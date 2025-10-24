@@ -1,0 +1,122 @@
+"""
+Stock Analysis Service
+
+Analyzes stocks using AI advisors and builds consensus
+Maps to build_consensus() from your analysis.py
+"""
+
+import logging
+import random
+from decimal import Decimal
+
+from django.db import connection
+from django.db.models import Sum
+from core.models import Stock, Holding, Discovery, Recommendation, Consensus, Trade, Profile
+from core.services.execution import execute_buy, execute_sell
+
+# Sentiment dictionary
+sentiment_settings = {
+    "BEAR" : {
+        "confidence_high": 0.8,
+        "confidence_low": 0.2
+    },
+    "STAG" : {
+        "confidence_high": 0.7,
+        "confidence_low": 0.3
+    },
+    "BULL" : {
+        "confidence_high": 0.6,
+        "confidence_low": 0.4
+    },
+}
+
+risk_settings = {
+    "CONSERVATIVE" : {
+        "allowance" : 0.1
+    },
+    "MODERATE" : {
+        "allowance" : 0.2
+    },
+    "AGGRESSIVE" : {
+        "allowance" : 0.4
+    },
+}
+
+logger = logging.getLogger(__name__)
+
+#  Build consensus on given stock
+def build_consensus(sa, advisors, stock):
+
+    # Only build consensus once for stock in a session (saves on API calls)
+    consensus = Consensus.objects.filter(sa_id=sa.id, stock_id=stock.id).first()
+    if consensus is not None:
+        return consensus
+    # TODO I'm sure there's nicer way to do the above
+
+    logger.info(f"Building consensus for stock {stock.symbol}")
+
+    # TODO Good time to get latest stock price (random it now to test)
+    stock.price = 1.00 #random.random() * 100
+    stock.save()
+
+    # Gather advice from external financial services
+    for a in advisors:
+        a.analyze(sa, stock)
+
+    # Collate advice and form a consensus
+    with connection.cursor() as cursor:
+        cursor.execute(f'''insert into core_consensus(sa_id, stock_id, recommendations, tot_confidence, avg_confidence) 
+            select {sa.id}, {stock.id}, count(*) as recommendations, sum(confidence) as tot_confidence, 
+            avg(confidence) as avg_confidence from core_recommendation where sa_id = {sa.id} and stock_id = {stock.id}
+        ''')
+    # TODO research alternative to raw SQL
+
+    return Consensus.objects.filter(sa=sa,stock=stock).first()
+
+# Review current holding stocks
+def analyze_holdings(sa, users, advisors):
+    logger.info(f"Analyzing holdings for SA session {sa.id}")
+
+    # 1. Filter stocks to sell on a per user basis
+    for u in users:
+        profile = Profile.objects.get(user=u)
+
+        sell_below = sentiment_settings[profile.sentiment]["confidence_low"]
+
+        for h in Holding.objects.filter(user=u):
+            consensus = build_consensus(sa, advisors, h.stock)
+
+            if consensus.avg_confidence < sell_below:
+                execute_sell(sa, u, consensus, h)
+
+
+# Discovery new stock
+def analyze_discovery(sa, users, advisors):
+    logger.info(f"Analyzing discovery for SA session {sa.id}")
+
+    # 1. Look for new stock (only once per sa to save API calls)
+    if not Discovery.objects.filter(sa=sa).exists():
+        for a in advisors:
+            a.discover(sa)
+
+    # 2. Build consensus on discovered stocl
+    for d in Discovery.objects.filter(sa=sa):
+        build_consensus(sa, advisors, d.stock)
+
+    # 3. Filter stocks to buy on a per user basis
+    for u in users:
+        profile = Profile.objects.get(user=u)
+        allowance = profile.cash * Decimal(risk_settings[profile.risk]["allowance"])
+        buy_from = sentiment_settings[profile.sentiment]["confidence_high"]
+
+        # Get shares to buy based on high confidence
+        consensus = Consensus.objects.filter(sa=sa.id, avg_confidence__gte=buy_from)
+
+        # Get tot_consensus so buy allowance can be decided by each stocks confidence score
+        tot_confidence = consensus.aggregate(Sum('avg_confidence'))['avg_confidence__sum']
+
+        # Do the buy process
+        for c in consensus:
+            execute_buy(sa, u, c, allowance, tot_confidence, c.avg_confidence)
+
+
