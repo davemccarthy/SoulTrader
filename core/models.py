@@ -50,8 +50,8 @@ class Profile(models.Model):
 
 # Basic stock at the core of everything
 class Stock(models.Model):
-    symbol = models.CharField(unique=True)
-    company = models.CharField()
+    symbol = models.CharField(max_length=10, unique=True)
+    company = models.CharField(max_length=200)
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0.0)
     updated = models.DateTimeField(auto_now=True)
 
@@ -68,7 +68,7 @@ class Holding(models.Model):
 # Smart analysis session
 class SmartAnalysis(models.Model):
     started = models.DateTimeField(auto_now_add=True)
-    username = models.CharField()
+    username = models.CharField(max_length=150)
     duration = models.DurationField(default=timedelta)
     # Other stats
     # allowance (this sessions spend)
@@ -77,36 +77,28 @@ class SmartAnalysis(models.Model):
 
 # External advisor services (pairs with python class)
 class Advisor(models.Model):
-    name = models.CharField(unique=True)
-    python_class = models.CharField(unique=True)
+    name = models.CharField(max_length=100, unique=True)
+    python_class = models.CharField(max_length=100, unique=True)
     enabled = models.BooleanField(default=True)
-    endpoint = models.CharField(default="")
-    key = models.CharField(default="")
+    endpoint = models.CharField(max_length=500, default="")
+    key = models.CharField(max_length=255, default="")
 
 #   Advisor suggested stock
 class Discovery(models.Model):
     sa = models.ForeignKey(SmartAnalysis, on_delete=models.CASCADE)
     stock = models.ForeignKey(Stock, on_delete=models.CASCADE)
     advisor = models.ForeignKey(Advisor, on_delete=models.CASCADE)
-    explanation = models.CharField()
+    explanation = models.CharField(max_length=500)
 
 
 # Recommendation for advisors
 class Recommendation(models.Model):
-    ACTION = [
-        ('BUY', 'Suggest buy'),
-        ('HOLD', 'Do not sell or buy'),
-        ('SELL', 'Suggest sell'),
-        ('STRONG_BUY', 'Definitely buy'),
-        ('STRONG_SELL', 'Definitely sell')
-    ]
 
     sa = models.ForeignKey(SmartAnalysis, on_delete=models.CASCADE)
     stock = models.ForeignKey(Stock, on_delete=models.CASCADE)
     advisor = models.ForeignKey(Advisor, on_delete=models.CASCADE)
-    action = models.CharField(max_length=20, choices=ACTION, default='HOLD')
     confidence = models.DecimalField(max_digits=3, decimal_places=2)
-    explanation = models.CharField()
+    explanation = models.CharField(max_length=500)
 
 
 # Stock consensus
@@ -114,7 +106,7 @@ class Consensus(models.Model):
     sa = models.ForeignKey(SmartAnalysis, on_delete=models.CASCADE)
     stock = models.ForeignKey(Stock, on_delete=models.CASCADE)
     recommendations = models.IntegerField()
-    avg_confidence = models.DecimalField(max_digits=2, decimal_places=2)
+    avg_confidence = models.DecimalField(max_digits=4, decimal_places=2)
     tot_confidence = models.DecimalField(max_digits=5, decimal_places=2)
 
 
@@ -128,6 +120,6 @@ class Trade(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     stock = models.ForeignKey(Stock, on_delete=models.CASCADE)
     consensus = models.ForeignKey(Consensus, on_delete=models.CASCADE)
-    action = models.CharField(max_length=20, choices=ACTION, default='HOLD')
-    price = models.DecimalField(max_digits=5, decimal_places=2)
+    action = models.CharField(max_length=20, choices=ACTION)
+    price = models.DecimalField(max_digits=10, decimal_places=2)
     shares = models.IntegerField()

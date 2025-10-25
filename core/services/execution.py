@@ -28,6 +28,7 @@ def execute_sell(sa, user, consensus, holding):
     trade.sa = sa
     trade.user = user
     trade.consensus = consensus
+    trade.action = "SELL"
     trade.stock = holding.stock
     trade.price = consensus.stock.price
     trade.shares = holding.shares
@@ -78,6 +79,7 @@ def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus):
     trade.sa = sa
     trade.user = user
     trade.consensus = consensus
+    trade.action = "BUY"
     trade.stock = consensus.stock
     trade.price = consensus.stock.price
     trade.shares = shares

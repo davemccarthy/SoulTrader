@@ -1,4 +1,4 @@
-import random
+
 from core.services.advisors.advisor import AdvisorBase, register
 
 class User(AdvisorBase):

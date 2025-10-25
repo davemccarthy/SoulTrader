@@ -65,10 +65,10 @@ def build_consensus(sa, advisors, stock):
 
     # Collate advice and form a consensus
     with connection.cursor() as cursor:
-        cursor.execute(f'''insert into core_consensus(sa_id, stock_id, recommendations, tot_confidence, avg_confidence) 
-            select {sa.id}, {stock.id}, count(*) as recommendations, sum(confidence) as tot_confidence, 
-            avg(confidence) as avg_confidence from core_recommendation where sa_id = {sa.id} and stock_id = {stock.id}
-        ''')
+        cursor.execute('''insert into core_consensus(sa_id, stock_id, recommendations, tot_confidence, avg_confidence) 
+            select %s, %s, count(*) as recommendations, sum(confidence) as tot_confidence, 
+            avg(confidence) as avg_confidence from core_recommendation where sa_id = %s and stock_id = %s
+        ''', [sa.id, stock.id, sa.id, stock.id])
     # TODO research alternative to raw SQL
 
     return Consensus.objects.filter(sa=sa,stock=stock).first()

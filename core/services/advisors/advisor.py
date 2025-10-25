@@ -39,15 +39,14 @@ class AdvisorBase:
 
         logger.info(f"{self.name} discovers {stock.symbol}")
 
-    def recommend(self, sa, stock, action, confidence, explanation=""):
+    def recommend(self, sa, stock, confidence, explanation=""):
         # TODO BUY, SELL .etc
         #create recommendation record
         recommendation = Recommendation()
         recommendation.sa = sa
         recommendation.stock = stock
         recommendation.advisor = Advisor.objects.get(name=self.name)
-        recommendation.action = action
-        recommendation.confidence = 0.75 #confidence
+        recommendation.confidence = confidence
         recommendation.explanation = explanation
         recommendation.save()
 
@@ -56,7 +55,8 @@ class AdvisorBase:
 
 def register(name, python_class):
     try:
-        Advisor.objects.get(name=name)
+        Advisor.objects.get(python_class=python_class)
+        logger.info(f"Advisor {name} ({python_class}) already exists, skipping registration")
 
     except Advisor.DoesNotExist:
         logger.info(f"Created new advisor: {name}")
