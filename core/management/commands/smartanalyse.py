@@ -106,12 +106,13 @@ class Command(BaseCommand):
             module_name = a.python_class.lower()
             module = getattr(advisor_modules, module_name)
             pythonClass = getattr(module, a.python_class)
-            advisors.append(pythonClass(a.name))
 
-        # Force discovery of stock from user
-        if options['discover']:
-            advisor = next((a for a in advisors if attrgetter('name')(a) == "User Advisor"), None)
-            advisor.discovered( sa=sa, symbol=options['discover'])
+            adv = pythonClass(a)
+            advisors.append(adv)
+
+            # Lookout for user discovery
+            if options['discover'] and a.python_class == "User":
+                adv.discovered( sa=sa, symbol=options['discover'])
 
         # Lets go
         if not param_discovery_only:

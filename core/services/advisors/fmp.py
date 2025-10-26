@@ -7,7 +7,7 @@ import requests
 import logging
 from decimal import Decimal
 from typing import Dict, Optional
-from .advisor import AdvisorBase
+from .advisor import AdvisorBase, register
 
 logger = logging.getLogger(__name__)
 
@@ -15,40 +15,14 @@ logger = logging.getLogger(__name__)
 class FMP(AdvisorBase):
     """Financial Modeling Prep advisor implementation"""
     
-    def __init__(self, advisor):
-        if isinstance(advisor, str):
-            # If passed a string, use it as the name and fetch from database
-            super().__init__(advisor)
-            from core.models import Advisor
-            try:
-                advisor_obj = Advisor.objects.get(name=advisor)
-                self.advisor = advisor_obj
-                self.api_key = advisor_obj.key
-                self.base_url = advisor_obj.endpoint or "https://financialmodelingprep.com/stable"
-            except Advisor.DoesNotExist:
-                self.advisor = None
-                self.api_key = ""
-                self.base_url = "https://financialmodelingprep.com/stable"
-        else:
-            # If passed an advisor object, use its name
-            super().__init__(advisor.name)
-            self.advisor = advisor
-            self.api_key = advisor.key
-            self.base_url = advisor.endpoint or "https://financialmodelingprep.com/stable"
-        
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'SoulTrader/1.0'
-        })
-    
     def analyze(self, sa, stock):
         """Analyze stock using FMP API"""
         try:
-            # Get company profile
+            # Get company profile (required)
             profile_data = self._get_company_profile(stock.symbol)
             if not profile_data:
-                logger.warning(f"FMP: No profile data available for {stock.symbol}")
-                return None
+                logger.warning(f"FMP: No profile data available for {stock.symbol}, skipping recommendation")
+                return None  # Don't create a recommendation if we can't get data
             
             # Get financial ratios (optional)
             ratios_data = self._get_financial_ratios(stock.symbol)
@@ -56,13 +30,29 @@ class FMP(AdvisorBase):
             # Get analyst grades/consensus (optional)
             grades_data = self._get_analyst_grades(stock.symbol)
             
+            # Double-check we still have valid profile data
+            if not profile_data or not any(profile_data.get(k) for k in ['marketCap', 'pe', 'profitMargins', 'symbol']):
+                logger.warning(f"FMP: Profile data for {stock.symbol} is empty/invalid, skipping recommendation")
+                return None
+            
             # Calculate confidence score
             confidence = self._calculate_confidence(profile_data, ratios_data, grades_data)
+            
+            # Only create recommendation if confidence is meaningful (not the default 0.5)
+            if confidence == 0.5 and not ratios_data and not grades_data:
+                logger.warning(f"FMP: Only default confidence score for {stock.symbol}, skipping recommendation")
+                return None
             
             # Build explanation
             explanation = self._build_explanation(profile_data, ratios_data, grades_data, confidence)
             
-            return self.recommend(sa, stock, confidence, explanation)
+            # Only create recommendation if explanation is meaningful
+            if explanation == "FMP analysis:" or explanation == "FMP analysis: Insufficient data":
+                logger.warning(f"FMP: Empty explanation for {stock.symbol}, skipping recommendation")
+                return None
+            
+            # Only create recommendation if we have valid data
+            self.recommend(sa, stock, confidence, explanation)
             
         except Exception as e:
             logger.error(f"FMP analysis failed for {stock.symbol}: {e}")
@@ -71,13 +61,29 @@ class FMP(AdvisorBase):
     def _get_company_profile(self, symbol):
         """Get company profile from FMP"""
         try:
-            params = {'symbol': symbol, 'apikey': self.api_key}
-            response = self.session.get(f"{self.base_url}/profile", params=params, timeout=30)
+            params = {'symbol': symbol, 'apikey': self.advisor.key}
+            response = requests.get(f"{self.advisor.endpoint}/profile", params=params, timeout=30)
+            
+            # Check for rate limit or payment required
+            if response.status_code == 402:
+                logger.warning(f"FMP API rate limit exceeded for {symbol}")
+                return None
+            
             response.raise_for_status()
             data = response.json()
             
+            # Check if we got actual data (not an error message)
+            if isinstance(data, dict) and 'Error Message' in data:
+                logger.warning(f"FMP API error for {symbol}: {data['Error Message']}")
+                return None
+            
             if isinstance(data, list) and data:
-                return data[0]
+                profile = data[0]
+                # Check if profile has actual data (not all None/empty)
+                if not any(profile.get(k) for k in ['marketCap', 'pe', 'profitMargins', 'symbol']):
+                    logger.warning(f"FMP profile for {symbol} has no usable data")
+                    return None
+                return profile
             return data
             
         except Exception as e:
@@ -87,8 +93,8 @@ class FMP(AdvisorBase):
     def _get_financial_ratios(self, symbol):
         """Get financial ratios from FMP"""
         try:
-            params = {'symbol': symbol, 'apikey': self.api_key}
-            response = self.session.get(f"{self.base_url}/ratios", params=params, timeout=30)
+            params = {'symbol': symbol, 'apikey': self.advisor.key}
+            response = requests.get(f"{self.advisor.endpoint}/ratios", params=params, timeout=30)
             
             # Check for rate limit or payment required
             if response.status_code == 402:
@@ -109,8 +115,8 @@ class FMP(AdvisorBase):
     def _get_analyst_grades(self, symbol):
         """Get analyst grades/consensus from FMP"""
         try:
-            params = {'symbol': symbol, 'apikey': self.api_key}
-            response = self.session.get(f"{self.base_url}/grades-consensus", params=params, timeout=30)
+            params = {'symbol': symbol, 'apikey': self.advisor.key}
+            response = requests.get(f"{self.advisor.endpoint}/grades-consensus", params=params, timeout=30)
             
             # Check for rate limit or payment required
             if response.status_code == 402:
@@ -240,3 +246,6 @@ class FMP(AdvisorBase):
             explanation_parts.append("Negative ROE")
         
         return " ".join(explanation_parts)
+
+
+register(name="Financial Modeling", python_class="FMP")

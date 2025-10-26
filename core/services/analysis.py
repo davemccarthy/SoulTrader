@@ -18,11 +18,11 @@ from core.services.execution import execute_buy, execute_sell
 sentiment_settings = {
     "BEAR" : {
         "confidence_high": 0.8,
-        "confidence_low": 0.2
+        "confidence_low": 0.6
     },
     "STAG" : {
         "confidence_high": 0.7,
-        "confidence_low": 0.3
+        "confidence_low": 0.5
     },
     "BULL" : {
         "confidence_high": 0.6,
