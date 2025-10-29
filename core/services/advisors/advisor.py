@@ -16,7 +16,7 @@ class AdvisorBase:
     def analyze(self, sa, stock):
         return
 
-    def discovered(self, sa, symbol, company, confidence, explanation):
+    def discovered(self, sa, symbol, company, explanation):
         #-- find stock or create stock
         try:
             stock = Stock.objects.get(symbol=symbol)

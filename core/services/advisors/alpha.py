@@ -36,10 +36,9 @@ class Alpha(AdvisorBase):
                 # Only discover stocks with significant gains (>5%)
                 if change_percent > 5.0:
                     company = stock_data.get('ticker')  # Fallback to ticker if name not available
-                    confidence = 0.3 + min(change_percent / 100, 0.3)  # Base 0.3 + up to 0.3 bonus
                     explanation = f"Top gainer: +{change_percent:.1f}%"
                     
-                    self.discovered(sa, symbol, company, confidence, explanation)
+                    self.discovered(sa, symbol, company, explanation)
                     discoveries.append(symbol)
                     logger.info(f"Alpha discovered {symbol}: {explanation}")
             
@@ -59,12 +58,12 @@ class Alpha(AdvisorBase):
                 if change_percent > 0:
                     volume = stock_data.get('volume')
                     company = stock_data.get('ticker')
-                    confidence = 0.35  # Slightly lower confidence than gainers
+
                     # Format volume with commas if it's a number
                     volume_str = f"{volume:,}" if isinstance(volume, int) else str(volume)
                     explanation = f"High volume +{change_percent:.1f}%: {volume_str} shares"
                     
-                    self.discovered(sa, symbol, company, confidence, explanation)
+                    self.discovered(sa, symbol, company, explanation)
                     discoveries.append(symbol)
                     logger.info(f"Alpha discovered {symbol}: {explanation}")
             
@@ -81,8 +80,10 @@ class Alpha(AdvisorBase):
             overview_data = self._get_overview(stock.symbol)
             
             if not quote_data:
-                logger.warning(f"Alpha Vantage: No quote data available for {stock.symbol}, returning neutral score")
-                return 0.5  # Neutral on error
+                # No data available (likely rate-limited) - don't submit recommendation
+                # Alpha Vantage will simply not participate in consensus for this stock
+                logger.debug(f"Alpha Vantage: Skipping {stock.symbol} - no data available (rate-limited)")
+                return None
             
             # Update stock price
             current_price = quote_data.get('price')
@@ -169,8 +170,16 @@ class Alpha(AdvisorBase):
             }
             
             response = requests.get(self.advisor.endpoint, params=params, timeout=30)
-            response.raise_for_status()
+            
+            # Check HTTP status first - if not 200, log once and return
+            if response.status_code != 200:
+                logger.warning(f"Alpha Vantage API HTTP {response.status_code} for {symbol}: {response.text[:200]}")
+                return None
+            
             data = response.json()
+            
+            # Log response for debugging
+            logger.debug(f"Alpha Vantage quote response for {symbol}: {list(data.keys())}")
             
             # Check for API error messages
             if 'Note' in data:
@@ -178,12 +187,16 @@ class Alpha(AdvisorBase):
                 return None
             
             if 'Error Message' in data:
-                logger.error(f"Alpha Vantage API error for {symbol}: {data['Error Message']}")
+                logger.warning(f"Alpha Vantage API error for {symbol}: {data['Error Message']}")
                 return None
             
             # Parse Alpha Vantage response
             if 'Global Quote' in data:
                 quote = data['Global Quote']
+                # Check if quote is empty or None
+                if not quote or (isinstance(quote, dict) and len(quote) == 0):
+                    logger.warning(f"Alpha Vantage quote for {symbol}: Empty Global Quote")
+                    return None
                 return {
                     'price': float(quote.get('05. price', 0)),
                     'change': float(quote.get('09. change', 0)),
@@ -194,7 +207,13 @@ class Alpha(AdvisorBase):
                     'open': float(quote.get('02. open', 0))
                 }
             
-            logger.warning(f"Alpha Vantage quote for {symbol}: No data returned")
+            # If response only has 'Information' key, it's likely rate-limited
+            if 'Information' in data and len(data) == 1:
+                logger.warning(f"Alpha Vantage quote for {symbol}: Rate-limited - {data.get('Information', 'No data available')[:100]}")
+                return None
+            
+            # Other cases - log warning
+            logger.warning(f"Alpha Vantage quote for {symbol}: No 'Global Quote' in response. Keys: {list(data.keys())}")
             return None
             
         except Exception as e:
@@ -211,21 +230,26 @@ class Alpha(AdvisorBase):
             }
             
             response = requests.get(self.advisor.endpoint, params=params, timeout=30)
-            response.raise_for_status()
+            
+            # Check HTTP status first - if not 200, return silently (already logged in _get_quote)
+            if response.status_code != 200:
+                logger.warning(f"{self.advisor.name} returns {response}")
+                return {}
+            
             data = response.json()
             
             # Check for API error messages
             if 'Note' in data:
-                logger.warning(f"Alpha Vantage API note for {symbol}: {data['Note']}")
+                # Don't log again if quote already logged
                 return {}
             
             if 'Error Message' in data:
-                logger.error(f"Alpha Vantage API error for {symbol}: {data['Error Message']}")
+                # Don't log again if quote already logged
                 return {}
             
             # Check if we got actual data (overview should have multiple fields)
             if not data or len(data) < 5:
-                logger.warning(f"Alpha Vantage overview for {symbol}: Insufficient data")
+                # Don't log - insufficient data is expected when rate limited
                 return {}
             
             return data

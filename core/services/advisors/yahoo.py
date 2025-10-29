@@ -34,10 +34,9 @@ class Yahoo(AdvisorBase):
                         if 'symbol' in quote:
                             symbol = quote['symbol']
                             company = quote.get('longName', symbol)
-                            confidence = 0.45
                             explanation = "Yahoo: Undervalued growth stock"
                             
-                            self.discovered(sa, symbol, company, confidence, explanation)
+                            self.discovered(sa, symbol, company, explanation)
                             discovered_symbols.append(symbol)
                             logger.info(f"Yahoo discovered {symbol}: {explanation}")
             except Exception as e:
@@ -57,10 +56,9 @@ class Yahoo(AdvisorBase):
                                 continue
                             
                             company = quote.get('longName', symbol)
-                            confidence = 0.35
                             explanation = "Yahoo: High volume active stock"
                             
-                            self.discovered(sa, symbol, company, confidence, explanation)
+                            self.discovered(sa, symbol, company, explanation)
                             discovered_symbols.append(symbol)
                             logger.info(f"Yahoo discovered {symbol}: {explanation}")
             except Exception as e:
@@ -80,10 +78,9 @@ class Yahoo(AdvisorBase):
                                 continue
                             
                             company = quote.get('longName', symbol)
-                            confidence = 0.40
                             explanation = "Yahoo: Undervalued large cap"
                             
-                            self.discovered(sa, symbol, company, confidence, explanation)
+                            self.discovered(sa, symbol, company, explanation)
                             discovered_symbols.append(symbol)
                             logger.info(f"Yahoo discovered {symbol}: {explanation}")
             except Exception as e:
