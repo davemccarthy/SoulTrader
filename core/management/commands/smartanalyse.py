@@ -112,7 +112,13 @@ class Command(BaseCommand):
 
             # Lookout for user discovery
             if options['discover'] and a.python_class == "User":
-                adv.discovered( sa=sa, symbol=options['discover'])
+
+                # Split on comma and strip whitespace
+                symbols = [s.strip().upper() for s in options['discover'].split(',')]
+
+                for symbol in symbols:
+                    adv.discovered( sa=sa, symbol=symbol)
+
 
         # Lets go
         if not param_discovery_only:

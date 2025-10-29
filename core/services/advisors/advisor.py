@@ -20,6 +20,7 @@ class AdvisorBase:
         #-- find stock or create stock
         try:
             stock = Stock.objects.get(symbol=symbol)
+            print(f"discovered {stock.symbol} @ {stock.price}")
 
         except Stock.DoesNotExist:
             stock = Stock()

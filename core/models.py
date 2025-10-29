@@ -52,6 +52,7 @@ class Profile(models.Model):
 class Stock(models.Model):
     symbol = models.CharField(max_length=10, unique=True)
     company = models.CharField(max_length=200)
+    exchange = models.CharField(max_length=32, default='Unknown')
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0.0)
     updated = models.DateTimeField(auto_now=True)
 

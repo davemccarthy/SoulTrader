@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 class Alpha(AdvisorBase):
 
     def discover(self, sa):
-        return
+
         """Discover stocks using Alpha Vantage market movers"""
         try:
             # Get market movers data

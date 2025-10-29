@@ -22,7 +22,7 @@ sentiment_settings = {
     },
     "STAG" : {
         "confidence_high": 0.7,
-        "confidence_low": 0.5
+        "confidence_low": 0.55
     },
     "BULL" : {
         "confidence_high": 0.6,
@@ -54,10 +54,6 @@ def build_consensus(sa, advisors, stock):
     # TODO I'm sure there's nicer way to do the above
 
     logger.info(f"Building consensus for stock {stock.symbol}")
-
-    # TODO Good time to get latest stock price (random it now to test)
-    stock.price = 1.00 #random.random() * 100
-    stock.save()
 
     # Gather advice from external financial services
     for a in advisors:

@@ -105,6 +105,16 @@ class Yahoo(AdvisorBase):
             current_price = info.get('currentPrice') or info.get('regularMarketPrice')
             if current_price:
                 stock.price = Decimal(str(current_price))
+
+                # Update name if user discovered
+                if stock.company == "Unknown":
+                    stock.company = info.get('longName') or info.get('shortName')
+
+                # Update exchange if unknown
+                if stock.exchange == "Unknown":
+                    stock.exchange = info.get('fullExchangeName')
+
+                # 1ogo_url
                 stock.save()
 
             # Calculate confidence based on real metrics
@@ -155,6 +165,21 @@ class Yahoo(AdvisorBase):
             elif debt_to_equity < 0.5:
                 explanation_parts.append(f"💪 LOW DEBT: {debt_to_equity:.1f} D/E")
             
+            # Add target price information if available
+            target_mean_price = info.get('targetMeanPrice')
+            if target_mean_price:
+                current_price = info.get('currentPrice') or info.get('regularMarketPrice')
+                if current_price:
+                    upside_percent = ((target_mean_price - current_price) / current_price) * 100
+                    if upside_percent > 20:
+                        explanation_parts.append(f"🎯 STRONG TARGET: ${target_mean_price:.2f} (+{upside_percent:.1f}% upside)")
+                    elif upside_percent > 10:
+                        explanation_parts.append(f"🎯 TARGET: ${target_mean_price:.2f} (+{upside_percent:.1f}% upside)")
+                    elif upside_percent > 0:
+                        explanation_parts.append(f"🎯 MODEST TARGET: ${target_mean_price:.2f} (+{upside_percent:.1f}% upside)")
+                    else:
+                        explanation_parts.append(f"🎯 BELOW TARGET: ${target_mean_price:.2f} ({upside_percent:.1f}% downside)")
+            
             explanation = " | ".join(explanation_parts)
             return super().recommend(sa, stock, confidence, explanation)
 
@@ -162,7 +187,7 @@ class Yahoo(AdvisorBase):
             logger.error(f"Error analyzing {stock.symbol}: {e}")
 
     def _calculate_confidence(self, info, symbol):
-        """Calculate confidence score based on Yahoo Finance metrics"""
+        """Calculate confidence score based on Yahoo Finance metrics including target price"""
         score = 0.5  # Start neutral
 
         # VALUATION ANALYSIS
@@ -237,6 +262,16 @@ class Yahoo(AdvisorBase):
                 score += 0.05
             elif volume < avg_volume * 0.5:
                 score -= 0.05
+
+        # TARGET PRICE ANALYSIS
+        target_mean_price = info.get('targetMeanPrice')
+        if target_mean_price:
+            current_price = info.get('currentPrice') or info.get('regularMarketPrice')
+            if current_price and current_price > 0:
+                upside_percent = ((target_mean_price - current_price) / current_price) * 100
+                # Conservative scaling: 50% weight of upside percentage
+                target_score_adjustment = (upside_percent / 100) * 0.5
+                score += target_score_adjustment
 
         # Ensure score is between 0 and 1
         final_score = max(0.0, min(1.0, score))
