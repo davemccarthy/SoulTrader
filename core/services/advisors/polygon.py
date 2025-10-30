@@ -32,7 +32,90 @@ class Polygon(AdvisorBase):
         
         self._last_request_time = time.time()
 
+    def discover(self, sa):
+        """Discover stocks from recent Polygon news articles"""
+        try:
+            # Get API key from advisor config
+            api_key = getattr(self.advisor, "key", "") if self.advisor else ""
+            if not api_key:
+                logger.warning("Polygon advisor missing API key; skipping discovery")
+                return
+
+            # Fetch recent news (last 48 hours)
+            news_items = self._fetch_recent_news(api_key)
+            
+            if not news_items:
+                logger.info("No recent news items found")
+                return
+
+            # Process each news item
+            for item in news_items:
+                self._process_news_item(sa, item)
+
+        except Exception as e:
+            logger.error(f"Polygon discovery error: {e}")
+
+    def _fetch_recent_news(self, api_key):
+        """Fetch recent news from Polygon API"""
+        try:
+            import requests
+            
+            url = "https://api.polygon.io/v2/reference/news"
+            
+            # Last 48 hours
+            since = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
+            
+            params = {
+                "published_utc.gte": since,
+                "sort": "published_utc",
+                "limit": 50,  # Get more items to filter
+                "apiKey": api_key
+            }
+            
+            logger.info(f"Fetching Polygon news since {since}")
+            response = requests.get(url, params=params, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                results = data.get("results", [])
+                logger.info(f"Found {len(results)} news items from Polygon")
+                return results
+            else:
+                logger.warning(f"Polygon news API error: {response.status_code} - {response.text}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error fetching Polygon news: {e}")
+            return []
+
+    def _process_news_item(self, sa, item):
+        """Process a single news item and discover stocks"""
+        try:
+            # Extract tickers from news item
+            tickers = item.get("tickers", [])
+            if not tickers:
+                return
+
+            title = item.get("title", "")
+            url = item.get("article_url", "")
+            published = item.get("published_utc", "")
+            
+            # Create explanation with news context
+            explanation = f"News: {title} ({url})"
+            
+            # Discover each ticker mentioned in the news
+            for ticker in tickers:
+                if ticker and len(ticker) <= 10:  # Basic validation
+                    # Use ticker as both symbol and company name for now
+                    # The Stock model will be created if it doesn't exist
+                    self.discovered(sa, ticker, ticker, explanation)
+                    logger.info(f"Polygon discovered {ticker} from news: {title[:50]}...")
+
+        except Exception as e:
+            logger.error(f"Error processing news item: {e}")
+
     def analyze(self, sa, stock):
+        return # disable for now
         self._rate_limit()
         client = RESTClient(api_key=self.advisor.key)
 

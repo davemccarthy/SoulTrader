@@ -204,5 +204,104 @@ Keep your reasoning concise but informative."""
             logger.error(f"Error parsing Gemini response: {e}")
             return None, response_text
 
+    def discover(self, sa):
+        """Discover stocks from recent market-moving news using Gemini AI"""
+        try:
+            # Get API config
+            endpoint = getattr(self.advisor, "endpoint", "") if self.advisor else ""
+            api_key = getattr(self.advisor, "key", "") if self.advisor else ""
+            
+            if not endpoint or not api_key:
+                logger.warning("Gemini advisor missing endpoint or API key; skipping discovery")
+                return
+
+            # Ask Gemini for recent market events
+            prompt = self._build_discovery_prompt()
+            response = self._call_gemini_api(endpoint, api_key, prompt)
+            
+            if not response:
+                return
+                
+            # Parse response and discover tickers
+            self._process_discovery_response(sa, response)
+
+        except Exception as e:
+            logger.error(f"Gemini discovery error: {e}")
+
+    def _build_discovery_prompt(self):
+        """Build prompt for Gemini to discover recent market events"""
+        return """You are a financial news analyst. Identify significant market-moving events from the last 48 hours that could impact stock prices.
+
+Focus on:
+- FDA drug approvals
+- M&A announcements (mergers, acquisitions, takeovers)
+- Major earnings surprises (beats/misses)
+- Corporate guidance updates
+- Regulatory approvals
+- Major partnerships or deals
+
+For each event, provide:
+EVENT: [Brief description]
+TICKERS: [Comma-separated list of relevant stock symbols]
+IMPACT: [High/Medium/Low]
+REASON: [Why this moves the stock]
+
+Format your response as:
+EVENT: [Description]
+TICKERS: [SYMBOL1, SYMBOL2, SYMBOL3]
+IMPACT: [High/Medium/Low]
+REASON: [Explanation]
+
+EVENT: [Next event]
+TICKERS: [SYMBOL4, SYMBOL5]
+IMPACT: [High/Medium/Low]
+REASON: [Explanation]
+
+Only include events with HIGH or MEDIUM impact. Skip general market commentary."""
+
+    def _process_discovery_response(self, sa, response):
+        """Process Gemini response and discover stocks"""
+        try:
+            lines = response.strip().split('\n')
+            current_event = None
+            current_tickers = []
+            current_reason = ""
+            
+            for line in lines:
+                line = line.strip()
+                if line.startswith('EVENT:'):
+                    # Process previous event if we have one
+                    if current_event and current_tickers:
+                        self._discover_event_stocks(sa, current_event, current_tickers, current_reason)
+                    
+                    # Start new event
+                    current_event = line[6:].strip()
+                    current_tickers = []
+                    current_reason = ""
+                    
+                elif line.startswith('TICKERS:'):
+                    tickers_str = line[8:].strip()
+                    current_tickers = [t.strip().upper() for t in tickers_str.split(',') if t.strip()]
+                    
+                elif line.startswith('REASON:'):
+                    current_reason = line[7:].strip()
+            
+            # Process last event
+            if current_event and current_tickers:
+                self._discover_event_stocks(sa, current_event, current_tickers, current_reason)
+                
+        except Exception as e:
+            logger.error(f"Error processing Gemini discovery response: {e}")
+
+    def _discover_event_stocks(self, sa, event, tickers, reason):
+        """Discover stocks for a specific event"""
+        for ticker in tickers:
+            if ticker and len(ticker) <= 10:  # Basic validation
+                # Truncate explanation to fit database field (500 chars)
+                full_explanation = f"News: {event} - {reason}"
+                explanation = full_explanation[:497] + "..." if len(full_explanation) > 500 else full_explanation
+                self.discovered(sa, ticker, ticker, explanation)
+                logger.info(f"Gemini discovered {ticker} from: {event[:50]}...")
+
 
 register(name="Google Gemini", python_class="Gemini")

@@ -25,7 +25,9 @@ class AdvisorBase:
         except Stock.DoesNotExist:
             stock = Stock()
             stock.symbol = symbol
-            stock.company = company
+            # Let yahoo fix this later
+            # stock.company = company
+            stock.advisor = self.advisor
             stock.save()
             # TODO GOOD TIME TO GET STOCK IMAGE
 
