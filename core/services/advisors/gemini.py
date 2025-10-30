@@ -4,6 +4,7 @@ import logging
 import requests
 import json
 import time
+from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
@@ -205,28 +206,37 @@ Keep your reasoning concise but informative."""
             return None, response_text
 
     def discover(self, sa):
-        """Discover stocks from recent market-moving news using Gemini AI"""
+        """Baby step: fetch and print the most recent Polygon news article (no discoveries yet)."""
         try:
-            # Get API config
-            endpoint = getattr(self.advisor, "endpoint", "") if self.advisor else ""
-            api_key = getattr(self.advisor, "key", "") if self.advisor else ""
-            
-            if not endpoint or not api_key:
-                logger.warning("Gemini advisor missing endpoint or API key; skipping discovery")
+            polygon_key = getattr(settings, 'POLYGON_API_KEY', None)
+            if not polygon_key:
+                print("[Gemini.discover] POLYGON_API_KEY not configured in settings")
                 return
 
-            # Ask Gemini for recent market events
-            prompt = self._build_discovery_prompt()
-            response = self._call_gemini_api(endpoint, api_key, prompt)
-            
-            if not response:
+            url = "https://api.polygon.io/v2/reference/news"
+            params = {
+                "sort": "published_utc",
+                "order": "desc",
+                "limit": 1,
+                "apiKey": polygon_key,
+            }
+            resp = requests.get(url, params=params, timeout=20)
+            if resp.status_code != 200:
+                print(f"[Gemini.discover] Polygon news error {resp.status_code}: {resp.text[:200]}")
                 return
-                
-            # Parse response and discover tickers
-            self._process_discovery_response(sa, response)
-
+            data = resp.json().get("results", [])
+            if not data:
+                print("[Gemini.discover] No Polygon news returned")
+                return
+            item = data[0]
+            title = item.get("title", "")
+            article_url = item.get("article_url", "")
+            published = item.get("published_utc", "")
+            print(f"[Gemini.discover] Latest Polygon news:\n- Title: {title}\n- URL: {article_url}\n- Published: {published}")
+            return
         except Exception as e:
-            logger.error(f"Gemini discovery error: {e}")
+            logger.error(f"Gemini discovery error (Polygon fetch/print): {e}")
+            return
 
     def _build_discovery_prompt(self):
         """Build prompt for Gemini to discover recent market events"""
