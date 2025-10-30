@@ -1,5 +1,5 @@
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from core.services.advisors.advisor import AdvisorBase, register
 import logging
@@ -62,17 +62,22 @@ class Polygon(AdvisorBase):
             
             url = "https://api.polygon.io/v2/reference/news"
             
-            # Last 48 hours
-            since = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
+            # Last 24 hours - timezone-aware ISO timestamps
+            now_utc = datetime.now(timezone.utc)
+            since_utc = now_utc - timedelta(hours=24)
+            since = since_utc.isoformat(timespec="seconds")
+            now_iso = now_utc.isoformat(timespec="seconds")
             
             params = {
                 "published_utc.gte": since,
+                "published_utc.lte": now_iso,
                 "sort": "published_utc",
+                "order": "desc",
                 "limit": 50,  # Get more items to filter
                 "apiKey": api_key
             }
             
-            logger.info(f"Fetching Polygon news since {since}")
+            logger.info(f"Fetching Polygon news from {since} to {now_iso}")
             response = requests.get(url, params=params, timeout=30)
             
             if response.status_code == 200:
