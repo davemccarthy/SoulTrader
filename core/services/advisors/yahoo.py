@@ -20,6 +20,7 @@ class Yahoo(AdvisorBase):
             self.advisor = advisor
 
     def discover(self, sa):
+
         """Discover stocks using Yahoo Finance screeners"""
         try:
             discovered_symbols = []
@@ -38,33 +39,11 @@ class Yahoo(AdvisorBase):
                             
                             self.discovered(sa, symbol, company, explanation)
                             discovered_symbols.append(symbol)
-                            logger.info(f"Yahoo discovered {symbol}: {explanation}")
+                            # logger.info(f"Yahoo discovered {symbol}: {explanation}")
             except Exception as e:
                 logger.warning(f"Yahoo growth stocks discovery failed: {e}")
             
-            # Method 2: Most Active Stocks (high liquidity)
-            try:
-                query = yf.PREDEFINED_SCREENER_QUERIES['most_actives']['query']
-                data = yf.screen(query)
-                
-                if isinstance(data, dict) and 'quotes' in data:
-                    for quote in data['quotes'][:6]:  # Top 6
-                        if 'symbol' in quote:
-                            symbol = quote['symbol']
-                            # Skip if already discovered
-                            if symbol in discovered_symbols:
-                                continue
-                            
-                            company = quote.get('longName', symbol)
-                            explanation = "Yahoo: High volume active stock"
-                            
-                            self.discovered(sa, symbol, company, explanation)
-                            discovered_symbols.append(symbol)
-                            logger.info(f"Yahoo discovered {symbol}: {explanation}")
-            except Exception as e:
-                logger.warning(f"Yahoo active stocks discovery failed: {e}")
-            
-            # Method 3: Undervalued Large Caps (stability)
+            # Method 2: Undervalued Large Caps (stability)
             try:
                 query = yf.PREDEFINED_SCREENER_QUERIES['undervalued_large_caps']['query']
                 data = yf.screen(query)
@@ -82,9 +61,54 @@ class Yahoo(AdvisorBase):
                             
                             self.discovered(sa, symbol, company, explanation)
                             discovered_symbols.append(symbol)
-                            logger.info(f"Yahoo discovered {symbol}: {explanation}")
+                            #logger.info(f"Yahoo discovered {symbol}: {explanation}")
             except Exception as e:
                 logger.warning(f"Yahoo large caps discovery failed: {e}")
+            
+            # Method 3: High-Risk/High-Reward (bouncing stocks)
+            # Day losers - oversold stocks with bounce potential
+            try:
+                query = yf.PREDEFINED_SCREENER_QUERIES['day_losers']['query']
+                data = yf.screen(query)
+                
+                if isinstance(data, dict) and 'quotes' in data:
+                    for quote in data['quotes'][:5]:  # Top 5 losers (oversold)
+                        if 'symbol' in quote:
+                            symbol = quote['symbol']
+                            # Skip if already discovered
+                            if symbol in discovered_symbols:
+                                continue
+                            
+                            company = quote.get('longName', symbol)
+                            explanation = "Yahoo: High-risk oversold (bounce potential)"
+                            
+                            self.discovered(sa, symbol, company, explanation)
+                            discovered_symbols.append(symbol)
+                            logger.info(f"Yahoo discovered {symbol}: {explanation}")
+            except Exception as e:
+                logger.warning(f"Yahoo day losers discovery failed: {e}")
+            
+            # Small cap gainers - volatile momentum plays
+            try:
+                query = yf.PREDEFINED_SCREENER_QUERIES['small_cap_gainers']['query']
+                data = yf.screen(query)
+                
+                if isinstance(data, dict) and 'quotes' in data:
+                    for quote in data['quotes'][:5]:  # Top 5 small cap gainers
+                        if 'symbol' in quote:
+                            symbol = quote['symbol']
+                            # Skip if already discovered
+                            if symbol in discovered_symbols:
+                                continue
+                            
+                            company = quote.get('longName', symbol)
+                            explanation = "Yahoo: High-risk small cap momentum"
+                            
+                            self.discovered(sa, symbol, company, explanation)
+                            discovered_symbols.append(symbol)
+                            logger.info(f"Yahoo discovered {symbol}: {explanation}")
+            except Exception as e:
+                logger.warning(f"Yahoo small cap gainers discovery failed: {e}")
             
             logger.info(f"Yahoo Finance discovery complete: {len(discovered_symbols)} stocks found")
             
@@ -104,11 +128,11 @@ class Yahoo(AdvisorBase):
                 stock.price = Decimal(str(current_price))
 
                 # Update name if user discovered
-                if stock.company == "Unknown":
+                if stock.company == "":
                     stock.company = info.get('longName') or info.get('shortName')
 
                 # Update exchange if unknown
-                if stock.exchange == "Unknown":
+                if stock.exchange == "":
                     stock.exchange = info.get('fullExchangeName')
 
                 # 1ogo_url

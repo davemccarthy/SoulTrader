@@ -13,35 +13,26 @@ from django.db import connection
 from django.db.models import Sum
 from core.models import Stock, Holding, Discovery, Recommendation, Consensus, Trade, Profile
 from core.services.execution import execute_buy, execute_sell
-
-# Sentiment dictionary
-sentiment_settings = {
-    "BEAR" : {
+"""""
+# Risky business
+risk_settings = {
+    "CONSERVATIVE" : {
+        "allowance" : 0.1,
         "confidence_high": 0.8,
         "confidence_low": 0.6
     },
-    "STAG" : {
+    "MODERATE" : {
+        "allowance" : 0.2,
         "confidence_high": 0.7,
         "confidence_low": 0.55
     },
-    "BULL" : {
-        "confidence_high": 0.6,
+    "AGGRESSIVE" : {
+        "allowance" : 0.4,
+        "confidence_high": 0.55,
         "confidence_low": 0.4
     },
 }
-
-risk_settings = {
-    "CONSERVATIVE" : {
-        "allowance" : 0.1
-    },
-    "MODERATE" : {
-        "allowance" : 0.2
-    },
-    "AGGRESSIVE" : {
-        "allowance" : 0.4
-    },
-}
-
+"""
 logger = logging.getLogger(__name__)
 
 #  Build consensus on given stock
@@ -57,7 +48,8 @@ def build_consensus(sa, advisors, stock):
 
     # Gather advice from external financial services
     for a in advisors:
-        a.analyze(sa, stock)
+        if a.advisor.enabled is True:
+            a.analyze(sa, stock)
 
     # Collate advice and form a consensus
     with connection.cursor() as cursor:
@@ -77,7 +69,7 @@ def analyze_holdings(sa, users, advisors):
     for u in users:
         profile = Profile.objects.get(user=u)
 
-        sell_below = sentiment_settings[profile.sentiment]["confidence_low"]
+        sell_below = Profile.RISK[profile.risk]["confidence_low"]
 
         for h in Holding.objects.filter(user=u):
             consensus = build_consensus(sa, advisors, h.stock)
@@ -102,8 +94,8 @@ def analyze_discovery(sa, users, advisors):
     # 3. Filter stocks to buy on a per user basis
     for u in users:
         profile = Profile.objects.get(user=u)
-        allowance = profile.cash * Decimal(risk_settings[profile.risk]["allowance"])
-        buy_from = sentiment_settings[profile.sentiment]["confidence_high"]
+        allowance = profile.cash * Decimal(Profile.RISK[profile.risk]["allowance"])
+        buy_from = Profile.RISK[profile.risk]["confidence_high"]
 
         # Get shares to buy based on high confidence
         consensus = Consensus.objects.filter(sa=sa.id, avg_confidence__gte=buy_from)

@@ -20,7 +20,6 @@ class AdvisorBase:
         #-- find stock or create stock
         try:
             stock = Stock.objects.get(symbol=symbol)
-            print(f"discovered {stock.symbol} @ {stock.price}")
 
         except Stock.DoesNotExist:
             stock = Stock()
@@ -33,6 +32,12 @@ class AdvisorBase:
 
             logger.info(f"{self.advisor.name} created stock {stock.symbol}")
 
+        # Check for repeating discovery
+        if Discovery.objects.filter(advisor=self.advisor,stock=stock): # TODO sa=sa-1
+            logger.info(f"{self.advisor.name} already discovered stock {stock.symbol}")
+            return
+
+        # Create new Discovery record
         discovery = Discovery()
         discovery.sa = sa
         discovery.stock = stock

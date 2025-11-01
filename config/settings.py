@@ -136,6 +136,8 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# Polygon news
+POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "MSVhtqDKV9HyMOdla5UunU2EFs53MweY")
 
 # Logging Configuration
 LOGGING = {

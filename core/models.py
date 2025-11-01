@@ -27,25 +27,30 @@ from decimal import Decimal
 
 # Profile / user settings
 class Profile(models.Model):
-    SENTIMENT = [
-        ('BEAR' ,'Market decline'),
-        ('STAG', 'Mixed market'),
-        ('BULL', 'Market optimism'),
-    ]
 
-    RISK = [
-        ('CONSERVATIVE', 'Conservative'),
-        ('MODERATE', 'Moderate'),
-        ('AGGRESSIVE', 'Aggressive'),
-    ]
+    # Risky business
+    RISK = {
+        "CONSERVATIVE": {
+            "allowance": 0.1,
+            "confidence_high": 0.8,
+            "confidence_low": 0.6
+        },
+        "MODERATE": {
+            "allowance": 0.2,
+            "confidence_high": 0.7,
+            "confidence_low": 0.55
+        },
+        "AGGRESSIVE": {
+            "allowance": 0.4,
+            "confidence_high": 0.55,
+            "confidence_low": 0.4
+        },
+    }
 
     user = models.ForeignKey(User, on_delete=models.DO_NOTHING)
-    sentiment = models.CharField(max_length=20, choices=SENTIMENT, default='STAG')
-    risk = models.CharField(max_length=20, choices=RISK, default='MODERATE')
-
+    risk = models.CharField(max_length=20, choices=[(key, key.replace('_', ' ').title()) for key in RISK.keys()], default='MODERATE')
     investment = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('100000.00'))
     cash = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('100000.00'))
-    #allowance = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
 
 
 # External advisor services (pairs with python class)
@@ -61,9 +66,10 @@ class Advisor(models.Model):
 class Stock(models.Model):
     symbol = models.CharField(max_length=10, unique=True)
     company = models.CharField(max_length=200)
-    exchange = models.CharField(max_length=32, default='Unknown')
+    exchange = models.CharField(max_length=32)
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0.0)
     advisor = models.ForeignKey(Advisor, on_delete=models.DO_NOTHING, null=True, blank=True, default=None)
+    image = models.URLField(max_length=500,  null=True, default=None)
     updated = models.DateTimeField(auto_now=True)
 
 
@@ -126,3 +132,21 @@ class Trade(models.Model):
     action = models.CharField(max_length=20, choices=ACTION)
     price = models.DecimalField(max_digits=10, decimal_places=2)
     shares = models.IntegerField()
+
+
+# Signal to auto-create Profile when User is created
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+
+@receiver(post_save, sender=User)
+def create_user_profile(sender, instance, created, **kwargs):
+    """Automatically create Profile when User is created"""
+    if created:
+        Profile.objects.get_or_create(
+            user=instance,
+            defaults={
+                'risk': 'MODERATE',
+                'cash': Decimal('100000.00'),
+                'investment': Decimal('100000.00')
+            }
+        )

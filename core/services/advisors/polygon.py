@@ -15,7 +15,7 @@ class Polygon(AdvisorBase):
     Polygon.io advisor - Free tier: 5 requests/minute
     Rate limiting: 1 request per 12 seconds (60/5 = 12)
     """
-    
+
     # Class-level rate limiting
     _last_request_time = 0
     _min_request_interval = 12  # seconds (60 seconds / 5 requests)
@@ -33,6 +33,7 @@ class Polygon(AdvisorBase):
         self._last_request_time = time.time()
 
     def discover(self, sa):
+        return
         """Discover stocks from recent Polygon news articles"""
         try:
             # Get API key from advisor config
@@ -120,108 +121,144 @@ class Polygon(AdvisorBase):
             logger.error(f"Error processing news item: {e}")
 
     def analyze(self, sa, stock):
-        return # disable for now
-        self._rate_limit()
-        client = RESTClient(api_key=self.advisor.key)
-
-        # --- FETCH DAILY PRICE DATA ---
-        today = datetime.now().strftime("%Y-%m-%d")
-        aggs = client.get_aggs(stock.symbol, multiplier=1, timespan="day", from_="2025-01-01", to=today)
-        data = pd.DataFrame(aggs)
-
-        # Detect timestamp key
-        if 't' in data.columns:
-            data['timestamp'] = pd.to_datetime(data['t'], unit='ms')
-            data = data.rename(columns={'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'})
-        elif 'timestamp' in data.columns:
-            data['timestamp'] = pd.to_datetime(data['timestamp'], unit='ms')
-        else:
-            raise KeyError("No timestamp found in Polygon response")
-
-        data.set_index('timestamp', inplace=True)
-        data = data.sort_index()
-
-        # --- TECHNICAL INDICATORS ---
-        data['SMA50'] = ta.sma(data['close'], length=50)
-        data['SMA200'] = ta.sma(data['close'], length=200)
-        data['RSI'] = ta.rsi(data['close'], length=14)
-        macd = ta.macd(data['close'])
-        data = pd.concat([data, macd], axis=1)
-
-        latest = data.iloc[-1]
-
-        # --- FETCH FUNDAMENTAL DATA (2025 SDK, attributes) ---
-        self._rate_limit()  # Rate limit before second API call
+        """Analyze stock using Polygon technical indicators + fundamentals"""
         try:
-            fundamentals = client.get_ticker_details(stock.symbol)
-        except Exception as e:
-            print("Warning: Could not fetch fundamental data:", e)
-            fundamentals = None
+            self._rate_limit()
+            client = RESTClient(api_key=self.advisor.key)
 
-        # Safe attribute access with defaults
-        pe_ratio = getattr(fundamentals, 'peRatio', 30)
-        eps = getattr(fundamentals, 'eps', 0)
-        dividend_yield = getattr(fundamentals, 'dividendYield', 0)
-        market_cap = getattr(fundamentals, 'marketcap', 0)
+            # --- FETCH DAILY PRICE DATA ---
+            # Fetch 2 years of data to ensure SMA200 (200 days) calculation
+            today = datetime.now().strftime("%Y-%m-%d")
+            from_date = (datetime.now() - timedelta(days=730)).strftime("%Y-%m-%d")  # ~2 years
+            try:
+                aggs = client.get_aggs(stock.symbol, multiplier=1, timespan="day", from_=from_date, to=today)
+                if not aggs:
+                    logger.warning(f"Polygon: No price data available for {stock.symbol}")
+                    return None
+            except Exception as e:
+                logger.error(f"Polygon: Error fetching price data for {stock.symbol}: {e}")
+                return None
 
-        # --- COMPUTE CONFIDENCE SCORE ---
-        score = 0.5  # neutral base
+            data = pd.DataFrame(aggs)
+            
+            if data.empty:
+                logger.warning(f"Polygon: Empty DataFrame for {stock.symbol}")
+                return None
 
-        # Technical contributions - handle None values
-        sma50 = latest.get('SMA50')
-        sma200 = latest.get('SMA200')
-        rsi = latest.get('RSI')
-        
-        if sma50 is not None and sma200 is not None:
-            if latest['close'] > sma50 > sma200:
-                score += 0.2
-            elif latest['close'] < sma50 < sma200:
-                score -= 0.2
-            elif latest['close'] > sma50:
-                score += 0.05  # Partial bullish
+            # Detect timestamp key
+            if 't' in data.columns:
+                data['timestamp'] = pd.to_datetime(data['t'], unit='ms')
+                data = data.rename(columns={'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'})
+            elif 'timestamp' in data.columns:
+                data['timestamp'] = pd.to_datetime(data['timestamp'], unit='ms')
             else:
-                score -= 0.05  # Partial bearish
+                logger.error(f"Polygon: No timestamp found in response for {stock.symbol}")
+                return None
 
-        # RSI contribution - handle None
-        if rsi is not None and not pd.isna(rsi):
-            rsi_norm = max(0, min(1, (50 - abs(rsi - 50)) / 50))
-            score += 0.1 * rsi_norm
+            data.set_index('timestamp', inplace=True)
+            data = data.sort_index()
 
-        # MACD contribution - handle None
-        macd_hist = latest.get('MACDh_12_26_9', 0)
-        if macd_hist is not None and not pd.isna(macd_hist):
-            score += 0.1 if macd_hist > 0 else -0.1
+            # Check if we have enough data (need at least 200 days for SMA200)
+            if len(data) < 200:
+                logger.debug(f"Polygon: Insufficient data for {stock.symbol} ({len(data)} days, need 200 for SMA200) - using SMA50 only")
+                # Continue anyway, but SMA200 will be None (SMA50 will be used instead)
 
-        # Fundamental contributions
-        if pe_ratio < 25:  # cheaper valuation increases score
-            score += 0.1
-        else:
-            score -= 0.05
+            # --- TECHNICAL INDICATORS ---
+            data['SMA50'] = ta.sma(data['close'], length=50)
+            data['SMA200'] = ta.sma(data['close'], length=200)
+            data['RSI'] = ta.rsi(data['close'], length=14)
+            macd = ta.macd(data['close'])
+            data = pd.concat([data, macd], axis=1)
 
-        if eps > 0:  # positive EPS
-            score += 0.05
+            latest = data.iloc[-1]
+            
+            # Update stock price with latest close
+            if 'close' in latest and latest['close'] is not None:
+                stock.price = Decimal(str(latest['close']))
+                stock.save()
 
-        if dividend_yield > 1:  # yield >1%
-            score += 0.05
+            # --- FETCH FUNDAMENTAL DATA (2025 SDK, attributes) ---
+            self._rate_limit()  # Rate limit before second API call
+            try:
+                fundamentals = client.get_ticker_details(stock.symbol)
+            except Exception as e:
+                logger.warning(f"Polygon: Could not fetch fundamental data for {stock.symbol}: {e}")
+                fundamentals = None
 
-        # Clip score to [0,1]
-        score = max(0, min(1, score))
+            # Safe attribute access with defaults
+            pe_ratio = getattr(fundamentals, 'peRatio', 30) if fundamentals else 30
+            eps = getattr(fundamentals, 'eps', 0) if fundamentals else 0
+            dividend_yield = getattr(fundamentals, 'dividendYield', 0) if fundamentals else 0
+            market_cap = getattr(fundamentals, 'marketcap', 0) if fundamentals else 0
 
-        # Build explanation - safely handle None values
-        sma50_str = f"{sma50:.2f}" if sma50 is not None else "N/A"
-        sma200_str = f"{sma200:.2f}" if sma200 is not None else "N/A"
-        rsi_str = f"{rsi:.2f}" if rsi is not None and not pd.isna(rsi) else "N/A"
-        macd_hist_str = f"{macd_hist:.2f}" if macd_hist is not None and not pd.isna(macd_hist) else "N/A"
-        
-        explanation_parts = [
-            f"Close: ${latest['close']:.2f}, SMA50: {sma50_str}, SMA200: {sma200_str}, RSI: {rsi_str}",
-            f"MACD Hist: {macd_hist_str}",
-            f"P/E: {pe_ratio}, EPS: {eps}, Dividend Yield: {dividend_yield}, Market Cap: {market_cap}",
-            f"Confidence Score: {score:.2f}  ({'Better' if score > 0.5 else 'Worse' if score < 0.5 else 'Neutral'})"
-        ]
+            # --- COMPUTE CONFIDENCE SCORE ---
+            score = 0.5  # neutral base
 
-        explanation = " | ".join(explanation_parts)
-        super().recommend(sa, stock, Decimal(str(score)), explanation)
+            # Technical contributions - handle None values
+            sma50 = latest.get('SMA50')
+            sma200 = latest.get('SMA200')
+            rsi = latest.get('RSI')
+            
+            if sma50 is not None and sma200 is not None:
+                if latest['close'] > sma50 > sma200:
+                    score += 0.2
+                elif latest['close'] < sma50 < sma200:
+                    score -= 0.2
+                elif latest['close'] > sma50:
+                    score += 0.05  # Partial bullish
+                else:
+                    score -= 0.05  # Partial bearish
+            elif sma50 is not None:  # Only SMA50 available
+                if latest['close'] > sma50:
+                    score += 0.05
+                else:
+                    score -= 0.05
+
+            # RSI contribution - handle None
+            if rsi is not None and not pd.isna(rsi):
+                rsi_norm = max(0, min(1, (50 - abs(rsi - 50)) / 50))
+                score += 0.1 * rsi_norm
+
+            # MACD contribution - handle None
+            macd_hist = latest.get('MACDh_12_26_9', 0)
+            if macd_hist is not None and not pd.isna(macd_hist):
+                score += 0.1 if macd_hist > 0 else -0.1
+
+            # Fundamental contributions
+            if pe_ratio and pe_ratio < 25:  # cheaper valuation increases score
+                score += 0.1
+            elif pe_ratio and pe_ratio >= 25:
+                score -= 0.05
+
+            if eps and eps > 0:  # positive EPS
+                score += 0.05
+
+            if dividend_yield and dividend_yield > 1:  # yield >1%
+                score += 0.05
+
+            # Clip score to [0,1]
+            score = max(0, min(1, score))
+
+            # Build explanation - safely handle None values
+            sma50_str = f"{sma50:.2f}" if sma50 is not None and not pd.isna(sma50) else "N/A"
+            sma200_str = f"{sma200:.2f}" if sma200 is not None and not pd.isna(sma200) else "N/A"
+            rsi_str = f"{rsi:.2f}" if rsi is not None and not pd.isna(rsi) else "N/A"
+            macd_hist_str = f"{macd_hist:.2f}" if macd_hist is not None and not pd.isna(macd_hist) else "N/A"
+            
+            explanation_parts = [
+                f"Close: ${latest['close']:.2f}, SMA50: {sma50_str}, SMA200: {sma200_str}, RSI: {rsi_str}",
+                f"MACD Hist: {macd_hist_str}",
+                f"P/E: {pe_ratio}, EPS: {eps}, Dividend Yield: {dividend_yield:.2%}, Market Cap: {market_cap:,}" if market_cap else f"P/E: {pe_ratio}, EPS: {eps}, Dividend Yield: {dividend_yield:.2%}",
+            ]
+            
+            explanation = " | ".join(explanation_parts)
+            super().recommend(sa, stock, Decimal(str(score)), explanation)
+            
+            return score
+            
+        except Exception as e:
+            logger.error(f"Polygon analysis error for {stock.symbol}: {e}")
+            return None
 
 
 register(name="Polygon.io", python_class="Polygon")

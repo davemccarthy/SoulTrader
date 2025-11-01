@@ -16,14 +16,27 @@ class FMP(AdvisorBase):
     """Financial Modeling Prep advisor implementation"""
     
     def analyze(self, sa, stock):
+
         """Analyze stock using FMP API"""
         try:
             # Get company profile (required)
             profile_data = self._get_company_profile(stock.symbol)
+
             if not profile_data:
                 logger.warning(f"FMP: No profile data available for {stock.symbol}, skipping recommendation")
                 return None  # Don't create a recommendation if we can't get data
-            
+
+            # Update image url
+            image_url = profile_data.get('image')
+
+            if image_url and stock.image is None:
+                stock.image = image_url
+                stock.save()
+
+                logger.info(f"Updated {stock.symbol} image from profile: {image_url}")
+            else:
+                logger.warning(f"{stock.symbol} - No image in profile")
+
             # Get financial ratios (optional)
             ratios_data = self._get_financial_ratios(stock.symbol)
             
@@ -67,6 +80,15 @@ class FMP(AdvisorBase):
             # Check for rate limit or payment required
             if response.status_code == 402:
                 logger.warning(f"FMP API rate limit exceeded for {symbol}")
+                return None
+
+            # Check for 403 Forbidden - log response body to understand the issue
+            if response.status_code == 403:
+                try:
+                    error_body = response.text[:200]  # First 200 chars of error response
+                    logger.warning(f"FMP API 403 Forbidden for {symbol}: {error_body}")
+                except:
+                    logger.warning(f"FMP API 403 Forbidden for {symbol} - could not read error response")
                 return None
             
             response.raise_for_status()

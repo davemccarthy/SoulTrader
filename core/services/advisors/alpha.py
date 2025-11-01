@@ -9,8 +9,9 @@ logger = logging.getLogger(__name__)
 class Alpha(AdvisorBase):
 
     def discover(self, sa):
-
-        """Discover stocks using Alpha Vantage market movers"""
+        """Discover stocks using Alpha Vantage market movers - DISABLED for now"""
+        return
+        # DISABLED: Alpha discovery disabled - can be re-enabled for high-risk/high-reward (bouncing stocks) later
         try:
             # Get market movers data
             params = {
