@@ -61,6 +61,9 @@ class Advisor(models.Model):
     endpoint = models.CharField(max_length=500, default="")
     key = models.CharField(max_length=255, default="")
 
+    def is_enabled(self):
+        self.refresh_from_db(fields=['enabled'])
+        return self.enabled
 
 # Basic stock at the core of everything
 class Stock(models.Model):
