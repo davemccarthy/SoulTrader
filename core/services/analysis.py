@@ -42,14 +42,12 @@ def build_consensus(sa, advisors, stock):
     consensus = Consensus.objects.filter(sa_id=sa.id, stock_id=stock.id).first()
     if consensus is not None:
         return consensus
-    # TODO I'm sure there's nicer way to do the above
 
     logger.info(f"Building consensus for stock {stock.symbol}")
 
     # Gather advice from external financial services
     for a in advisors:
-        if a.advisor.enabled is True:
-            a.analyze(sa, stock)
+        a.analyze(sa, stock)
 
     # Collate advice and form a consensus
     with connection.cursor() as cursor:

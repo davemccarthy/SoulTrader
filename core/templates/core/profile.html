@@ -1,0 +1,43 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Profile - SOULTRADER{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h1 style="color: #667eea; margin-bottom: 1rem;">Profile Settings</h1>
+    
+    <div class="form-group">
+        <label>Username</label>
+        <input type="text" value="{{ user.username }}" disabled style="background-color: #f8f9fa;">
+    </div>
+    
+    <div class="form-group">
+        <label>Email</label>
+        <input type="email" value="{{ user.email }}" disabled style="background-color: #f8f9fa;">
+    </div>
+    
+    <div class="form-group">
+        <label>Risk Profile</label>
+        <select disabled style="background-color: #f8f9fa;">
+            <option value="CONSERVATIVE" {% if profile.risk == 'CONSERVATIVE' %}selected{% endif %}>Conservative</option>
+            <option value="MODERATE" {% if profile.risk == 'MODERATE' %}selected{% endif %}>Moderate</option>
+            <option value="AGGRESSIVE" {% if profile.risk == 'AGGRESSIVE' %}selected{% endif %}>Aggressive</option>
+        </select>
+    </div>
+    
+    <div class="form-group">
+        <label>Investment Amount</label>
+        <input type="text" value="${{ profile.investment|floatformat:2 }}" disabled style="background-color: #f8f9fa;">
+    </div>
+    
+    <div class="form-group">
+        <label>Cash Balance</label>
+        <input type="text" value="${{ profile.cash|floatformat:2 }}" disabled style="background-color: #f8f9fa;">
+    </div>
+    
+    <p style="color: #6c757d; font-size: 0.9rem; margin-top: 1rem;">
+        Profile updates coming soon.
+    </p>
+</div>
+{% endblock %}
+

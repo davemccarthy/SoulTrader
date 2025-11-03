@@ -1,0 +1,29 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Home - SOULTRADER{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h1 style="color: #667eea; margin-bottom: 1rem;">Welcome to SOULTRADER</h1>
+    <p style="color: #6c757d; margin-bottom: 2rem;">AI-powered stock trading platform with automated portfolio management.</p>
+    
+    {% if not user.is_authenticated %}
+    <div style="text-align: center; padding: 2rem;">
+        <a href="{% url 'core:register' %}" class="btn btn-success" style="margin-right: 1rem;">Get Started</a>
+        <a href="{% url 'core:login' %}" class="btn">Login</a>
+    </div>
+    {% endif %}
+</div>
+
+{% if user.is_authenticated %}
+<div class="card">
+    <h2 style="margin-bottom: 1rem; color: #333;">Quick Actions</h2>
+    <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+        <a href="{% url 'core:holdings' %}" class="btn">View Holdings</a>
+        <a href="{% url 'core:trades' %}" class="btn btn-secondary">Trade History</a>
+        <a href="{% url 'core:profile' %}" class="btn">Profile Settings</a>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+

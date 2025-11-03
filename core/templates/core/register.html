@@ -1,0 +1,49 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Register - SOULTRADER{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h1 style="color: #667eea; margin-bottom: 1rem;">Create Account</h1>
+    
+    <form method="post">
+        {% csrf_token %}
+        
+        <div class="form-group">
+            <label for="username">Username</label>
+            <input type="text" id="username" name="username" required>
+        </div>
+        
+        <div class="form-group">
+            <label for="email">Email</label>
+            <input type="email" id="email" name="email" required>
+        </div>
+        
+        <div class="form-group">
+            <label for="password1">Password</label>
+            <input type="password" id="password1" name="password1" required>
+        </div>
+        
+        <div class="form-group">
+            <label for="password2">Confirm Password</label>
+            <input type="password" id="password2" name="password2" required>
+        </div>
+        
+        <div class="form-group">
+            <label for="risk">Risk Profile</label>
+            <select id="risk" name="risk" required>
+                <option value="CONSERVATIVE">Conservative</option>
+                <option value="MODERATE" selected>Moderate</option>
+                <option value="AGGRESSIVE">Aggressive</option>
+            </select>
+        </div>
+        
+        <button type="submit" class="btn btn-success" style="width: 100%;">Create Account</button>
+    </form>
+    
+    <p style="text-align: center; margin-top: 1rem; color: #6c757d;">
+        Already have an account? <a href="{% url 'core:login' %}" style="color: #667eea;">Login here</a>
+    </p>
+</div>
+{% endblock %}
+

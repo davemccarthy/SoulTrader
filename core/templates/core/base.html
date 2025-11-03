@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}SOULTRADER - AI Stock Advisor{% endblock %}</title>
+    <link href="https://fonts.googleapis.com/css2?family=VT323&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background-color: #f8f9fa;
+            color: #333;
+            line-height: 1.6;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 1rem 0;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .header-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .logo {
+            font-size: 1.8rem;
+            font-weight: bold;
+            text-decoration: none;
+            color: white;
+        }
+        
+        .nav {
+            display: flex;
+            gap: 1rem;
+        }
+        
+        .nav a {
+            color: white;
+            text-decoration: none;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            transition: background-color 0.3s;
+        }
+        
+        .nav a:hover {
+            background-color: rgba(255,255,255,0.2);
+        }
+        
+        .nav a.active {
+            background-color: rgba(255,255,255,0.3);
+            font-weight: 600;
+            //border-bottom: 2px solid rgba(255,255,255,0.8);
+        }
+        
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+        
+        /* Portfolio Dashboard Widget */
+        .portfolio-widget {
+            background: white;
+            border-bottom: 0.5px solid #667eea;
+            padding: 0.75rem 0;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+
+        .portfolio-widget-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 1rem;
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            gap: 1rem;
+            align-items: flex-start;
+        }
+
+        .portfolio-stat {
+            text-align: left;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+        }
+
+        .portfolio-stat-header {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            color: #6c757d;
+            font-weight: 600;
+            margin-bottom: 0.15rem;
+        }
+
+        .portfolio-stat-value {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .portfolio-stat-value.positive {
+            color: #28a745;
+        }
+
+        .portfolio-stat-value.negative {
+            color: #dc3545;
+        }
+
+        .main-content {
+            max-width: 1200px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+        }
+
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin: 1rem 0;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border: 1px solid #e9ecef;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 0.75rem 1.5rem;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: transform 0.2s;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+        }
+
+        .btn-success {
+            background: #28a745;
+        }
+
+        .btn-danger {
+            background: #dc3545;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin: 2rem 0;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .stat-number {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #667eea;
+        }
+        .stat-number.small {
+            font-size: 1.25rem;
+        }
+
+        .stat-label {
+            color: #6c757d;
+            margin-top: 0.5rem;
+        }
+        .stat-label.caps {
+            text-transform: uppercase;
+            font-weight: 700;
+        }
+
+        .alert {
+            padding: 1rem;
+            border-radius: 4px;
+            margin: 1rem 0;
+        }
+
+        .alert-success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .alert-error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .form-group {
+            margin-bottom: 1rem;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+        }
+
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+            font-size: 1rem;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.25);
+        }
+
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+        }
+
+        .table th,
+        .table td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid #dee2e6;
+        }
+
+        .table th {
+            background-color: #f8f9fa;
+            font-weight: 600;
+        }
+
+        .positive {
+            color: #28a745;
+            font-weight: bold;
+        }
+
+        .negative {
+            color: #dc3545;
+            font-weight: bold;
+        }
+
+        .warning {
+            color: #ffc107;
+            font-weight: bold;
+        }
+
+        .info {
+            color: #17a2b8;
+            font-weight: bold;
+        }
+
+        .footer {
+            background-color: clear;
+            color: darkgrey;
+            text-align: center;
+            padding: 1rem 0;
+            margin-top: 4rem;
+        }
+
+        /* Stock Ticker */
+        .ticker-container {
+            overflow: hidden;
+            background: #343a40;
+            border-top: 2px solid #004400;
+            border-bottom: 2px solid #004400;
+            white-space: nowrap;
+            position: relative;
+            margin: 0rem 0;
+        }
+
+        .ticker-text {
+            display: inline-block;
+            font-family: 'VT323', monospace;
+            font-size: 1.2rem;
+            color: #00ff00;
+            padding: 0px 0;
+            animation: tickerScroll 20s linear infinite;
+        }
+
+        @keyframes tickerScroll {
+            0% {
+                transform: translateX(100%);
+            }
+            100% {
+                transform: translateX(-100%);
+            }
+        }
+
+        .ticker-text span {
+            margin-right: 2em;
+        }
+
+        .ticker-text .positive {
+            color: #00ff00;
+        }
+
+        .ticker-text .negative {
+            color: #ff0000;
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="header-content">
+            <a href="{% url 'core:home' %}" class="logo">SOULTRADER</a>
+
+            <nav class="nav">
+                {% if user.is_authenticated %}
+                    <a href="{% url 'core:holdings' %}" {% if current_page == 'holdings' %}class="active"{% endif %}>Holdings</a>
+                    <a href="{% url 'core:trades' %}" {% if current_page == 'trades' %}class="active"{% endif %}>Trades</a>
+                    <a href="{% url 'core:profile' %}" {% if current_page == 'profile' %}class="active"{% endif %}>Profile</a>
+                {% else %}
+                    {% if current_page != 'home' %}
+                        <a href="{% url 'core:home' %}" {% if current_page == 'home' %}class="active"{% endif %}>Home</a>
+                    {% endif %}
+                {% endif %}
+            </nav>
+
+            <div class="user-info">
+                {% if user.is_authenticated %}
+                    <span>Welcome, {{ user.username }}!</span>
+                    <a href="{% url 'core:logout' %}" class="btn btn-secondary">Logout</a>
+                {% else %}
+                    <a href="{% url 'core:login' %}" class="btn">Login</a>
+                    <a href="{% url 'core:register' %}" class="btn btn-success">Register</a>
+                {% endif %}
+            </div>
+        </div>
+    </header>
+
+    {% if user.is_authenticated %}
+    <!-- Stock Ticker -->
+    <div class="ticker-container">
+        <div class="ticker-text">
+            {% if portfolio_widget.ticker_data %}
+                {% for item in portfolio_widget.ticker_data %}
+                    <span class="{% if item.change >= 0 %}positive{% else %}negative{% endif %}">
+                        {{ item.symbol }} {% if item.change >= 0 %}↑ {{ item.change }}%{% else %}↓ {{ item.change|floatformat:1 }}%{% endif %}
+                    </span>
+                {% endfor %}
+            {% else %}
+                <span>Welcome David McCarthy</span>
+                <span class="positive">AAPL ↑ 3.5%</span>
+                <span class="positive">TSLA ↑ 1.2%</span>
+                <span class="negative">GOOG ↓ 0.8%</span>
+                <span class="positive">MSFT ↑ 2.1%</span>
+                <span class="positive">AMZN ↑ 0.4%</span>
+                <span class="positive">NVDA ↑ 4.7%</span>
+                <span class="positive">META ↑ 1.9%</span>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Portfolio Dashboard Widget -->
+    <div class="portfolio-widget">
+        <div class="portfolio-widget-content">
+            <div class="portfolio-stat">
+                <div class="portfolio-stat-header">Value</div>
+                <div class="portfolio-stat-value">${{ portfolio_widget.total_value|default:"0"|floatformat:2 }}</div>
+            </div>
+            <div class="portfolio-stat">
+                <div class="portfolio-stat-header">Return</div>
+                <div class="portfolio-stat-value {% if portfolio_widget.return_percent >= 0 %}positive{% else %}negative{% endif %}">
+                    {{ portfolio_widget.return_amount|default:"0"|floatformat:2 }}
+                </div>
+            </div>
+            <div class="portfolio-stat">
+                <div class="portfolio-stat-header">Invested</div>
+                <div class="portfolio-stat-value">${{ portfolio_widget.invested|default:"0"|floatformat:2 }}</div>
+            </div>
+            <div class="portfolio-stat">
+                <div class="portfolio-stat-header">Cash</div>
+                <div class="portfolio-stat-value">${{ portfolio_widget.cash|default:"0"|floatformat:2 }}</div>
+            </div>
+            <div class="portfolio-stat">
+                <div class="portfolio-stat-header">Holdings</div>
+                <div class="portfolio-stat-value">{{ portfolio_widget.holdings_count|default:"0" }}</div>
+            </div>
+            <div class="portfolio-stat">
+                <div class="portfolio-stat-header">Trades</div>
+                <div class="portfolio-stat-value">{{ portfolio_widget.trades_count|default:"0" }}</div>
+            </div>
+            <div class="portfolio-stat">
+                <div class="portfolio-stat-header">Shares</div>
+                <div class="portfolio-stat-value">{{ portfolio_widget.shares_count|default:"0" }}</div>
+            </div>
+            <div class="portfolio-stat">
+                <div class="portfolio-stat-header">P&L</div>
+                <div class="portfolio-stat-value {% if portfolio_widget.return_percent >= 0 %}positive{% else %}negative{% endif %}">
+                    {{ portfolio_widget.return_percent|default:"0"|floatformat:2 }}%
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <main class="main-content">
+        {% if messages %}
+            {% for message in messages %}
+                <div class="alert alert-{{ message.tags }}">
+                    {{ message }}
+                </div>
+            {% endfor %}
+        {% endif %}
+
+        {% block content %}
+        {% endblock %}
+    </main>
+
+    <footer class="footer">
+        <p>&copy; 2024 SOULTRADER - AI Stock Advisor. All rights reserved.</p>
+    </footer>
+</body>
+</html>
+

@@ -113,56 +113,69 @@ Focus on:
 
 Keep your reasoning concise but informative."""
 
-    def _call_gemini_api(self, endpoint, api_key, prompt):
-        """Call Gemini API with better error handling and logging."""
-        try:
-            import urllib.parse
-            import time
+    def _call_gemini_api(self, endpoint, api_key, prompt, max_retries=3):
+        """Call Gemini API with better error handling, logging, and retry logic."""
+        import urllib.parse
+        
+        headers = {"Content-Type": "application/json"}
+        encoded_key = urllib.parse.quote(api_key, safe='')
 
-            headers = {"Content-Type": "application/json"}
-            encoded_key = urllib.parse.quote(api_key, safe='')
+        base_url = "https://generativelanguage.googleapis.com/v1beta/models"
+        model_name = 'gemma-3-12b-it'
+        url = f"{base_url}/{model_name}:generateContent?key={encoded_key}"
 
-            base_url = "https://generativelanguage.googleapis.com/v1beta/models"
-            model_name = 'gemma-3-12b-it'
-            url = f"{base_url}/{model_name}:generateContent?key={encoded_key}"
+        payload = {
+            "contents": [{
+                "parts": [{"text": prompt}]
+            }]
+        }
 
-            payload = {
-                "contents": [{
-                    "parts": [{"text": prompt}]
-                }]
-            }
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(url, headers=headers, json=payload, timeout=30)
 
-            response = requests.post(url, headers=headers, json=payload, timeout=30)
+                if response.status_code == 200:
+                    data = response.json()
+                    if 'candidates' in data and data['candidates']:
+                        return data['candidates'][0]['content']['parts'][0]['text']
+                    logger.warning(f"Gemini API: Unexpected response structure: {data}")
+                    return None
+                elif response.status_code == 429:
+                    # Rate limit exceeded
+                    wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                    logger.warning(f"Gemini API: Rate limit exceeded (429). Retrying in {wait_time}s... (attempt {attempt+1}/{max_retries})")
+                    time.sleep(wait_time)
+                    continue
+                elif response.status_code == 503:
+                    # Model overloaded - retry with exponential backoff
+                    wait_time = 5 * (attempt + 1)  # 5s, 10s, 15s
+                    logger.warning(f"Gemini API: Model overloaded (503). Retrying in {wait_time}s... (attempt {attempt+1}/{max_retries})")
+                    time.sleep(wait_time)
+                    continue
+                elif response.status_code == 403:
+                    logger.error(f"Gemini API: Forbidden (403) - Check API key or quota")
+                    return None
+                else:
+                    error_msg = response.text[:200] if response.text else "No error message"
+                    logger.error(f"Gemini API error {response.status_code}: {error_msg}")
+                    return None
 
-            if response.status_code == 200:
-                data = response.json()
-                if 'candidates' in data and data['candidates']:
-                    return data['candidates'][0]['content']['parts'][0]['text']
-                logger.warning(f"Gemini API: Unexpected response structure: {data}")
+            except requests.exceptions.Timeout:
+                logger.warning(f"Gemini API: Request timeout after 30s (attempt {attempt+1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    time.sleep(5)
+                    continue
                 return None
-            elif response.status_code == 429:
-                # Rate limit exceeded
-                logger.warning(f"Gemini API: Rate limit exceeded (429). Waiting and retrying...")
-                time.sleep(2)  # Wait 2 seconds before retry
-                # Could implement retry logic here if needed
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Gemini API: Request error: {e}")
                 return None
-            elif response.status_code == 403:
-                logger.error(f"Gemini API: Forbidden (403) - Check API key or quota")
+            except Exception as e:
+                logger.error(f"Gemini API: Unexpected error: {e}")
                 return None
-            else:
-                error_msg = response.text[:200] if response.text else "No error message"
-                logger.error(f"Gemini API error {response.status_code}: {error_msg}")
-                return None
-
-        except requests.exceptions.Timeout:
-            logger.warning(f"Gemini API: Request timeout after 30s")
-            return None
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Gemini API: Request error: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"Gemini API: Unexpected error: {e}")
-            return None
+        
+        # All retries exhausted
+        logger.error(f"Gemini API: Max retries ({max_retries}) exhausted")
+        return None
 
     def discover(self, sa):
         """Fetch Polygon news since last SA session; ask Gemini for Dismiss/Interesting; create Discoveries for Interesting items."""
@@ -318,32 +331,61 @@ URL: {url}
 
 Return JSON with fields:
 {{
-  "keep": true|false,
+  "rank": "DISMISS|INTERESTING|OPPORTUNITY|NOBRAINER",
   "category": "FDA_APPROVAL|EARNINGS|MA|GUIDANCE|MACRO|OTHER",
   "reason": "<=240 chars",
   "tickers": ["SYM1","SYM2","SYM3","SYM4"]
 }}
 
-Rules for keep=true (ALL must apply):
-- Article announces a concrete, quantifiable event with immediate or near-term impact
-- Event has disclosed financial terms (deal value, revenue impact, earnings beat/miss percentages) OR is a regulatory approval/clinical milestone with specific dates
-- Examples of keep=true: FDA drug approval with dates, earnings release with actual results (beat/miss), signed M&A with disclosed deal value, major guidance change with specific numbers, Phase 3 trial start with enrollment dates
+Rank definitions:
+- **DISMISS**: Routine announcements, scheduling, generic commentary, market movements, forecasts, ETF/articles/recommendations
+- **INTERESTING**: Solid clinical/regulatory milestones OR small but disclosed deals/contracts worth tracking
+- **OPPORTUNITY**: Strong buy signals (FDA approvals, earnings beats with results, M&A $100M+)
+- **NOBRAINER**: Exceptional opportunities (blockbuster deals $1B+, transformative approvals)
 
-Rules for keep=false (dismiss if ANY apply):
-- **CRITICAL: Earnings SCHEDULING announcements - ALWAYS dismiss if article says "to announce", "will announce", "schedules earnings", "to report", "plans to announce" with only a date. These are NOT actual earnings results, just scheduling. Only keep if article contains actual earnings numbers/results.**
-- Routine partnership announcements without disclosed financial terms or deal values
-- Supply/delivery/provision announcements without disclosed contract values, revenue impact, or order quantities
-- AGM/governance/board appointment notices
-- Marketing/branding/PR campaigns
-- General macro commentary, ETF comparisons, or sector-wide discussions
-- Market forecasts, industry size projections, or trend analyses (even if mentioning specific companies)
-- "Building", "partnering", "teaming", "collaborating", "supplying", "delivering", "providing" language without concrete $ terms
-- Internal financing or investment rounds without disclosed amounts
-- MACRO category: ONLY keep if company-specific macro event (e.g., new regulation affecting ONE company), otherwise dismiss as general commentary
+Rules for each rank:
 
-Examples of dismiss: "Company to announce earnings on date X" (SCHEDULING - dismiss), "Company will report Q3 results on Nov 5" (SCHEDULING - dismiss), "Company A partners with Company B", "Company appoints new CEO", "Company builds AI factory" (without $ value), "Company supplying chips to customers" (routine supply without contract value), "Market forecast shows $X billion by 2033" (general market commentary, not company-specific), "Cloud market to reach $X billion" (forecast mentioning multiple companies)
+**DISMISS (use if ANY apply - be STRICT):**
+- **CRITICAL: Earnings SCHEDULING - ALWAYS dismiss if article says "to announce", "will announce", "schedules earnings", "to report", "plans to announce" with only a date**
+- **Stock price movements or reactions ("plunges", "surges", "climbs") without news event**
+- **Investment/financing rounds without disclosed deal terms (e.g., "closes $2M investment")**
+- **ETF articles, stock picks, "best stocks to buy" lists**
+- **General macro commentary, sector-wide discussions, AI trends**
+- **Market forecasts, industry projections, trend analyses**
+- **Partnership/team/collaboration announcements without disclosed financial terms or contract values**
+- **Supply/delivery/provision announcements without disclosed contract values or revenue impact**
+- **Board appointments, governance changes, AGM notices**
+- **Marketing campaigns, branding initiatives, PR announcements**
 
-Examples of keep (earnings): "Company reports Q3 earnings beat with revenue of $X billion" (ACTUAL RESULTS - keep), "Company misses earnings expectations" (ACTUAL RESULTS - keep)
+**INTERESTING (rarely used - must have BOTH concrete event AND disclosed terms):**
+- Phase 3 clinical trial START with specific enrollment numbers AND company name disclosed
+- Guidance changes with actual numbers (not forecasts, not "plans to")
+- Signed partnership/contract with disclosed dollar value under $100M
+- Minor regulatory approvals (facility expansion with capacity numbers, export licenses with volume)
+
+**OPPORTUNITY (use when):**
+- FDA drug approval with specific indication
+- Earnings release with actual results (beat/miss percentages) AND forward guidance
+- Signed M&A with disclosed deal value ($100M or more)
+- Major guidance changes with transformative numbers
+- Breakthrough clinical trial results published with data
+
+**NOBRAINER (use when):**
+- Blockbuster M&A ($1B+ deal value)
+- Transformative FDA approvals (first-in-class, breakthrough therapy designation)
+- Massive earnings beats (>50% surprise)
+- Acquisition of strategic/high-value assets
+
+Examples:
+- "Company to announce earnings on Nov 5" → DISMISS (scheduling only)
+- "Stock plunges 16% on earnings miss" → DISMISS (price movement only)
+- "Company closes $2M strategic investment" → DISMISS (no deal terms)
+- "3 Best Energy Stocks to Buy Now" → DISMISS (stock picks/ETF)
+- "Company partners with Industry Leader" → DISMISS (no financial terms)
+- "Company reports Q3 earnings beat with revenue of $2.5B" → OPPORTUNITY (actual results)
+- "FDA approves Company's drug for lung cancer" → OPPORTUNITY or NOBRAINER
+- "Company starts Phase 3 trial enrolling 500 patients" → DISMISS (no outcome data)
+- "Phase 3 trial completes successfully for 500 patients" → INTERESTING (concrete milestone)
 
 Tickers:
 - CRITICAL: Only use tickers from this allowed list: {allowed_tickers}

@@ -123,6 +123,11 @@ class Polygon(AdvisorBase):
     def analyze(self, sa, stock):
         """Analyze stock using Polygon technical indicators + fundamentals"""
         try:
+
+            # Real-time check (see advisor model) to minimize delay mid analysis
+            if not self.advisor.enabled:
+                return
+
             self._rate_limit()
             client = RESTClient(api_key=self.advisor.key)
 
