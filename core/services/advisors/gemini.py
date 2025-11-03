@@ -253,6 +253,12 @@ Keep your reasoning concise but informative."""
                 reason = str(parsed.get('reason', '')).strip()
                 tickers = [str(t).upper() for t in (parsed.get('tickers') or []) if t]
 
+                # Validate rank - must be one of the allowed values
+                valid_ranks = {'DISMISS', 'INTERESTING', 'OPPORTUNITY', 'NOBRAINER'}
+                if rank not in valid_ranks:
+                    logger.warning(f"Gemini returned invalid rank '{rank}', defaulting to DISMISS. Response: {response_text[:200]}")
+                    rank = 'DISMISS'
+
                 if rank == 'DISMISS':
                     print(f"[Gemini.discover]  → Dismiss: {reason}")
                     continue
