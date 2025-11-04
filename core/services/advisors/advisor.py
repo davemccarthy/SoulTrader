@@ -28,24 +28,24 @@ class AdvisorBase:
             # stock.company = company
             stock.advisor = self.advisor
             stock.save()
-            # TODO GOOD TIME TO GET STOCK IMAGE
 
             logger.info(f"{self.advisor.name} created stock {stock.symbol}")
 
         # Check for repeating discovery
         if Discovery.objects.filter(advisor=self.advisor,stock=stock): # TODO sa=sa-1
             logger.info(f"{self.advisor.name} already discovered stock {stock.symbol}")
-            return
+            return stock
 
         # Create new Discovery record
         discovery = Discovery()
         discovery.sa = sa
         discovery.stock = stock
         discovery.advisor = self.advisor
-        discovery.explanation = explanation
+        discovery.explanation = explanation[:500]
         discovery.save()
 
         logger.info(f"{self.advisor.name} discovers {stock.symbol}")
+        return stock
 
     def recommend(self, sa, stock, confidence, explanation=""):
 
