@@ -3,7 +3,9 @@ from django.contrib.auth import login, authenticate, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.contrib import messages
-from .models import Profile
+from django.db.models import F, Q, Case, When, Value, CharField
+from decimal import Decimal
+from .models import Profile, Holding, Stock
 
 
 def home(request):
@@ -58,9 +60,43 @@ def register(request):
 
 @login_required
 def holdings(request):
-    """Holdings page - content to be designed later"""
+    """Holdings page - displays user's stock holdings"""
+    # Query holdings with related stock and advisor data
+    holdings_list = Holding.objects.filter(user=request.user).select_related('stock', 'stock__advisor')
+    
+    # Annotate with calculated fields
+    holdings_data = []
+    for holding in holdings_list:
+        stock = holding.stock
+        current_price = stock.price
+        avg_price = holding.average_price
+        
+        # Calculate change percentage
+        if avg_price and avg_price > 0:
+            change_percent = ((current_price / avg_price) * 100 - 100)
+        else:
+            change_percent = Decimal('0')
+        
+        # Calculate P&L
+        pl = (current_price * holding.shares) - (avg_price * holding.shares)
+        
+        # Get advisor name for discovery
+        discovery = stock.advisor.name if stock.advisor else ""
+        
+        holdings_data.append({
+            'image': stock.image,
+            'symbol': stock.symbol,
+            'company': stock.company,
+            'price': current_price,
+            'change_percent': change_percent,
+            'pl': pl,
+            'discovery': discovery,
+            'holding': holding,  # Keep reference for potential future use
+        })
+    
     context = {
         'current_page': 'holdings',
+        'holdings': holdings_data,
     }
     return render(request, 'core/holdings.html', context)
 

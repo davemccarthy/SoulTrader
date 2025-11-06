@@ -40,11 +40,11 @@ class Gemini(AdvisorBase):
             # Fetch from Polygon API
             url = "https://api.polygon.io/v2/reference/news"
             params = {
-                "published_utc.gte": sa_start_utc.isoformat(timespec="seconds"),
-                "published_utc.lte": sa_end_utc.isoformat(timespec="seconds"),
+                #"published_utc.gte": sa_start_utc.isoformat(timespec="seconds"),
+                #"published_utc.lte": sa_end_utc.isoformat(timespec="seconds"),
                 "sort": "published_utc",
                 "order": "desc",
-                "limit": 50,
+                "limit": 1,
                 "apiKey": polygon_key,
             }
 
@@ -61,71 +61,14 @@ class Gemini(AdvisorBase):
                 logger.info("No Polygon news to process")
                 return
 
-            client = genai.Client(api_key=self.advisor.key)
+            #client = genai.Client(api_key=self.advisor.key)
 
             # 2. Process said articles
             for idx, article in enumerate(articles, start=1):
                 title = article.get("title", "")
                 url = article.get("article_url", "")
 
-                prompt = f"""
-                    Starting afresh
-                    You are an expert analyzing business articles
-                    How do you interpret this article by way of speculation of rising share prices and supply a recommendation?
-
-                    Please respond in JSON only choosing one of the below recommendations and supply relevant company symbol / ticker 
-
-                    RETURN JSON:
-                    {{
-                    "recommendation": "DISMISS|BUY|SELL|STRONG_BUY|STRONG_SELL",
-                    "tickers": ["SYM1", "SYM2"]
-                    }}
-
-                    url: {url}"""
-
-                # Call on 3rd part gemini AI
-                response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-
-                # Extract text from nested structure
-                if not response.candidates or len(response.candidates) == 0:
-                    logger.warning(f"No candidates in Gemini response for article {idx}")
-                    continue
-
-                candidate = response.candidates[0]
-                if not candidate.content or not candidate.content.parts:
-                    logger.warning(f"No content/parts in Gemini response for article {idx}")
-                    continue
-
-                response_text = candidate.content.parts[0].text
-
-                if not response_text:
-                    logger.warning(f"Empty text in Gemini response for article {idx}")
-                    continue
-
-                # Verify feedback
-                results = self._extract_json(response.text)
-                if not results: continue
-
-                recommendation  = results["recommendation"]
-                tickers = results["tickers"]
-
-                # Log it
-                logger.info(f"{recommendation}: {tickers} | {title}")
-
-                # TMP
-                print(url)
-
-                # Anything better than DISMISS is put forward for consensus
-                if recommendation == "BUY" or recommendation == "STRONG_BUY":
-                    for ticker in tickers:
-                        stock = self.discovered(sa, ticker, '',f"{recommendation} | Polygon News: {title} | Article: {url} ")
-
-                        # A strong buy skews consensus in favour of BUY
-                        if recommendation == "STRONG_BUY":
-                            self.recommend(sa, stock, 0.85, f"STRONG_BUY | Polygon News: {title}")
-
-                # Give Gemini a rest
-                time.sleep(2)
+                self.news_flash(sa, title, url)
 
         # Problems
         except Exception as e:
@@ -159,10 +102,13 @@ class Gemini(AdvisorBase):
 
 
 register(name="Google Gemini", python_class="Gemini")
+"""
+from google import genai
+client = genai.Client(api_key="AIzaSyCiVvWptLpmCGrQeTr2BaPfYJY04Sb21cU")
 
 article = 'https://stockstory.org/us/stocks/nyse/br/news/earnings/broadridge-nysebr-delivers-impressive-q3'
 
-prompt = f"""
+prompt = f
 Starting afresh
 You are an expert analyzing business articles
 How do you interpret this article by way of speculation of rising share prices and supply a recommendation?
@@ -172,4 +118,11 @@ RETURN JSON:
   "recommendation": "DISMISS|BUY|SELL|STRONG_BUY|STRONG_SELL",
   "tickers": ["SYM1", "SYM2"]
 }}
-url: {article}"""
+url: {article}
+
+
+response = client.models.generate_content(
+    model="gemini-2.5-flash", contents=prompt
+)
+print(response.text)
+"""

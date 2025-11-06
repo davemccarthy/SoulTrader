@@ -3,6 +3,179 @@
 {% block title %}Holdings - SOULTRADER{% endblock %}
 
 {% block content %}
-<!-- Holdings content to be designed later -->
+<style>
+    .holdings-container {
+        width: 100%;
+        margin: 0;
+        padding: 0 1rem;
+    }
+    
+    .holdings-panel {
+        background: white;
+        border: 1px solid #e0e0e0;
+        border-radius: 4px;
+        overflow: hidden;
+    }
+    
+    .holdings-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr 3fr 1fr 1fr 1fr 1fr;
+        gap: 0.5rem;
+        align-items: center;
+        font-size: 0.875rem;
+    }
+    
+    .holdings-row {
+        padding: 0.75rem;
+        transition: background-color 0.2s;
+    }
+    
+    .holdings-row:hover {
+        background-color: #f8f9fa;
+        cursor: pointer;
+    }
+    
+    .holdings-row:not(:last-child) {
+        border-bottom: 1px solid #f0f0f0;
+    }
+    
+    .holdings-col {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    
+    .holdings-col-company {
+        justify-content: flex-start;
+        text-align: left;
+    }
+    
+    .holdings-image {
+        width: 40px;
+        height: 40px;
+        object-fit: contain;
+        border-radius: 4px;
+    }
+    
+    .holdings-symbol {
+        font-weight: 600;
+        font-size: 0.9rem;
+    }
+    
+    .holdings-company {
+        font-size: 0.85rem;
+        color: #666;
+        text-align: left;
+    }
+    
+    .holdings-price {
+        font-weight: 600;
+    }
+    
+    .holdings-change {
+        font-weight: 600;
+    }
+    
+    .holdings-change.positive {
+        color: #10b981;
+    }
+    
+    .holdings-change.negative {
+        color: #ef4444;
+    }
+    
+    .holdings-pl {
+        font-weight: 600;
+    }
+    
+    .holdings-pl.positive {
+        color: #10b981;
+    }
+    
+    .holdings-pl.negative {
+        color: #ef4444;
+    }
+    
+    .holdings-discovery {
+        font-size: 0.8rem;
+        color: #666;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    
+    .holdings-empty {
+        text-align: center;
+        padding: 3rem;
+        color: #666;
+        font-size: 1.1rem;
+    }
+</style>
+
+<div class="holdings-container">
+    {% if holdings %}
+        <div class="holdings-panel">
+            {% for holding in holdings %}
+                <div class="holdings-row holdings-grid">
+                <!-- Image -->
+                <div class="holdings-col">
+                    {% if holding.image %}
+                        <img src="{{ holding.image }}" alt="{{ holding.symbol }}" class="holdings-image">
+                    {% else %}
+                        <div class="holdings-image" style="background: #f0f0f0; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; color: #999;">
+                            {{ holding.symbol|slice:":2" }}
+                        </div>
+                    {% endif %}
+                </div>
+                
+                <!-- Symbol -->
+                <div class="holdings-col">
+                    <span class="holdings-symbol">{{ holding.symbol }}</span>
+                </div>
+                
+                <!-- Company -->
+                <div class="holdings-col holdings-col-company">
+                    <span class="holdings-company">{{ holding.company|default:"—" }}</span>
+                </div>
+                
+                <!-- Price -->
+                <div class="holdings-col">
+                    <span class="holdings-price">${{ holding.price|floatformat:2 }}</span>
+                </div>
+                
+                <!-- Change -->
+                <div class="holdings-col">
+                    {% if holding.change_percent >= 0 %}
+                        <span class="holdings-change positive">+{{ holding.change_percent|floatformat:0 }}%</span>
+                    {% else %}
+                        <span class="holdings-change negative">{{ holding.change_percent|floatformat:0 }}%</span>
+                    {% endif %}
+                </div>
+                
+                <!-- P&L -->
+                <div class="holdings-col">
+                    {% if holding.pl >= 0 %}
+                        <span class="holdings-pl positive">${{ holding.pl|floatformat:2 }}</span>
+                    {% else %}
+                        <span class="holdings-pl negative">${{ holding.pl|floatformat:2 }}</span>
+                    {% endif %}
+                </div>
+                
+                <!-- Discovery -->
+                <div class="holdings-col">
+                    {% if holding.discovery %}
+                        <span class="holdings-discovery">{{ holding.discovery|slice:":2"|upper }}</span>
+                    {% else %}
+                        <span class="holdings-discovery">—</span>
+                    {% endif %}
+                </div>
+                </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="holdings-empty">
+            <p>No holdings found. Start trading to see your positions here.</p>
+        </div>
+    {% endif %}
+</div>
 {% endblock %}
 

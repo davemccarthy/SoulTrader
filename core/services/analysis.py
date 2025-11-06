@@ -18,7 +18,7 @@ from core.services.execution import execute_buy, execute_sell
 risk_settings = {
     "CONSERVATIVE" : {
         "allowance" : 0.1,
-        "confidence_high": 0.8,
+        "confidence_high": 0.9,
         "confidence_low": 0.6
     },
     "MODERATE" : {
@@ -28,8 +28,8 @@ risk_settings = {
     },
     "AGGRESSIVE" : {
         "allowance" : 0.4,
-        "confidence_high": 0.55,
-        "confidence_low": 0.4
+        "confidence_high": 0.50,
+        "confidence_low": 0.40
     },
 }
 """
@@ -48,6 +48,11 @@ def build_consensus(sa, advisors, stock):
     # Gather advice from external financial services
     for a in advisors:
         a.analyze(sa, stock)
+
+    # Verify recommendations for this stock
+    if Recommendation.objects.filter(sa=sa.id,stock_id=stock.id).first() is None:
+        logger.info(f"No recommendations for stock {stock.symbol}")
+        return None
 
     # Collate advice and form a consensus
     with connection.cursor() as cursor:
@@ -71,6 +76,9 @@ def analyze_holdings(sa, users, advisors):
 
         for h in Holding.objects.filter(user=u):
             consensus = build_consensus(sa, advisors, h.stock)
+
+            if consensus is None:
+                return
 
             if consensus.avg_confidence < sell_below:
                 execute_sell(sa, u, consensus, h)

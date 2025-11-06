@@ -9,10 +9,12 @@ logger = logging.getLogger(__name__)
 
 class Finnhub(AdvisorBase):
     
-    def analyze(self, sa, stock):
+    def analyze(self, sa, consensus):
         """Analyze stock using Finnhub free tier data"""
         try:
             # Get free tier data from Finnhub
+            stock = consensus
+
             quote_data = self._get_quote(stock.symbol)
             company_profile = self._get_company_profile(stock.symbol)
             
@@ -32,13 +34,14 @@ class Finnhub(AdvisorBase):
             # Add data from available sources
             if quote_data and 'c' in quote_data:
                 price = quote_data['c']
-                change_pct = quote_data.get('dp', 0)
-                if change_pct > 5:
-                    explanation_parts.append(f"🚀 STRONG: {change_pct:.1f}% gain")
-                elif change_pct > 2:
-                    explanation_parts.append(f"📈 UP: {change_pct:.1f}% gain")
-                elif change_pct < -5:
-                    explanation_parts.append(f"📉 DOWN: {change_pct:.1f}% loss")
+                change_pct = quote_data.get('dp')
+                if change_pct is not None:
+                    if change_pct > 5:
+                        explanation_parts.append(f"🚀 STRONG: {change_pct:.1f}% gain")
+                    elif change_pct > 2:
+                        explanation_parts.append(f"📈 UP: {change_pct:.1f}% gain")
+                    elif change_pct < -5:
+                        explanation_parts.append(f"📉 DOWN: {change_pct:.1f}% loss")
             
             if company_profile:
                 market_cap = company_profile.get('marketCapitalization')
@@ -49,15 +52,15 @@ class Finnhub(AdvisorBase):
             
             if recommendation_trends and len(recommendation_trends) > 0:
                 latest_rec = recommendation_trends[0]
-                buy_ratings = latest_rec.get('strongBuy', 0) + latest_rec.get('buy', 0)
-                total = sum([latest_rec.get(k, 0) for k in ['strongBuy', 'buy', 'hold', 'sell', 'strongSell']])
-                if total > 0:
+                buy_ratings = (latest_rec.get('strongBuy') or 0) + (latest_rec.get('buy') or 0)
+                total = sum([latest_rec.get(k) or 0 for k in ['strongBuy', 'buy', 'hold', 'sell', 'strongSell']])
+                if total and total > 0:
                     buy_pct = buy_ratings / total
                     if buy_pct > 0.6:
                         explanation_parts.append(f"⭐ ANALYST CONSENSUS: {buy_pct:.0%} buy")
             
             explanation = " | ".join(explanation_parts)
-            super().recommend(sa, stock, confidence, explanation)
+            super().recommend(sa, consensus, confidence, explanation)
             
             return confidence
             
@@ -161,21 +164,23 @@ class Finnhub(AdvisorBase):
         
         # QUOTE DATA ANALYSIS (FREE)
         if quote_data and 'c' in quote_data:
-            current_price = quote_data['c']
-            change_pct = quote_data.get('dp', 0)  # Day percent change
+            current_price = quote_data.get('c')
+            change_pct = quote_data.get('dp')  # Day percent change (handle None)
             
-            # Update stock price
-            stock.price = Decimal(str(current_price))
-            stock.save()
+            # Update stock price (handle None price)
+            if current_price is not None:
+                stock.price = Decimal(str(current_price))
+                stock.save()
             
-            if change_pct > 5:
-                score += 0.15
-            elif change_pct > 2:
-                score += 0.1
-            elif change_pct < -5:
-                score -= 0.15
-            elif change_pct < -2:
-                score -= 0.1
+            if change_pct is not None:
+                if change_pct > 5:
+                    score += 0.15
+                elif change_pct > 2:
+                    score += 0.1
+                elif change_pct < -5:
+                    score -= 0.15
+                elif change_pct < -2:
+                    score -= 0.1
         
         # COMPANY PROFILE ANALYSIS (FREE)
         if company_profile:
@@ -191,10 +196,10 @@ class Finnhub(AdvisorBase):
         # ANALYST RECOMMENDATIONS (PREMIUM - Graceful degradation)
         if rec_trends and len(rec_trends) > 0:
             latest_rec = rec_trends[0]
-            buy = latest_rec.get('strongBuy', 0) + latest_rec.get('buy', 0)
-            total = sum([latest_rec.get(k, 0) for k in ['strongBuy', 'buy', 'hold', 'sell', 'strongSell']])
+            buy = (latest_rec.get('strongBuy') or 0) + (latest_rec.get('buy') or 0)
+            total = sum([latest_rec.get(k) or 0 for k in ['strongBuy', 'buy', 'hold', 'sell', 'strongSell']])
             
-            if total > 0:
+            if total and total > 0:
                 buy_pct = buy / total
                 if buy_pct > 0.8:
                     score += 0.2
@@ -206,7 +211,7 @@ class Finnhub(AdvisorBase):
         # PRICE TARGETS (PREMIUM - Graceful degradation)
         if price_target:
             target_mean = price_target.get('targetMean')
-            if target_mean and stock.price:
+            if target_mean is not None and stock.price is not None and float(stock.price) > 0:
                 upside = ((target_mean - float(stock.price)) / float(stock.price))
                 if upside > 0.3:
                     score += 0.15
