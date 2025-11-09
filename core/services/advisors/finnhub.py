@@ -29,7 +29,7 @@ class Finnhub(AdvisorBase):
             
             # Build detailed analysis explanation
             explanation_parts = []
-            explanation_parts.append(f"Confidence Score: {confidence:.2f}")
+            #explanation_parts.append(f"Confidence Score: {confidence:.2f}")
             
             # Add data from available sources
             if quote_data and 'c' in quote_data:

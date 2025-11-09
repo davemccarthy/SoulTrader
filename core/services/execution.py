@@ -53,6 +53,11 @@ def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus):
     #print(f"PERCENTAGE: {(stk_consensus / tot_consensus) * 100}")
     # TODO MAX PER STOCK BUY
 
+    # Verify stock price
+    if consensus.stock.price == 0.0:
+        logger.warning(f"Trade: no price for {consensus.stock.symbol}")
+        return
+
     # Calculate no. shares to buy
     shares = int(allowance / consensus.stock.price)
 

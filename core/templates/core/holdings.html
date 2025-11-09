@@ -9,14 +9,18 @@
         margin: 0;
         padding: 0 1rem;
     }
-    
+
     .holdings-panel {
         background: white;
         border: 1px solid #e0e0e0;
         border-radius: 4px;
         overflow: hidden;
     }
-    
+
+    .holdings-panel + .holdings-panel {
+        margin-top: 1rem;
+    }
+
     .holdings-grid {
         display: grid;
         grid-template-columns: 1fr 1fr 3fr 1fr 1fr 1fr 1fr;
@@ -24,85 +28,326 @@
         align-items: center;
         font-size: 0.875rem;
     }
-    
+
     .holdings-row {
         padding: 0.75rem;
-        transition: background-color 0.2s;
+        transition: background-color 0.2s ease;
     }
-    
+
     .holdings-row:hover {
         background-color: #f8f9fa;
         cursor: pointer;
     }
-    
+
     .holdings-row:not(:last-child) {
         border-bottom: 1px solid #f0f0f0;
     }
-    
+
     .holdings-col {
         display: flex;
         align-items: center;
         justify-content: center;
     }
-    
+
     .holdings-col-company {
         justify-content: flex-start;
         text-align: left;
     }
-    
+
     .holdings-image {
         width: 40px;
         height: 40px;
         object-fit: contain;
         border-radius: 4px;
     }
-    
+
     .holdings-symbol {
         font-weight: 600;
         font-size: 0.9rem;
     }
-    
+
     .holdings-company {
         font-size: 0.85rem;
         color: #666;
         text-align: left;
     }
-    
+
     .holdings-price {
         font-weight: 600;
     }
-    
+
     .holdings-change {
         font-weight: 600;
     }
-    
+
     .holdings-change.positive {
         color: #10b981;
     }
-    
+
     .holdings-change.negative {
         color: #ef4444;
     }
-    
+
     .holdings-pl {
         font-weight: 600;
     }
-    
+
     .holdings-pl.positive {
         color: #10b981;
     }
-    
+
     .holdings-pl.negative {
         color: #ef4444;
     }
-    
+
     .holdings-discovery {
         font-size: 0.8rem;
         color: #666;
         text-transform: uppercase;
         letter-spacing: 0.5px;
     }
-    
+
+    .holdings-advisor {
+        display: grid;
+        justify-items: center;
+        gap: 0.2rem;
+        font-size: 0.7rem;
+        text-transform: none;
+        color: #475569;
+    }
+
+    .holdings-advisor-name {
+        max-width: 64px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .holding-detail-panel {
+        padding: 1.5rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1.5rem;
+    }
+
+    .holding-detail-back {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        background: #f1f5f9;
+        border: 1px solid #dbe3eb;
+        border-radius: 4px;
+        color: #0f172a;
+        font-weight: 500;
+        padding: 0.5rem 0.85rem;
+        cursor: pointer;
+        transition: background-color 0.2s ease, border-color 0.2s ease;
+        align-self: flex-start;
+    }
+
+    .holding-detail-back:hover {
+        background: #e2e8f0;
+        border-color: #cbd5f5;
+    }
+
+    .holding-detail-header {
+        display: flex;
+        gap: 2rem;
+        align-items: center;
+    }
+
+    .holding-detail-logo {
+        width: 100px;
+        height: 100px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+    }
+
+    .holding-detail-logo img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+    }
+
+    .holding-detail-summary h3 {
+        margin: 0;
+        font-size: 1.25rem;
+        font-weight: 700;
+    }
+
+    .holding-detail-metrics {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0rem 1.25rem;
+        margin-top: 0.2rem;
+        font-size: 0.9rem;
+        color: #475569;
+    }
+
+    .holding-detail-return.positive {
+        color: #10b981;
+        font-weight: 600;
+    }
+
+    .holding-detail-return.negative {
+        color: #ef4444;
+        font-weight: 600;
+    }
+
+    .holding-detail-section {
+        margin-top: 1rem;
+    }
+
+    .holding-detail-section h4 {
+        margin: 0 0 0.75rem;
+        font-size: 1rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #475569;
+    }
+
+    .trade-list {
+        display: grid;
+        gap: 1rem;
+    }
+
+    .trade-card {
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 1.25rem 1.5rem;
+        background: #f8fafc;
+        display: grid;
+        gap: 1rem;
+    }
+
+    .trade-card-header {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 0.5rem 1rem;
+        align-items: baseline;
+    }
+
+    .trade-card-title {
+        margin: 0;
+        font-size: 1rem;
+        font-weight: 600;
+        color: #0f172a;
+    }
+
+    .trade-card-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem 1rem;
+        font-size: 0.85rem;
+        color: #64748b;
+    }
+
+    .trade-section {
+        display: grid;
+        gap: 0.35rem;
+        color: #1e293b;
+    }
+
+    .trade-discovery-explanation {
+        font-size: 0.9rem;
+        line-height: 1.5;
+        color: #334155;
+    }
+
+    .trade-section-title {
+        font-size: 0.85rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #475569;
+        margin: 0;
+    }
+
+    .trade-recommendations {
+        display: grid;
+        gap: 0.6rem;
+    }
+
+    .explanation-article a {
+        font-size: 0.85rem;
+        color: #2563eb;
+        font-weight: 600;
+        text-decoration: none;
+    }
+
+    .trade-advisor-panel {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 1rem 1.25rem;
+    }
+
+    .trade-advisor-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1rem 1.25rem;
+    }
+
+    @media (max-width: 768px) {
+        .trade-advisor-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    .trade-recommendation-entry {
+        display: grid;
+        gap: 0.4rem;
+        font-size: 0.9rem;
+        color: #334155;
+        margin-bottom: 1.5em;
+    }
+
+    .trade-recommendation-copy {
+        display: grid;
+        gap: 0.2rem;
+    }
+
+    .trade-recommendation-confidence {
+        color: #475569;
+    }
+
+    .trade-advisor-header {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+    }
+
+    .trade-advisor-logo {
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        background: #e2e8f0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: #1e293b;
+        text-transform: uppercase;
+    }
+
+    .trade-advisor-logo img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+
+    .holding-detail-empty,
+    .holding-detail-error,
+    .holding-detail-loading {
+        color: #475569;
+        font-size: 0.95rem;
+    }
+
     .holdings-empty {
         text-align: center;
         padding: 3rem;
@@ -113,63 +358,59 @@
 
 <div class="holdings-container">
     {% if holdings %}
-        <div class="holdings-panel">
+        <div id="holdings-list" class="holdings-panel">
             {% for holding in holdings %}
-                <div class="holdings-row holdings-grid">
-                <!-- Image -->
-                <div class="holdings-col">
-                    {% if holding.image %}
-                        <img src="{{ holding.image }}" alt="{{ holding.symbol }}" class="holdings-image">
-                    {% else %}
-                        <div class="holdings-image" style="background: #f0f0f0; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; color: #999;">
-                            {{ holding.symbol|slice:":2" }}
-                        </div>
-                    {% endif %}
-                </div>
-                
-                <!-- Symbol -->
-                <div class="holdings-col">
-                    <span class="holdings-symbol">{{ holding.symbol }}</span>
-                </div>
-                
-                <!-- Company -->
-                <div class="holdings-col holdings-col-company">
-                    <span class="holdings-company">{{ holding.company|default:"—" }}</span>
-                </div>
-                
-                <!-- Price -->
-                <div class="holdings-col">
-                    <span class="holdings-price">${{ holding.price|floatformat:2 }}</span>
-                </div>
-                
-                <!-- Change -->
-                <div class="holdings-col">
-                    {% if holding.change_percent >= 0 %}
-                        <span class="holdings-change positive">+{{ holding.change_percent|floatformat:0 }}%</span>
-                    {% else %}
-                        <span class="holdings-change negative">{{ holding.change_percent|floatformat:0 }}%</span>
-                    {% endif %}
-                </div>
-                
-                <!-- P&L -->
-                <div class="holdings-col">
-                    {% if holding.pl >= 0 %}
-                        <span class="holdings-pl positive">${{ holding.pl|floatformat:2 }}</span>
-                    {% else %}
-                        <span class="holdings-pl negative">${{ holding.pl|floatformat:2 }}</span>
-                    {% endif %}
-                </div>
-                
-                <!-- Discovery -->
-                <div class="holdings-col">
-                    {% if holding.discovery %}
-                        <span class="holdings-discovery">{{ holding.discovery|slice:":2"|upper }}</span>
-                    {% else %}
-                        <span class="holdings-discovery">—</span>
-                    {% endif %}
-                </div>
+                <div class="holdings-row holdings-grid" data-stock-id="{{ holding.stock_id }}">
+                    <div class="holdings-col">
+                        {% if holding.image %}
+                            <img src="{{ holding.image }}" alt="{{ holding.symbol }}" class="holdings-image">
+                        {% else %}
+                            <div class="holdings-image" style="background: #f0f0f0; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; color: #999;">
+                                {{ holding.symbol|slice:":2" }}
+                            </div>
+                        {% endif %}
+                    </div>
+                    <div class="holdings-col">
+                        <span class="holdings-symbol">{{ holding.symbol }}</span>
+                    </div>
+                    <div class="holdings-col holdings-col-company">
+                        <span class="holdings-company">{{ holding.company|default:"—" }}</span>
+                    </div>
+                    <div class="holdings-col">
+                        <span class="holdings-price">${{ holding.price|floatformat:2 }}</span>
+                    </div>
+                    <div class="holdings-col">
+                        {% if holding.change_percent >= 0 %}
+                            <span class="holdings-change positive">+{{ holding.change_percent|floatformat:0 }}%</span>
+                        {% else %}
+                            <span class="holdings-change negative">{{ holding.change_percent|floatformat:0 }}%</span>
+                        {% endif %}
+                    </div>
+                    <div class="holdings-col">
+                        {% if holding.pl >= 0 %}
+                            <span class="holdings-pl positive">${{ holding.pl|floatformat:2 }}</span>
+                        {% else %}
+                            <span class="holdings-pl negative">${{ holding.pl|floatformat:2 }}</span>
+                        {% endif %}
+                    </div>
+                    <div class="holdings-col">
+                        {% if holding.discovery_logo %}
+                            <span class="holdings-advisor" title="{{ holding.discovery }}">
+                                <span class="advisor-logo"><img src="{{ holding.discovery_logo }}" alt="{{ holding.discovery }}"></span>
+                                <span class="holdings-advisor-name">{{ holding.discovery }}</span>
+                            </span>
+                        {% elif holding.discovery %}
+                            <span class="holdings-discovery">{{ holding.discovery|slice:":2"|upper }}</span>
+                        {% else %}
+                            <span class="holdings-discovery">—</span>
+                        {% endif %}
+                    </div>
                 </div>
             {% endfor %}
+        </div>
+        <div id="holding-detail-panel" class="holdings-panel holding-detail-panel" hidden>
+            <div id="holding-detail-content" class="holding-detail-content"></div>
+            <button type="button" id="holding-detail-back" class="holding-detail-back">← Back to holdings</button>
         </div>
     {% else %}
         <div class="holdings-empty">
@@ -177,5 +418,305 @@
         </div>
     {% endif %}
 </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const listPanel = document.getElementById('holdings-list');
+    const detailPanel = document.getElementById('holding-detail-panel');
+    const detailContent = document.getElementById('holding-detail-content');
+    const backButton = document.getElementById('holding-detail-back');
+
+    if (!listPanel || !detailPanel) {
+        return;
+    }
+
+    function escapeHtml(value) {
+        return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;',
+        })[char]);
+    }
+
+    function formatCurrency(value) {
+        return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' }).format(value ?? 0);
+    }
+
+    function formatPercent(value) {
+        const fixed = Number(value ?? 0).toFixed(2);
+        return `${value >= 0 ? '+' : ''}${fixed}%`;
+    }
+
+    function formatDecimal(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num.toFixed(2) : '—';
+    }
+
+    function renderAdvisorBadge(label, logoUrl) {
+        const fallback = label ? escapeHtml(label.slice(0, 2)) : 'AD';
+        if (logoUrl) {
+            const safeUrl = escapeHtml(logoUrl);
+            const alt = label ? escapeHtml(label) : 'Advisor logo';
+            return `<div class="trade-advisor-logo"><img src="${safeUrl}" alt="${alt}"></div>`;
+        }
+        return `<div class="trade-advisor-logo">${fallback}</div>`;
+    }
+
+    function formatExplanation(text) {
+        if (!text) {
+            return '';
+        }
+
+        const normalized = text
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        if (!normalized) {
+            return '';
+        }
+
+        const segments = normalized.split('|').map((segment) => segment.trim()).filter(Boolean);
+
+        const clauses = [];
+        for (let i = 0; i < segments.length; i += 1) {
+            const current = segments[i];
+            if (!current) {
+                continue;
+            }
+
+            const articleTailMatch = current.match(/^(.*?)(\s*article:?)\s*$/i);
+            if (articleTailMatch && i + 2 < segments.length) {
+                const leadingText = articleTailMatch[1]?.trim();
+                const suffix = articleTailMatch[2]?.trim() || 'article:';
+                const titleRaw = segments[i + 1];
+                const urlRaw = segments[i + 2];
+
+                if (titleRaw && urlRaw) {
+                    const prefixLine = leadingText ? `${leadingText} ${suffix}`.trim() : suffix;
+                    clauses.push(escapeHtml(prefixLine));
+                    const safeTitle = escapeHtml(titleRaw);
+                    const safeUrl = escapeHtml(urlRaw);
+                    clauses.push(`<span class="explanation-article"><a href="${safeUrl}" target="_blank" rel="noopener">${safeTitle}</a></span>`);
+                    i += 2;
+                    continue;
+                }
+            }
+
+            if (/^article:?$/i.test(current) && i + 2 < segments.length) {
+                const titleRaw = segments[i + 1];
+                const urlRaw = segments[i + 2];
+
+                if (titleRaw && urlRaw) {
+                    clauses.push(escapeHtml(current));
+                    const safeTitle = escapeHtml(titleRaw);
+                    const safeUrl = escapeHtml(urlRaw);
+                    clauses.push(`<span class="explanation-article"><a href="${safeUrl}" target="_blank" rel="noopener">${safeTitle}</a></span>`);
+                    i += 2;
+                    continue;
+                }
+            }
+
+            clauses.push(escapeHtml(current));
+        }
+
+        if (!clauses.length) {
+            return '';
+        }
+
+        return clauses.join('<br>');
+    }
+
+    function renderDiscoverySection(discovery) {
+        if (!discovery) {
+            return '';
+        }
+
+        const advisor = escapeHtml(discovery.advisor || 'Unknown advisor');
+        const started = discovery.sa_started ? escapeHtml(new Date(discovery.sa_started).toLocaleString()) : '';
+        const explanation = formatExplanation(discovery.explanation || '');
+        const saId = escapeHtml(discovery.sa_id);
+        const badge = renderAdvisorBadge(discovery.advisor || '', discovery.advisor_logo);
+
+        return `
+            <div class="trade-section">
+                <div class="trade-advisor-header">
+                    ${badge}
+                    <div class="trade-recommendation-copy">
+                        <strong>Discovered by ${advisor}</strong>
+                        <div class="trade-recommendation-confidence">${started ? `${started} · ` : ''}SA #${saId}</div>
+                    </div>
+                </div>
+                <div class="trade-discovery-explanation">${explanation}</div>
+            </div>
+        `;
+    }
+
+    function renderRecommendationsSection(recommendations) {
+        if (!recommendations || !recommendations.length) {
+            return '';
+        }
+
+        const entries = recommendations.map((rec) => {
+            const advisor = escapeHtml(rec.advisor || 'Unknown advisor');
+            const confidence = rec.confidence != null ? Number(rec.confidence).toFixed(2) : '—';
+            const explanation = formatExplanation(rec.explanation || '');
+            const badge = renderAdvisorBadge(rec.advisor || '', rec.advisor_logo);
+
+            return `
+                <div class="trade-recommendation-entry">
+                    <div class="trade-advisor-header">
+                        ${badge}
+                        <div class="trade-recommendation-copy">
+                            <strong>${advisor}</strong>
+                            <div class="trade-recommendation-confidence">Confidence score ${confidence}</div>
+                        </div>
+                    </div>
+                    <div>${explanation}</div>
+                </div>
+            `;
+        }).join('');
+
+        return `
+            <div class="trade-section">
+                <h6 class="trade-section-title">Analysis</h6>
+                <div class="trade-advisor-panel">
+                    <div class="trade-advisor-grid">${entries}</div>
+                </div>
+            </div>
+        `;
+    }
+
+    function renderTradeCard(trade) {
+        const action = escapeHtml(trade.action || 'UNKNOWN');
+        const shares = escapeHtml(trade.shares);
+        const price = trade.price != null ? formatCurrency(trade.price) : '—';
+        const value = trade.value != null ? formatCurrency(trade.value) : '—';
+        const valueLabel = (trade.action || '').toUpperCase() === 'SELL' ? 'Proceeds' : 'Cost';
+        const saId = escapeHtml(trade.sa_id || '—');
+        const started = trade.sa_started ? escapeHtml(new Date(trade.sa_started).toLocaleString()) : '';
+
+        const discoveryBlock = renderDiscoverySection(trade.discovery);
+        const recommendationsBlock = renderRecommendationsSection(trade.recommendations);
+
+        return `
+            <div class="trade-card">
+                <div class="trade-card-header">
+                    <h5 class="trade-card-title">${action} ${shares} @ ${price}</h5>
+                    <div class="trade-card-meta">
+                        <span>${valueLabel} ${value}</span>
+                        <span>SA #${saId}</span>
+                        ${started ? `<span>${started}</span>` : ''}
+                    </div>
+                </div>
+                ${discoveryBlock}
+                ${recommendationsBlock}
+            </div>
+        `;
+    }
+
+    async function loadHolding(stockId) {
+        if (!stockId) {
+            return;
+        }
+
+        listPanel.hidden = true;
+        detailPanel.hidden = false;
+        detailContent.innerHTML = '<div class="holding-detail-loading">Loading holding details…</div>';
+
+        try {
+            const response = await fetch(`/holdings/${stockId}/detail/`, {
+                headers: { 'Accept': 'application/json' }
+            });
+
+            if (!response.ok) {
+                throw new Error('Request failed');
+            }
+
+            const data = await response.json();
+            const plClass = data.holding.pl_percent >= 0 ? 'positive' : 'negative';
+            const symbolRaw = (data.stock.symbol || '').toString();
+            const companyRaw = data.stock.company || '';
+            const imageRaw = data.stock.image || '';
+
+            const symbol = escapeHtml(symbolRaw);
+            const company = escapeHtml(companyRaw);
+            const imageAttr = escapeHtml(imageRaw);
+
+            const holdingShares = escapeHtml(data.holding.shares);
+            const averagePrice = escapeHtml(formatCurrency(data.holding.average_price));
+            const currentPrice = escapeHtml(formatCurrency(data.stock.price));
+            const returnAmount = escapeHtml(formatCurrency(data.holding.return_amount));
+            const percentDisplay = escapeHtml(formatPercent(data.holding.pl_percent));
+            const worth = escapeHtml(formatCurrency(data.holding.worth));
+            const consensus = (data.trades || []).find((trade) => trade.consensus)?.consensus || null;
+
+            const consensusRecommendations = consensus && consensus.recommendations != null
+                ? escapeHtml(consensus.recommendations)
+                : null;
+            const consensusAverage = consensus && consensus.avg_confidence != null
+                ? escapeHtml(formatDecimal(consensus.avg_confidence))
+                : null;
+            const consensusTotal = consensus && consensus.tot_confidence != null
+                ? escapeHtml(formatDecimal(consensus.tot_confidence))
+                : null;
+
+            const metricItems = [
+                `<span>Shares ${holdingShares}</span>`,
+                `<span>Average ${averagePrice}</span>`,
+                `<span>Current ${currentPrice}</span>`,
+                `<span>Value ${worth}</span>`,
+                `<span class="holding-detail-return ${plClass}">Return ${returnAmount} (${percentDisplay})</span>`,
+            ];
+
+            if (consensusRecommendations != null) {
+                metricItems.push(`<span>Recommendations ${consensusRecommendations}</span>`);
+            }
+            if (consensusAverage != null) {
+                metricItems.push(`<span>Average confidence ${consensusAverage}</span>`);
+            }
+            if (consensusTotal != null) {
+                metricItems.push(`<span>Total confidence ${consensusTotal}</span>`);
+            }
+
+            const tradesHtml = data.trades.length
+                ? `<div class="trade-list">${data.trades.map(renderTradeCard).join('')}</div>`
+                : '<p class="holding-detail-empty">No trades recorded for this holding yet.</p>';
+
+            detailContent.innerHTML = `
+                <div class="holding-detail-header">
+                    <div class="holding-detail-logo">
+                        ${imageRaw ? `<img src="${imageAttr}" alt="${symbol}">` : escapeHtml(symbolRaw.slice(0, 2))}
+                    </div>
+                    <div class="holding-detail-summary">
+                        <h3>${symbol} · ${company}</h3>
+                        <div class="holding-detail-metrics">
+                            ${metricItems.join('')}
+                        </div>
+                    </div>
+                </div>
+                <div class="holding-detail-section">
+                    ${tradesHtml}
+                </div>
+            `;
+        } catch (error) {
+            detailContent.innerHTML = '<div class="holding-detail-error">Unable to load holding details. Please try again.</div>';
+        }
+    }
+
+    listPanel.querySelectorAll('.holdings-row').forEach((row) => {
+        row.addEventListener('click', () => loadHolding(row.dataset.stockId));
+    });
+
+    if (backButton) {
+        backButton.addEventListener('click', () => {
+            detailPanel.hidden = true;
+            listPanel.hidden = false;
+            detailContent.innerHTML = '';
+        });
+    }
+});
+</script>
 {% endblock %}
 

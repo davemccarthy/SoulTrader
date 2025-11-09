@@ -8,6 +8,7 @@ import core.services.advisors.fmp as fmp
 import core.services.advisors.gemini as gemini
 import core.services.advisors.polygon as polygon
 import core.services.advisors.story as stockstory
+import core.services.advisors.fda as fda
 import core.services.advisors.user as user
 
 # Create advisors namespace
@@ -20,4 +21,5 @@ advisors = type('Advisors', (), {
     'gemini': gemini,
     'polygon': polygon,
     'stockstory' : stockstory,
+    'fda': fda,
 })()

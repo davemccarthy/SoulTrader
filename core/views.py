@@ -4,8 +4,11 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.contrib import messages
 from django.db.models import F, Q, Case, When, Value, CharField
+from django.http import JsonResponse, Http404
+from django.templatetags.static import static
 from decimal import Decimal
-from .models import Profile, Holding, Stock
+from collections import defaultdict
+from .models import Profile, Holding, Stock, Discovery, Trade, Consensus, Recommendation
 
 
 def home(request):
@@ -61,8 +64,7 @@ def register(request):
 @login_required
 def holdings(request):
     """Holdings page - displays user's stock holdings"""
-    # Query holdings with related stock and advisor data
-    holdings_list = Holding.objects.filter(user=request.user).select_related('stock', 'stock__advisor')
+    holdings_list = Holding.objects.filter(user=request.user).order_by('-id').select_related('stock', 'stock__advisor')
     
     # Annotate with calculated fields
     holdings_data = []
@@ -91,7 +93,8 @@ def holdings(request):
             'change_percent': change_percent,
             'pl': pl,
             'discovery': discovery,
-            'holding': holding,  # Keep reference for potential future use
+            'discovery_logo': _advisor_logo_url(stock.advisor),
+            'stock_id': stock.id,
         })
     
     context = {
@@ -99,6 +102,144 @@ def holdings(request):
         'holdings': holdings_data,
     }
     return render(request, 'core/holdings.html', context)
+
+
+def _advisor_logo_url(advisor):
+    if not advisor:
+        return None
+
+    python_class = getattr(advisor, 'python_class', None)
+    if not python_class:
+        return None
+
+    filename = f"core/advisors/{python_class.lower()}.png"
+    return static(filename)
+
+
+@login_required
+def holding_detail(request, stock_id):
+    try:
+        holding = (
+            Holding.objects
+            .select_related('stock')
+            .get(user=request.user, stock_id=stock_id)
+        )
+    except Holding.DoesNotExist:
+        raise Http404("Holding not found")
+
+    stock = holding.stock
+    shares = holding.shares or 0
+    avg_price = holding.average_price or Decimal('0')
+    current_price = stock.price or Decimal('0')
+
+    worth = current_price * shares
+    invested = avg_price * shares
+    return_amount = worth - invested
+
+    if avg_price and avg_price > 0:
+        pl_percent = ((current_price / avg_price) * Decimal('100')) - Decimal('100')
+    else:
+        pl_percent = Decimal('0')
+
+    trades_qs = list(
+        Trade.objects
+        .select_related('sa', 'consensus', 'consensus__stock')
+        .filter(user=request.user, stock_id=stock_id)
+        .order_by('-id')
+    )
+
+    sa_ids = {trade.sa_id for trade in trades_qs if trade.sa_id}
+
+    discoveries_map = {}
+    if sa_ids:
+        for discovery in Discovery.objects.select_related('advisor', 'sa').filter(sa_id__in=sa_ids, stock_id=stock_id):
+            discoveries_map[discovery.sa_id] = discovery
+
+    consensus_map = {}
+    if sa_ids:
+        for consensus in Consensus.objects.filter(sa_id__in=sa_ids, stock_id=stock_id):
+            consensus_map[consensus.sa_id] = consensus
+
+    recommendations_map = defaultdict(list)
+    if sa_ids:
+        for recommendation in Recommendation.objects.select_related('advisor').filter(sa_id__in=sa_ids, stock_id=stock_id):
+            recommendations_map[recommendation.sa_id].append(recommendation)
+
+    trades_payload = []
+    for trade in trades_qs:
+        trade_value = None
+        if trade.price is not None:
+            trade_value = float((trade.price or Decimal('0')) * trade.shares)
+
+        trade_payload = {
+            'id': trade.id,
+            'action': trade.action,
+            'price': float(trade.price) if trade.price is not None else None,
+            'shares': trade.shares,
+            'sa_id': trade.sa_id,
+            'sa_started': trade.sa.started.isoformat() if trade.sa and trade.sa.started else None,
+            'value': trade_value,
+        }
+
+        discovery = discoveries_map.get(trade.sa_id)
+        if discovery:
+            trade_payload['discovery'] = {
+                'id': discovery.id,
+                'advisor': discovery.advisor.name if discovery.advisor else '',
+                'advisor_logo': _advisor_logo_url(discovery.advisor),
+                'explanation': discovery.explanation,
+                'sa_id': discovery.sa_id,
+                'sa_started': discovery.sa.started.isoformat() if discovery.sa and discovery.sa.started else None,
+            }
+        else:
+            trade_payload['discovery'] = None
+
+        consensus = trade.consensus or consensus_map.get(trade.sa_id)
+        if consensus:
+            trade_payload['consensus'] = {
+                'id': consensus.id,
+                'recommendations': consensus.recommendations,
+                'avg_confidence': float(consensus.avg_confidence) if consensus.avg_confidence is not None else None,
+                'tot_confidence': float(consensus.tot_confidence) if consensus.tot_confidence is not None else None,
+                'sa_id': consensus.sa_id,
+            }
+        else:
+            trade_payload['consensus'] = None
+
+        recommendations = recommendations_map.get(trade.sa_id, [])
+        trade_payload['recommendations'] = [
+            {
+                'id': recommendation.id,
+                'advisor': recommendation.advisor.name if recommendation.advisor else '',
+                'advisor_logo': _advisor_logo_url(recommendation.advisor),
+                'confidence': float(recommendation.confidence) if recommendation.confidence is not None else None,
+                'explanation': recommendation.explanation,
+            }
+            for recommendation in recommendations
+        ]
+
+        trades_payload.append(trade_payload)
+
+    payload = {
+        'stock': {
+            'id': stock.id,
+            'symbol': stock.symbol,
+            'company': stock.company,
+            'image': stock.image,
+            'price': float(current_price),
+        },
+        'holding': {
+            'shares': shares,
+            'average_price': float(avg_price),
+            'worth': float(worth),
+            'invested': float(invested),
+            'return_amount': float(return_amount),
+            'pl_percent': float(pl_percent),
+        },
+        'trades': trades_payload,
+    }
+
+    return JsonResponse(payload)
 
 
 @login_required

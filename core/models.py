@@ -100,7 +100,7 @@ class Discovery(models.Model):
     sa = models.ForeignKey(SmartAnalysis, on_delete=models.DO_NOTHING)
     stock = models.ForeignKey(Stock, on_delete=models.DO_NOTHING)
     advisor = models.ForeignKey(Advisor, on_delete=models.DO_NOTHING)
-    explanation = models.CharField(max_length=500)
+    explanation = models.CharField(max_length=1000)
 
 
 # Recommendation for advisors

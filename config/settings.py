@@ -153,6 +153,8 @@ POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "MSVhtqDKV9HyMOdla5UunU2EFs53MweY
 # To keep
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyCiVvWptLpmCGrQeTr2BaPfYJY04Sb21cU")
 
+OPENFIGI_API_KEY = os.getenv("GEMINI_API_KEY", "791f799e-e10d-49a2-a0b6-e5abbabc176d")
+
 # Logging Configuration
 LOGGING = {
     'version': 1,

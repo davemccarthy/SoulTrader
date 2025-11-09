@@ -57,8 +57,11 @@ def build_consensus(sa, advisors, stock):
     # Collate advice and form a consensus
     with connection.cursor() as cursor:
         cursor.execute('''insert into core_consensus(sa_id, stock_id, recommendations, tot_confidence, avg_confidence) 
-            select %s, %s, count(*) as recommendations, sum(confidence) as tot_confidence, 
-            avg(confidence) as avg_confidence from core_recommendation where sa_id = %s and stock_id = %s
+            select %s, %s, count(*) as recommendations,
+            sum(case when confidence > 1 then 1 else confidence end) as tot_confidence,
+            avg(case when confidence > 1 then 1 else confidence end) as avg_confidence
+            from core_recommendation
+            where sa_id = %s and stock_id = %s
         ''', [sa.id, stock.id, sa.id, stock.id])
     # TODO research alternative to raw SQL
 
@@ -100,7 +103,7 @@ def analyze_discovery(sa, users, advisors):
     # 3. Filter stocks to buy on a per user basis
     for u in users:
         profile = Profile.objects.get(user=u)
-        allowance = profile.cash * Decimal(Profile.RISK[profile.risk]["allowance"])
+        allowance = min(profile.investment * Decimal(Profile.RISK[profile.risk]["allowance"]), profile.cash)
         buy_from = Profile.RISK[profile.risk]["confidence_high"]
 
         # Get shares to buy based on high confidence

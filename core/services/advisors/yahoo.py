@@ -35,7 +35,7 @@ class Yahoo(AdvisorBase):
                         if 'symbol' in quote:
                             symbol = quote['symbol']
                             company = quote.get('longName', symbol)
-                            explanation = "Yahoo: Undervalued growth stock"
+                            explanation = "Undervalued growth stock"
                             
                             self.discovered(sa, symbol, company, explanation)
                             discovered_symbols.append(symbol)
@@ -57,14 +57,14 @@ class Yahoo(AdvisorBase):
                                 continue
                             
                             company = quote.get('longName', symbol)
-                            explanation = "Yahoo: Undervalued large cap"
+                            explanation = "Undervalued large cap"
                             
                             self.discovered(sa, symbol, company, explanation)
                             discovered_symbols.append(symbol)
                             #logger.info(f"Yahoo discovered {symbol}: {explanation}")
             except Exception as e:
                 logger.warning(f"Yahoo large caps discovery failed: {e}")
-            
+            """
             # Method 3: High-Risk/High-Reward (bouncing stocks)
             # Day losers - oversold stocks with bounce potential
             try:
@@ -80,7 +80,7 @@ class Yahoo(AdvisorBase):
                                 continue
                             
                             company = quote.get('longName', symbol)
-                            explanation = "Yahoo: High-risk oversold (bounce potential)"
+                            explanation = "High-risk oversold (bounce potential)"
                             
                             self.discovered(sa, symbol, company, explanation)
                             discovered_symbols.append(symbol)
@@ -102,7 +102,7 @@ class Yahoo(AdvisorBase):
                                 continue
                             
                             company = quote.get('longName', symbol)
-                            explanation = "Yahoo: High-risk small cap momentum"
+                            explanation = "High-risk small cap momentum"
                             
                             self.discovered(sa, symbol, company, explanation)
                             discovered_symbols.append(symbol)
@@ -111,7 +111,7 @@ class Yahoo(AdvisorBase):
                 logger.warning(f"Yahoo small cap gainers discovery failed: {e}")
             
             logger.info(f"Yahoo Finance discovery complete: {len(discovered_symbols)} stocks found")
-            
+        """
         except Exception as e:
             logger.error(f"Yahoo Finance discovery failed: {e}")
 
@@ -143,7 +143,7 @@ class Yahoo(AdvisorBase):
             
             # Build detailed analysis explanation
             explanation_parts = []
-            explanation_parts.append(f"Confidence Score: {confidence:.2f}")
+            #explanation_parts.append(f"Confidence Score: {confidence:.2f}")
             
             # Add key factors that influenced the score
             pe_ratio = info.get('trailingPE', 0)
@@ -210,38 +210,47 @@ class Yahoo(AdvisorBase):
     def _calculate_confidence(self, info, symbol):
         """Calculate confidence score based on Yahoo Finance metrics including target price"""
         score = 0.5  # Start neutral
+        negative_flag = False
 
         # VALUATION ANALYSIS
         pe_ratio = info.get('trailingPE', 0)
         if pe_ratio > 0:
             if pe_ratio < 1.0:  # Very low P/E = distressed company
                 score -= 0.3
+                negative_flag = True
             elif pe_ratio < 15:
                 score += 0.2
             elif pe_ratio > 30:
                 score -= 0.3
+                negative_flag = True
             elif pe_ratio > 25:
                 score -= 0.1
+                negative_flag = True
 
         # PROFITABILITY ANALYSIS
         profit_margin = info.get('profitMargins', 0)
         if profit_margin < 0:  # Losing money
             score -= 0.2
+            negative_flag = True
         elif profit_margin > 0.20:  # >20%
             score += 0.2
         elif profit_margin > 0.10:  # >10%
             score += 0.1
         elif profit_margin < 0.05:  # <5%
             score -= 0.1
+            negative_flag = True
 
         # MOMENTUM ANALYSIS
         change_52w = info.get('fiftyTwoWeekChangePercent', 0)
         if change_52w < -0.50:  # >50% loss = catastrophic
             score -= 0.3
+            negative_flag = True
         elif change_52w < -0.20:  # >20% loss = major decline
             score -= 0.2
+            negative_flag = True
         elif change_52w < -0.10:  # >10% loss
             score -= 0.1
+            negative_flag = True
         elif change_52w > 0.20:
             score += 0.15
         elif change_52w > 0.10:
@@ -255,6 +264,7 @@ class Yahoo(AdvisorBase):
             score += 0.05
         elif market_cap < 100_000_000:  # <$100M = micro-cap risk
             score -= 0.1
+            negative_flag = True
 
         # ANALYST CONSENSUS
         analyst_rating = info.get('recommendationMean', 3.0)
@@ -264,13 +274,16 @@ class Yahoo(AdvisorBase):
             score += 0.1
         elif analyst_rating > 3.5:
             score -= 0.1
+            negative_flag = True
 
         # DEBT ANALYSIS
         debt_to_equity = info.get('debtToEquity', 0)
         if debt_to_equity > 2.0:
             score -= 0.2
+            negative_flag = True
         elif debt_to_equity > 1.0:
             score -= 0.1
+            negative_flag = True
         elif debt_to_equity < 0.5:
             score += 0.1
 
@@ -290,12 +303,17 @@ class Yahoo(AdvisorBase):
             current_price = info.get('currentPrice') or info.get('regularMarketPrice')
             if current_price and current_price > 0:
                 upside_percent = ((target_mean_price - current_price) / current_price) * 100
-                # Conservative scaling: 50% weight of upside percentage
-                target_score_adjustment = (upside_percent / 100) * 0.5
+                # Conservative scaling: 35% weight and clamp extreme moves
+                target_score_adjustment = (upside_percent / 100) * 0.35
+                target_score_adjustment = max(-0.2, min(0.25, target_score_adjustment))
+                if target_score_adjustment < 0:
+                    negative_flag = True
                 score += target_score_adjustment
 
         # Ensure score is between 0 and 1
         final_score = max(0.0, min(1.0, score))
+        if negative_flag:
+            final_score = min(final_score, 0.95)
 
         return final_score
 

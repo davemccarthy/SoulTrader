@@ -43,7 +43,7 @@ class Polygon(AdvisorBase):
                 sa_start_utc = timezone.make_aware(prev_sa.started) if timezone.is_naive(
                     prev_sa.started) else prev_sa.started
             else:
-                sa_start_utc = sa_end_utc - timedelta(hours=12)
+                sa_start_utc = sa_end_utc - timedelta(days=7)
 
             # Fetch from Polygon API
             url = "https://api.polygon.io/v2/reference/news"

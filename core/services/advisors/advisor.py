@@ -37,9 +37,14 @@ class AdvisorBase:
 
             logger.info(f"{self.advisor.name} created stock {stock.symbol}")
 
-        # Check for repeating discovery
-        if Discovery.objects.filter(advisor=self.advisor,stock=stock): # TODO sa=sa-1
-            logger.info(f"{self.advisor.name} already discovered stock {stock.symbol}")
+        # Avoid duplicating discovery within this SmartAnalysis run
+        if Discovery.objects.filter(advisor=self.advisor, stock=stock, sa=sa).exists():
+            logger.info(f"{self.advisor.name} already recorded discovery for {stock.symbol} in SA {sa.id}")
+            return stock
+
+        # Check for repeating discovery in previous run
+        if Discovery.objects.filter(advisor=self.advisor, stock=stock, sa_id=sa.id - 1).exists():
+            logger.info(f"{self.advisor.name} previously discovered stock {stock.symbol}")
             return stock
 
         # Create new Discovery record
@@ -47,7 +52,7 @@ class AdvisorBase:
         discovery.sa = sa
         discovery.stock = stock
         discovery.advisor = self.advisor
-        discovery.explanation = explanation[:500]
+        discovery.explanation = explanation[:1000]
         discovery.save()
 
         logger.info(f"{self.advisor.name} discovers {stock.symbol}")
@@ -78,7 +83,8 @@ class AdvisorBase:
             RETURN JSON:
             {{
                 "recommendation": "DISMISS|BUY|SELL|STRONG_BUY|STRONG_SELL",
-                "tickers": ["SYM1", "SYM2"]
+                "tickers": ["SYM1", "SYM2"],
+                "explanation": "A brief reason you came to your descion"
             }}
 
             url: {url}"""
@@ -109,23 +115,25 @@ class AdvisorBase:
             logger.warning(f"Cannot parse response for {self.advisor.name} article")
             return False
 
+        # tmp
+        print(url)
+        print(results["explanation"])
+
+        explanation = results["explanation"]
         recommendation = results["recommendation"]
         tickers = results["tickers"]
 
         # Log it
         logger.info(f"{recommendation}: {tickers} | {title}")
 
-        # TMP
-        print(url)
-
         # Anything better than DISMISS is put forward for consensus
         if recommendation == "BUY" or recommendation == "STRONG_BUY":
             for ticker in tickers:
-                stock = self.discovered(sa, ticker, '', f"Newsflash: | {recommendation} | {title} | {url} ")
+                stock = self.discovered(sa, ticker, '', f"Gemini: {recommendation} | {title} | {explanation} | {url} ")
 
                 # A strong buy skews consensus in favour of BUY
                 if recommendation == "STRONG_BUY":
-                    self.recommend(sa, stock, 0.85, f"STRONG_BUY | Polygon News: {title}")
+                    self.recommend(sa, stock, 0.85, f"Submittied a high score based on above article | A strong buy skews consensus in favour of BUY")
 
         # Give Gemini a rest
         time.sleep(2)
