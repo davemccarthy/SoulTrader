@@ -6,6 +6,8 @@ import re
 from core.models import Stock, Discovery, Recommendation, Advisor
 from google import genai
 from django.conf import settings
+from datetime import timedelta
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -26,25 +28,21 @@ class AdvisorBase:
         #-- find stock or create stock
         try:
             stock = Stock.objects.get(symbol=symbol)
-
         except Stock.DoesNotExist:
             stock = Stock()
             stock.symbol = symbol
-            # Let yahoo fix this later
-            # stock.company = company
             stock.advisor = self.advisor
             stock.save()
-
             logger.info(f"{self.advisor.name} created stock {stock.symbol}")
 
-        # Avoid duplicating discovery within this SmartAnalysis run
-        if Discovery.objects.filter(advisor=self.advisor, stock=stock, sa=sa).exists():
-            logger.info(f"{self.advisor.name} already recorded discovery for {stock.symbol} in SA {sa.id}")
-            return stock
-
-        # Check for repeating discovery in previous run
-        if Discovery.objects.filter(advisor=self.advisor, stock=stock, sa_id=sa.id - 1).exists():
-            logger.info(f"{self.advisor.name} previously discovered stock {stock.symbol}")
+        # Avoid duplicating discovery in the last 7 days
+        time_threshold = timezone.now() - timedelta(days=7)
+        if Discovery.objects.filter(
+            advisor=self.advisor,
+            stock=stock,
+            created__gte=time_threshold,
+        ).exists():
+            logger.info(f"{self.advisor.name} already recorded discovery for {stock.symbol}")
             return stock
 
         # Create new Discovery record

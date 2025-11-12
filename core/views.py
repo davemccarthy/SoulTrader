@@ -3,7 +3,7 @@ from django.contrib.auth import login, authenticate, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.contrib import messages
-from django.db.models import F, Q, Case, When, Value, CharField
+from django.db.models import F, Q, Case, When, Value, CharField, Max
 from django.http import JsonResponse, Http404
 from django.templatetags.static import static
 from decimal import Decimal
@@ -64,7 +64,18 @@ def register(request):
 @login_required
 def holdings(request):
     """Holdings page - displays user's stock holdings"""
-    holdings_list = Holding.objects.filter(user=request.user).order_by('-id').select_related('stock', 'stock__advisor')
+    holdings_list = (
+        Holding.objects
+        .filter(user=request.user)
+        .annotate(
+            latest_trade_sa=Max(
+                'stock__trade__sa_id',
+                filter=Q(stock__trade__user=request.user)
+            )
+        )
+        .order_by('-latest_trade_sa', '-id')
+        .select_related('stock', 'stock__advisor')
+    )
     
     # Annotate with calculated fields
     holdings_data = []

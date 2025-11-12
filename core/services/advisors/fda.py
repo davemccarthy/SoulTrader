@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup
 from django.utils import timezone
 
 from django.conf import settings
-from core.models import SmartAnalysis
+from core.models import Discovery, SmartAnalysis
 from core.services.advisors.advisor import AdvisorBase, register
 
 logger = logging.getLogger(__name__)
@@ -123,6 +123,21 @@ FDA_ALLOW_IF_CONTAINS = (
 
 class FDA(AdvisorBase):
     def discover(self, sa):
+        sa_end = _ensure_aware(sa.started)
+        sa_day = sa_end.date()
+        already_processed_today = Discovery.objects.filter(
+            advisor=self.advisor,
+            sa__username=sa.username,
+            created__date=sa_day,
+        ).exists()
+        if already_processed_today:
+            logger.info(
+                "FDA advisor: already processed discoveries for %s on %s; skipping.",
+                sa.username or "<unknown>",
+                sa_day,
+            )
+            return
+
         try:
             approvals = scrape_fda_approvals(days=REPORT_WINDOW_DAYS)
         except Exception as exc:
@@ -133,7 +148,6 @@ class FDA(AdvisorBase):
             logger.info("FDA advisor: no approvals returned from FDA report.")
             return
 
-        sa_end = _ensure_aware(sa.started)
         prev_sa = (
             SmartAnalysis.objects.filter(username=sa.username, id__lt=sa.id)
             .order_by("-id")
@@ -637,10 +651,10 @@ def _get_company_to_symbol_map():
         "TEVA PHARMACEUTICAL": "TEVA",
         "TEVA PHARMS USA": "TEVA",
         "TEVA PHARMACEUTICALS": "TEVA",
-        "MYLAN": "MYL",
+        "MYLAN": "VTRS",
         "VIATRIS": "VTRS",
-        "SUN PHARMA": "SUNPHARMA",
-        "SUN PHARMACEUTICAL": "SUNPHARMA",
+        "SUN PHARMA": "SUNPF",
+        "SUN PHARMACEUTICAL": "SUNPF",
         "DR REDDYS": "RDY",
         "DR. REDDYS": "RDY",
         "DR REDDYS LABORATORIES": "RDY",

@@ -67,26 +67,55 @@ def build_consensus(sa, advisors, stock):
 
     return Consensus.objects.filter(sa=sa,stock=stock).first()
 
-# Review current holding stocks
 def analyze_holdings(sa, users, advisors):
     logger.info(f"Analyzing holdings for SA session {sa.id}")
 
-    # 1. Filter stocks to sell on a per user basis
     for u in users:
         profile = Profile.objects.get(user=u)
 
-        sell_below = Profile.RISK[profile.risk]["confidence_low"]
+        allowance = profile.investment * Decimal(str(Profile.RISK[profile.risk]["allowance"]))
+        sell_below = Decimal(str(Profile.RISK[profile.risk]["confidence_low"]))
+        buy_from = Decimal(str(Profile.RISK[profile.risk]["confidence_high"]))
 
-        for h in Holding.objects.filter(user=u):
-            consensus = build_consensus(sa, advisors, h.stock)
+        holdings = list(Holding.objects.filter(user=u).select_related("stock"))
+        if not holdings:
+            continue
 
-            if consensus is None:
-                return
+        candidates = []
+        for holding in holdings:
+            if holding.shares <= 0:
+                continue
 
-            if consensus.avg_confidence < sell_below:
-                execute_sell(sa, u, consensus, h)
+            consensus = build_consensus(sa, advisors, holding.stock)
+            if consensus is None or consensus.avg_confidence is None:
+                continue
 
+            if consensus.avg_confidence < buy_from:
+                candidates.append((holding, consensus))
 
+        if not candidates:
+            continue
+
+        candidates.sort(key=lambda item: item[1].avg_confidence)
+
+        for holding, consensus in candidates:
+            profile.refresh_from_db(fields=["cash"])
+
+            sell_for_confidence = consensus.avg_confidence < sell_below
+            sell_for_cash = profile.cash < allowance
+
+            if not (sell_for_confidence or sell_for_cash):
+                if profile.cash >= allowance:
+                    break
+                continue
+
+            execute_sell(sa, u, profile, consensus, holding)
+            profile.refresh_from_db(fields=["cash"])
+
+            if profile.cash >= allowance:
+                break
+
+                
 # Discovery new stock
 def analyze_discovery(sa, users, advisors):
     logger.info(f"Analyzing discovery for SA session {sa.id}")

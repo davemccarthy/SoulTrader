@@ -1,0 +1,22 @@
+[
+  {
+    "symbol": "AMRX",
+    "company": "Amneal Ireland Limited",
+    "drug_name": "Beclomethasone Dipropionate",
+    "approval_date": "10/28/2025",
+    "approval_actual_date": "2025-10-28",
+    "approval_price": 10.29,
+    "target_date": "2025-11-04",
+    "target_actual_date": "2025-11-04",
+    "target_price": 11.35,
+    "price_change": 1.06,
+    "price_change_pct": 10.3,
+    "application_number": "213811",
+    "application_type": "ANDA",
+    "submission": "ORIG-1",
+    "submission_classification": "",
+    "confidence_score": 0.9400000000000002,
+    "market_cap": 3574306364.424019,
+    "market_price_at_approval": 11.369999885559082
+  }
+]

@@ -14,19 +14,19 @@ class Story(AdvisorBase):
     def discover(self, sa):
         """Discover stocks from StockStory news articles"""
         try:
-        # Calculate time window: since last SA session for this username
-        prev_sa = SmartAnalysis.objects.filter(
-            username=sa.username,
-            id__lt=sa.id
-        ).order_by('-id').first()
+            # Calculate time window: since last SA session for this username
+            prev_sa = SmartAnalysis.objects.filter(
+                username=sa.username,
+                id__lt=sa.id
+            ).order_by('-id').first()
 
-        # Set bounds: prev SA started -> current SA started
-        sa_end_utc = timezone.make_aware(sa.started) if timezone.is_naive(sa.started) else sa.started
-        if prev_sa:
-            sa_start_utc = timezone.make_aware(prev_sa.started) if timezone.is_naive(
-                prev_sa.started) else prev_sa.started
-        else:
-            sa_start_utc = sa_end_utc - timedelta(hours=12)
+            # Set bounds: prev SA started -> current SA started
+            sa_end_utc = timezone.make_aware(sa.started) if timezone.is_naive(sa.started) else sa.started
+            if prev_sa:
+                sa_start_utc = timezone.make_aware(prev_sa.started) if timezone.is_naive(
+                    prev_sa.started) else prev_sa.started
+            else:
+                sa_start_utc = sa_end_utc - timedelta(hours=12)
 
             # Fetch StockStory articles within the time window
             articles = self._fetch_stockstory_articles(sa_start_utc, sa_end_utc)

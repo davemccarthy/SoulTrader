@@ -11,9 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 # Sell all for now
-def execute_sell(sa, user, consensus, holding):
-    # TODO bank
-    profile = Profile.objects.get(user=user)
+def execute_sell(sa, user, profile, consensus, holding):
     logger.info(f"Trade: {user.username} selling {holding.shares} shares of {consensus.stock.symbol} at ${consensus.stock.price}.")
 
     # Transfer funds

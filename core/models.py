@@ -100,6 +100,7 @@ class Discovery(models.Model):
     sa = models.ForeignKey(SmartAnalysis, on_delete=models.DO_NOTHING)
     stock = models.ForeignKey(Stock, on_delete=models.DO_NOTHING)
     advisor = models.ForeignKey(Advisor, on_delete=models.DO_NOTHING)
+    created = models.DateTimeField(auto_now_add=True)
     explanation = models.CharField(max_length=1000)
 
 
@@ -110,6 +111,7 @@ class Recommendation(models.Model):
     stock = models.ForeignKey(Stock, on_delete=models.DO_NOTHING)
     advisor = models.ForeignKey(Advisor, on_delete=models.DO_NOTHING)
     confidence = models.DecimalField(max_digits=3, decimal_places=2)
+    created = models.DateTimeField(default=timezone.now)
     explanation = models.CharField(max_length=500)
 
 

@@ -1,11 +1,31 @@
+import logging
+from decimal import Decimal
+
 import yfinance as yf
-import random
+from yfinance.screener import EquityQuery as YfEquityQuery
 
 from core.services.advisors.advisor import AdvisorBase, register
-from decimal import Decimal
-import logging
 
 logger = logging.getLogger(__name__)
+
+MAX_PRICE = 5.0
+
+
+CUSTOM_SCREEN_QUERY = YfEquityQuery(
+    "and",
+    [
+        YfEquityQuery("lt", ["pegratio_5y", 1]),  # PEG below 1
+        YfEquityQuery(
+            "or",
+            [
+                YfEquityQuery("btwn", ["epsgrowth.lasttwelvemonths", 25, 50]),
+                YfEquityQuery("gt", ["epsgrowth.lasttwelvemonths", 100]),
+            ],
+        ),
+        YfEquityQuery("is-in", ["exchange", "NMS", "NYQ"]),
+        YfEquityQuery("lt", ["intradayprice", MAX_PRICE]),
+    ],
+)
 
 class Yahoo(AdvisorBase):
 
@@ -20,100 +40,109 @@ class Yahoo(AdvisorBase):
             self.advisor = advisor
 
     def discover(self, sa):
+        """Discover stocks using Yahoo Finance screener filters."""
+        try:
+            quotes = self._fetch_filtered_quotes()
+        except Exception as exc:  # pragma: no cover - network failure fallback
+            logger.warning("Yahoo custom screener failed (%s)", exc)
+            return
 
-        """Discover stocks using Yahoo Finance screeners"""
+        discovered = 0
+        for quote in quotes:
+            symbol = quote.get("symbol")
+            if not symbol:
+                continue
+
+            last_price = self._safe_float(
+                quote.get("regularMarketPrice") or quote.get("intradayprice")
+            )
+            if last_price is None or last_price >= MAX_PRICE:
+                # Safety check in case Yahoo returns stale data outside our query filter.
+                continue
+
+            company = quote.get("longName") or quote.get("shortName") or symbol
+            peg_ratio = self._safe_float(quote.get("pegRatio"))
+            eps_growth = self._safe_float(quote.get("epsGrowthQuarterly"))
+
+            explanation_parts = ["Undervalued growth screener match"]
+            if peg_ratio is not None:
+                explanation_parts.append(f"PEG {peg_ratio:.2f}")
+            if eps_growth is not None:
+                explanation_parts.append(f"EPS growth {eps_growth:.0%}")
+            explanation_parts.append(f"Price ${last_price:.2f}")
+
+            explanation = " | ".join(explanation_parts)
+            self.discovered(sa, symbol, company, explanation)
+            discovered += 1
+
+        logger.info("Yahoo Finance discovery complete: %s stocks found", discovered)
+
+    def discover_old(self, sa):
+        """Legacy discovery flow using yfinance predefined screeners."""
         try:
             discovered_symbols = []
-            
+
             # Method 1: Undervalued Growth Stocks (best quality)
             try:
-                query = yf.PREDEFINED_SCREENER_QUERIES['undervalued_growth_stocks']['query']
+                query = yf.PREDEFINED_SCREENER_QUERIES["undervalued_growth_stocks"]["query"]
                 data = yf.screen(query)
-                
-                if isinstance(data, dict) and 'quotes' in data:
-                    for quote in data['quotes'][:8]:  # Top 8
-                        if 'symbol' in quote:
-                            symbol = quote['symbol']
-                            company = quote.get('longName', symbol)
+
+                if isinstance(data, dict) and "quotes" in data:
+                    for quote in data["quotes"][:8]:  # Top 8
+                        if "symbol" in quote:
+                            symbol = quote["symbol"]
+                            company = quote.get("longName", symbol)
                             explanation = "Undervalued growth stock"
-                            
+
                             self.discovered(sa, symbol, company, explanation)
                             discovered_symbols.append(symbol)
-                            # logger.info(f"Yahoo discovered {symbol}: {explanation}")
             except Exception as e:
                 logger.warning(f"Yahoo growth stocks discovery failed: {e}")
-            
+
             # Method 2: Undervalued Large Caps (stability)
             try:
-                query = yf.PREDEFINED_SCREENER_QUERIES['undervalued_large_caps']['query']
+                query = yf.PREDEFINED_SCREENER_QUERIES["undervalued_large_caps"]["query"]
                 data = yf.screen(query)
-                
-                if isinstance(data, dict) and 'quotes' in data:
-                    for quote in data['quotes'][:6]:  # Top 6
-                        if 'symbol' in quote:
-                            symbol = quote['symbol']
+
+                if isinstance(data, dict) and "quotes" in data:
+                    for quote in data["quotes"][:6]:  # Top 6
+                        if "symbol" in quote:
+                            symbol = quote["symbol"]
                             # Skip if already discovered
                             if symbol in discovered_symbols:
                                 continue
-                            
-                            company = quote.get('longName', symbol)
+
+                            company = quote.get("longName", symbol)
                             explanation = "Undervalued large cap"
-                            
+
                             self.discovered(sa, symbol, company, explanation)
                             discovered_symbols.append(symbol)
-                            #logger.info(f"Yahoo discovered {symbol}: {explanation}")
             except Exception as e:
                 logger.warning(f"Yahoo large caps discovery failed: {e}")
-            """
-            # Method 3: High-Risk/High-Reward (bouncing stocks)
-            # Day losers - oversold stocks with bounce potential
-            try:
-                query = yf.PREDEFINED_SCREENER_QUERIES['day_losers']['query']
-                data = yf.screen(query)
-                
-                if isinstance(data, dict) and 'quotes' in data:
-                    for quote in data['quotes'][:5]:  # Top 5 losers (oversold)
-                        if 'symbol' in quote:
-                            symbol = quote['symbol']
-                            # Skip if already discovered
-                            if symbol in discovered_symbols:
-                                continue
-                            
-                            company = quote.get('longName', symbol)
-                            explanation = "High-risk oversold (bounce potential)"
-                            
-                            self.discovered(sa, symbol, company, explanation)
-                            discovered_symbols.append(symbol)
-                            logger.info(f"Yahoo discovered {symbol}: {explanation}")
-            except Exception as e:
-                logger.warning(f"Yahoo day losers discovery failed: {e}")
-            
-            # Small cap gainers - volatile momentum plays
-            try:
-                query = yf.PREDEFINED_SCREENER_QUERIES['small_cap_gainers']['query']
-                data = yf.screen(query)
-                
-                if isinstance(data, dict) and 'quotes' in data:
-                    for quote in data['quotes'][:5]:  # Top 5 small cap gainers
-                        if 'symbol' in quote:
-                            symbol = quote['symbol']
-                            # Skip if already discovered
-                            if symbol in discovered_symbols:
-                                continue
-                            
-                            company = quote.get('longName', symbol)
-                            explanation = "High-risk small cap momentum"
-                            
-                            self.discovered(sa, symbol, company, explanation)
-                            discovered_symbols.append(symbol)
-                            logger.info(f"Yahoo discovered {symbol}: {explanation}")
-            except Exception as e:
-                logger.warning(f"Yahoo small cap gainers discovery failed: {e}")
-            
-            logger.info(f"Yahoo Finance discovery complete: {len(discovered_symbols)} stocks found")
-        """
         except Exception as e:
             logger.error(f"Yahoo Finance discovery failed: {e}")
+
+    def _fetch_filtered_quotes(self, limit: int = 10):
+        """Run custom Yahoo screener query using yfinance."""
+        response = yf.screen(
+            CUSTOM_SCREEN_QUERY,
+            offset=0,
+            size=limit,
+            sortField="pegratio_5y",
+            sortAsc=True,
+        )
+        return response.get("quotes", [])
+
+    @staticmethod
+    def _safe_float(value):
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     def analyze(self, sa, stock):
         """Analyze stock using Yahoo Finance data"""

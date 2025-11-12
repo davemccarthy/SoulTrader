@@ -29,6 +29,11 @@ class FMP(AdvisorBase):
             # Update image url
             image_url = profile_data.get('image')
 
+            # If no url, guess
+            if image_url is None:
+                image_url = f"https://images.financialmodelingprep.com/symbol/{stock.symbol}.png"
+                logger.info(f"Updated {stock.symbol} image as a guess: {image_url}")
+
             if image_url and stock.image is None:
                 stock.image = image_url
                 stock.save()

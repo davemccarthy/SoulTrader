@@ -1,0 +1,19 @@
+[
+  {
+    "symbol": "MSN",
+    "company": "Msn Laboratories Private Ltd",
+    "drug_name": "Dapagliflozin",
+    "approval_date": "10/31/2025",
+    "approval_actual_date": "2025-10-31",
+    "approval_price": 0.5,
+    "target_date": "2025-11-07",
+    "target_actual_date": "2025-11-07",
+    "target_price": 0.45,
+    "price_change": -0.05,
+    "price_change_pct": -9.8,
+    "application_number": "211478",
+    "application_type": "ANDA",
+    "submission": "ORIG-1",
+    "submission_classification": ""
+  }
+]
