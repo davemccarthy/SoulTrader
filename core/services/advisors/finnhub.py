@@ -9,12 +9,10 @@ logger = logging.getLogger(__name__)
 
 class Finnhub(AdvisorBase):
     
-    def analyze(self, sa, consensus):
+    def analyze(self, sa, stock):
         """Analyze stock using Finnhub free tier data"""
         try:
             # Get free tier data from Finnhub
-            stock = consensus
-
             quote_data = self._get_quote(stock.symbol)
             company_profile = self._get_company_profile(stock.symbol)
             
@@ -29,8 +27,7 @@ class Finnhub(AdvisorBase):
             
             # Build detailed analysis explanation
             explanation_parts = []
-            #explanation_parts.append(f"Confidence Score: {confidence:.2f}")
-            
+
             # Add data from available sources
             if quote_data and 'c' in quote_data:
                 price = quote_data['c']

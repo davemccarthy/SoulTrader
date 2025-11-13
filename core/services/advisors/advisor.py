@@ -3,19 +3,38 @@ import logging
 import time
 import json
 import re
+import google.generativeai as genai
 from core.models import Stock, Discovery, Recommendation, Advisor
-from google import genai
+from google.api_core import exceptions
 from django.conf import settings
 from datetime import timedelta
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
+genai.configure(api_key=getattr(settings, 'GEMINI_KEY', None))
+
+"""
+ Note: Gemini models
+ https://ai.google.dev/gemini-api/docs/rate-limits 
+"""
+
+# Gemini models
+models = [
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-pro-preview-03-25",
+    "gemini-2.5-flash-preview-05-20",
+    "gemini-2.5-flash-lite-preview-06-17",
+    "gemini-2.0-flash",
+]
+
 class AdvisorBase:
 
     def __init__(self, advisor):
         self.advisor = advisor
-        self.gemini = genai.Client(api_key=getattr(settings, 'GEMINI_KEY', None))
+        #self.gemini = genai.Client(api_key=getattr(settings, 'GEMINI_KEY', None))
+        self.gemini_model = 0
 
     # Are these two needed?
     def discover(self, sa):
@@ -87,54 +106,81 @@ class AdvisorBase:
 
             url: {url}"""
 
-        # Call on 3rd part gemini AI
-        response = self.gemini.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        # Call on 3rd part gemini AI - exhaust all models if unavailable
+        for attempt in range(len(models)):
+            try:
+                retry_exceptions = (
+                    exceptions.ServiceUnavailable,  # 503
+                    exceptions.ResourceExhausted,   # 429
+                    exceptions.DeadlineExceeded,    # 504
+                    exceptions.InternalServerError, # 500
+                )
 
-        # Extract text from nested structure
-        if not response.candidates or len(response.candidates) == 0:
-            logger.warning(f"No candidates in Gemini response for {self.advisor.name} article")
-            return False
+                model = models[self.gemini_model]
+                logger.info(f"{model}:\n{url}")
 
-        candidate = response.candidates[0]
-        if not candidate.content or not candidate.content.parts:
-            logger.warning(f"No content/parts in Gemini response for {self.advisor.name} article")
-            return False
+                # In the Gods hand's now
+                response = genai.GenerativeModel(model).generate_content(prompt)
 
-        response_text = candidate.content.parts[0].text
+                # Extract text from nested structure
+                if not response.candidates or len(response.candidates) == 0:
+                    logger.warning(f"No candidates in Gemini response for {self.advisor.name} article")
+                    return False
 
-        if not response_text:
-            logger.warning(f"Empty text in Gemini response for {self.advisor.name} article")
-            return False
+                candidate = response.candidates[0]
+                if not candidate.content or not candidate.content.parts:
+                    logger.warning(f"No content/parts in Gemini response for {self.advisor.name} article")
+                    return False
 
-        # Verify feedback
-        results = self._extract_json(response.text)
+                response_text = candidate.content.parts[0].text
 
-        if not results:
-            logger.warning(f"Cannot parse response for {self.advisor.name} article")
-            return False
+                if not response_text:
+                    logger.warning(f"Empty text in Gemini response for {self.advisor.name} article")
+                    return False
 
-        # tmp
-        print(url)
-        print(results["explanation"])
+                # Verify feedback
+                results = self._extract_json(response_text)
 
-        explanation = results["explanation"]
-        recommendation = results["recommendation"]
-        tickers = results["tickers"]
+                if not results:
+                    logger.warning(f"Cannot parse response for {self.advisor.name} article")
+                    return False
 
-        # Log it
-        logger.info(f"{recommendation}: {tickers} | {title}")
+                # tmp
+                #print(url)
+                print(results["explanation"])
 
-        # Anything better than DISMISS is put forward for consensus
-        if recommendation == "BUY" or recommendation == "STRONG_BUY":
-            for ticker in tickers:
-                stock = self.discovered(sa, ticker, '', f"Gemini: {recommendation} | {title} | {explanation} | {url} ")
+                explanation = results["explanation"]
+                recommendation = results["recommendation"]
+                tickers = results["tickers"]
 
-                # A strong buy skews consensus in favour of BUY
-                if recommendation == "STRONG_BUY":
-                    self.recommend(sa, stock, 0.85, f"Submittied a high score based on above article | A strong buy skews consensus in favour of BUY")
+                # Log it
+                logger.info(f"{recommendation}: {tickers} | {title}")
 
-        # Give Gemini a rest
-        time.sleep(2)
+                # Anything better than DISMISS is put forward for consensus
+                if recommendation == "BUY" or recommendation == "STRONG_BUY":
+                    for ticker in tickers:
+                        stock = self.discovered(sa, ticker, '',
+                                                f"Gemini recommended {recommendation} from reading article. | Article: {title} | {url} | {explanation} ")
+
+                        # A strong buy skews consensus in favour of BUY
+                        if recommendation == "STRONG_BUY":
+                            self.recommend(sa, stock, 0.85,
+                                           f"Submittied a high score based on above article | A strong buy skews consensus in favour of BUY")
+                # Give Gemini a rest
+                time.sleep(1)
+                break  # success, exit loop
+
+            except retry_exceptions as e:
+                print(f"Attempt {attempt + 1}: Service {model} unavailable. Retrying...")
+
+                # Try another model
+                self.gemini_model += 1
+                self.gemini_model %= len(models)
+
+            except Exception as e:
+                print(f"Unexpected error: {e}")
+                break
+
 
     def _extract_json(self, text):
         """Extract JSON from Gemini response, handling markdown code blocks."""

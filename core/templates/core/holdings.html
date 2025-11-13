@@ -3,359 +3,6 @@
 {% block title %}Holdings - SOULTRADER{% endblock %}
 
 {% block content %}
-<style>
-    .holdings-container {
-        width: 100%;
-        margin: 0;
-        padding: 0 1rem;
-    }
-
-    .holdings-panel {
-        background: white;
-        border: 1px solid #e0e0e0;
-        border-radius: 4px;
-        overflow: hidden;
-    }
-
-    .holdings-panel + .holdings-panel {
-        margin-top: 1rem;
-    }
-
-    .holdings-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr 3fr 1fr 1fr 1fr 1fr;
-        gap: 0.5rem;
-        align-items: center;
-        font-size: 0.875rem;
-    }
-
-    .holdings-row {
-        padding: 0.75rem;
-        transition: background-color 0.2s ease;
-    }
-
-    .holdings-row:hover {
-        background-color: #f8f9fa;
-        cursor: pointer;
-    }
-
-    .holdings-row:not(:last-child) {
-        border-bottom: 1px solid #f0f0f0;
-    }
-
-    .holdings-col {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
-
-    .holdings-col-company {
-        justify-content: flex-start;
-        text-align: left;
-    }
-
-    .holdings-image {
-        width: 40px;
-        height: 40px;
-        object-fit: contain;
-        border-radius: 4px;
-    }
-
-    .holdings-symbol {
-        font-weight: 600;
-        font-size: 0.9rem;
-    }
-
-    .holdings-company {
-        font-size: 0.85rem;
-        color: #666;
-        text-align: left;
-    }
-
-    .holdings-price {
-        font-weight: 600;
-    }
-
-    .holdings-change {
-        font-weight: 600;
-    }
-
-    .holdings-change.positive {
-        color: #10b981;
-    }
-
-    .holdings-change.negative {
-        color: #ef4444;
-    }
-
-    .holdings-pl {
-        font-weight: 600;
-    }
-
-    .holdings-pl.positive {
-        color: #10b981;
-    }
-
-    .holdings-pl.negative {
-        color: #ef4444;
-    }
-
-    .holdings-discovery {
-        font-size: 0.8rem;
-        color: #666;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }
-
-    .holdings-advisor {
-        display: grid;
-        justify-items: center;
-        gap: 0.2rem;
-        font-size: 0.7rem;
-        text-transform: none;
-        color: #475569;
-    }
-
-    .holdings-advisor-name {
-        max-width: 64px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-
-    .holding-detail-panel {
-        padding: 1.5rem;
-        display: flex;
-        flex-direction: column;
-        gap: 1.5rem;
-    }
-
-    .holding-detail-back {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.4rem;
-        background: #f1f5f9;
-        border: 1px solid #dbe3eb;
-        border-radius: 4px;
-        color: #0f172a;
-        font-weight: 500;
-        padding: 0.5rem 0.85rem;
-        cursor: pointer;
-        transition: background-color 0.2s ease, border-color 0.2s ease;
-        align-self: flex-start;
-    }
-
-    .holding-detail-back:hover {
-        background: #e2e8f0;
-        border-color: #cbd5f5;
-    }
-
-    .holding-detail-header {
-        display: flex;
-        gap: 2rem;
-        align-items: center;
-    }
-
-    .holding-detail-logo {
-        width: 100px;
-        height: 100px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        overflow: hidden;
-    }
-
-    .holding-detail-logo img {
-        width: 100%;
-        height: 100%;
-        object-fit: contain;
-    }
-
-    .holding-detail-summary h3 {
-        margin: 0;
-        font-size: 1.25rem;
-        font-weight: 700;
-    }
-
-    .holding-detail-metrics {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0rem 1.25rem;
-        margin-top: 0.2rem;
-        font-size: 0.9rem;
-        color: #475569;
-    }
-
-    .holding-detail-return.positive {
-        color: #10b981;
-        font-weight: 600;
-    }
-
-    .holding-detail-return.negative {
-        color: #ef4444;
-        font-weight: 600;
-    }
-
-    .holding-detail-section {
-        margin-top: 1rem;
-    }
-
-    .holding-detail-section h4 {
-        margin: 0 0 0.75rem;
-        font-size: 1rem;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        color: #475569;
-    }
-
-    .trade-list {
-        display: grid;
-        gap: 1rem;
-    }
-
-    .trade-card {
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
-        padding: 1.25rem 1.5rem;
-        background: #f8fafc;
-        display: grid;
-        gap: 1rem;
-    }
-
-    .trade-card-header {
-        display: flex;
-        flex-wrap: wrap;
-        justify-content: space-between;
-        gap: 0.5rem 1rem;
-        align-items: baseline;
-    }
-
-    .trade-card-title {
-        margin: 0;
-        font-size: 1rem;
-        font-weight: 600;
-        color: #0f172a;
-    }
-
-    .trade-card-meta {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.5rem 1rem;
-        font-size: 0.85rem;
-        color: #64748b;
-    }
-
-    .trade-section {
-        display: grid;
-        gap: 0.35rem;
-        color: #1e293b;
-    }
-
-    .trade-discovery-explanation {
-        font-size: 0.9rem;
-        line-height: 1.5;
-        color: #334155;
-    }
-
-    .trade-section-title {
-        font-size: 0.85rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: #475569;
-        margin: 0;
-    }
-
-    .trade-recommendations {
-        display: grid;
-        gap: 0.6rem;
-    }
-
-    .explanation-article a {
-        font-size: 0.85rem;
-        color: #2563eb;
-        font-weight: 600;
-        text-decoration: none;
-    }
-
-    .trade-advisor-panel {
-        background: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
-        padding: 1rem 1.25rem;
-    }
-
-    .trade-advisor-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 1rem 1.25rem;
-    }
-
-    @media (max-width: 768px) {
-        .trade-advisor-grid {
-            grid-template-columns: 1fr;
-        }
-    }
-
-    .trade-recommendation-entry {
-        display: grid;
-        gap: 0.4rem;
-        font-size: 0.9rem;
-        color: #334155;
-        margin-bottom: 1.5em;
-    }
-
-    .trade-recommendation-copy {
-        display: grid;
-        gap: 0.2rem;
-    }
-
-    .trade-recommendation-confidence {
-        color: #475569;
-    }
-
-    .trade-advisor-header {
-        display: flex;
-        align-items: center;
-        gap: 0.6rem;
-    }
-
-    .trade-advisor-logo {
-        width: 36px;
-        height: 36px;
-        border-radius: 50%;
-        background: #e2e8f0;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        overflow: hidden;
-        font-size: 0.75rem;
-        font-weight: 600;
-        color: #1e293b;
-        text-transform: uppercase;
-    }
-
-    .trade-advisor-logo img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-    }
-
-    .holding-detail-empty,
-    .holding-detail-error,
-    .holding-detail-loading {
-        color: #475569;
-        font-size: 0.95rem;
-    }
-
-    .holdings-empty {
-        text-align: center;
-        padding: 3rem;
-        color: #666;
-        font-size: 1.1rem;
-    }
-</style>
-
 <div class="holdings-container">
     {% if holdings %}
         <div id="holdings-list" class="holdings-panel">
@@ -370,14 +17,16 @@
                             </div>
                         {% endif %}
                     </div>
-                    <div class="holdings-col">
+                    <div class="holdings-col holdings-col-symbol">
                         <span class="holdings-symbol">{{ holding.symbol }}</span>
+                        <span class="holdings-symbol-value">${{ holding.total_value|floatformat:2 }}</span>
                     </div>
                     <div class="holdings-col holdings-col-company">
                         <span class="holdings-company">{{ holding.company|default:"—" }}</span>
+                        <span class="holdings-company-meta">{{ holding.shares|default:"—" }} @ ${{ holding.average_price|floatformat:2 }}</span>
                     </div>
                     <div class="holdings-col">
-                        <span class="holdings-price">${{ holding.price|floatformat:2 }}</span>
+                        <span class="holdings-price {{ holding.price_class }}">${{ holding.price|floatformat:2 }}</span>
                     </div>
                     <div class="holdings-col">
                         {% if holding.change_percent >= 0 %}
@@ -486,36 +135,25 @@ document.addEventListener('DOMContentLoaded', function () {
                 continue;
             }
 
-            const articleTailMatch = current.match(/^(.*?)(\s*article:?)\s*$/i);
-            if (articleTailMatch && i + 2 < segments.length) {
-                const leadingText = articleTailMatch[1]?.trim();
-                const suffix = articleTailMatch[2]?.trim() || 'article:';
-                const titleRaw = segments[i + 1];
-                const urlRaw = segments[i + 2];
+            const articleInlineMatch = current.match(/^article\s*:\s*(.+)$/i);
+            if (articleInlineMatch && i + 1 < segments.length) {
+                const titleRaw = articleInlineMatch[1];
+                const urlRaw = segments[i + 1];
 
-                if (titleRaw && urlRaw) {
-                    const prefixLine = leadingText ? `${leadingText} ${suffix}`.trim() : suffix;
-                    clauses.push(escapeHtml(prefixLine));
-                    const safeTitle = escapeHtml(titleRaw);
-                    const safeUrl = escapeHtml(urlRaw);
+                if (titleRaw && /^https?:\/\/\S+/i.test(urlRaw)) {
+                    const safeTitle = escapeHtml(titleRaw.trim());
+                    const safeUrl = escapeHtml(urlRaw.trim());
                     clauses.push(`<span class="explanation-article"><a href="${safeUrl}" target="_blank" rel="noopener">${safeTitle}</a></span>`);
-                    i += 2;
+                    i += 1;
                     continue;
                 }
             }
 
-            if (/^article:?$/i.test(current) && i + 2 < segments.length) {
-                const titleRaw = segments[i + 1];
-                const urlRaw = segments[i + 2];
-
-                if (titleRaw && urlRaw) {
-                    clauses.push(escapeHtml(current));
-                    const safeTitle = escapeHtml(titleRaw);
-                    const safeUrl = escapeHtml(urlRaw);
-                    clauses.push(`<span class="explanation-article"><a href="${safeUrl}" target="_blank" rel="noopener">${safeTitle}</a></span>`);
-                    i += 2;
-                    continue;
-                }
+            const bareUrlMatch = current.match(/^https?:\/\/\S+$/i);
+            if (bareUrlMatch) {
+                const safeUrl = escapeHtml(current);
+                clauses.push(`<a href="${safeUrl}" target="_blank" rel="noopener">${safeUrl}</a>`);
+                continue;
             }
 
             clauses.push(escapeHtml(current));
@@ -540,7 +178,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const badge = renderAdvisorBadge(discovery.advisor || '', discovery.advisor_logo);
 
         return `
-            <div class="trade-section">
+            <div class="trade-detail-panel">
                 <div class="trade-advisor-header">
                     ${badge}
                     <div class="trade-recommendation-copy">
@@ -581,7 +219,7 @@ document.addEventListener('DOMContentLoaded', function () {
         return `
             <div class="trade-section">
                 <h6 class="trade-section-title">Analysis</h6>
-                <div class="trade-advisor-panel">
+                <div class="trade-detail-panel">
                     <div class="trade-advisor-grid">${entries}</div>
                 </div>
             </div>

@@ -590,7 +590,7 @@ def build_discovery_explanation(approval, score):
 
     link = approval.get("link")
     if link:
-        parts.append("article: FDA approval details")
+        parts.append("Article: FDA approval details")
         parts.append(link)
 
     return " | ".join(filter(None, parts))

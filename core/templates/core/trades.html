@@ -3,6 +3,147 @@
 {% block title %}Trades - SOULTRADER{% endblock %}
 
 {% block content %}
-<!-- Trades content to be designed later -->
+<style>
+    .trade-image-fallback {
+        width: 40px;
+        height: 40px;
+        border-radius: 4px;
+        background: #f1f5f9;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.72rem;
+        font-weight: 600;
+        color: #94a3b8;
+        text-transform: uppercase;
+    }
+
+    .trade-company {
+        font-size: 0.82rem;
+        color: #475569;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-weight: 600;
+    }
+
+    .trade-company-col {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.15rem;
+    }
+
+    .trade-meta {
+        font-size: 0.78rem;
+        color: #475569;
+        letter-spacing: 0.02em;
+    }
+
+    .trade-symbol {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.15rem;
+    }
+
+    .trade-timestamp {
+        font-size: 0.78rem;
+        color: #475569;
+        letter-spacing: 0.02em;
+    }
+
+    .trade-action {
+        font-weight: 700;
+        font-size: 0.9rem;
+    }
+
+    .trade-action.buy {
+        color: #059669;
+    }
+
+    .trade-action.sell {
+        color: #dc2626;
+    }
+
+    .trades-empty {
+        text-align: center;
+        padding: 3rem;
+        color: #64748b;
+        font-size: 1rem;
+    }
+</style>
+
+<div class="holdings-container">
+    {% if trades %}
+        <div class="holdings-panel">
+            {% for trade in trades %}
+                <div class="holdings-row holdings-grid"
+                     data-trade-id="{{ trade.id }}"
+                     data-stock-id="{{ trade.stock_id }}">
+                    <div class="holdings-col">
+                        {% if trade.image %}
+                            <img src="{{ trade.image }}" alt="{{ trade.symbol }}" class="holdings-image">
+                        {% else %}
+                            <span class="trade-image-fallback">{{ trade.symbol|slice:":2" }}</span>
+                        {% endif %}
+                    </div>
+                    <div class="holdings-col trade-symbol">
+                        <span class="holdings-symbol">{{ trade.symbol }}</span>
+                        {% if trade.timestamp %}
+                            <span class="trade-timestamp">{{ trade.timestamp|date:"Y-m-d" }}</span>
+                        {% endif %}
+                    </div>
+                    <div class="holdings-col holdings-col-company trade-company-col">
+                        <span class="trade-company" title="{{ trade.company }}">{{ trade.company|default:"—" }}</span>
+                        <span class="trade-meta">
+                            SA&nbsp;#{{ trade.sa_id|default:"—" }}
+                            &nbsp;{{ trade.shares }}&nbsp;@&nbsp;
+                            {% if trade.action == 'SELL' %}
+                                <span class="trade-meta-price {{ trade.price_class }}">${{ trade.price|floatformat:2 }}</span>
+                            {% else %}
+                                ${{ trade.price|floatformat:2 }}
+                            {% endif %}
+                        </span>
+                    </div>
+                    <div class="holdings-col">
+                        {% if trade.action == 'BUY' %}
+                            <span class="holdings-price">-${{ trade.cost|floatformat:2 }}</span>
+                        {% else %}
+                            <span class="holdings-price {{ trade.price_class }}">+${{ trade.cost|floatformat:2 }}</span>
+                        {% endif %}
+                    </div>
+                    <div class="holdings-col">
+                        {% if trade.pl_percent is not None %}
+                            {% if trade.pl_percent >= 0 %}
+                                <span class="holdings-change {{ trade.pl_class }}">+{{ trade.pl_percent|floatformat:2 }}%</span>
+                            {% else %}
+                                <span class="holdings-change {{ trade.pl_class }}">{{ trade.pl_percent|floatformat:2 }}%</span>
+                            {% endif %}
+                        {% else %}
+                            <span class="holdings-change muted">—</span>
+                        {% endif %}
+                    </div>
+                    <div class="holdings-col">
+                        {% if trade.pl_amount is not None %}
+                            {% if trade.pl_amount >= 0 %}
+                                <span class="holdings-pl {{ trade.pl_class }}">+${{ trade.pl_amount|floatformat:2 }}</span>
+                            {% else %}
+                                <span class="holdings-pl {{ trade.pl_class }}">${{ trade.pl_amount|floatformat:2 }}</span>
+                            {% endif %}
+                        {% else %}
+                            <span class="holdings-pl muted">—</span>
+                        {% endif %}
+                    </div>
+                    <div class="holdings-col">
+                        <span class="trade-action {{ trade.action|lower }}">{{ trade.action }}</span>
+                    </div>
+                </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="trades-empty">
+            No trades yet. Run a smart analysis to generate activity.
+        </div>
+    {% endif %}
+</div>
 {% endblock %}
 

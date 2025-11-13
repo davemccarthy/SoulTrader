@@ -81,8 +81,9 @@ def holdings(request):
     holdings_data = []
     for holding in holdings_list:
         stock = holding.stock
-        current_price = stock.price
-        avg_price = holding.average_price
+        current_price = stock.price or Decimal('0')
+        avg_price = holding.average_price or Decimal('0')
+        shares = holding.shares or Decimal('0')
         
         # Calculate change percentage
         if avg_price and avg_price > 0:
@@ -91,7 +92,14 @@ def holdings(request):
             change_percent = Decimal('0')
         
         # Calculate P&L
-        pl = (current_price * holding.shares) - (avg_price * holding.shares)
+        pl = (current_price * shares) - (avg_price * shares)
+        total_value = current_price * shares
+        if change_percent > 0:
+            price_class = 'positive'
+        elif change_percent < 0:
+            price_class = 'negative'
+        else:
+            price_class = 'neutral'
         
         # Get advisor name for discovery
         discovery = stock.advisor.name if stock.advisor else ""
@@ -106,6 +114,10 @@ def holdings(request):
             'discovery': discovery,
             'discovery_logo': _advisor_logo_url(stock.advisor),
             'stock_id': stock.id,
+            'shares': shares,
+            'average_price': avg_price,
+            'total_value': total_value,
+            'price_class': price_class,
         })
     
     context = {
@@ -255,9 +267,93 @@ def holding_detail(request, stock_id):
 
 @login_required
 def trades(request):
-    """Trades page - content to be designed later"""
+    """Trades page - summarize executed trades using holdings styling."""
+    trade_qs = (
+        Trade.objects
+        .filter(user=request.user)
+        .select_related('stock', 'sa')
+        .order_by('sa__started', 'id')
+    )
+
+    inventory = defaultdict(lambda: {'shares': Decimal('0'), 'avg_cost': Decimal('0')})
+    metrics = {}
+
+    for trade in trade_qs:
+        state = inventory[trade.stock_id]
+        shares = Decimal(trade.shares or 0)
+        price = Decimal(trade.price or 0)
+        amount = shares * price
+        current_price = Decimal(trade.stock.price or 0)
+
+        if trade.action == 'BUY':
+            total_cost = (state['avg_cost'] * state['shares']) + amount
+            total_shares = state['shares'] + shares
+            avg_cost = total_cost / total_shares if total_shares else Decimal('0')
+            state['shares'] = total_shares
+            state['avg_cost'] = avg_cost
+
+            pl_amount = (current_price - price) * shares if shares else Decimal('0')
+            pl_percent = ((current_price / price) * Decimal('100') - Decimal('100')) if price > 0 else None
+
+            metrics[trade.id] = {
+                'cost': amount,
+                'pl_amount': pl_amount,
+                'pl_percent': pl_percent,
+                'realized': False,
+            }
+        else:
+            avg_cost = state['avg_cost'] if state['shares'] > 0 else price
+            pl_amount = (price - avg_cost) * shares if shares else Decimal('0')
+            pl_percent = ((price / avg_cost) * Decimal('100') - Decimal('100')) if avg_cost > 0 else None
+            state['shares'] = max(state['shares'] - shares, Decimal('0'))
+
+            metrics[trade.id] = {
+                'cost': amount,
+                'pl_amount': pl_amount,
+                'pl_percent': pl_percent,
+                'realized': True,
+            }
+
+    trades_payload = []
+    for trade in reversed(trade_qs):
+        data = metrics.get(trade.id, {})
+        pl_amount = data.get('pl_amount')
+        realized = data.get('realized', False)
+
+        if realized:
+            if pl_amount is not None and pl_amount > 0:
+                pl_class = 'positive'
+            elif pl_amount is not None and pl_amount < 0:
+                pl_class = 'negative'
+            else:
+                pl_class = 'neutral'
+            price_class = pl_class
+        else:
+            pl_class = 'muted'
+            price_class = 'neutral'
+
+        trades_payload.append({
+            'id': trade.id,
+            'stock_id': trade.stock_id,
+            'image': trade.stock.image,
+            'symbol': trade.stock.symbol,
+            'company': trade.stock.company,
+            'shares': trade.shares,
+            'price': trade.price,
+            'sa_id': trade.sa_id,
+            'timestamp': trade.sa.started if trade.sa else None,
+            'action': trade.action,
+            'cost': data.get('cost', Decimal('0')),
+            'pl_amount': pl_amount,
+            'pl_percent': data.get('pl_percent'),
+            'pl_class': pl_class,
+            'price_class': price_class,
+            'realized': realized,
+        })
+
     context = {
         'current_page': 'trades',
+        'trades': trades_payload,
     }
     return render(request, 'core/trades.html', context)
 

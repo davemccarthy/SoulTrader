@@ -17,17 +17,17 @@ from core.services.execution import execute_buy, execute_sell
 # Risky business
 risk_settings = {
     "CONSERVATIVE" : {
-        "allowance" : 0.1,
+        "allowance" : 0.05,
         "confidence_high": 0.9,
         "confidence_low": 0.6
     },
     "MODERATE" : {
-        "allowance" : 0.2,
+        "allowance" : 0.1,
         "confidence_high": 0.7,
         "confidence_low": 0.55
     },
     "AGGRESSIVE" : {
-        "allowance" : 0.4,
+        "allowance" : 0.2,
         "confidence_high": 0.50,
         "confidence_low": 0.40
     },
@@ -115,7 +115,7 @@ def analyze_holdings(sa, users, advisors):
             if profile.cash >= allowance:
                 break
 
-                
+
 # Discovery new stock
 def analyze_discovery(sa, users, advisors):
     logger.info(f"Analyzing discovery for SA session {sa.id}")

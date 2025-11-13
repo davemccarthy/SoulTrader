@@ -24,3 +24,4 @@ python-decouple>=3.8
 
 
 beautifulsoup4~=4.13.5
+google-generativeai>=0.7.2
