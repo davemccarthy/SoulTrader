@@ -521,6 +521,13 @@
             gap: 1.5rem;
         }
 
+        .holding-detail-panel[hidden],
+        #holding-detail-panel[hidden],
+        #holding-detail-back[hidden],
+        .holdings-panel[hidden] {
+            display: none !important;
+        }
+
         .holding-detail-back {
             display: inline-flex;
             align-items: center;
@@ -832,7 +839,7 @@
                 </div>
             </div>
             <div class="portfolio-stat">
-                <div class="portfolio-stat-header">Invested</div>
+                <div class="portfolio-stat-header">Investment</div>
                 <div class="portfolio-stat-value">${{ portfolio_widget.invested|default:"0"|floatformat:2 }}</div>
             </div>
             <div class="portfolio-stat">

@@ -13,27 +13,13 @@ from django.db import connection
 from django.db.models import Sum
 from core.models import Stock, Holding, Discovery, Recommendation, Consensus, Trade, Profile
 from core.services.execution import execute_buy, execute_sell
-"""""
-# Risky business
-risk_settings = {
-    "CONSERVATIVE" : {
-        "allowance" : 0.05,
-        "confidence_high": 0.9,
-        "confidence_low": 0.6
-    },
-    "MODERATE" : {
-        "allowance" : 0.1,
-        "confidence_high": 0.7,
-        "confidence_low": 0.55
-    },
-    "AGGRESSIVE" : {
-        "allowance" : 0.2,
-        "confidence_high": 0.50,
-        "confidence_low": 0.40
-    },
-}
-"""
+
 logger = logging.getLogger(__name__)
+
+# Calculate allowance
+def calc_allowance(user, profile):
+    allowance = profile.investment * Decimal(str(Profile.RISK[profile.risk]["allowance"]))
+    return allowance
 
 #  Build consensus on given stock
 def build_consensus(sa, advisors, stock):
@@ -73,7 +59,7 @@ def analyze_holdings(sa, users, advisors):
     for u in users:
         profile = Profile.objects.get(user=u)
 
-        allowance = profile.investment * Decimal(str(Profile.RISK[profile.risk]["allowance"]))
+        allowance = calc_allowance(u, profile)
         sell_below = Decimal(str(Profile.RISK[profile.risk]["confidence_low"]))
         buy_from = Decimal(str(Profile.RISK[profile.risk]["confidence_high"]))
 
@@ -132,7 +118,7 @@ def analyze_discovery(sa, users, advisors):
     # 3. Filter stocks to buy on a per user basis
     for u in users:
         profile = Profile.objects.get(user=u)
-        allowance = min(profile.investment * Decimal(Profile.RISK[profile.risk]["allowance"]), profile.cash)
+        allowance = min(calc_allowance(u, profile), profile.cash)
         buy_from = Profile.RISK[profile.risk]["confidence_high"]
 
         # Get shares to buy based on high confidence

@@ -59,7 +59,7 @@
         </div>
         <div id="holding-detail-panel" class="holdings-panel holding-detail-panel" hidden>
             <div id="holding-detail-content" class="holding-detail-content"></div>
-            <button type="button" id="holding-detail-back" class="holding-detail-back">← Back to holdings</button>
+            <button type="button" id="holding-detail-back" class="holding-detail-back" hidden>← Back to holdings</button>
         </div>
     {% else %}
         <div class="holdings-empty">
@@ -163,7 +163,20 @@ document.addEventListener('DOMContentLoaded', function () {
             return '';
         }
 
-        return clauses.join('<br>');
+        if (!clauses.length) {
+            return '';
+        }
+
+        let result = '';
+        clauses.forEach((clause, index) => {
+            result += clause;
+            if (index < clauses.length - 1) {
+                const isArticleClause = clause.startsWith('<span class="explanation-article">');
+                result += isArticleClause ? ' ' : '<br>';
+            }
+        });
+
+        return result;
     }
 
     function renderDiscoverySection(discovery) {
@@ -233,8 +246,6 @@ document.addEventListener('DOMContentLoaded', function () {
         const value = trade.value != null ? formatCurrency(trade.value) : '—';
         const valueLabel = (trade.action || '').toUpperCase() === 'SELL' ? 'Proceeds' : 'Cost';
         const saId = escapeHtml(trade.sa_id || '—');
-        const started = trade.sa_started ? escapeHtml(new Date(trade.sa_started).toLocaleString()) : '';
-
         const discoveryBlock = renderDiscoverySection(trade.discovery);
         const recommendationsBlock = renderRecommendationsSection(trade.recommendations);
 
@@ -245,7 +256,6 @@ document.addEventListener('DOMContentLoaded', function () {
                     <div class="trade-card-meta">
                         <span>${valueLabel} ${value}</span>
                         <span>SA #${saId}</span>
-                        ${started ? `<span>${started}</span>` : ''}
                     </div>
                 </div>
                 ${discoveryBlock}
@@ -261,6 +271,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
         listPanel.hidden = true;
         detailPanel.hidden = false;
+        if (backButton) {
+            backButton.hidden = false;
+        }
         detailContent.innerHTML = '<div class="holding-detail-loading">Loading holding details…</div>';
 
         try {
@@ -352,6 +365,9 @@ document.addEventListener('DOMContentLoaded', function () {
             detailPanel.hidden = true;
             listPanel.hidden = false;
             detailContent.innerHTML = '';
+            if (backButton) {
+                backButton.hidden = true;
+            }
         });
     }
 });

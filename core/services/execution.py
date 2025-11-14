@@ -5,6 +5,7 @@ Executes buy/sell trades and updates holdings
 """
 
 import logging
+from decimal import Decimal
 from core.models import Stock, Holding, Discovery, Recommendation, Consensus, Trade, Profile
 
 logger = logging.getLogger(__name__)
@@ -43,13 +44,8 @@ def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus):
     if holding is None:
         holding = Holding()
 
-    # Calculate potential spend for this stock based on confidence
-    allowance = (stk_consensus / tot_consensus) * allowance
-    #print(f"ALLOWANCE {allowance}")
-    #print(f"CONSENSUS {stk_consensus}")
-    #print(f"TOTAL {tot_consensus}")
-    #print(f"PERCENTAGE: {(stk_consensus / tot_consensus) * 100}")
-    # TODO MAX PER STOCK BUY
+    # Calculate potential spend for this stock based on confidence (no more than half allowance for single stock)
+    allowance = min((stk_consensus / tot_consensus) * allowance, allowance / 2)
 
     # Verify stock price
     if consensus.stock.price == 0.0:
@@ -91,9 +87,14 @@ def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus):
     # Update holdings
     holding.user = user
     holding.stock = consensus.stock
+    old_shares = holding.shares
+    old_avg = holding.average_price or Decimal('0')
     holding.shares += shares
-    holding.average_price = consensus.stock.price
-    # TODO calculate average price correctly
+    if holding.shares > 0:
+        total_cost = (old_avg * Decimal(old_shares)) + (consensus.stock.price * shares)
+        holding.average_price = total_cost / Decimal(holding.shares)
+    else:
+        holding.average_price = consensus.stock.price
     holding.save()
 
     profile.save()

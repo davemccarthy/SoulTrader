@@ -57,7 +57,7 @@ class Finnhub(AdvisorBase):
                         explanation_parts.append(f"⭐ ANALYST CONSENSUS: {buy_pct:.0%} buy")
             
             explanation = " | ".join(explanation_parts)
-            super().recommend(sa, consensus, confidence, explanation)
+            super().recommend(sa, stock, confidence, explanation)
             
             return confidence
             
@@ -181,7 +181,9 @@ class Finnhub(AdvisorBase):
         
         # COMPANY PROFILE ANALYSIS (FREE)
         if company_profile:
-            market_cap = company_profile.get('marketCapitalization')
+            # Finnhub returns market cap in millions USD; convert to absolute dollars for comparison
+            market_cap_musd = company_profile.get('marketCapitalization')
+            market_cap = market_cap_musd * 1_000_000 if market_cap_musd else None
             if market_cap:
                 if market_cap > 1_000_000_000_000:
                     score += 0.1
@@ -192,18 +194,22 @@ class Finnhub(AdvisorBase):
         
         # ANALYST RECOMMENDATIONS (PREMIUM - Graceful degradation)
         if rec_trends and len(rec_trends) > 0:
-            latest_rec = rec_trends[0]
-            buy = (latest_rec.get('strongBuy') or 0) + (latest_rec.get('buy') or 0)
-            total = sum([latest_rec.get(k) or 0 for k in ['strongBuy', 'buy', 'hold', 'sell', 'strongSell']])
-            
-            if total and total > 0:
-                buy_pct = buy / total
-                if buy_pct > 0.8:
-                    score += 0.2
-                elif buy_pct > 0.6:
-                    score += 0.1
-                elif buy_pct < 0.3:
-                    score -= 0.1
+            try:
+                latest_rec = rec_trends[0]
+                buy = (int(latest_rec.get('strongBuy') or 0) +
+                       int(latest_rec.get('buy') or 0))
+                total = sum(int(latest_rec.get(k) or 0) for k in ['strongBuy', 'buy', 'hold', 'sell', 'strongSell'])
+                
+                if total and total > 0:
+                    buy_pct = buy / total
+                    if buy_pct > 0.8:
+                        score += 0.2
+                    elif buy_pct > 0.6:
+                        score += 0.1
+                    elif buy_pct < 0.3:
+                        score -= 0.1
+            except Exception as exc:
+                logger.warning("Finnhub %s analyst trend parsing failed: %s", stock.symbol, exc)
         
         # PRICE TARGETS (PREMIUM - Graceful degradation)
         if price_target:

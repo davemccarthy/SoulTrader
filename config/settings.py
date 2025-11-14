@@ -148,7 +148,7 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Polygon news (to go)
-POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "MSVhtqDKV9HyMOdla5UunU2EFs53MweY")
+#POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "MSVhtqDKV9HyMOdla5UunU2EFs53MweY")
 
 # To keep
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyCiVvWptLpmCGrQeTr2BaPfYJY04Sb21cU")

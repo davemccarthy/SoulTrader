@@ -31,17 +31,17 @@ class Profile(models.Model):
     # Risky business
     RISK = {
         "CONSERVATIVE": {
-            "allowance": 0.1,
+            "allowance": 0.05,
             "confidence_high": 0.8,
             "confidence_low": 0.6
         },
         "MODERATE": {
-            "allowance": 0.2,
+            "allowance": 0.1,
             "confidence_high": 0.7,
             "confidence_low": 0.55
         },
         "AGGRESSIVE": {
-            "allowance": 0.4,
+            "allowance": 0.2,
             "confidence_high": 0.55,
             "confidence_low": 0.4
         },

@@ -77,50 +77,6 @@ class Yahoo(AdvisorBase):
 
         logger.info("Yahoo Finance discovery complete: %s stocks found", discovered)
 
-    def discover_old(self, sa):
-        """Legacy discovery flow using yfinance predefined screeners."""
-        try:
-            discovered_symbols = []
-
-            # Method 1: Undervalued Growth Stocks (best quality)
-            try:
-                query = yf.PREDEFINED_SCREENER_QUERIES["undervalued_growth_stocks"]["query"]
-                data = yf.screen(query)
-
-                if isinstance(data, dict) and "quotes" in data:
-                    for quote in data["quotes"][:8]:  # Top 8
-                        if "symbol" in quote:
-                            symbol = quote["symbol"]
-                            company = quote.get("longName", symbol)
-                            explanation = "Undervalued growth stock"
-
-                            self.discovered(sa, symbol, company, explanation)
-                            discovered_symbols.append(symbol)
-            except Exception as e:
-                logger.warning(f"Yahoo growth stocks discovery failed: {e}")
-
-            # Method 2: Undervalued Large Caps (stability)
-            try:
-                query = yf.PREDEFINED_SCREENER_QUERIES["undervalued_large_caps"]["query"]
-                data = yf.screen(query)
-
-                if isinstance(data, dict) and "quotes" in data:
-                    for quote in data["quotes"][:6]:  # Top 6
-                        if "symbol" in quote:
-                            symbol = quote["symbol"]
-                            # Skip if already discovered
-                            if symbol in discovered_symbols:
-                                continue
-
-                            company = quote.get("longName", symbol)
-                            explanation = "Undervalued large cap"
-
-                            self.discovered(sa, symbol, company, explanation)
-                            discovered_symbols.append(symbol)
-            except Exception as e:
-                logger.warning(f"Yahoo large caps discovery failed: {e}")
-        except Exception as e:
-            logger.error(f"Yahoo Finance discovery failed: {e}")
 
     def _fetch_filtered_quotes(self, limit: int = 10):
         """Run custom Yahoo screener query using yfinance."""
