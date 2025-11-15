@@ -33,17 +33,20 @@ class Profile(models.Model):
         "CONSERVATIVE": {
             "allowance": 0.05,
             "confidence_high": 0.8,
-            "confidence_low": 0.6
+            "confidence_low": 0.6,
+            "stocks": 50
         },
         "MODERATE": {
             "allowance": 0.1,
             "confidence_high": 0.7,
-            "confidence_low": 0.55
+            "confidence_low": 0.55,
+            "stocks": 40
         },
         "AGGRESSIVE": {
             "allowance": 0.2,
             "confidence_high": 0.55,
-            "confidence_low": 0.4
+            "confidence_low": 0.4,
+            "stocks": 30
         },
     }
 
@@ -81,7 +84,8 @@ class Holding(models.Model):
     user = models.ForeignKey(User, on_delete=models.DO_NOTHING)
     stock = models.ForeignKey(Stock, on_delete=models.DO_NOTHING)
     shares = models.IntegerField(default=0)
-    average_price = models.DecimalField(max_digits=10, decimal_places=2,default=0.0)
+    average_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.0)
+    consensus = models.DecimalField(max_digits=4, decimal_places=2, default=5.0)
     volatile = models.BooleanField(default=False)  # Your flag!
 
 

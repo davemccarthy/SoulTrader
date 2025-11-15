@@ -9,6 +9,7 @@ import logging
 import random
 from decimal import Decimal
 
+import h11
 from django.db import connection
 from django.db.models import Sum
 from core.models import Stock, Holding, Discovery, Recommendation, Consensus, Trade, Profile
@@ -16,10 +17,6 @@ from core.services.execution import execute_buy, execute_sell
 
 logger = logging.getLogger(__name__)
 
-# Calculate allowance
-def calc_allowance(user, profile):
-    allowance = profile.investment * Decimal(str(Profile.RISK[profile.risk]["allowance"]))
-    return allowance
 
 #  Build consensus on given stock
 def build_consensus(sa, advisors, stock):
@@ -56,50 +53,20 @@ def build_consensus(sa, advisors, stock):
 def analyze_holdings(sa, users, advisors):
     logger.info(f"Analyzing holdings for SA session {sa.id}")
 
-    for u in users:
-        profile = Profile.objects.get(user=u)
-
-        allowance = calc_allowance(u, profile)
+    for user in users:
+        profile = Profile.objects.get(user=user)
         sell_below = Decimal(str(Profile.RISK[profile.risk]["confidence_low"]))
-        buy_from = Decimal(str(Profile.RISK[profile.risk]["confidence_high"]))
 
-        holdings = list(Holding.objects.filter(user=u).select_related("stock"))
-        if not holdings:
-            continue
-
-        candidates = []
-        for holding in holdings:
-            if holding.shares <= 0:
-                continue
-
+        for holding in Holding.objects.filter(user=user):
             consensus = build_consensus(sa, advisors, holding.stock)
             if consensus is None or consensus.avg_confidence is None:
                 continue
 
-            if consensus.avg_confidence < buy_from:
-                candidates.append((holding, consensus))
+            holding.consensus = consensus.avg_confidence
+            holding.save(update_fields=["consensus"])
 
-        if not candidates:
-            continue
-
-        candidates.sort(key=lambda item: item[1].avg_confidence)
-
-        for holding, consensus in candidates:
-            profile.refresh_from_db(fields=["cash"])
-
-            sell_for_confidence = consensus.avg_confidence < sell_below
-            sell_for_cash = profile.cash < allowance
-
-            if not (sell_for_confidence or sell_for_cash):
-                if profile.cash >= allowance:
-                    break
-                continue
-
-            execute_sell(sa, u, profile, consensus, holding)
-            profile.refresh_from_db(fields=["cash"])
-
-            if profile.cash >= allowance:
-                break
+            if consensus.avg_confidence < sell_below:
+                execute_sell(sa, user, profile, consensus, holding)
 
 
 # Discovery new stock
@@ -118,17 +85,27 @@ def analyze_discovery(sa, users, advisors):
     # 3. Filter stocks to buy on a per user basis
     for u in users:
         profile = Profile.objects.get(user=u)
-        allowance = min(calc_allowance(u, profile), profile.cash)
         buy_from = Profile.RISK[profile.risk]["confidence_high"]
 
-        # Get shares to buy based on high confidence
-        consensus = Consensus.objects.filter(sa=sa.id, avg_confidence__gte=buy_from)
+        # Limit to stocks discovered in this SA and above confidence threshold
+        discovered_stock_ids = Discovery.objects.filter(sa=sa).values_list('stock_id', flat=True)
+        consensus = Consensus.objects.filter(
+            sa=sa.id,
+            stock_id__in=discovered_stock_ids,
+            avg_confidence__gte=buy_from
+        )
+
+        # Calculate allowance based on target slot count
+        allowance = len(consensus) * (profile.investment / Decimal(str(Profile.RISK[profile.risk]["stocks"])))
 
         # Get tot_consensus so buy allowance can be decided by each stocks confidence score
         tot_confidence = consensus.aggregate(Sum('avg_confidence'))['avg_confidence__sum']
+        if not tot_confidence:
+            continue
 
         # Do the buy process
         for c in consensus:
+            # Buy stock
             execute_buy(sa, u, c, allowance, tot_confidence, c.avg_confidence)
 
 

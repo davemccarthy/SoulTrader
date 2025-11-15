@@ -121,11 +121,11 @@ class Command(BaseCommand):
 
 
         # Lets go
-        if not param_holdings_only:
-            analysis.analyze_discovery(sa, users, advisors)
-
         if not param_discovery_only:
             analysis.analyze_holdings(sa, users, advisors)
+
+        if not param_holdings_only:
+            analysis.analyze_discovery(sa, users, advisors)
 
         sa.duration = timezone.now() - sa.started
         # save we all stats from session : users, trades, buys, sells, spend

@@ -45,7 +45,7 @@ def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus):
         holding = Holding()
 
     # Calculate potential spend for this stock based on confidence (no more than half allowance for single stock)
-    allowance = min((stk_consensus / tot_consensus) * allowance, allowance / 2)
+    allowance = (stk_consensus / tot_consensus) * allowance
 
     # Verify stock price
     if consensus.stock.price == 0.0:
@@ -90,6 +90,8 @@ def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus):
     old_shares = holding.shares
     old_avg = holding.average_price or Decimal('0')
     holding.shares += shares
+    holding.consensus = stk_consensus
+
     if holding.shares > 0:
         total_cost = (old_avg * Decimal(old_shares)) + (consensus.stock.price * shares)
         holding.average_price = total_cost / Decimal(holding.shares)
