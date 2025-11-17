@@ -93,7 +93,7 @@
                         {% endif %}
                     </div>
                     <div class="holdings-col holdings-col-company trade-company-col">
-                        <span class="trade-company" title="{{ trade.company }}">{{ trade.company|default:"—" }}</span>
+                        <span class="trade-company" title="{{ trade.company }}">{{ trade.company|default:"—"|truncatechars:40 }}</span>
                         <span class="trade-meta">
                             SA&nbsp;#{{ trade.sa_id|default:"—" }}
                             &nbsp;{{ trade.shares }}&nbsp;@&nbsp;

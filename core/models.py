@@ -31,24 +31,27 @@ class Profile(models.Model):
     # Risky business
     RISK = {
         "CONSERVATIVE": {
-            "allowance": 0.05,
             "confidence_high": 0.8,
             "confidence_low": 0.6,
             "stocks": 50
         },
         "MODERATE": {
-            "allowance": 0.1,
             "confidence_high": 0.7,
             "confidence_low": 0.55,
             "stocks": 40
         },
         "AGGRESSIVE": {
-            "allowance": 0.2,
             "confidence_high": 0.55,
             "confidence_low": 0.4,
             "stocks": 30
         },
+        "EXPERIMENTAL": {
+            "confidence_high": 0.0,
+            "confidence_low": 0.0,
+            "stocks": 40
+        },
     }
+
 
     user = models.ForeignKey(User, on_delete=models.DO_NOTHING)
     risk = models.CharField(max_length=20, choices=[(key, key.replace('_', ' ').title()) for key in RISK.keys()], default='MODERATE')
@@ -137,7 +140,7 @@ class Trade(models.Model):
     sa = models.ForeignKey(SmartAnalysis, on_delete=models.DO_NOTHING)
     user = models.ForeignKey(User, on_delete=models.DO_NOTHING)
     stock = models.ForeignKey(Stock, on_delete=models.DO_NOTHING)
-    consensus = models.ForeignKey(Consensus, on_delete=models.DO_NOTHING)
+    consensus = models.ForeignKey(Consensus, null=True, blank=True, on_delete=models.DO_NOTHING)
     action = models.CharField(max_length=20, choices=ACTION)
     price = models.DecimalField(max_digits=10, decimal_places=2)
     shares = models.IntegerField()

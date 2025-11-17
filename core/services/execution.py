@@ -13,10 +13,10 @@ logger = logging.getLogger(__name__)
 
 # Sell all for now
 def execute_sell(sa, user, profile, consensus, holding):
-    logger.info(f"Trade: {user.username} selling {holding.shares} shares of {consensus.stock.symbol} at ${consensus.stock.price}.")
+    logger.info(f"Trade: {user.username} selling {holding.shares} shares of {holding.stock.symbol} at ${holding.stock.price}.")
 
     # Transfer funds
-    profile.cash += holding.shares * consensus.stock.price
+    profile.cash += holding.shares * holding.stock.price
 
     # Delete holding
     holding.delete()
@@ -29,7 +29,7 @@ def execute_sell(sa, user, profile, consensus, holding):
     trade.consensus = consensus
     trade.action = "SELL"
     trade.stock = holding.stock
-    trade.price = consensus.stock.price
+    trade.price = holding.stock.price
     trade.shares = holding.shares
     trade.save()
 
@@ -66,6 +66,28 @@ def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus):
     shares -= holding.shares
     cost = shares * consensus.stock.price
     # TODO plus commission
+
+    # Sacrifce stock for better stock
+    while profile.cash < cost:
+        sacrifice = (
+            Holding.objects.filter(user=user, consensus__lt=stk_consensus, shares__gt=0)
+            .order_by("consensus")
+            .first()
+        )
+
+        if sacrifice:
+            logger.warning(
+                "Sacrificing %s (CS %.2f) for %s (CS %.2f)",
+                sacrifice.stock.symbol,
+                float(sacrifice.consensus or 0),
+                consensus.stock.symbol,
+                stk_consensus,
+            )
+            execute_sell(sa, user, profile, None, sacrifice)
+            profile.refresh_from_db(fields=["cash"])
+        else:
+            logger.warning("No cash to buy %s", consensus.stock.symbol)
+            return
 
     logger.info(f"Trade: {user.username} buying {shares} shares of {consensus.stock.symbol} at ${consensus.stock.price}. Holding {holding.shares}")
 
