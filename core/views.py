@@ -359,6 +359,114 @@ def trades(request):
 
 
 @login_required
+def trade_detail(request, trade_id):
+    """Trade detail view - returns JSON for a single trade"""
+    try:
+        trade = (
+            Trade.objects
+            .select_related('stock', 'sa', 'consensus')
+            .get(id=trade_id, user=request.user)
+        )
+    except Trade.DoesNotExist:
+        raise Http404("Trade not found")
+
+    stock = trade.stock
+    shares = trade.shares or 0
+    price = trade.price or Decimal('0')
+    value = price * shares
+
+    # Get discovery for this stock
+    # For SELL trades, discovery might be from an earlier SA, so find the earliest discovery
+    # Look for discovery in the trade's SA first, then fall back to earliest discovery for this stock
+    discovery = None
+    discovery_obj = None
+    
+    # First try to find discovery in the same SA as the trade
+    if trade.sa_id:
+        discovery_obj = Discovery.objects.select_related('advisor', 'sa').filter(
+            sa_id=trade.sa_id,
+            stock_id=stock.id
+        ).first()
+    
+    # If not found, get the earliest discovery for this stock (for SELL trades from earlier SA)
+    if not discovery_obj:
+        discovery_obj = Discovery.objects.select_related('advisor', 'sa').filter(
+            stock_id=stock.id
+        ).order_by('sa__started', 'id').first()
+    
+    if discovery_obj:
+        discovery = {
+            'id': discovery_obj.id,
+            'advisor': discovery_obj.advisor.name if discovery_obj.advisor else '',
+            'advisor_logo': _advisor_logo_url(discovery_obj.advisor),
+            'explanation': discovery_obj.explanation,
+            'sa_id': discovery_obj.sa_id,
+            'sa_started': discovery_obj.sa.started.isoformat() if discovery_obj.sa and discovery_obj.sa.started else None,
+        }
+
+    # Get consensus
+    consensus = None
+    if trade.consensus:
+        consensus = {
+            'id': trade.consensus.id,
+            'recommendations': trade.consensus.recommendations,
+            'avg_confidence': float(trade.consensus.avg_confidence) if trade.consensus.avg_confidence is not None else None,
+            'tot_confidence': float(trade.consensus.tot_confidence) if trade.consensus.tot_confidence is not None else None,
+            'sa_id': trade.consensus.sa_id,
+        }
+    elif trade.sa_id:
+        # Try to find consensus for this SA
+        consensus_obj = Consensus.objects.filter(sa_id=trade.sa_id, stock_id=stock.id).first()
+        if consensus_obj:
+            consensus = {
+                'id': consensus_obj.id,
+                'recommendations': consensus_obj.recommendations,
+                'avg_confidence': float(consensus_obj.avg_confidence) if consensus_obj.avg_confidence is not None else None,
+                'tot_confidence': float(consensus_obj.tot_confidence) if consensus_obj.tot_confidence is not None else None,
+                'sa_id': consensus_obj.sa_id,
+            }
+
+    # Get recommendations
+    recommendations = []
+    if trade.sa_id:
+        for recommendation in Recommendation.objects.select_related('advisor').filter(
+            sa_id=trade.sa_id,
+            stock_id=stock.id
+        ):
+            recommendations.append({
+                'id': recommendation.id,
+                'advisor': recommendation.advisor.name if recommendation.advisor else '',
+                'advisor_logo': _advisor_logo_url(recommendation.advisor),
+                'confidence': float(recommendation.confidence) if recommendation.confidence is not None else None,
+                'explanation': recommendation.explanation,
+            })
+
+    payload = {
+        'trade': {
+            'id': trade.id,
+            'action': trade.action,
+            'shares': shares,
+            'price': float(price),
+            'value': float(value),
+            'sa_id': trade.sa_id,
+            'sa_started': trade.sa.started.isoformat() if trade.sa and trade.sa.started else None,
+        },
+        'stock': {
+            'id': stock.id,
+            'symbol': stock.symbol,
+            'company': stock.company,
+            'image': stock.image,
+            'price': float(stock.price) if stock.price else 0.0,
+        },
+        'discovery': discovery,
+        'consensus': consensus,
+        'recommendations': recommendations,
+    }
+
+    return JsonResponse(payload)
+
+
+@login_required
 def profile(request):
     """Profile page"""
     user_profile = request.user.profile_set.first()

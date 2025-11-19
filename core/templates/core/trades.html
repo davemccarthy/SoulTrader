@@ -72,9 +72,15 @@
     }
 </style>
 
-<div class="holdings-container">
+<div class="holdings-container"
+     data-detail-list-panel="#trades-list"
+     data-detail-panel="#trade-detail-panel"
+     data-detail-content="#trade-detail-content"
+     data-detail-back="#trade-detail-back"
+     data-detail-endpoint="/trades/{id}/detail/"
+     data-detail-id-attr="data-trade-id">
     {% if trades %}
-        <div class="holdings-panel">
+        <div id="trades-list" class="holdings-panel">
             {% for trade in trades %}
                 <div class="holdings-row holdings-grid"
                      data-trade-id="{{ trade.id }}"
@@ -139,11 +145,270 @@
                 </div>
             {% endfor %}
         </div>
+        <div id="trade-detail-panel" class="holdings-panel holding-detail-panel" hidden>
+            <div id="trade-detail-content" class="holding-detail-content"></div>
+            <button type="button" id="trade-detail-back" class="holding-detail-back" hidden>← Back to trades</button>
+        </div>
     {% else %}
         <div class="trades-empty">
             No trades yet. Run a smart analysis to generate activity.
         </div>
     {% endif %}
 </div>
+
+<script>
+// Trade-specific renderer for detail panel
+window.detailPanelRenderer = function(data) {
+    function escapeHtml(value) {
+        return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;',
+        })[char]);
+    }
+
+    function formatCurrency(value) {
+        return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' }).format(value ?? 0);
+    }
+
+    function formatPercent(value) {
+        if (value == null) return '—';
+        const fixed = Number(value).toFixed(2);
+        return `${value >= 0 ? '+' : ''}${fixed}%`;
+    }
+
+    function formatDecimal(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num.toFixed(2) : '—';
+    }
+
+    function renderAdvisorBadge(label, logoUrl) {
+        const fallback = label ? escapeHtml(label.slice(0, 2)) : 'AD';
+        if (logoUrl) {
+            const safeUrl = escapeHtml(logoUrl);
+            const alt = label ? escapeHtml(label) : 'Advisor logo';
+            return `<div class="trade-advisor-logo"><img src="${safeUrl}" alt="${alt}"></div>`;
+        }
+        return `<div class="trade-advisor-logo">${fallback}</div>`;
+    }
+
+    function formatExplanation(text) {
+        if (!text) {
+            return '';
+        }
+
+        const normalized = text
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        if (!normalized) {
+            return '';
+        }
+
+        const segments = normalized.split('|').map((segment) => segment.trim()).filter(Boolean);
+
+        const clauses = [];
+        for (let i = 0; i < segments.length; i += 1) {
+            const current = segments[i];
+            if (!current) {
+                continue;
+            }
+
+            const articleInlineMatch = current.match(/^article\s*:\s*(.+)$/i);
+            if (articleInlineMatch && i + 1 < segments.length) {
+                const titleRaw = articleInlineMatch[1];
+                const urlRaw = segments[i + 1];
+
+                if (titleRaw && /^https?:\/\/\S+/i.test(urlRaw)) {
+                    const safeTitle = escapeHtml(titleRaw.trim());
+                    const safeUrl = escapeHtml(urlRaw.trim());
+                    clauses.push(`<span class="explanation-article"><a href="${safeUrl}" target="_blank" rel="noopener">${safeTitle}</a></span>`);
+                    i += 1;
+                    continue;
+                }
+            }
+
+            const bareUrlMatch = current.match(/^https?:\/\/\S+$/i);
+            if (bareUrlMatch) {
+                const safeUrl = escapeHtml(current);
+                clauses.push(`<a href="${safeUrl}" target="_blank" rel="noopener">${safeUrl}</a>`);
+                continue;
+            }
+
+            clauses.push(escapeHtml(current));
+        }
+
+        if (!clauses.length) {
+            return '';
+        }
+
+        let result = '';
+        clauses.forEach((clause, index) => {
+            result += clause;
+            if (index < clauses.length - 1) {
+                const isArticleClause = clause.startsWith('<span class="explanation-article">');
+                result += isArticleClause ? ' ' : '<br>';
+            }
+        });
+
+        return result;
+    }
+
+    function renderDiscoverySection(discovery) {
+        if (!discovery) {
+            return '';
+        }
+
+        const advisor = escapeHtml(discovery.advisor || 'Unknown advisor');
+        const started = discovery.sa_started ? escapeHtml(new Date(discovery.sa_started).toLocaleString()) : '';
+        const explanation = formatExplanation(discovery.explanation || '');
+        const saId = escapeHtml(discovery.sa_id);
+        const badge = renderAdvisorBadge(discovery.advisor || '', discovery.advisor_logo);
+
+        return `
+            <div class="trade-detail-panel">
+                <div class="trade-advisor-header">
+                    ${badge}
+                    <div class="trade-recommendation-copy">
+                        <strong>Discovered by ${advisor}</strong>
+                        <div class="trade-recommendation-confidence">${started ? `${started} · ` : ''}SA #${saId}</div>
+                    </div>
+                </div>
+                <div class="trade-discovery-explanation">${explanation}</div>
+            </div>
+        `;
+    }
+
+    function renderRecommendationsSection(recommendations) {
+        if (!recommendations || !recommendations.length) {
+            return '';
+        }
+
+        const entries = recommendations.map((rec) => {
+            const advisor = escapeHtml(rec.advisor || 'Unknown advisor');
+            const confidence = rec.confidence != null ? Number(rec.confidence).toFixed(2) : '—';
+            const explanation = formatExplanation(rec.explanation || '');
+            const badge = renderAdvisorBadge(rec.advisor || '', rec.advisor_logo);
+
+            return `
+                <div class="trade-recommendation-entry">
+                    <div class="trade-advisor-header">
+                        ${badge}
+                        <div class="trade-recommendation-copy">
+                            <strong>${advisor}</strong>
+                            <div class="trade-recommendation-confidence">Confidence score ${confidence}</div>
+                        </div>
+                    </div>
+                    <div>${explanation}</div>
+                </div>
+            `;
+        }).join('');
+
+        return `
+            <div class="trade-section">
+                <h6 class="trade-section-title">Analysis</h6>
+                <div class="trade-detail-panel">
+                    <div class="trade-advisor-grid">${entries}</div>
+                </div>
+            </div>
+        `;
+    }
+
+    // Main rendering logic
+    const trade = data.trade;
+    const stock = data.stock;
+    const action = trade.action || 'UNKNOWN';
+    const isBuy = action.toUpperCase() === 'BUY';
+    const actionClass = isBuy ? 'buy' : 'sell';
+    const valueLabel = isBuy ? 'Cost' : 'Proceeds';
+
+    const symbolRaw = (stock.symbol || '').toString();
+    const companyRaw = stock.company || '';
+    const imageRaw = stock.image || '';
+
+    const symbol = escapeHtml(symbolRaw);
+    const company = escapeHtml(companyRaw);
+    const imageAttr = escapeHtml(imageRaw);
+
+    const shares = escapeHtml(trade.shares);
+    const price = escapeHtml(formatCurrency(trade.price));
+    const value = escapeHtml(formatCurrency(trade.value));
+    const saId = escapeHtml(trade.sa_id || '—');
+    const saStarted = trade.sa_started ? escapeHtml(new Date(trade.sa_started).toLocaleString()) : '';
+
+    const metricItems = [
+        `<span>Action <span class="trade-action ${actionClass}">${action}</span></span>`,
+        `<span>Shares ${shares}</span>`,
+        `<span>Price ${price}</span>`,
+        `<span>${valueLabel} ${value}</span>`,
+        `<span>SA #${saId}</span>`,
+    ];
+
+    if (saStarted) {
+        metricItems.push(`<span>Date ${saStarted}</span>`);
+    }
+
+    if (data.consensus) {
+        const consensus = data.consensus;
+        if (consensus.recommendations != null) {
+            metricItems.push(`<span>Recommendations ${escapeHtml(consensus.recommendations)}</span>`);
+        }
+        if (consensus.avg_confidence != null) {
+            metricItems.push(`<span>Average confidence ${escapeHtml(formatDecimal(consensus.avg_confidence))}</span>`);
+        }
+        if (consensus.tot_confidence != null) {
+            metricItems.push(`<span>Total confidence ${escapeHtml(formatDecimal(consensus.tot_confidence))}</span>`);
+        }
+    }
+
+    function renderTradeCard(trade, stock, discovery, recommendations) {
+        const action = escapeHtml(trade.action || 'UNKNOWN');
+        const shares = escapeHtml(trade.shares);
+        const price = trade.price != null ? formatCurrency(trade.price) : '—';
+        const value = trade.value != null ? formatCurrency(trade.value) : '—';
+        const valueLabel = (trade.action || '').toUpperCase() === 'SELL' ? 'Proceeds' : 'Cost';
+        const saId = escapeHtml(trade.sa_id || '—');
+        const discoveryBlock = renderDiscoverySection(discovery);
+        const recommendationsBlock = renderRecommendationsSection(recommendations);
+
+        return `
+            <div class="trade-card">
+                <div class="trade-card-header">
+                    <h5 class="trade-card-title">${action} ${shares} @ ${price}</h5>
+                    <div class="trade-card-meta">
+                        <span>${valueLabel} ${value}</span>
+                        <span>SA #${saId}</span>
+                    </div>
+                </div>
+                ${discoveryBlock}
+                ${recommendationsBlock}
+            </div>
+        `;
+    }
+
+    const discoveryBlock = renderDiscoverySection(data.discovery);
+    const recommendationsBlock = renderRecommendationsSection(data.recommendations);
+    const tradeCard = renderTradeCard(data.trade, data.stock, data.discovery, data.recommendations);
+
+    return `
+        <div class="holding-detail-header">
+            <div class="holding-detail-logo">
+                ${imageRaw ? `<img src="${imageAttr}" alt="${symbol}">` : escapeHtml(symbolRaw.slice(0, 2))}
+            </div>
+            <div class="holding-detail-summary">
+                <h3>${symbol} · ${company}</h3>
+                <div class="holding-detail-metrics">
+                    ${metricItems.join('')}
+                </div>
+            </div>
+        </div>
+        <div class="holding-detail-section">
+            ${tradeCard}
+        </div>
+    `;
+};
+</script>
 {% endblock %}
 

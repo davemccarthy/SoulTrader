@@ -54,7 +54,6 @@ class AdvisorBase:
             logger.info(f"{self.advisor.name} created stock {stock.symbol}")
 
         # Avoid duplicating discovery in the last 7 days
-        """
         time_threshold = timezone.now() - timedelta(days=7)
         if Discovery.objects.filter(
             advisor=self.advisor,
@@ -63,7 +62,7 @@ class AdvisorBase:
         ).exists():
             logger.info(f"{self.advisor.name} already recorded discovery for {stock.symbol}")
             return stock
-        """
+
         # Create new Discovery record
         discovery = Discovery()
         discovery.sa = sa

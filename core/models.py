@@ -31,7 +31,7 @@ class Profile(models.Model):
     # Risky business
     RISK = {
         "CONSERVATIVE": {
-            "confidence_high": 0.8,
+            "confidence_high": 0.85,
             "confidence_low": 0.6,
             "stocks": 50
         },
@@ -42,7 +42,7 @@ class Profile(models.Model):
         },
         "AGGRESSIVE": {
             "confidence_high": 0.55,
-            "confidence_low": 0.4,
+            "confidence_low": 0.55,
             "stocks": 30
         },
         "EXPERIMENTAL": {

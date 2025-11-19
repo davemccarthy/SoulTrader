@@ -3,7 +3,13 @@
 {% block title %}Holdings - SOULTRADER{% endblock %}
 
 {% block content %}
-<div class="holdings-container">
+<div class="holdings-container" 
+     data-detail-list-panel="#holdings-list"
+     data-detail-panel="#holding-detail-panel"
+     data-detail-content="#holding-detail-content"
+     data-detail-back="#holding-detail-back"
+     data-detail-endpoint="/holdings/{id}/detail/"
+     data-detail-id-attr="data-stock-id">
     {% if holdings %}
         <div id="holdings-list" class="holdings-panel">
             {% for holding in holdings %}
@@ -69,16 +75,8 @@
 </div>
 
 <script>
-document.addEventListener('DOMContentLoaded', function () {
-    const listPanel = document.getElementById('holdings-list');
-    const detailPanel = document.getElementById('holding-detail-panel');
-    const detailContent = document.getElementById('holding-detail-content');
-    const backButton = document.getElementById('holding-detail-back');
-
-    if (!listPanel || !detailPanel) {
-        return;
-    }
-
+// Holdings-specific renderer for detail panel
+window.detailPanelRenderer = function(data) {
     function escapeHtml(value) {
         return String(value ?? '').replace(/[&<>"']/g, (char) => ({
             '&': '&amp;',
@@ -157,10 +155,6 @@ document.addEventListener('DOMContentLoaded', function () {
             }
 
             clauses.push(escapeHtml(current));
-        }
-
-        if (!clauses.length) {
-            return '';
         }
 
         if (!clauses.length) {
@@ -264,113 +258,73 @@ document.addEventListener('DOMContentLoaded', function () {
         `;
     }
 
-    async function loadHolding(stockId) {
-        if (!stockId) {
-            return;
-        }
+    // Main rendering logic
+    const plClass = data.holding.pl_percent >= 0 ? 'positive' : 'negative';
+    const symbolRaw = (data.stock.symbol || '').toString();
+    const companyRaw = data.stock.company || '';
+    const imageRaw = data.stock.image || '';
 
-        listPanel.hidden = true;
-        detailPanel.hidden = false;
-        if (backButton) {
-            backButton.hidden = false;
-        }
-        detailContent.innerHTML = '<div class="holding-detail-loading">Loading holding details…</div>';
+    const symbol = escapeHtml(symbolRaw);
+    const company = escapeHtml(companyRaw);
+    const imageAttr = escapeHtml(imageRaw);
 
-        try {
-            const response = await fetch(`/holdings/${stockId}/detail/`, {
-                headers: { 'Accept': 'application/json' }
-            });
+    const holdingShares = escapeHtml(data.holding.shares);
+    const averagePrice = escapeHtml(formatCurrency(data.holding.average_price));
+    const currentPrice = escapeHtml(formatCurrency(data.stock.price));
+    const returnAmount = escapeHtml(formatCurrency(data.holding.return_amount));
+    const percentDisplay = escapeHtml(formatPercent(data.holding.pl_percent));
+    const worth = escapeHtml(formatCurrency(data.holding.worth));
+    const consensus = (data.trades || []).find((trade) => trade.consensus)?.consensus || null;
 
-            if (!response.ok) {
-                throw new Error('Request failed');
-            }
+    const consensusRecommendations = consensus && consensus.recommendations != null
+        ? escapeHtml(consensus.recommendations)
+        : null;
+    const consensusAverage = consensus && consensus.avg_confidence != null
+        ? escapeHtml(formatDecimal(consensus.avg_confidence))
+        : null;
+    const consensusTotal = consensus && consensus.tot_confidence != null
+        ? escapeHtml(formatDecimal(consensus.tot_confidence))
+        : null;
 
-            const data = await response.json();
-            const plClass = data.holding.pl_percent >= 0 ? 'positive' : 'negative';
-            const symbolRaw = (data.stock.symbol || '').toString();
-            const companyRaw = data.stock.company || '';
-            const imageRaw = data.stock.image || '';
+    const metricItems = [
+        `<span>Shares ${holdingShares}</span>`,
+        `<span>Average ${averagePrice}</span>`,
+        `<span>Current ${currentPrice}</span>`,
+        `<span>Value ${worth}</span>`,
+        `<span class="holding-detail-return ${plClass}">Return ${returnAmount} (${percentDisplay})</span>`,
+    ];
 
-            const symbol = escapeHtml(symbolRaw);
-            const company = escapeHtml(companyRaw);
-            const imageAttr = escapeHtml(imageRaw);
-
-            const holdingShares = escapeHtml(data.holding.shares);
-            const averagePrice = escapeHtml(formatCurrency(data.holding.average_price));
-            const currentPrice = escapeHtml(formatCurrency(data.stock.price));
-            const returnAmount = escapeHtml(formatCurrency(data.holding.return_amount));
-            const percentDisplay = escapeHtml(formatPercent(data.holding.pl_percent));
-            const worth = escapeHtml(formatCurrency(data.holding.worth));
-            const consensus = (data.trades || []).find((trade) => trade.consensus)?.consensus || null;
-
-            const consensusRecommendations = consensus && consensus.recommendations != null
-                ? escapeHtml(consensus.recommendations)
-                : null;
-            const consensusAverage = consensus && consensus.avg_confidence != null
-                ? escapeHtml(formatDecimal(consensus.avg_confidence))
-                : null;
-            const consensusTotal = consensus && consensus.tot_confidence != null
-                ? escapeHtml(formatDecimal(consensus.tot_confidence))
-                : null;
-
-            const metricItems = [
-                `<span>Shares ${holdingShares}</span>`,
-                `<span>Average ${averagePrice}</span>`,
-                `<span>Current ${currentPrice}</span>`,
-                `<span>Value ${worth}</span>`,
-                `<span class="holding-detail-return ${plClass}">Return ${returnAmount} (${percentDisplay})</span>`,
-            ];
-
-            if (consensusRecommendations != null) {
-                metricItems.push(`<span>Recommendations ${consensusRecommendations}</span>`);
-            }
-            if (consensusAverage != null) {
-                metricItems.push(`<span>Average confidence ${consensusAverage}</span>`);
-            }
-            if (consensusTotal != null) {
-                metricItems.push(`<span>Total confidence ${consensusTotal}</span>`);
-            }
-
-            const tradesHtml = data.trades.length
-                ? `<div class="trade-list">${data.trades.map(renderTradeCard).join('')}</div>`
-                : '<p class="holding-detail-empty">No trades recorded for this holding yet.</p>';
-
-            detailContent.innerHTML = `
-                <div class="holding-detail-header">
-                    <div class="holding-detail-logo">
-                        ${imageRaw ? `<img src="${imageAttr}" alt="${symbol}">` : escapeHtml(symbolRaw.slice(0, 2))}
-                    </div>
-                    <div class="holding-detail-summary">
-                        <h3>${symbol} · ${company}</h3>
-                        <div class="holding-detail-metrics">
-                            ${metricItems.join('')}
-                        </div>
-                    </div>
-                </div>
-                <div class="holding-detail-section">
-                    ${tradesHtml}
-                </div>
-            `;
-        } catch (error) {
-            detailContent.innerHTML = '<div class="holding-detail-error">Unable to load holding details. Please try again.</div>';
-        }
+    if (consensusRecommendations != null) {
+        metricItems.push(`<span>Recommendations ${consensusRecommendations}</span>`);
+    }
+    if (consensusAverage != null) {
+        metricItems.push(`<span>Average confidence ${consensusAverage}</span>`);
+    }
+    if (consensusTotal != null) {
+        metricItems.push(`<span>Total confidence ${consensusTotal}</span>`);
     }
 
-    listPanel.querySelectorAll('.holdings-row').forEach((row) => {
-        row.addEventListener('click', () => loadHolding(row.dataset.stockId));
-    });
+    const tradesHtml = data.trades.length
+        ? `<div class="trade-list">${data.trades.map(renderTradeCard).join('')}</div>`
+        : '<p class="holding-detail-empty">No trades recorded for this holding yet.</p>';
 
-    if (backButton) {
-        backButton.addEventListener('click', () => {
-            detailPanel.hidden = true;
-            listPanel.hidden = false;
-            detailContent.innerHTML = '';
-            if (backButton) {
-                backButton.hidden = true;
-            }
-        });
-    }
-});
+    return `
+        <div class="holding-detail-header">
+            <div class="holding-detail-logo">
+                ${imageRaw ? `<img src="${imageAttr}" alt="${symbol}">` : escapeHtml(symbolRaw.slice(0, 2))}
+            </div>
+            <div class="holding-detail-summary">
+                <h3>${symbol} · ${company}</h3>
+                <div class="holding-detail-metrics">
+                    ${metricItems.join('')}
+                </div>
+            </div>
+        </div>
+        <div class="holding-detail-section">
+            ${tradesHtml}
+        </div>
+    `;
+};
 </script>
 {% endblock %}
 

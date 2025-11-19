@@ -23,7 +23,7 @@ CUSTOM_SCREEN_QUERY = YfEquityQuery(
             ],
         ),
         YfEquityQuery("is-in", ["exchange", "NMS", "NYQ"]),
-        YfEquityQuery("lt", ["intradayprice", MAX_PRICE]),
+        YfEquityQuery("lt", ["intradayprice", MAX_PRICE]),  # Price filter: prefer lower-priced stocks
     ],
 )
 
@@ -39,7 +39,7 @@ class Yahoo(AdvisorBase):
             super().__init__(advisor.name)
             self.advisor = advisor
 
-    def discover(self, sa):
+    def discover_yfinance(self, sa):
         """Discover stocks using Yahoo Finance screener filters."""
         try:
             quotes = self._fetch_filtered_quotes()
@@ -56,8 +56,8 @@ class Yahoo(AdvisorBase):
             last_price = self._safe_float(
                 quote.get("regularMarketPrice") or quote.get("intradayprice")
             )
-            if last_price is None or last_price >= MAX_PRICE:
-                # Safety check in case Yahoo returns stale data outside our query filter.
+            if last_price is None:
+                # Skip if no price data available
                 continue
 
             company = quote.get("longName") or quote.get("shortName") or symbol
@@ -83,11 +83,33 @@ class Yahoo(AdvisorBase):
         response = yf.screen(
             CUSTOM_SCREEN_QUERY,
             offset=0,
-            size=limit,
+            size=limit * 2,  # Fetch more to ensure we get enough after sorting
             sortField="pegratio_5y",
             sortAsc=True,
         )
-        return response.get("quotes", [])
+        quotes = response.get("quotes", [])
+        
+        # Sort by PEG ratio first, then by price (lower is better)
+        # This ensures we get the most undervalued stocks, with preference for lower-priced ones
+        def get_sort_key(quote):
+            peg_value = quote.get("pegRatio") or quote.get("pegratio_5y")
+            peg = self._safe_float(peg_value)
+            # Put None/missing PEG at the end
+            peg_sort = peg if peg is not None and peg > 0 else float('inf')
+            
+            # Get price for secondary sort (lower price = better)
+            price = self._safe_float(
+                quote.get("regularMarketPrice") or quote.get("intradayprice")
+            )
+            price_sort = price if price is not None and price > 0 else float('inf')
+            
+            # Return tuple: (PEG, price) - both sorted ascending (lower is better)
+            return (peg_sort, price_sort)
+        
+        quotes.sort(key=get_sort_key)
+        
+        # Return top N most undervalued (lowest PEG, then lowest price)
+        return quotes[:limit]
 
     @staticmethod
     def _safe_float(value):

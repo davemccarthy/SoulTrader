@@ -307,8 +307,7 @@
             background-color: clear;
             color: darkgrey;
             text-align: center;
-            padding: 1rem 0;
-            margin-top: 0rem;
+            margin-bottom: 1rem;
         }
 
         /* Stock Ticker */
@@ -882,8 +881,106 @@
     </main>
 
     <footer class="footer">
-        <p>&copy; 2025 SOULTRADER - AI Stock Advisor. All rights reserved.</p>
+        <p>&copy; 2025 SOULTRADER - All rights reserved.</p>
     </footer>
+
+    <!-- Generic Detail Panel System -->
+    <script>
+    /**
+     * Generic detail panel system for list/detail views
+     * 
+     * Usage:
+     * 1. Add data attributes to your container:
+     *    - data-detail-list-panel: selector for list panel
+     *    - data-detail-panel: selector for detail panel
+     *    - data-detail-content: selector for detail content area
+     *    - data-detail-back: selector for back button
+     *    - data-detail-endpoint: URL pattern with {id} placeholder (e.g., "/holdings/{id}/detail/")
+     *    - data-detail-id-attr: attribute name on list items (e.g., "data-stock-id")
+     * 
+     * 2. Provide a render function via window.detailPanelRenderer
+     *    function(data) { return htmlString; }
+     */
+    (function() {
+        'use strict';
+
+        function initDetailPanel(container) {
+            if (!container) return;
+
+            const listPanel = container.querySelector(container.dataset.detailListPanel);
+            const detailPanel = container.querySelector(container.dataset.detailPanel);
+            const detailContent = container.querySelector(container.dataset.detailContent);
+            const backButton = container.querySelector(container.dataset.detailBack);
+            const endpointPattern = container.dataset.detailEndpoint;
+            const idAttr = container.dataset.detailIdAttr;
+
+            if (!listPanel || !detailPanel || !detailContent || !endpointPattern || !idAttr) {
+                return;
+            }
+
+            const renderer = window.detailPanelRenderer;
+            if (!renderer || typeof renderer !== 'function') {
+                console.warn('detailPanelRenderer function not found');
+                return;
+            }
+
+            async function loadDetail(itemId) {
+                if (!itemId) return;
+
+                listPanel.hidden = true;
+                detailPanel.hidden = false;
+                if (backButton) {
+                    backButton.hidden = false;
+                }
+                detailContent.innerHTML = '<div class="holding-detail-loading">Loading details…</div>';
+
+                try {
+                    const url = endpointPattern.replace('{id}', itemId);
+                    const response = await fetch(url, {
+                        headers: { 'Accept': 'application/json' }
+                    });
+
+                    if (!response.ok) {
+                        throw new Error('Request failed');
+                    }
+
+                    const data = await response.json();
+                    detailContent.innerHTML = renderer(data);
+                } catch (error) {
+                    console.error('Error loading detail:', error);
+                    detailContent.innerHTML = '<div class="holding-detail-error">Unable to load details. Please try again.</div>';
+                }
+            }
+
+            function goBack() {
+                detailPanel.hidden = true;
+                listPanel.hidden = false;
+                detailContent.innerHTML = '';
+                if (backButton) {
+                    backButton.hidden = true;
+                }
+            }
+
+            // Attach click handlers to list items
+            listPanel.querySelectorAll(`[${idAttr}]`).forEach((row) => {
+                row.addEventListener('click', () => {
+                    const itemId = row.getAttribute(idAttr);
+                    loadDetail(itemId);
+                });
+            });
+
+            // Attach back button handler
+            if (backButton) {
+                backButton.addEventListener('click', goBack);
+            }
+        }
+
+        // Initialize all detail panels on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            document.querySelectorAll('[data-detail-list-panel]').forEach(initDetailPanel);
+        });
+    })();
+    </script>
 </body>
 </html>
 

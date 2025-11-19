@@ -124,19 +124,6 @@ FDA_ALLOW_IF_CONTAINS = (
 class FDA(AdvisorBase):
     def discover(self, sa):
         sa_end = _ensure_aware(sa.started)
-        sa_day = sa_end.date()
-        already_processed_today = Discovery.objects.filter(
-            advisor=self.advisor,
-            sa__username=sa.username,
-            created__date=sa_day,
-        ).exists()
-        if already_processed_today:
-            logger.info(
-                "FDA advisor: already processed discoveries for %s on %s; skipping.",
-                sa.username or "<unknown>",
-                sa_day,
-            )
-            return
 
         try:
             approvals = scrape_fda_approvals(days=REPORT_WINDOW_DAYS)
@@ -157,8 +144,6 @@ class FDA(AdvisorBase):
             sa_start = _ensure_aware(prev_sa.started)
         else:
             sa_start = sa_end - timedelta(days=REPORT_WINDOW_DAYS)
-
-        #sa_start = sa_end - timedelta(days=REPORT_WINDOW_DAYS)
 
         start_date = sa_start.date()
         end_date = sa_end.date()
