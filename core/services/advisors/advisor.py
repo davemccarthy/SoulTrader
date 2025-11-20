@@ -24,7 +24,6 @@ models = [
     "gemini-2.5-pro",
     "gemini-2.5-flash",
     "gemini-2.5-pro-preview-03-25",
-    "gemini-2.5-flash-preview-05-20",
     "gemini-2.0-flash",
 ]
 
@@ -42,7 +41,7 @@ class AdvisorBase:
     def analyze(self, sa, stock):
         return
 
-    def discovered(self, sa, symbol, company, explanation):
+    def discovered(self, sa, symbol, company, explanation, sell_instructions = None):
         #-- find stock or create stock
         try:
             stock = Stock.objects.get(symbol=symbol)
@@ -71,6 +70,49 @@ class AdvisorBase:
         discovery.explanation = explanation[:1000]
         discovery.save()
 
+        # Create sell instructions if provided
+        if sell_instructions:
+            from core.models import SellInstruction
+            from decimal import Decimal
+
+            for instruction_type, instruction_value in sell_instructions:
+                instruction = SellInstruction()
+                instruction.discovery = discovery
+                instruction.instruction = instruction_type
+
+                # Calculate value based on instruction type
+                if instruction_type == 'STOP_LOSS':
+                    # instruction_value is percentage (e.g., 0.99)
+                    # Calculate absolute price: stock.price * percentage
+                    instruction.value = Decimal(str(stock.price)) * Decimal(str(instruction_value))
+                elif instruction_type == 'TARGET_PRICE':
+                    # instruction_value could be multiplier or absolute price
+                    # If < 10, treat as multiplier; otherwise absolute price
+                    if instruction_value < 10:
+                        instruction.value = Decimal(str(stock.price)) * Decimal(str(instruction_value))
+                    else:
+                        instruction.value = Decimal(str(instruction_value))
+                elif instruction_type == 'AFTER_DAYS':
+                    instruction.value = Decimal(str(instruction_value))
+                elif instruction_type == 'CS_FLOOR':
+                    # Value ignored for CS_FLOOR (set to None or 0)
+                    instruction.value = None
+                else:
+                    logger.warning(f"Unknown instruction_type: {instruction_type}")
+                    continue
+
+                instruction.save()
+                logger.info(f"Created {instruction_type} sell instruction for {stock.symbol}: {instruction.value}")
+        else:
+            # Default: create CS_FLOOR instruction so existing behavior continues
+            from core.models import SellInstruction
+            instruction = SellInstruction()
+            instruction.discovery = discovery
+            instruction.instruction = 'CS_FLOOR'
+            instruction.value = None  # CS_FLOOR value is determined at sell time from profile risk
+            instruction.save()
+            logger.info(f"Created default CS_FLOOR sell instruction for {stock.symbol}")
+
         logger.info(f"{self.advisor.name} discovers {stock.symbol}")
         return stock
 
@@ -87,6 +129,8 @@ class AdvisorBase:
         logger.info(f"{self.advisor.name} scores {stock.symbol} a confidences of {confidence:.2f}")
 
     def news_flash(self, sa, title, url):
+
+        # Carefully worded script for the robot
         prompt = f"""
             Starting afresh
             You are an expert analyzing business articles
@@ -104,6 +148,12 @@ class AdvisorBase:
             }}
 
             url: {url}"""
+
+        # Pass sell instructions to siacovery
+        sell_instructions = [
+            ("CS_FLOOR", 0.0),
+            ("STOP_LOSS", 0.98),
+        ]
 
         # Call on 3rd part gemini AI - exhaust all models if unavailable
         for attempt in range(len(models)):
@@ -159,7 +209,7 @@ class AdvisorBase:
                 if recommendation == "BUY" or recommendation == "STRONG_BUY":
                     for ticker in tickers:
                         stock = self.discovered(sa, ticker, '',
-                                                f"Gemini recommended {recommendation} from reading article. | Article: {title} | {url} | {explanation} ")
+                                                f"{model} recommended {recommendation} from reading article. | Article: {title} | {url} | {explanation} ", sell_instructions)
 
                         # A strong buy skews consensus in favour of BUY
                         if recommendation == "STRONG_BUY":

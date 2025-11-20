@@ -450,6 +450,7 @@ def trade_detail(request, trade_id):
             'value': float(value),
             'sa_id': trade.sa_id,
             'sa_started': trade.sa.started.isoformat() if trade.sa and trade.sa.started else None,
+            'explanation': trade.explanation,
         },
         'stock': {
             'id': stock.id,

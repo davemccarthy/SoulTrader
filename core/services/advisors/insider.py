@@ -506,6 +506,134 @@ def scrape_openinsider_purchases(since_date: Optional[date] = None) -> List[Dict
     return purchases
 
 
+def check_net_selling(ticker: str) -> tuple:
+    """
+    Check if a ticker has net selling (more sales than purchases) by scraping the ticker page.
+    
+    Args:
+        ticker: Stock ticker symbol
+        
+    Returns:
+        Tuple of (has_net_selling: bool, total_purchase_value: float, total_sale_value: float)
+        Returns (False, 0, 0) if unable to check (e.g., page not found)
+    """
+    url = f"{BASE_URL}/{ticker}"
+    
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        resp = requests.get(url, headers=headers, timeout=15)
+        
+        if not resp.ok:
+            logger.debug(f"Could not fetch {url} for net selling check: HTTP {resp.status_code}")
+            return (False, 0, 0)
+        
+        soup = BeautifulSoup(resp.text, "html.parser")
+        tables = soup.find_all("table")
+        
+        total_purchase_value = 0.0
+        total_sale_value = 0.0
+        
+        for table in tables:
+            rows = table.find_all("tr")
+            
+            # Look for header row
+            header_idx = -1
+            for i, row in enumerate(rows):
+                row_text = row.get_text().lower()
+                if any(keyword in row_text for keyword in ["filing date", "trade date", "transaction", "insider", "price"]):
+                    header_idx = i
+                    break
+            
+            if header_idx < 0:
+                continue
+            
+            # Process data rows
+            for row in rows[header_idx + 1:]:
+                cells = row.find_all(["td", "th"])
+                if len(cells) < 5:
+                    continue
+                
+                try:
+                    row_text = " ".join([c.text.strip() for c in cells])
+                    row_text_lower = row_text.lower()
+                    
+                    # Determine transaction type
+                    is_purchase = any(indicator in row_text_lower for indicator in ["p - purchase", "purchase", "p -", "buy"])
+                    is_sale = any(indicator in row_text_lower for indicator in ["s - sale", "sale", "s -", "sell"])
+                    
+                    if not is_purchase and not is_sale:
+                        # Check individual cells for transaction type
+                        for cell in cells:
+                            cell_text = cell.text.strip().upper()
+                            if "P" == cell_text or "PURCHASE" in cell_text:
+                                is_purchase = True
+                                break
+                            elif "S" == cell_text or "SALE" in cell_text:
+                                is_sale = True
+                                break
+                    
+                    if not is_purchase and not is_sale:
+                        continue
+                    
+                    # Extract price, quantity, and value
+                    price = None
+                    qty = None
+                    transaction_value = 0.0
+                    
+                    for cell in cells:
+                        cell_text = cell.text.strip()
+                        cell_text_clean = cell_text.replace("$", "").replace(",", "").replace("+", "").replace("-", "")
+                        
+                        # Price (starts with $)
+                        if cell_text.startswith("$") and not cell_text.startswith("$0") and price is None:
+                            try:
+                                price = float(cell_text.replace("$", "").replace(",", "").split()[0])
+                            except:
+                                pass
+                        
+                        # Quantity (starts with + or -)
+                        if (cell_text.startswith("+") or cell_text.startswith("-")) and any(c.isdigit() for c in cell_text) and qty is None:
+                            try:
+                                qty_str = cell_text.replace("+", "").replace("-", "").replace(",", "")
+                                qty = int(qty_str)
+                            except:
+                                pass
+                        
+                        # Value (starts with +$ or -$)
+                        if cell_text.startswith("+$") or cell_text.startswith("-$"):
+                            try:
+                                value_str = cell_text.replace("+$", "").replace("-$", "").replace(",", "")
+                                transaction_value = float(value_str)
+                                break  # Found explicit value, use it
+                            except:
+                                pass
+                    
+                    # Calculate value if not found explicitly
+                    if transaction_value == 0.0 and price is not None and qty is not None:
+                        transaction_value = price * abs(qty)
+                    
+                    # Add to appropriate total (use absolute value for sales)
+                    if is_purchase and transaction_value > 0:
+                        total_purchase_value += transaction_value
+                    elif is_sale and transaction_value > 0:
+                        total_sale_value += abs(transaction_value)  # Sales are always positive in our calculation
+                
+                except Exception as e:
+                    logger.debug(f"Error parsing transaction row for {ticker}: {e}")
+                    continue
+        
+        has_net_selling = total_sale_value > total_purchase_value
+        
+        if has_net_selling:
+            logger.info(f"{ticker}: Net selling detected - ${total_sale_value:,.0f} sold vs ${total_purchase_value:,.0f} bought")
+        
+        return (has_net_selling, total_purchase_value, total_sale_value)
+    
+    except Exception as e:
+        logger.warning(f"Error checking net selling for {ticker}: {e}")
+        return (False, 0, 0)
+
+
 class Insider(AdvisorBase):
 
     def discover(self, sa):
@@ -527,6 +655,14 @@ class Insider(AdvisorBase):
             if not purchases:
                 logger.info("No insider purchases found")
                 return
+
+            # Pass sell instructions to siacovery
+            sell_instructions = [
+                ("CS_FLOOR", 0.0),
+                ("STOP_LOSS", 0.99),
+                ("TARGET_PRICE", 1.20),
+                ("AFTER_DAYS", 7.0),
+            ]
             
             # Group purchases by ticker
             by_ticker = {}
@@ -541,7 +677,15 @@ class Insider(AdvisorBase):
             
             # Calculate scores and discover stocks above threshold
             discovered_count = 0
+            skipped_net_selling = 0
             for ticker, purchases_list in by_ticker.items():
+                # Check for net selling - filter out stocks where insiders are net sellers
+                has_net_selling, total_purchase_val, total_sale_val = check_net_selling(ticker)
+                if has_net_selling:
+                    logger.info(f"{ticker}: Skipping discovery due to net selling (${total_sale_val:,.0f} sold vs ${total_purchase_val:,.0f} bought)")
+                    skipped_net_selling += 1
+                    continue
+                
                 # Calculate score for each purchase
                 # Sum scores - multiple purchases should strengthen the signal
                 # The cluster bonus already rewards multiple insiders buying, and summing
@@ -587,10 +731,10 @@ class Insider(AdvisorBase):
                 
                 # Discover the stock
                 company = purchases_list[0].get("company", ticker)
-                self.discovered(sa, ticker, company, explanation)
+                self.discovered(sa, ticker, company, explanation, sell_instructions)
                 discovered_count += 1
             
-            logger.info(f"Insider advisor discovered {discovered_count} stocks (from {len(by_ticker)} with purchases)")
+            logger.info(f"Insider advisor discovered {discovered_count} stocks (from {len(by_ticker)} with purchases, {skipped_net_selling} skipped due to net selling)")
             
         except Exception as e:
             logger.error(f"Error in Insider.discover: {e}")

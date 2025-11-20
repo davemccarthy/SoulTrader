@@ -12,6 +12,7 @@ from decimal import Decimal
 import h11
 from django.db import connection
 from django.db.models import Sum
+from django.utils import timezone
 from core.models import Stock, Holding, Discovery, Recommendation, Consensus, Trade, Profile
 from core.services.execution import execute_buy, execute_sell
 
@@ -58,15 +59,44 @@ def analyze_holdings(sa, users, advisors):
         sell_below = Decimal(str(Profile.RISK[profile.risk]["confidence_low"]))
 
         for holding in Holding.objects.filter(user=user):
-            consensus = build_consensus(sa, advisors, holding.stock)
-            if consensus is None or consensus.avg_confidence is None:
-                continue
 
-            holding.consensus = consensus.avg_confidence
-            holding.save(update_fields=["consensus"])
+            # Get most recent discovery for this stock
+            discovery = Discovery.objects.filter(stock=holding.stock).order_by('-created').first()
+            if discovery:
+                # Get all sell instructions for this discovery
+                from core.models import SellInstruction
+                instructions = SellInstruction.objects.filter(discovery=discovery)
 
-            if consensus.avg_confidence < sell_below:
-                execute_sell(sa, user, profile, consensus, holding)
+                # Check sell conditions in priority order
+                for instruction in instructions:
+                    if instruction.instruction == 'STOP_LOSS':
+                        if holding.stock.price <= instruction.value:
+                            execute_sell(sa, user, profile, consensus, holding, f"{holding.stock.symbol} fell to stop-loss of ${instruction.value:.2f}")
+                            break
+
+                    elif instruction.instruction == 'TARGET_PRICE' and instruction.value != 0.0: # TMP CHECK
+                        if holding.stock.price >= instruction.value:
+                            execute_sell(sa, user, profile, consensus, holding, f"{holding.stock.symbol} reached target price of ${instruction.value:.2f}")
+                            break
+
+                    elif instruction.instruction == 'AFTER_DAYS':
+                        days_held = (timezone.now() - discovery.created).days
+                        if days_held >= instruction.value:
+                            execute_sell(sa, user, profile, consensus, holding, f"{holding.stock.symbol} after holding for {days_held} days (target: {instruction.value} days)")
+                            break
+
+                    elif instruction.instruction == 'CS_FLOOR':
+
+                        consensus = build_consensus(sa, advisors, holding.stock)
+                        if consensus is None or consensus.avg_confidence is None:
+                            continue
+
+                        holding.consensus = consensus.avg_confidence
+                        holding.save(update_fields=["consensus"])
+
+                        if consensus.avg_confidence < sell_below:
+                            execute_sell(sa, user, profile, consensus, holding, f"Consensus confidence ({consensus.avg_confidence:.2f}) fell below threshold ({sell_below:.2f})")
+                            break
 
 
 # Discovery new stock

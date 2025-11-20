@@ -185,8 +185,14 @@ class FDA(AdvisorBase):
             stock_symbol = approval.get("stock_symbol")
             score = approval.get("confidence_score") or 0.0
 
+            # Pass sell instructions to siacovery
+            sell_instructions = [
+                ("CS_FLOOR", 0.0),
+                ("STOP_LOSS", 0.99),
+            ]
+
             explanation = build_discovery_explanation(approval, score)
-            stock = self.discovered(sa, stock_symbol, approval.get("company", ""), explanation)
+            stock = self.discovered(sa, stock_symbol, approval.get("company", ""), explanation, sell_instructions)
             if not stock:
                 continue
 

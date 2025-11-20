@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 # Sell all for now
-def execute_sell(sa, user, profile, consensus, holding):
+def execute_sell(sa, user, profile, consensus, holding, explanation):
     logger.info(f"Trade: {user.username} selling {holding.shares} shares of {holding.stock.symbol} at ${holding.stock.price}.")
 
     # Transfer funds
@@ -31,6 +31,7 @@ def execute_sell(sa, user, profile, consensus, holding):
     trade.stock = holding.stock
     trade.price = holding.stock.price
     trade.shares = holding.shares
+    trade.explanation = explanation
     trade.save()
 
     profile.save()
@@ -55,9 +56,12 @@ def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus):
     # Calculate no. shares to buy
     shares = int(allowance / consensus.stock.price)
 
+    if shares ==  0:
+        logger.info(f"Trade: {user.username} NOT buying shares of {consensus.stock.symbol}. Can't afford any")
+        return
+
     # No buy if have shares (surrender allowance for subsequent purchases)
     if shares - holding.shares < 0:
-        #profile.allowance += allowance
         logger.info(f"Trade: {user.username} NOT buying shares of {consensus.stock.symbol}. Holding {holding.shares} shares already")
         return
 
@@ -83,7 +87,7 @@ def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus):
                 consensus.stock.symbol,
                 stk_consensus,
             )
-            execute_sell(sa, user, profile, None, sacrifice)
+            execute_sell(sa, user, profile, None, sacrifice, f"Sacrificed for better stock {consensus.stock.symbol}")
             profile.refresh_from_db(fields=["cash"])
         else:
             logger.warning("No cash to buy %s", consensus.stock.symbol)
@@ -92,7 +96,6 @@ def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus):
     logger.info(f"Trade: {user.username} buying {shares} shares of {consensus.stock.symbol} at ${consensus.stock.price}. Holding {holding.shares}")
 
     profile.cash -= cost
-    #profile.allowance -= cost
 
     # Create trade record
     trade = Trade()

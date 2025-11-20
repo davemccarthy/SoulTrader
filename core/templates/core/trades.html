@@ -372,11 +372,16 @@ window.detailPanelRenderer = function(data) {
         const saId = escapeHtml(trade.sa_id || '—');
         const discoveryBlock = renderDiscoverySection(discovery);
         const recommendationsBlock = renderRecommendationsSection(recommendations);
+        
+        let title = `${action} ${shares} @ ${price}`;
+        if (trade.explanation) {
+            title += ` - ${escapeHtml(trade.explanation)}`;
+        }
 
         return `
             <div class="trade-card">
                 <div class="trade-card-header">
-                    <h5 class="trade-card-title">${action} ${shares} @ ${price}</h5>
+                    <h5 class="trade-card-title">${title}</h5>
                     <div class="trade-card-meta">
                         <span>${valueLabel} ${value}</span>
                         <span>SA #${saId}</span>

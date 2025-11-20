@@ -110,6 +110,18 @@ class Discovery(models.Model):
     created = models.DateTimeField(auto_now_add=True)
     explanation = models.CharField(max_length=1000)
 
+class SellInstruction(models.Model):
+    choices = [
+        ("STOP_LOSS", "Stop Loss"),
+        ("TARGET_PRICE", "Target Price"),
+        ("CS_FLOOR", "CS Floor"),
+        ("AFTER_DAYS", "After Days"),
+    ]
+
+    discovery = models.ForeignKey(Discovery, on_delete=models.DO_NOTHING)
+    instruction = models.CharField(max_length=20, choices=choices)
+    value = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
 
 # Recommendation for advisors
 class Recommendation(models.Model):
@@ -144,6 +156,7 @@ class Trade(models.Model):
     action = models.CharField(max_length=20, choices=ACTION)
     price = models.DecimalField(max_digits=10, decimal_places=2)
     shares = models.IntegerField()
+    explanation = models.CharField(max_length=256, null=True, blank=True)
     # TODO NO DATE STAMP
 
 
