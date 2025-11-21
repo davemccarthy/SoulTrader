@@ -105,7 +105,6 @@ def holdings(request):
         discovery = stock.advisor.name if stock.advisor else ""
         
         holdings_data.append({
-            'image': stock.image,
             'symbol': stock.symbol,
             'company': stock.company,
             'price': current_price,
@@ -248,7 +247,6 @@ def holding_detail(request, stock_id):
             'id': stock.id,
             'symbol': stock.symbol,
             'company': stock.company,
-            'image': stock.image,
             'price': float(current_price),
         },
         'holding': {
@@ -335,7 +333,6 @@ def trades(request):
         trades_payload.append({
             'id': trade.id,
             'stock_id': trade.stock_id,
-            'image': trade.stock.image,
             'symbol': trade.stock.symbol,
             'company': trade.stock.company,
             'shares': trade.shares,
@@ -456,7 +453,6 @@ def trade_detail(request, trade_id):
             'id': stock.id,
             'symbol': stock.symbol,
             'company': stock.company,
-            'image': stock.image,
             'price': float(stock.price) if stock.price else 0.0,
         },
         'discovery': discovery,

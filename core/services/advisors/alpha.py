@@ -85,13 +85,7 @@ class Alpha(AdvisorBase):
                 # Alpha Vantage will simply not participate in consensus for this stock
                 logger.debug(f"Alpha Vantage: Skipping {stock.symbol} - no data available (rate-limited)")
                 return None
-            
-            # Update stock price
-            current_price = quote_data.get('price')
-            if current_price:
-                stock.price = Decimal(str(current_price))
-                stock.save()
-            
+
             # Calculate confidence based on Alpha Vantage metrics
             confidence = self._calculate_confidence(quote_data, overview_data)
             

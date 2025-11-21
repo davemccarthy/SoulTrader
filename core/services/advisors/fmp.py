@@ -26,22 +26,6 @@ class FMP(AdvisorBase):
                 logger.warning(f"FMP: No profile data available for {stock.symbol}, skipping recommendation")
                 return None  # Don't create a recommendation if we can't get data
 
-            # Update image url
-            image_url = profile_data.get('image')
-
-            # If no url, guess
-            if image_url is None:
-                image_url = f"https://images.financialmodelingprep.com/symbol/{stock.symbol}.png"
-                logger.info(f"Updated {stock.symbol} image as a guess: {image_url}")
-
-            if image_url and stock.image is None:
-                stock.image = image_url
-                stock.save()
-
-                logger.info(f"Updated {stock.symbol} image from profile: {image_url}")
-            else:
-                logger.warning(f"{stock.symbol} - No image in profile")
-
             # Get financial ratios (optional)
             ratios_data = self._get_financial_ratios(stock.symbol)
             

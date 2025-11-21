@@ -78,9 +78,43 @@ class Stock(models.Model):
     exchange = models.CharField(max_length=32)
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0.0)
     advisor = models.ForeignKey(Advisor, on_delete=models.DO_NOTHING, null=True, blank=True, default=None)
-    image = models.URLField(max_length=500,  null=True, default=None)
     updated = models.DateTimeField(auto_now=True)
 
+    def refresh(self):
+        from decimal import Decimal
+        import yfinance as yf
+        import logging
+
+        logger = logging.getLogger(__name__)
+
+        try:
+            ticker = yf.Ticker(self.symbol)
+            info = ticker.fast_info
+            price = info.get('lastPrice') or info.get('regularMarketPrice')
+
+            # Update price
+            if price:
+                self.price =  Decimal(str(price))
+
+            # Update company (and exchange) if missing
+            if not self.company:
+                full_info = ticker.info
+
+                company = full_info.get('longName') or full_info.get('shortName')
+                exchange = full_info.get('fullExchangeName') or full_info.get('exchange')
+
+                if company:
+                    self.company = company
+
+                if exchange:
+                    self.exchange = exchange
+
+            self.save()
+            logger.info(f"Updated {self.symbol} {self.price}") # TMP
+        except Exception as e:
+            logger.warning(f"Could not auto-update {self.symbol}: {e}")
+
+        return self
 
 # Users stock holdingß
 class Holding(models.Model):

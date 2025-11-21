@@ -163,12 +163,7 @@ class Finnhub(AdvisorBase):
         if quote_data and 'c' in quote_data:
             current_price = quote_data.get('c')
             change_pct = quote_data.get('dp')  # Day percent change (handle None)
-            
-            # Update stock price (handle None price)
-            if current_price is not None:
-                stock.price = Decimal(str(current_price))
-                stock.save()
-            
+
             if change_pct is not None:
                 if change_pct > 5:
                     score += 0.15

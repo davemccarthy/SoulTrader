@@ -60,6 +60,9 @@ def analyze_holdings(sa, users, advisors):
 
         for holding in Holding.objects.filter(user=user):
 
+            # Latest prices
+            holding.stock.refresh()
+
             # Get most recent discovery for this stock
             discovery = Discovery.objects.filter(stock=holding.stock).order_by('-created').first()
             if discovery:

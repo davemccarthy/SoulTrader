@@ -137,11 +137,6 @@ class Polygon(AdvisorBase):
 
             latest = data.iloc[-1]
 
-            # Update stock price with latest close
-            if 'close' in latest and latest['close'] is not None:
-                stock.price = Decimal(str(latest['close']))
-                stock.save()
-
             # --- FETCH FUNDAMENTAL DATA (2025 SDK, attributes) ---
             self._rate_limit()  # Rate limit before second API call
             try:

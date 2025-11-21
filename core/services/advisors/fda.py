@@ -187,7 +187,7 @@ class FDA(AdvisorBase):
 
             # Pass sell instructions to siacovery
             sell_instructions = [
-                ("CS_FLOOR", 0.0),
+                ("TARGET_PRICE", 1.20),
                 ("STOP_LOSS", 0.99),
             ]
 

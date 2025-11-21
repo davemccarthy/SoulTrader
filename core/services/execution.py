@@ -13,6 +13,9 @@ logger = logging.getLogger(__name__)
 
 # Sell all for now
 def execute_sell(sa, user, profile, consensus, holding, explanation):
+
+    # Latest price
+    holding.stock.refresh()
     logger.info(f"Trade: {user.username} selling {holding.shares} shares of {holding.stock.symbol} at ${holding.stock.price}.")
 
     # Transfer funds
@@ -48,6 +51,9 @@ def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus):
     # Calculate potential spend for this stock based on confidence (no more than half allowance for single stock)
     allowance = (stk_consensus / tot_consensus) * allowance
 
+    # Latest price
+    consensus.stock.refresh()
+
     # Verify stock price
     if consensus.stock.price == 0.0:
         logger.warning(f"Trade: no price for {consensus.stock.symbol}")
@@ -74,7 +80,7 @@ def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus):
     # Sacrifce stock for better stock
     while profile.cash < cost:
         sacrifice = (
-            Holding.objects.filter(user=user, consensus__lt=stk_consensus, shares__gt=0)
+            Holding.objects.filter(user=user, consensus__lt=stk_consensus, consensus__gt=0, shares__gt=0)
             .order_by("consensus")
             .first()
         )

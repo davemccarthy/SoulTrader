@@ -658,7 +658,6 @@ class Insider(AdvisorBase):
 
             # Pass sell instructions to siacovery
             sell_instructions = [
-                ("CS_FLOOR", 0.0),
                 ("STOP_LOSS", 0.99),
                 ("TARGET_PRICE", 1.20),
                 ("AFTER_DAYS", 7.0),
@@ -731,7 +730,14 @@ class Insider(AdvisorBase):
                 
                 # Discover the stock
                 company = purchases_list[0].get("company", ticker)
-                self.discovered(sa, ticker, company, explanation, sell_instructions)
+                stock = self.discovered(sa, ticker, company, explanation, sell_instructions)
+                
+                # Also recommend it to boost consensus score (helps it pass buy threshold)
+                # Use the calculated score as confidence, but ensure it's at least 0.55 (to push average up)
+                recommendation_confidence = Decimal(str(max(avg_score, 0.55)))
+                recommendation_note = f"Insider purchase signal: {explanation}"
+                self.recommend(sa, stock, recommendation_confidence, recommendation_note)
+                
                 discovered_count += 1
             
             logger.info(f"Insider advisor discovered {discovered_count} stocks (from {len(by_ticker)} with purchases, {skipped_net_selling} skipped due to net selling)")

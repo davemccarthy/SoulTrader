@@ -49,8 +49,10 @@ class AdvisorBase:
             stock = Stock()
             stock.symbol = symbol
             stock.advisor = self.advisor
-            stock.save()
             logger.info(f"{self.advisor.name} created stock {stock.symbol}")
+
+        # Latest price
+        stock.refresh()
 
         # Avoid duplicating discovery in the last 7 days
         time_threshold = timezone.now() - timedelta(days=7)

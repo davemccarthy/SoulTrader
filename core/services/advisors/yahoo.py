@@ -129,22 +129,6 @@ class Yahoo(AdvisorBase):
             ticker = yf.Ticker(stock.symbol)
             info = ticker.info
 
-            # Update stock price
-            current_price = info.get('currentPrice') or info.get('regularMarketPrice')
-            if current_price:
-                stock.price = Decimal(str(current_price))
-
-                # Update name if user discovered
-                if stock.company == "":
-                    stock.company = info.get('longName') or info.get('shortName')
-
-                # Update exchange if unknown
-                if stock.exchange == "":
-                    stock.exchange = info.get('fullExchangeName')
-
-                # 1ogo_url
-                stock.save()
-
             # Calculate confidence based on real metrics
             confidence = self._calculate_confidence(info, stock.symbol)
             
