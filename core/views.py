@@ -104,6 +104,18 @@ def holdings(request):
         # Get advisor name for discovery
         discovery = stock.advisor.name if stock.advisor else ""
         
+        # Determine trend class (positive = uptrend, negative = downtrend, neutral = sideways)
+        trend_value = stock.trend
+        if trend_value is not None:
+            if trend_value > 0:
+                trend_class = 'positive'
+            elif trend_value < 0:
+                trend_class = 'negative'
+            else:
+                trend_class = 'neutral'
+        else:
+            trend_class = 'neutral'
+        
         holdings_data.append({
             'symbol': stock.symbol,
             'company': stock.company,
@@ -117,6 +129,8 @@ def holdings(request):
             'average_price': avg_price,
             'total_value': total_value,
             'price_class': price_class,
+            'trend': trend_value,
+            'trend_class': trend_class,
         })
     
     context = {
@@ -278,11 +292,25 @@ def holding_detail(request, stock_id):
 
         trades_payload.append(trade_payload)
 
+    # Determine trend class for detail view
+    trend_value = stock.trend
+    if trend_value is not None:
+        if trend_value > 0:
+            trend_class = 'positive'
+        elif trend_value < 0:
+            trend_class = 'negative'
+        else:
+            trend_class = 'neutral'
+    else:
+        trend_class = 'neutral'
+    
     payload = {
         'stock': {
             'id': stock.id,
             'symbol': stock.symbol,
             'company': stock.company,
+            'trend': float(trend_value) if trend_value is not None else None,
+            'trend_class': trend_class,
             'price': float(current_price),
         },
         'holding': {
