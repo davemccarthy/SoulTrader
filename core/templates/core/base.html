@@ -605,6 +605,49 @@
             color: #475569;
         }
 
+        .sell-instruction-item {
+            display: grid;
+            gap: 0.4rem;
+        }
+
+        .sell-instruction-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .sell-instruction-label {
+            font-weight: 600;
+            font-size: 0.9rem;
+            color: #0f172a;
+        }
+
+        .sell-instruction-status {
+            font-size: 0.75rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .sell-instruction-status.pending {
+            background: #f1f5f9;
+            color: #64748b;
+        }
+
+        .sell-instruction-status.active {
+            background: #fee2e2;
+            color: #dc2626;
+        }
+
+        .sell-instruction-value {
+            font-size: 0.9rem;
+            line-height: 1.5;
+            color: #334155;
+        }
+
         .trade-list {
             display: grid;
             gap: 1rem;

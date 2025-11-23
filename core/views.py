@@ -8,7 +8,7 @@ from django.http import JsonResponse, Http404
 from django.templatetags.static import static
 from decimal import Decimal
 from collections import defaultdict
-from .models import Profile, Holding, Stock, Discovery, Trade, Consensus, Recommendation
+from .models import Profile, Holding, Stock, Discovery, Trade, Consensus, Recommendation, SellInstruction
 
 
 def home(request):
@@ -140,6 +140,8 @@ def _advisor_logo_url(advisor):
 
 @login_required
 def holding_detail(request, stock_id):
+    from django.utils import timezone
+    
     try:
         holding = (
             Holding.objects
@@ -148,6 +150,10 @@ def holding_detail(request, stock_id):
         )
     except Holding.DoesNotExist:
         raise Http404("Holding not found")
+
+    # Get user's profile for risk-based values
+    profile = Profile.objects.get(user=request.user)
+    confidence_low = Decimal(str(Profile.RISK[profile.risk]["confidence_low"]))
 
     stock = holding.stock
     shares = holding.shares or 0
@@ -213,8 +219,38 @@ def holding_detail(request, stock_id):
                 'sa_id': discovery.sa_id,
                 'sa_started': discovery.sa.started.isoformat() if discovery.sa and discovery.sa.started else None,
             }
+            
+            # Get sell instructions for this discovery
+            instructions = SellInstruction.objects.filter(discovery=discovery).order_by('id')
+            sell_instructions = []
+            for instruction in instructions:
+                instruction_data = {
+                    'instruction': instruction.instruction,
+                    'value': float(instruction.value) if instruction.value is not None else None,
+                }
+                
+                # Add status/context for each instruction type
+                if instruction.instruction == 'STOP_LOSS' and instruction.value:
+                    instruction_data['status'] = 'active' if current_price <= instruction.value else 'pending'
+                    instruction_data['current_price'] = float(current_price)
+                elif instruction.instruction == 'TARGET_PRICE' and instruction.value:
+                    instruction_data['status'] = 'active' if current_price >= instruction.value else 'pending'
+                    instruction_data['current_price'] = float(current_price)
+                elif instruction.instruction == 'AFTER_DAYS' and instruction.value:
+                    days_held = (timezone.now() - discovery.created).days
+                    instruction_data['days_held'] = days_held
+                    instruction_data['status'] = 'active' if days_held >= instruction.value else 'pending'
+                elif instruction.instruction == 'CS_FLOOR':
+                    # CS_FLOOR value is always None in DB, populate with user's risk profile confidence_low
+                    instruction_data['value'] = float(confidence_low)
+                    instruction_data['status'] = 'pending'  # CS_FLOOR is checked during analysis
+                    instruction_data['current_consensus'] = float(holding.consensus) if holding.consensus else None
+                
+                sell_instructions.append(instruction_data)
+            trade_payload['sell_instructions'] = sell_instructions
         else:
             trade_payload['discovery'] = None
+            trade_payload['sell_instructions'] = []
 
         consensus = trade.consensus or consensus_map.get(trade.sa_id)
         if consensus:

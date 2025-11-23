@@ -230,7 +230,7 @@ window.detailPanelRenderer = function(data) {
         `;
     }
 
-    function renderTradeCard(trade) {
+    function renderTradeCard(trade, currentPrice) {
         const action = escapeHtml(trade.action || 'UNKNOWN');
         const shares = escapeHtml(trade.shares);
         const price = trade.price != null ? formatCurrency(trade.price) : '—';
@@ -239,6 +239,7 @@ window.detailPanelRenderer = function(data) {
         const saId = escapeHtml(trade.sa_id || '—');
         const discoveryBlock = renderDiscoverySection(trade.discovery);
         const recommendationsBlock = renderRecommendationsSection(trade.recommendations);
+        const sellInstructionsBlock = renderSellInstructionsSection(trade.sell_instructions || [], currentPrice);
 
         return `
             <div class="trade-card">
@@ -251,6 +252,80 @@ window.detailPanelRenderer = function(data) {
                 </div>
                 ${discoveryBlock}
                 ${recommendationsBlock}
+                ${sellInstructionsBlock}
+            </div>
+        `;
+    }
+
+    function renderSellInstructionsSection(sellInstructions, currentPrice) {
+        if (!sellInstructions || !sellInstructions.length) {
+            return '';
+        }
+
+        const instructionEmojis = {
+            'STOP_LOSS': '🛑',
+            'TARGET_PRICE': '🎯',
+            'CS_FLOOR': '📉',
+            'AFTER_DAYS': '📅',
+        };
+
+        const instructionLabels = {
+            'STOP_LOSS': 'STOP LOSS',
+            'TARGET_PRICE': 'TARGET PRICE',
+            'CS_FLOOR': 'CS FLOOR',
+            'AFTER_DAYS': 'AFTER DAYS',
+        };
+
+        const entries = sellInstructions.map((inst) => {
+            const emoji = instructionEmojis[inst.instruction] || '📌';
+            const label = instructionLabels[inst.instruction] || inst.instruction;
+            let valueDisplay = '';
+            let extraInfo = '';
+
+            if (inst.instruction === 'STOP_LOSS' && inst.value != null) {
+                valueDisplay = formatCurrency(inst.value);
+                if (inst.current_price != null) {
+                    const diff = inst.current_price - inst.value;
+                    const diffPercent = inst.value > 0 ? ((diff / inst.value) * 100) : 0;
+                    extraInfo = ` (${diffPercent >= 0 ? '+' : ''}${diffPercent.toFixed(1)}% from current)`;
+                }
+            } else if (inst.instruction === 'TARGET_PRICE' && inst.value != null) {
+                valueDisplay = formatCurrency(inst.value);
+                if (inst.current_price != null) {
+                    const upside = inst.value - inst.current_price;
+                    const upsidePercent = inst.current_price > 0 ? ((upside / inst.current_price) * 100) : 0;
+                    extraInfo = ` (+${upsidePercent.toFixed(1)}% upside)`;
+                }
+            } else if (inst.instruction === 'AFTER_DAYS' && inst.value != null) {
+                valueDisplay = `${inst.value} days`;
+                if (inst.days_held != null) {
+                    const remaining = Math.max(0, inst.value - inst.days_held);
+                    extraInfo = ` (${inst.days_held} days held, ${remaining} remaining)`;
+                }
+            } else if (inst.instruction === 'CS_FLOOR' && inst.value != null) {
+                valueDisplay = inst.value.toFixed(2);
+                if (inst.current_consensus != null) {
+                    const diff = inst.current_consensus - inst.value;
+                    extraInfo = ` (Current: ${inst.current_consensus.toFixed(2)}, ${diff >= 0 ? '+' : ''}${diff.toFixed(2)} above floor)`;
+                }
+            }
+
+            const statusIndicator = inst.status === 'active' ? ' ⚠️ TRIGGERED' : '';
+            const text = `${emoji} ${label}: ${valueDisplay}${extraInfo}${statusIndicator}`;
+            
+            return `
+                <div>${escapeHtml(text)}</div>
+            `;
+        }).join('');
+
+        return `
+            <div class="trade-section">
+                <h6 class="trade-section-title">Sell Instructions</h6>
+                <div class="trade-detail-panel">
+                    <div class="trade-recommendation-entry">
+                        ${entries}
+                    </dive>
+                </div>
             </div>
         `;
     }
@@ -300,7 +375,7 @@ window.detailPanelRenderer = function(data) {
     }
 
     const tradesHtml = data.trades.length
-        ? `<div class="trade-list">${data.trades.map(renderTradeCard).join('')}</div>`
+        ? `<div class="trade-list">${data.trades.map(trade => renderTradeCard(trade, data.stock.price)).join('')}</div>`
         : '<p class="holding-detail-empty">No trades recorded for this holding yet.</p>';
 
     return `

@@ -735,7 +735,7 @@ class Insider(AdvisorBase):
                 # Also recommend it to boost consensus score (helps it pass buy threshold)
                 # Use the calculated score as confidence, but ensure it's at least 0.55 (to push average up)
                 recommendation_confidence = Decimal(str(max(avg_score, 0.55)))
-                recommendation_note = f"Insider purchase signal: {explanation}"
+                recommendation_note = f"Boosted confidnce score to influence buy: {recommendation_confidence}"
                 self.recommend(sa, stock, recommendation_confidence, recommendation_note)
                 
                 discovered_count += 1

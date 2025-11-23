@@ -96,7 +96,7 @@ def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus):
             execute_sell(sa, user, profile, None, sacrifice, f"Sacrificed for better stock {consensus.stock.symbol}")
             profile.refresh_from_db(fields=["cash"])
         else:
-            logger.warning("No cash to buy %s", consensus.stock.symbol)
+            logger.warning("Low on cash. %s not worthy of sellnig existing stock", consensus.stock.symbol)
             return
 
     logger.info(f"Trade: {user.username} buying {shares} shares of {consensus.stock.symbol} at ${consensus.stock.price}. Holding {holding.shares}")
