@@ -22,6 +22,9 @@ from django.utils import timezone
 from datetime import timedelta
 from decimal import Decimal
 
+import yfinance as yf
+import logging
+
 # Your models go here
 # Keep them simple and aligned with your SQL queries in analysis.py
 
@@ -52,7 +55,6 @@ class Profile(models.Model):
         },
     }
 
-
     user = models.ForeignKey(User, on_delete=models.DO_NOTHING)
     risk = models.CharField(max_length=20, choices=[(key, key.replace('_', ' ').title()) for key in RISK.keys()], default='MODERATE')
     investment = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('100000.00'))
@@ -77,13 +79,63 @@ class Stock(models.Model):
     company = models.CharField(max_length=200)
     exchange = models.CharField(max_length=32)
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0.0)
+    trend = models.DecimalField(max_digits=5, decimal_places=4, null=True, blank=True)
     advisor = models.ForeignKey(Advisor, on_delete=models.DO_NOTHING, null=True, blank=True, default=None)
     updated = models.DateTimeField(auto_now=True)
 
+    def calc_trend(self, period="1d", interval="15m"):
+        """
+        Calculate trend using linear regression slope on price history.
+
+        Args:
+            period: Time period for history (default: "2d" for 2 days)
+            interval: Data interval (default: "60m" for hourly)
+
+        Returns:
+            Decimal: slope value (positive = uptrend, negative = downtrend, ~0 = sideways) or None if calculation fails
+        """
+        import numpy as np
+        from sklearn.linear_model import LinearRegression
+
+        logger = logging.getLogger(__name__)
+
+        try:
+            if not self.price or self.price == 0:
+                return None
+
+            ticker = yf.Ticker(self.symbol)
+            hist = ticker.history(period=period, interval=interval)
+
+            if hist.empty or 'Close' not in hist.columns:
+                logger.warning(f"No history data for {self.symbol}")
+                return None
+
+            # Get price array
+            prices = hist['Close'].values
+
+            if len(prices) < 2:
+                logger.warning(f"Not enough data points for {self.symbol}")
+                return None
+
+            # Create x values (time indices: 0, 1, 2, ...)
+            y = np.array(prices)
+            x = np.arange(len(prices)).reshape(-1, 1)
+
+            # Fit linear regression
+            model = LinearRegression().fit(x, y)
+            slope = model.coef_[0]
+
+            # Normalize by average price
+            avg_price = hist['Close'].mean()
+            normalized_slope = (slope / avg_price) * 100
+
+            return Decimal(str(normalized_slope))
+
+        except Exception as e:
+            logger.warning(f"Could not calculate trend for {self.symbol}: {e}")
+            return None
+
     def refresh(self):
-        from decimal import Decimal
-        import yfinance as yf
-        import logging
 
         logger = logging.getLogger(__name__)
 
@@ -109,8 +161,11 @@ class Stock(models.Model):
                 if exchange:
                     self.exchange = exchange
 
+            # Calculate weighted trend (combines trend and velocity)  1-day 15-minute history
+            self.trend = self.calc_trend()
             self.save()
-            logger.info(f"Updated {self.symbol} {self.price}") # TMP
+
+            logger.info(f"Updated {self.symbol} {self.price} (trend: {self.trend})") # TMP
         except Exception as e:
             logger.warning(f"Could not auto-update {self.symbol}: {e}")
 
@@ -150,6 +205,7 @@ class SellInstruction(models.Model):
         ("TARGET_PRICE", "Target Price"),
         ("CS_FLOOR", "CS Floor"),
         ("AFTER_DAYS", "After Days"),
+        ("DESCENDING_TREND", 'Dedcending trend')
     ]
 
     discovery = models.ForeignKey(Discovery, on_delete=models.DO_NOTHING)

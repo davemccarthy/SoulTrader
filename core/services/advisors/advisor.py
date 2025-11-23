@@ -64,6 +64,9 @@ class AdvisorBase:
             logger.info(f"{self.advisor.name} already recorded discovery for {stock.symbol}")
             return stock
 
+        # TMP to track stock trend
+        explanation = f"{explanation} | Trend: {stock.trend}"
+
         # Create new Discovery record
         discovery = Discovery()
         discovery.sa = sa

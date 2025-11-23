@@ -88,6 +88,12 @@ def analyze_holdings(sa, users, advisors):
                             execute_sell(sa, user, profile, consensus, holding, f"{holding.stock.symbol} after holding for {days_held} days (target: {instruction.value} days)")
                             break
 
+                    elif instruction.instruction == 'DESCENDING_TREND' and instruction.value != 0.0: # TMP CHECK
+                        if holding.stock.trend < instruction.value:
+                            # execute_sell(sa, user, profile, consensus, holding, f"{holding.stock.symbol} descending detection of ${instruction.value:.2f}")
+                            print(f"*************** {holding.stock.symbol} descending detection of ${holding.stock.trend:.2f}")
+                            break
+
                     elif instruction.instruction == 'CS_FLOOR':
 
                         consensus = build_consensus(sa, advisors, holding.stock)
