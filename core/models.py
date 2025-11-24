@@ -34,24 +34,25 @@ class Profile(models.Model):
     # Risky business
     RISK = {
         "CONSERVATIVE": {
-            "confidence_high": 0.85,
-            "confidence_low": 0.6,
+            "confidence_high": 0.7,
+            "confidence_low": 0.55,
+            "min_price": 5.0,
+            "max_price": 1000.0,
             "stocks": 50
         },
         "MODERATE": {
-            "confidence_high": 0.7,
-            "confidence_low": 0.55,
+            "confidence_high": 0.55,
+            "confidence_low": 0.45,
+            "min_price": 2.0,
+            "max_price": 200.0,
             "stocks": 40
         },
         "AGGRESSIVE": {
-            "confidence_high": 0.55,
-            "confidence_low": 0.55,
-            "stocks": 30
-        },
-        "EXPERIMENTAL": {
             "confidence_high": 0.0,
             "confidence_low": 0.0,
-            "stocks": 40
+            "min_price": 0.0,
+            "max_price": 20.0,
+            "stocks": 30
         },
     }
 
@@ -83,16 +84,17 @@ class Stock(models.Model):
     advisor = models.ForeignKey(Advisor, on_delete=models.DO_NOTHING, null=True, blank=True, default=None)
     updated = models.DateTimeField(auto_now=True)
 
-    def calc_trend(self, period="1d", interval="15m"):
+    def calc_trend(self, period="1d", interval="15m", hours=12):
         """
         Calculate trend using linear regression slope on price history.
-
+        
         Args:
-            period: Time period for history (default: "2d" for 2 days)
-            interval: Data interval (default: "60m" for hourly)
-
+            period: Time period for history (default: "1d" for 1 day)
+            interval: Data interval (default: "15m" for 15 minutes)
+            hours: Optional - limit to last N hours of data (default: 12 hours)
+        
         Returns:
-            Decimal: slope value (positive = uptrend, negative = downtrend, ~0 = sideways) or None if calculation fails
+            Decimal: normalized slope value (positive = uptrend, negative = downtrend, ~0 = sideways) or None if calculation fails
         """
         import numpy as np
         from sklearn.linear_model import LinearRegression
@@ -109,6 +111,24 @@ class Stock(models.Model):
             if hist.empty or 'Close' not in hist.columns:
                 logger.warning(f"No history data for {self.symbol}")
                 return None
+
+            # If hours specified, slice to last N hours
+            if hours is not None:
+                # Calculate number of intervals for N hours
+                # Parse interval (e.g., "15m", "30m", "60m", "1h")
+                interval_str = interval.lower()
+                if 'h' in interval_str:
+                    interval_minutes = int(interval_str.replace('h', '')) * 60
+                elif 'm' in interval_str:
+                    interval_minutes = int(interval_str.replace('m', ''))
+                else:
+                    interval_minutes = 60  # Default to 60 minutes if unclear
+                
+                intervals_per_hour = 60 / interval_minutes
+                num_intervals = int(hours * intervals_per_hour)
+                
+                if len(hist) > num_intervals:
+                    hist = hist.tail(num_intervals)
 
             # Get price array
             prices = hist['Close'].values
@@ -161,7 +181,7 @@ class Stock(models.Model):
                 if exchange:
                     self.exchange = exchange
 
-            # Calculate weighted trend (combines trend and velocity)  1-day 15-minute history
+            # Calculate trend using last 12 hours of 15-minute history
             self.trend = self.calc_trend()
             self.save()
 

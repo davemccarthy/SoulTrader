@@ -77,6 +77,21 @@ def holdings(request):
         .select_related('stock', 'stock__advisor')
     )
     
+    # Get all SA IDs for discoveries lookup
+    sa_ids = {h.latest_trade_sa for h in holdings_list if h.latest_trade_sa}
+    
+    # Prefetch discoveries for all holdings
+    discoveries_map = {}
+    if sa_ids:
+        discoveries = Discovery.objects.select_related('advisor').filter(
+            sa_id__in=sa_ids,
+            stock_id__in=[h.stock_id for h in holdings_list]
+        )
+        for discovery in discoveries:
+            key = (discovery.stock_id, discovery.sa_id)
+            if key not in discoveries_map:
+                discoveries_map[key] = discovery
+    
     # Annotate with calculated fields
     holdings_data = []
     for holding in holdings_list:
@@ -101,8 +116,18 @@ def holdings(request):
         else:
             price_class = 'neutral'
         
-        # Get advisor name for discovery
-        discovery = stock.advisor.name if stock.advisor else ""
+        # Get advisor name for discovery - use Discovery if available, fallback to stock.advisor
+        discovery_obj = None
+        if holding.latest_trade_sa:
+            discovery_obj = discoveries_map.get((stock.id, holding.latest_trade_sa))
+        
+        if discovery_obj:
+            discovery = discovery_obj.advisor.name if discovery_obj.advisor else ""
+            discovery_advisor = discovery_obj.advisor
+        else:
+            # Fallback to stock.advisor if no discovery found
+            discovery = stock.advisor.name if stock.advisor else ""
+            discovery_advisor = stock.advisor
         
         # Determine trend class (positive = uptrend, negative = downtrend, neutral = sideways)
         trend_value = stock.trend
@@ -123,7 +148,7 @@ def holdings(request):
             'change_percent': change_percent,
             'pl': pl,
             'discovery': discovery,
-            'discovery_logo': _advisor_logo_url(stock.advisor),
+            'discovery_logo': _advisor_logo_url(discovery_advisor),
             'stock_id': stock.id,
             'shares': shares,
             'average_price': avg_price,

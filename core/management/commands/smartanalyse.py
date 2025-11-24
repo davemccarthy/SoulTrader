@@ -57,10 +57,13 @@ class Command(BaseCommand):
             type=str,
             help='Force discovery for given stock symbol'
         )
+        parser.add_argument(
+            '--explanation',
+            type=str,
+            help='Explanation for discovered stock (used with --discover)'
+        )
     
     def handle(self, *args, **options):
-
-        self.stdout.write('Starting Smart Analysis...')
 
         # Params
         param_holdings_only = options['holdings_only']
@@ -95,6 +98,8 @@ class Command(BaseCommand):
             sa = SmartAnalysis.objects.last()
             print(sa)
 
+        self.stdout.write(f"Starting Smart Analysis ({sa.id}) ...")
+
         # Tmp: create missing profiles
         for user in users:
             Profile.objects.get_or_create(user=user)
@@ -116,8 +121,11 @@ class Command(BaseCommand):
                 # Split on comma and strip whitespace
                 symbols = [s.strip().upper() for s in options['discover'].split(',')]
 
+                # Get explanation if provided
+                explanation = options.get('explanation')
+
                 for symbol in symbols:
-                    adv.discovered( sa=sa, symbol=symbol)
+                    adv.discovered( sa=sa, symbol=symbol, explanation=explanation)
 
 
         # Lets go

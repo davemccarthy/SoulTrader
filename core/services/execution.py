@@ -59,6 +59,27 @@ def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus):
         logger.warning(f"Trade: no price for {consensus.stock.symbol}")
         return
 
+    # Check price against user's risk profile min/max buy prices
+    risk_settings = Profile.RISK.get(profile.risk, {})
+    min_price = Decimal(str(risk_settings.get('min_price', 0.0)))
+    max_price = Decimal(str(risk_settings.get('max_price', float('inf'))))
+    
+    stock_price = consensus.stock.price
+    
+    if stock_price < min_price:
+        logger.info(
+            f"Trade: {user.username} NOT buying {consensus.stock.symbol} at ${stock_price:.2f}. "
+            f"Price ${stock_price:.2f} below minimum ${min_price:.2f} for {profile.risk} risk profile"
+        )
+        return
+    
+    if stock_price > max_price:
+        logger.info(
+            f"Trade: {user.username} NOT buying {consensus.stock.symbol} at ${stock_price:.2f}. "
+            f"Price ${stock_price:.2f} above maximum ${max_price:.2f} for {profile.risk} risk profile"
+        )
+        return
+
     # Calculate no. shares to buy
     shares = int(allowance / consensus.stock.price)
 
@@ -79,8 +100,15 @@ def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus):
 
     # Sacrifce stock for better stock
     while profile.cash < cost:
+        # Only sacrifice stocks that have CS_FLOOR instruction from their discovery
         sacrifice = (
-            Holding.objects.filter(user=user, consensus__lt=stk_consensus, consensus__gt=0, shares__gt=0)
+            Holding.objects.filter(
+                user=user,
+                consensus__lt=stk_consensus,
+                consensus__gt=0,
+                shares__gt=0,
+                stock__discovery__sellinstruction__instruction='CS_FLOOR'
+            )
             .order_by("consensus")
             .first()
         )
