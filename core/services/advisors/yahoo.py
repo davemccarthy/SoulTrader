@@ -1,5 +1,7 @@
 import logging
 from decimal import Decimal
+import pandas as pd
+import pandas_ta as ta
 
 import yfinance as yf
 from yfinance.screener import EquityQuery as YfEquityQuery
@@ -9,6 +11,12 @@ from core.services.advisors.advisor import AdvisorBase, register
 logger = logging.getLogger(__name__)
 
 MAX_PRICE = 5.0
+
+# Notional price discovery settings
+UNDERVALUED_RATIO_THRESHOLD = 0.66
+MIN_PROFIT_MARGIN = 0.0
+MAX_YEARLY_LOSS = -50.0
+MIN_MARKET_CAP = 100_000_000
 
 
 CUSTOM_SCREEN_QUERY = YfEquityQuery(
@@ -38,6 +46,376 @@ class Yahoo(AdvisorBase):
             # If passed an advisor object, use its name
             super().__init__(advisor.name)
             self.advisor = advisor
+
+    # ============================================================================
+    # NOTIONAL PRICE CALCULATION METHODS
+    # ============================================================================
+
+    def _calculate_notional_price_dcf(self, ticker_info):
+        """Calculate notional price using DCF method (simplified)."""
+        try:
+            fcf = ticker_info.get('freeCashflow') or ticker_info.get('operatingCashflow')
+            shares = ticker_info.get('sharesOutstanding')
+            
+            if not fcf or not shares or fcf <= 0 or shares <= 0:
+                return None
+            
+            # Simplified DCF: assume 5% growth, 10% discount rate, 10x terminal multiple
+            growth_rate = 0.05
+            discount_rate = 0.10
+            terminal_multiple = 10.0
+            years = 5
+            
+            # Project FCF for 5 years
+            pv_fcf = 0
+            for year in range(1, years + 1):
+                future_fcf = fcf * ((1 + growth_rate) ** year)
+                pv_fcf += future_fcf / ((1 + discount_rate) ** year)
+            
+            # Terminal value
+            terminal_fcf = fcf * ((1 + growth_rate) ** years)
+            terminal_value = terminal_fcf * terminal_multiple
+            pv_terminal = terminal_value / ((1 + discount_rate) ** years)
+            
+            equity_value = pv_fcf + pv_terminal
+            notional_price = equity_value / shares
+            
+            return notional_price
+        except:
+            return None
+
+    def _calculate_notional_price_pe(self, ticker_info):
+        """Calculate notional price using P/E multiple method."""
+        try:
+            eps = ticker_info.get('trailingEps') or ticker_info.get('forwardEps')
+            shares = ticker_info.get('sharesOutstanding')
+            
+            if not eps or not shares or eps <= 0 or shares <= 0:
+                return None
+            
+            # Use sector average P/E, not company's own P/E
+            sector_pe_map = {
+                'Technology': 28.0,
+                'Healthcare': 22.0,
+                'Financial Services': 13.0,
+                'Consumer Cyclical': 19.0,
+                'Consumer Defensive': 21.0,
+                'Energy': 11.0,
+                'Industrials': 19.0,
+                'Basic Materials': 16.0,
+                'Real Estate': 18.0,
+                'Utilities': 16.0,
+                'Communication Services': 16.0,
+            }
+            
+            sector = ticker_info.get('sector', '')
+            pe_ratio = sector_pe_map.get(sector, 18.0)  # Default to market average
+            
+            notional_price = eps * pe_ratio
+            return notional_price
+        except:
+            return None
+
+    def _calculate_notional_price_ev_ebitda(self, ticker_info):
+        """Calculate notional price using EV/EBITDA multiple method."""
+        try:
+            ebitda = ticker_info.get('ebitda')
+            shares = ticker_info.get('sharesOutstanding')
+            market_cap = ticker_info.get('marketCap')
+            total_debt = ticker_info.get('totalDebt') or 0
+            cash = ticker_info.get('totalCash') or 0
+            
+            if not ebitda or not shares or ebitda <= 0 or shares <= 0:
+                return None
+            
+            # Use company's own EV/EBITDA if available, otherwise use sector average
+            ev_ebitda = ticker_info.get('enterpriseToEbitda') or 10.0
+            
+            # Calculate Enterprise Value
+            enterprise_value = ebitda * ev_ebitda
+            
+            # Convert to Equity Value
+            net_debt = total_debt - cash
+            equity_value = enterprise_value - net_debt
+            
+            # If we have market cap, use it to validate/adjust
+            if market_cap and market_cap > 0:
+                # Use a blend: 70% calculated, 30% market-based
+                equity_value = equity_value * 0.7 + market_cap * 0.3
+            
+            notional_price = equity_value / shares
+            return notional_price
+        except:
+            return None
+
+    def _calculate_notional_price_revenue(self, ticker_info):
+        """Calculate notional price using revenue multiple method."""
+        try:
+            revenue_per_share = ticker_info.get('revenuePerShare')
+            shares = ticker_info.get('sharesOutstanding')
+            total_revenue = ticker_info.get('totalRevenue')
+            
+            if not revenue_per_share and total_revenue and shares and shares > 0:
+                revenue_per_share = total_revenue / shares
+            
+            if not revenue_per_share or revenue_per_share <= 0:
+                return None
+            
+            # Use price-to-sales ratio (default 2.0 for growth companies)
+            ps_ratio = ticker_info.get('priceToSalesTrailing12Months')
+            if not ps_ratio or ps_ratio < 0.5 or ps_ratio > 20:
+                ps_ratio = 2.0
+            
+            notional_price = revenue_per_share * ps_ratio
+            
+            # Sanity check
+            if notional_price > 10000:
+                return None
+            
+            return notional_price
+        except:
+            return None
+
+    def _calculate_notional_price_book(self, ticker_info):
+        """Calculate notional price using price-to-book method."""
+        try:
+            book_value = ticker_info.get('bookValue')
+            shares = ticker_info.get('sharesOutstanding')
+            
+            if not book_value or not shares or book_value <= 0 or shares <= 0:
+                return None
+            
+            book_per_share = book_value / shares
+            
+            # Use company's P/B if available, otherwise use sector average (default 1.5)
+            pb_ratio = ticker_info.get('priceToBook') or 1.5
+            
+            notional_price = book_per_share * pb_ratio
+            return notional_price
+        except:
+            return None
+
+    def _calculate_best_notional_price(self, ticker_info):
+        """Calculate notional price using the best available method."""
+        methods = []
+        actual_price = ticker_info.get('currentPrice') or ticker_info.get('regularMarketPrice') or 0
+        
+        # Try EV/EBITDA first (most reliable for most companies)
+        ev_ebitda_price = self._calculate_notional_price_ev_ebitda(ticker_info)
+        if ev_ebitda_price and ev_ebitda_price > 0 and ev_ebitda_price < actual_price * 10:
+            methods.append(('EV/EBITDA', ev_ebitda_price))
+        
+        # Try P/E (good for profitable companies)
+        pe_price = self._calculate_notional_price_pe(ticker_info)
+        if pe_price and pe_price > 0 and pe_price < actual_price * 10:
+            methods.append(('P/E', pe_price))
+        
+        # Try DCF (most rigorous but requires assumptions)
+        dcf_price = self._calculate_notional_price_dcf(ticker_info)
+        if dcf_price and dcf_price > 0 and dcf_price < actual_price * 10:
+            methods.append(('DCF', dcf_price))
+        
+        # Try P/B (for financial companies)
+        pb_price = self._calculate_notional_price_book(ticker_info)
+        if pb_price and pb_price > 0 and pb_price < actual_price * 10:
+            methods.append(('P/B', pb_price))
+        
+        # Try Revenue multiple last (for growth companies, less reliable)
+        revenue_price = self._calculate_notional_price_revenue(ticker_info)
+        if revenue_price and revenue_price > 0 and revenue_price < actual_price * 10:
+            methods.append(('Revenue', revenue_price))
+        
+        if not methods:
+            return None, None
+        
+        # Use the method with the most reasonable price
+        if actual_price and actual_price > 0:
+            valid_methods = [m for m in methods if m[1] > actual_price * 0.5 and m[1] < actual_price * 5]
+            if valid_methods:
+                best_method = min(valid_methods, key=lambda x: abs(x[1] - actual_price))
+            else:
+                best_method = min(methods, key=lambda x: abs(x[1] - actual_price))
+        else:
+            best_method = methods[0]
+        
+        return best_method[0], best_method[1]
+
+    # ============================================================================
+    # DISCOVERY HELPER METHODS
+    # ============================================================================
+
+    def _get_active_stocks(self, limit=200):
+        """Get most active stocks from Yahoo Finance."""
+        try:
+            most_active_query = YfEquityQuery(
+                "and",
+                [
+                    YfEquityQuery("is-in", ["exchange", "NMS", "NYQ"]),
+                    YfEquityQuery("gt", ["intradayprice", 1.0]),
+                ],
+            )
+            
+            max_size = min(limit * 2, 250)
+            response = yf.screen(
+                most_active_query,
+                offset=0,
+                size=max_size,
+                sortField="intradayprice",
+                sortAsc=True,
+            )
+            
+            quotes = response.get("quotes", [])
+            stocks = []
+            
+            for quote in quotes:
+                symbol = quote.get('symbol')
+                name = quote.get('shortName') or quote.get('longName', 'N/A')
+                price = quote.get('regularMarketPrice') or quote.get('intradayprice')
+                volume = quote.get('volume') or quote.get('regularMarketVolume') or 0
+                
+                if symbol and price:
+                    stocks.append({
+                        'symbol': symbol,
+                        'name': name,
+                        'price': float(price),
+                        'volume': float(volume) if volume else 0.0,
+                    })
+            
+            stocks.sort(key=lambda x: x['volume'], reverse=True)
+            return stocks[:limit]
+            
+        except Exception as e:
+            logger.warning(f"Error fetching active stocks: {e}")
+            return []
+
+    def _filter_fundamentals(self, results):
+        """Filter stocks by fundamental metrics."""
+        filtered = []
+        
+        for stock in results:
+            profit_margin = stock.get('profit_margin', 0) or 0
+            yearly_change = stock.get('yearly_change_pct', 0) or 0
+            market_cap = stock.get('market_cap', 0) or 0
+            
+            # Check profit margin
+            if profit_margin < MIN_PROFIT_MARGIN:
+                continue
+            
+            # Check yearly loss
+            if yearly_change < MAX_YEARLY_LOSS:
+                continue
+            
+            # Check market cap
+            if market_cap < MIN_MARKET_CAP:
+                continue
+            
+            filtered.append(stock)
+        
+        return filtered
+
+    # ============================================================================
+    # DISCOVERY METHODS
+    # ============================================================================
+
+    def discover(self, sa):
+        """Discover undervalued stocks using notional price method with fundamental filters."""
+        try:
+            # Get most active stocks
+            stocks = self._get_active_stocks(limit=200)
+            if not stocks:
+                logger.warning("No active stocks retrieved")
+                return
+            
+            # Calculate notional prices
+            results = []
+            batch_size = 20
+            
+            for i in range(0, len(stocks), batch_size):
+                batch = stocks[i:i+batch_size]
+                
+                for stock in batch:
+                    try:
+                        ticker = yf.Ticker(stock['symbol'])
+                        info = ticker.info
+                        
+                        method, notional_price = self._calculate_best_notional_price(info)
+                        
+                        if notional_price and notional_price > 0:
+                            actual_price = stock['price']
+                            discount_ratio = actual_price / notional_price
+                            
+                            # Get fundamental metrics
+                            profit_margin = info.get('profitMargins', 0) or 0
+                            yearly_change = (info.get('fiftyTwoWeekChangePercent', 0) or 0) * 100
+                            market_cap = info.get('marketCap', 0) or 0
+                            
+                            results.append({
+                                'symbol': stock['symbol'],
+                                'name': stock['name'],
+                                'actual_price': actual_price,
+                                'notional_price': notional_price,
+                                'discount_ratio': discount_ratio,
+                                'method': method,
+                                'profit_margin': profit_margin,
+                                'yearly_change_pct': yearly_change,
+                                'market_cap': market_cap,
+                            })
+                    except Exception as e:
+                        logger.debug(f"Error processing {stock.get('symbol', 'unknown')}: {e}")
+                        continue
+            
+            if not results:
+                logger.info("No stocks with notional prices calculated")
+                return
+            
+            # Filter by fundamentals
+            fundamental_filtered = self._filter_fundamentals(results)
+            
+            if not fundamental_filtered:
+                logger.info("No stocks passed fundamental filters")
+                return
+            
+            # Filter for undervalued (actual/notional <= threshold)
+            undervalued = [
+                r for r in fundamental_filtered 
+                if r['discount_ratio'] <= UNDERVALUED_RATIO_THRESHOLD
+            ]
+            
+            if not undervalued:
+                logger.info("No undervalued stocks found (ratio <= %.2f)", UNDERVALUED_RATIO_THRESHOLD)
+                return
+
+            # Pass sell instructions 
+            sell_instructions = [
+                ("TARGET_PRICE", 1.20),
+                ("STOP_LOSS", 0.98),
+                ('DESCENDING_TREND', -0.40),
+                ('CS FLOOR', 0.00)
+            ]
+            
+            # Discover each undervalued stock
+            discovered = 0
+            for stock in undervalued:
+                discount_pct = (1 - stock['discount_ratio']) * 100
+                upside = stock['notional_price'] - stock['actual_price']
+                upside_pct = (upside / stock['actual_price']) * 100 if stock['actual_price'] > 0 else 0
+                
+                explanation_parts = [
+                    f"Actual: ${stock['actual_price']:.2f}",
+                    f"Notional: ${stock['notional_price']:.2f}",
+                    f"Discount: {discount_pct:.1f}%",
+                    f"Upside: {upside_pct:.1f}%",
+                    f"Method: {stock['method']}",
+                ]
+                
+                explanation = " | ".join(explanation_parts)
+                self.discovered(sa, stock['symbol'], stock['name'], explanation)
+                discovered += 1
+            
+            logger.info("Yahoo notional price discovery complete: %s stocks found", discovered)
+            
+        except Exception as e:
+            logger.error(f"Error in notional price discovery: {e}", exc_info=True)
 
     def discover_yfinance(self, sa):
         """Discover stocks using Yahoo Finance screener filters."""
@@ -123,18 +501,94 @@ class Yahoo(AdvisorBase):
             return None
 
     def analyze(self, sa, stock):
-        """Analyze stock using Yahoo Finance data"""
+        """Analyze stock using Yahoo Finance data + technical indicators"""
         try:
             # Get real-time data
             ticker = yf.Ticker(stock.symbol)
             info = ticker.info
 
-            # Calculate confidence based on real metrics
-            confidence = self._calculate_confidence(info, stock.symbol)
+            # --- TECHNICAL ANALYSIS (from Polygon) ---
+            technical_score = None
+            technical_explanation = []
+            
+            try:
+                # Fetch 2 years of daily historical data
+                hist = ticker.history(period="2y", interval="1d")
+                
+                if not hist.empty and len(hist) >= 50:  # Need at least 50 days for SMA50
+                    # Calculate technical indicators (same as Polygon)
+                    hist['SMA50'] = ta.sma(hist['Close'], length=50)
+                    hist['SMA200'] = ta.sma(hist['Close'], length=200) if len(hist) >= 200 else None
+                    hist['RSI'] = ta.rsi(hist['Close'], length=14)
+                    macd = ta.macd(hist['Close'])
+                    hist = pd.concat([hist, macd], axis=1)
+                    
+                    latest = hist.iloc[-1]
+                    current_price = float(latest['Close'])
+                    
+                    # Calculate technical score (same logic as Polygon)
+                    tech_score = 0.5  # neutral base
+                    
+                    sma50 = latest.get('SMA50')
+                    sma200 = latest.get('SMA200')
+                    rsi = latest.get('RSI')
+                    
+                    # SMA trend analysis
+                    if sma50 is not None and sma200 is not None:
+                        if current_price > sma50 > sma200:
+                            tech_score += 0.2
+                        elif current_price < sma50 < sma200:
+                            tech_score -= 0.2
+                        elif current_price > sma50:
+                            tech_score += 0.05
+                        else:
+                            tech_score -= 0.05
+                    elif sma50 is not None:
+                        if current_price > sma50:
+                            tech_score += 0.05
+                        else:
+                            tech_score -= 0.05
+                    
+                    # RSI contribution
+                    if rsi is not None and not pd.isna(rsi):
+                        rsi_norm = max(0, min(1, (50 - abs(rsi - 50)) / 50))
+                        tech_score += 0.1 * rsi_norm
+                    
+                    # MACD contribution
+                    macd_hist = latest.get('MACDh_12_26_9', 0)
+                    if macd_hist is not None and not pd.isna(macd_hist):
+                        tech_score += 0.1 if macd_hist > 0 else -0.1
+                    
+                    technical_score = max(0.0, min(1.0, tech_score))
+                    
+                    # Build technical explanation
+                    sma50_str = f"{sma50:.2f}" if sma50 is not None and not pd.isna(sma50) else "N/A"
+                    sma200_str = f"{sma200:.2f}" if sma200 is not None and not pd.isna(sma200) else "N/A"
+                    rsi_str = f"{rsi:.2f}" if rsi is not None and not pd.isna(rsi) else "N/A"
+                    macd_hist_str = f"{macd_hist:.2f}" if macd_hist is not None and not pd.isna(macd_hist) else "N/A"
+                    technical_explanation.append(f"SMA50: {sma50_str}, SMA200: {sma200_str}, RSI: {rsi_str}, MACD: {macd_hist_str}")
+                    
+            except Exception as e:
+                logger.debug(f"Yahoo technical analysis failed for {stock.symbol}: {e}")
+                # Continue with fundamental-only analysis
+            
+            # --- FUNDAMENTAL ANALYSIS (EXISTING) ---
+            fundamental_score = self._calculate_confidence(info, stock.symbol)
+            
+            # --- COMBINE SCORES ---
+            if technical_score is not None:
+                # Weighted combination: 60% technical, 40% fundamental
+                confidence = (technical_score * 0.6) + (fundamental_score * 0.4)
+            else:
+                # Fallback to fundamental-only if technical fails
+                confidence = fundamental_score
             
             # Build detailed analysis explanation
             explanation_parts = []
-            #explanation_parts.append(f"Confidence Score: {confidence:.2f}")
+            
+            # Add technical indicators if available
+            if technical_explanation:
+                explanation_parts.extend(technical_explanation)
             
             # Add key factors that influenced the score
             pe_ratio = info.get('trailingPE', 0)

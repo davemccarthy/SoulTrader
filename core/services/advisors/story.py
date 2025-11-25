@@ -14,30 +14,53 @@ class Story(AdvisorBase):
     def discover(self, sa):
         """Discover stocks from StockStory news articles"""
         try:
-            # Calculate time window: since last SA session for this username
+            # Get time window: from previous SA to current SA
             prev_sa = SmartAnalysis.objects.filter(
-                username=sa.username,
                 id__lt=sa.id
             ).order_by('-id').first()
-
-            # Set bounds: prev SA started -> current SA started
-            sa_end_utc = timezone.make_aware(sa.started) if timezone.is_naive(sa.started) else sa.started
+            
+            # Set bounds: prev SA started -> now (to catch articles published since SA started)
+            end_time = timezone.now()
             if prev_sa:
-                sa_start_utc = timezone.make_aware(prev_sa.started) if timezone.is_naive(
-                    prev_sa.started) else prev_sa.started
+                start_time = timezone.make_aware(prev_sa.started) if timezone.is_naive(prev_sa.started) else prev_sa.started
             else:
-                sa_start_utc = sa_end_utc - timedelta(hours=12)
-
+                # Fallback: last 24 hours if no previous SA
+                start_time = end_time - timedelta(hours=24)
+            
             # Fetch StockStory articles within the time window
-            articles = self._fetch_stockstory_articles(sa_start_utc, sa_end_utc)
+            articles = self._fetch_stockstory_articles(start_time, end_time)
             
             if not articles:
-                logger.info("No StockStory articles found in time window")
                 return
-
+            
+            # Track statistics
+            total_found = len(articles)
+            accepted_count = 0
+            rejected_count = 0
+            
             # Process each article through Gemini
-            for url, title in articles:
-                self.news_flash(sa, title, url)
+            for article_data in articles:
+                if len(article_data) == 3:
+                    url, title, ticker_price_text = article_data
+                else:
+                    # Backward compatibility
+                    url, title = article_data
+                    ticker_price_text = ""
+                
+                # Filter by title: reject articles containing "Analyst Questions" or "Stocks"
+                if "Analyst Questions" in title or "Stocks" in title:
+                    rejected_count += 1
+                    continue
+                
+                # Filter: only accept articles about a single stock
+                if self._is_single_stock_article(ticker_price_text):
+                    self.news_flash(sa, title, url)
+                    accepted_count += 1
+                else:
+                    rejected_count += 1
+            
+            # Summary statistics
+            logger.info(f"StockStory: Summary - {total_found} articles found, {accepted_count} accepted, {rejected_count} rejected")
 
         except Exception as e:
             logger.error(f"StockStory discovery error: {e}", exc_info=True)
@@ -68,15 +91,27 @@ class Story(AdvisorBase):
             all_links = soup.find_all('a', href=True)
             articles = []
             
+            # Convert times to UTC for comparison
+            start_utc = start_time.astimezone(dt_timezone.utc) if start_time.tzinfo else start_time.replace(tzinfo=dt_timezone.utc)
+            end_utc = end_time.astimezone(dt_timezone.utc) if end_time.tzinfo else end_time.replace(tzinfo=dt_timezone.utc)
+            
+            logger.info(f"StockStory: Time window - {start_utc} to {end_utc}")
+            
+            article_links_found = 0
+            articles_with_time = 0
+            articles_in_window = 0
+            
             for link in all_links:
                 href = link.get('href', '')
                 text = link.get_text(strip=True)
                 
-                # Look for links that might be articles (StockStory uses /story/news/ pattern)
+                # Look for article links
                 if '/story/news/' in href and len(text) > 20:
                     # Skip navigation/category links
                     if any(skip in href.lower() for skip in ['/authors/', '/exclusives', '/chart-of', '/categories']):
                         continue
+                    
+                    article_links_found += 1
                     
                     # Build full URL
                     if href.startswith('/'):
@@ -86,39 +121,42 @@ class Story(AdvisorBase):
                     else:
                         continue
                     
-                    # Try to find the article's timestamp
-                    article_time = self._extract_article_time(link, soup)
+                    # Try to extract article timestamp
+                    article_time = self._extract_article_time(link)
                     
-                    # If still no time found, try finding nearby time elements
-                    if article_time is None:
-                        article_time = self._find_nearby_time(link, soup)
-                    
-                    # Only include articles with timestamps (ignore sponsored content without timestamps)
-                    # and within our time window
+                    # Only include articles with timestamps within our window
                     if article_time:
-                        # Ensure article_time is timezone-aware for comparison
+                        articles_with_time += 1
+                        # Ensure timezone-aware
                         if article_time.tzinfo is None:
                             article_time = article_time.replace(tzinfo=dt_timezone.utc)
                         else:
-                            # Convert to UTC if needed
                             article_time = article_time.astimezone(dt_timezone.utc)
                         
-                        # Convert start/end times to UTC for comparison
-                        start_utc = start_time.astimezone(dt_timezone.utc) if start_time.tzinfo else start_time.replace(tzinfo=dt_timezone.utc)
-                        end_utc = end_time.astimezone(dt_timezone.utc) if end_time.tzinfo else end_time.replace(tzinfo=dt_timezone.utc)
-                        
                         if start_utc <= article_time <= end_utc:
-                            articles.append((full_url, text))
+                            articles_in_window += 1
+                            # Extract ticker:price pattern from nearby HTML elements
+                            ticker_price_text = self._extract_ticker_price(link)
+                            articles.append((full_url, text, ticker_price_text))
+                        elif articles_in_window == 0 and articles_with_time <= 3:
+                            # Log first few articles outside window for diagnosis
+                            # Also log what time text was found
+                            time_text_sample = self._get_time_text_sample(link)
+                            logger.info(f"StockStory: Article outside window - Time: {article_time}, Window: {start_utc} to {end_utc}, Time text: '{time_text_sample}', Title: {text[:80]}")
+                    elif article_links_found <= 3:
+                        # Log first few articles without timestamps for diagnosis
+                        logger.info(f"StockStory: Article without timestamp - Title: {text[:80]}")
             
             # Remove duplicates while preserving order
             seen = set()
             unique_articles = []
-            for url, title in articles:
+            for article_data in articles:
+                url = article_data[0]
                 if url not in seen:
                     seen.add(url)
-                    unique_articles.append((url, title))
+                    unique_articles.append(article_data)
             
-            logger.info(f"Found {len(unique_articles)} StockStory articles in time window")
+            logger.info(f"StockStory: Found {article_links_found} article links, {articles_with_time} with timestamps, {articles_in_window} in window, {len(unique_articles)} unique")
             return unique_articles
                 
         except requests.RequestException as e:
@@ -128,107 +166,114 @@ class Story(AdvisorBase):
             logger.error(f"Error scraping StockStory page: {e}", exc_info=True)
             return []
 
-    def _extract_article_time(self, link_element, soup):
+    def _get_time_text_sample(self, link_element):
+        """Get a sample of time-related text from the article for debugging"""
+        parent = link_element.parent
+        if not parent:
+            return ""
+        
+        # Check parent and siblings for time-related text
+        search_elements = [parent]
+        search_elements.extend(parent.find_all(['span', 'div', 'time', 'p']))
+        search_elements.extend(link_element.find_next_siblings()[:5])
+        
+        for elem in search_elements:
+            text = elem.get_text(strip=True) if hasattr(elem, 'get_text') else str(elem)
+            if text and any(word in text.lower() for word in ['ago', 'hour', 'minute', 'day', 'stockstory']):
+                return text[:100]
+        
+        return ""
+    
+    def _extract_article_time(self, link_element):
         """
         Extract timestamp from article link or nearby elements.
         Returns datetime object (timezone-aware) or None if not found.
         """
-        # Try to find time element near the link
+        # Strategy: Look in parent, then siblings, then container
         parent = link_element.parent
-        if parent:
-            # Look for <time> elements
-            time_elem = parent.find('time')
-            if time_elem:
-                # Try datetime attribute
-                dt_str = time_elem.get('datetime')
-                if dt_str:
-                    try:
-                        return datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
-                    except:
-                        pass
-                
-                # Try text content (e.g., "2 hours ago", "1 hour ago", "Tue Nov 4, 11:40PM CST")
-                time_text = time_elem.get_text(strip=True)
-                parsed = self._parse_time_text(time_text)
-                if parsed:
-                    return parsed
-            
-            # Look for date/time in sibling elements (including those that come after the link)
-            for sibling in parent.find_all(['span', 'div', 'time', 'p'], class_=re.compile(r'date|time|ago|published|meta', re.I)):
-                text = sibling.get_text(strip=True)
-                parsed = self._parse_time_text(text)
-                if parsed:
-                    return parsed
-                
-                dt_str = sibling.get('datetime')
-                if dt_str:
-                    try:
-                        return datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
-                    except:
-                        pass
-            
-            # Look for text content that contains date patterns (e.g., "StockStory - Tue Nov 4, 11:40PM CST")
-            parent_text = parent.get_text()
-            if parent_text:
-                # Try to find date patterns in the parent's text
-                parsed = self._parse_time_text(parent_text)
-                if parsed:
-                    return parsed
+        if not parent:
+            return None
         
-        # Also check next sibling elements (timestamps often appear below the link)
-        next_sibling = link_element.find_next_sibling()
-        if next_sibling:
-            text = next_sibling.get_text(strip=True)
-            parsed = self._parse_time_text(text)
-            if parsed:
-                return parsed
+        # 1. Check for <time> element with datetime attribute
+        time_elem = parent.find('time')
+        if time_elem:
+            dt_str = time_elem.get('datetime')
+            if dt_str:
+                try:
+                    dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+                    return dt if dt.tzinfo else dt.replace(tzinfo=dt_timezone.utc)
+                except:
+                    pass
         
-        # Check all following siblings (timestamps might be a few elements away)
-        for i, sibling in enumerate(link_element.find_next_siblings()):
-            text = sibling.get_text(strip=True)
+        # 2. Check parent and siblings for time-related text
+        search_elements = [parent]
+        search_elements.extend(parent.find_all(['span', 'div', 'time', 'p']))
+        search_elements.extend(link_element.find_next_siblings()[:5])
+        
+        for elem in search_elements:
+            text = elem.get_text(strip=True) if hasattr(elem, 'get_text') else str(elem)
             if text:
                 parsed = self._parse_time_text(text)
                 if parsed:
                     return parsed
-            # Limit search to avoid going too far (check first 5 siblings)
-            if i >= 4:
-                break
         
-        return None
-
-    def _find_nearby_time(self, link_element, soup):
-        """
-        Search for time elements near the link in the DOM.
-        """
-        # Look in the same container/article element
+        # 3. Check container (article/div/li) for time elements
         container = link_element.find_parent(['article', 'div', 'li'])
         if container:
-            # Look for any time-related elements
-            time_elems = container.find_all(['time', 'span', 'div', 'p'], 
-                                           class_=re.compile(r'date|time|ago|published|meta', re.I))
+            time_elems = container.find_all(['time', 'span', 'div'], 
+                                            class_=re.compile(r'date|time|ago|published|meta', re.I))
             for elem in time_elems:
-                # Try datetime attribute
                 dt_str = elem.get('datetime')
                 if dt_str:
                     try:
-                        return datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+                        dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+                        return dt if dt.tzinfo else dt.replace(tzinfo=dt_timezone.utc)
                     except:
                         pass
                 
-                # Try text content
                 text = elem.get_text(strip=True)
                 parsed = self._parse_time_text(text)
                 if parsed:
                     return parsed
-            
-            # Also check container text for date patterns
-            container_text = container.get_text()
-            if container_text:
-                parsed = self._parse_time_text(container_text)
-                if parsed:
-                    return parsed
         
         return None
+
+    def _extract_ticker_price(self, link_element):
+        """
+        Extract ticker:price pattern from nearby HTML elements.
+        Looks for patterns like "ITW : 242.53" or "BLBD:54.86" in the article container.
+        Returns the text containing ticker:price patterns, or empty string.
+        """
+        # Find the article container (limit search to this specific article)
+        container = link_element.find_parent(['article', 'div', 'li', 'section'])
+        if not container:
+            container = link_element.parent
+            if not container:
+                return ""
+        
+        # Get all text from this container (but limit to reasonable size to avoid combining multiple articles)
+        container_text = container.get_text(separator=' ', strip=True)
+        
+        # Limit to first 500 chars to avoid pulling in next article
+        # The ticker:price should be near the link, so it should be in the first part
+        container_text = container_text[:500]
+        
+        # Look for ticker:price pattern - handle both "TICKER:PRICE" and "TICKER : PRICE"
+        # Pattern matches: "BLBD:54.86", "ITW : 242.53", "BLBD : 54.86", etc.
+        ticker_pattern = r'([A-Z]{1,5})\s*:\s*\d+\.\d+'
+        
+        matches = re.findall(ticker_pattern, container_text, re.IGNORECASE)
+        if matches:
+            # Return just the portion of text that contains ticker patterns
+            # Find the position of the first ticker pattern
+            match_obj = re.search(ticker_pattern, container_text, re.IGNORECASE)
+            if match_obj:
+                start_pos = max(0, match_obj.start() - 50)  # Get some context before
+                end_pos = min(len(container_text), match_obj.end() + 200)  # Get context after
+                extracted = container_text[start_pos:end_pos]
+                return extracted
+        
+        return ""
 
     def _parse_time_text(self, time_text):
         """
@@ -242,7 +287,11 @@ class Story(AdvisorBase):
         
         time_text = time_text.strip()
         time_text_lower = time_text.lower()
-        now = datetime.now(dt_timezone.utc)
+        now = timezone.now()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=dt_timezone.utc)
+        else:
+            now = now.astimezone(dt_timezone.utc)
         
         # First try relative time patterns
         relative_patterns = [
@@ -256,7 +305,9 @@ class Story(AdvisorBase):
             match = re.search(pattern, time_text_lower)
             if match:
                 try:
-                    return func(match)
+                    result = func(match)
+                    logger.debug(f"StockStory: Parsed '{time_text}' -> {result} (pattern: {pattern})")
+                    return result
                 except:
                     pass
         
@@ -306,7 +357,6 @@ class Story(AdvisorBase):
                 
                 return dt
             except Exception as e:
-                logger.debug(f"Error parsing absolute time '{time_text}': {e}")
                 pass
         
         return None
@@ -327,6 +377,27 @@ class Story(AdvisorBase):
         }
         
         return tz_map.get(tz_str.upper())
+
+    def _is_single_stock_article(self, ticker_price_text):
+        """
+        Check if article relates to exactly one stock.
+        Looks for patterns like "TICKER : PRICE" or "TICKER: PRICE" in the ticker_price_text.
+        Returns True if exactly one stock ticker pattern is found.
+        """
+        if not ticker_price_text:
+            return False
+        
+        # Pattern to match stock ticker with price: "TICKER : PRICE" or "TICKER:PRICE" (with or without space)
+        # Matches: "BLBD : 54.86", "BLBD:54.86", "CECO : 51.44", "ASGN : 44.56", "ITW : 242.53", etc.
+        # Case-insensitive to handle variations
+        ticker_pattern = r'([A-Z]{1,5})\s*:\s*\d+\.\d+'
+        
+        matches = re.findall(ticker_pattern, ticker_price_text, re.IGNORECASE)
+        
+        # Must have exactly one unique ticker
+        unique_tickers = set(matches)
+        
+        return len(unique_tickers) == 1
 
 
 register(name="StockStory", python_class="Story")

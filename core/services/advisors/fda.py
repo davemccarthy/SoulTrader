@@ -189,7 +189,6 @@ class FDA(AdvisorBase):
             sell_instructions = [
                 ("TARGET_PRICE", 1.20),
                 ("STOP_LOSS", 0.99),
-                ('DESCENDING_TREND', 0.00)
             ]
 
             explanation = build_discovery_explanation(approval, score)

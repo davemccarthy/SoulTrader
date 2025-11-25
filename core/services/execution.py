@@ -39,7 +39,7 @@ def execute_sell(sa, user, profile, consensus, holding, explanation):
 
     profile.save()
 
-def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus):
+def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus, explanation=""):
 
     # Check for existing stock
     profile = Profile.objects.get(user=user)
@@ -141,6 +141,7 @@ def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus):
     trade.stock = consensus.stock
     trade.price = consensus.stock.price
     trade.shares = shares
+    trade.explanation = explanation
     trade.save()
 
     # Update holdings

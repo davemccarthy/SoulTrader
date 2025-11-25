@@ -91,7 +91,7 @@ def analyze_holdings(sa, users, advisors):
                     elif instruction.instruction == 'DESCENDING_TREND' and instruction.value != 0.0: # TMP CHECK
                         if holding.stock.trend < instruction.value:
                             # execute_sell(sa, user, profile, consensus, holding, f"{holding.stock.symbol} descending detection of ${instruction.value:.2f}")
-                            print(f"*************** {holding.stock.symbol} descending detection of ${holding.stock.trend:.2f}")
+                            print(f"*************** WOULD HAVE SOLD {holding.stock.symbol} descending detection of ${holding.stock.trend:.2f}")
                             break
 
                     elif instruction.instruction == 'CS_FLOOR':
@@ -145,6 +145,7 @@ def analyze_discovery(sa, users, advisors):
         # Do the buy process
         for c in consensus:
             # Buy stock
-            execute_buy(sa, u, c, allowance, tot_confidence, c.avg_confidence)
+            explanation = f"Consensus confidence {c.avg_confidence:.2f} above threshold {buy_from:.2f}"
+            execute_buy(sa, u, c, allowance, tot_confidence, c.avg_confidence, explanation)
 
 

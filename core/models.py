@@ -185,7 +185,7 @@ class Stock(models.Model):
             self.trend = self.calc_trend()
             self.save()
 
-            logger.info(f"Updated {self.symbol} {self.price} (trend: {self.trend})") # TMP
+            logger.debug(f"Updated {self.symbol} {self.price} (trend: {self.trend})") # TMP
         except Exception as e:
             logger.warning(f"Could not auto-update {self.symbol}: {e}")
 

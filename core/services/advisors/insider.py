@@ -661,6 +661,7 @@ class Insider(AdvisorBase):
                 ("STOP_LOSS", 0.99),
                 ("TARGET_PRICE", 1.20),
                 ("AFTER_DAYS", 7.0),
+                ('DESCENDING_TREND', 0.00)
             ]
             
             # Group purchases by ticker

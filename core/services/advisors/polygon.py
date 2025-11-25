@@ -80,7 +80,7 @@ class Polygon(AdvisorBase):
         except Exception as e:
             logger.error(f"Discovery error: {e}", exc_info=True)
 
-    def analyze(self, sa, stock):
+    def analyze_defunct(self, sa, stock):
         """Analyze stock using Polygon technical indicators + fundamentals"""
         try:
             # Real-time check (see advisor model) to minimize delay mid-analysis

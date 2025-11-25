@@ -54,15 +54,8 @@ class AdvisorBase:
         # Latest price
         stock.refresh()
 
-        # Avoid duplicating discovery in the last 7 days
-        time_threshold = timezone.now() - timedelta(days=7)
-        if Discovery.objects.filter(
-            advisor=self.advisor,
-            stock=stock,
-            created__gte=time_threshold,
-        ).exists():
-            logger.info(f"{self.advisor.name} already recorded discovery for {stock.symbol}")
-            return stock
+        # REMOVED: 7-day duplicate discovery check - no longer needed since SA sessions are faster without Polygon
+        # This allows stocks to be re-discovered and bought again if they show strong movement
 
         # TMP to track stock trend
         explanation = f"{explanation} | Trend: {stock.trend}"

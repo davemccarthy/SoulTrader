@@ -26,11 +26,25 @@ class FMP(AdvisorBase):
                 logger.warning(f"FMP: No profile data available for {stock.symbol}, skipping recommendation")
                 return None  # Don't create a recommendation if we can't get data
 
-            # Get financial ratios (optional)
-            ratios_data = self._get_financial_ratios(stock.symbol)
+            # Get financial ratios (optional - skip if rate limited)
+            ratios_data = None
+            try:
+                ratios_data = self._get_financial_ratios(stock.symbol)
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code in (402, 429):
+                    logger.debug(f"FMP: Skipping ratios for {stock.symbol} due to rate limit")
+                else:
+                    raise
             
-            # Get analyst grades/consensus (optional)
-            grades_data = self._get_analyst_grades(stock.symbol)
+            # Get analyst grades/consensus (optional - skip if rate limited)
+            grades_data = None
+            try:
+                grades_data = self._get_analyst_grades(stock.symbol)
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code in (402, 429):
+                    logger.debug(f"FMP: Skipping grades for {stock.symbol} due to rate limit")
+                else:
+                    raise
             
             # Double-check we still have valid profile data
             if not profile_data or not any(profile_data.get(k) for k in ['marketCap', 'pe', 'profitMargins', 'symbol']):
@@ -68,7 +82,12 @@ class FMP(AdvisorBase):
             
             # Check for rate limit or payment required
             if response.status_code == 402:
-                logger.warning(f"FMP API rate limit exceeded for {symbol}")
+                logger.warning(f"FMP API rate limit exceeded (402) for {symbol}")
+                return None
+
+            # Check for 429 Too Many Requests
+            if response.status_code == 429:
+                logger.warning(f"FMP API too many requests (429) for {symbol} - rate limit hit")
                 return None
 
             # Check for 403 Forbidden - log response body to understand the issue
@@ -109,7 +128,12 @@ class FMP(AdvisorBase):
             
             # Check for rate limit or payment required
             if response.status_code == 402:
-                logger.warning(f"FMP API rate limit exceeded for {symbol}")
+                logger.debug(f"FMP API rate limit exceeded (402) for {symbol} ratios - skipping")
+                return None
+
+            # Check for 429 Too Many Requests
+            if response.status_code == 429:
+                logger.debug(f"FMP API too many requests (429) for {symbol} ratios - skipping")
                 return None
                 
             response.raise_for_status()
@@ -131,7 +155,12 @@ class FMP(AdvisorBase):
             
             # Check for rate limit or payment required
             if response.status_code == 402:
-                logger.warning(f"FMP API rate limit exceeded for {symbol}")
+                logger.debug(f"FMP API rate limit exceeded (402) for {symbol} grades - skipping")
+                return None
+
+            # Check for 429 Too Many Requests
+            if response.status_code == 429:
+                logger.debug(f"FMP API too many requests (429) for {symbol} grades - skipping")
                 return None
                 
             response.raise_for_status()
