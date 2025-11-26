@@ -71,41 +71,49 @@ def analyze_holdings(sa, users, advisors):
                 instructions = SellInstruction.objects.filter(discovery=discovery)
 
                 # Check sell conditions in priority order
-                for instruction in instructions:
-                    if instruction.instruction == 'STOP_LOSS':
-                        if holding.stock.price <= instruction.value:
-                            execute_sell(sa, user, profile, consensus, holding, f"{holding.stock.symbol} fell to stop-loss of ${instruction.value:.2f}")
-                            break
+                try:
+                    for instruction in instructions:
+                        if instruction.instruction == 'STOP_LOSS':
+                            if holding.stock.price < instruction.value:
+                                execute_sell(sa, user, profile, consensus, holding, f"{holding.stock.symbol} fell to stop-loss of ${instruction.value:.2f}")
+                                break
 
-                    elif instruction.instruction == 'TARGET_PRICE' and instruction.value != 0.0: # TMP CHECK
-                        if holding.stock.price >= instruction.value:
-                            execute_sell(sa, user, profile, consensus, holding, f"{holding.stock.symbol} reached target price of ${instruction.value:.2f}")
-                            break
+                        elif instruction.instruction == 'TARGET_PRICE' and instruction.value != 0.0: # TMP CHECK
+                            if holding.stock.price >= instruction.value:
+                                execute_sell(sa, user, profile, consensus, holding, f"{holding.stock.symbol} reached target price of ${instruction.value:.2f}")
+                                break
 
-                    elif instruction.instruction == 'AFTER_DAYS':
-                        days_held = (timezone.now() - discovery.created).days
-                        if days_held >= instruction.value:
-                            execute_sell(sa, user, profile, consensus, holding, f"{holding.stock.symbol} after holding for {days_held} days (target: {instruction.value} days)")
-                            break
+                        elif instruction.instruction == 'AFTER_DAYS':
+                            days_held = (timezone.now() - discovery.created).days
+                            if days_held >= instruction.value:
+                                execute_sell(sa, user, profile, consensus, holding, f"{holding.stock.symbol} after holding for {days_held} days (target: {instruction.value} days)")
+                                break
 
-                    elif instruction.instruction == 'DESCENDING_TREND' and instruction.value != 0.0: # TMP CHECK
-                        if holding.stock.trend < instruction.value:
-                            # execute_sell(sa, user, profile, consensus, holding, f"{holding.stock.symbol} descending detection of ${instruction.value:.2f}")
-                            print(f"*************** WOULD HAVE SOLD {holding.stock.symbol} descending detection of ${holding.stock.trend:.2f}")
-                            break
+                        elif instruction.instruction == 'DESCENDING_TREND':
+                            if holding.stock.trend < instruction.value:
+                                execute_sell(sa, user, profile, consensus, holding, f"{holding.stock.symbol} descending detection of ${instruction.value:.2f}")
+                                print(f"*************** HAVE SOLD {holding.stock.symbol} descending detection of ${holding.stock.trend:.2f}")
+                                break
 
-                    elif instruction.instruction == 'CS_FLOOR':
+                        elif instruction.instruction == 'CS_FLOOR':
 
-                        consensus = build_consensus(sa, advisors, holding.stock)
-                        if consensus is None or consensus.avg_confidence is None:
-                            continue
+                            consensus = build_consensus(sa, advisors, holding.stock)
+                            if consensus is None or consensus.avg_confidence is None:
+                                continue
 
-                        holding.consensus = consensus.avg_confidence
-                        holding.save(update_fields=["consensus"])
+                            holding.consensus = consensus.avg_confidence
+                            holding.save(update_fields=["consensus"])
 
-                        if consensus.avg_confidence < sell_below:
-                            execute_sell(sa, user, profile, consensus, holding, f"Consensus confidence ({consensus.avg_confidence:.2f}) fell below threshold ({sell_below:.2f})")
-                            break
+                            if consensus.avg_confidence < sell_below:
+                                execute_sell(sa, user, profile, consensus, holding, f"Consensus confidence ({consensus.avg_confidence:.2f}) fell below threshold ({sell_below:.2f})")
+                                break
+                except Exception as e:
+                    logger.error(
+                        f"Error checking sell instructions for {holding.stock.symbol} (holding {holding.id}): {e}",
+                        exc_info=True
+                    )
+                    # Continue processing other holdings
+                    continue
 
 
 # Discovery new stock
@@ -145,7 +153,6 @@ def analyze_discovery(sa, users, advisors):
         # Do the buy process
         for c in consensus:
             # Buy stock
-            explanation = f"Consensus confidence {c.avg_confidence:.2f} above threshold {buy_from:.2f}"
-            execute_buy(sa, u, c, allowance, tot_confidence, c.avg_confidence, explanation)
+            execute_buy(sa, u, c, allowance, tot_confidence, c.avg_confidence)
 
 

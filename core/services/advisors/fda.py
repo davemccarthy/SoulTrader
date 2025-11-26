@@ -19,7 +19,8 @@ FDA_REPORT_URL = "https://www.accessdata.fda.gov/scripts/cder/daf/index.cfm?even
 FDA_REPORT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
 }
-OPENFIGI_ENDPOINT = "https://api.openfigi.com/v3/mapping"
+OPENFIGI_MAPPING_ENDPOINT = "https://api.openfigi.com/v3/mapping"
+OPENFIGI_SEARCH_ENDPOINT = "https://api.openfigi.com/v3/search"
 
 REPORT_WINDOW_DAYS = 14
 DISCOVERY_CONFIDENCE_THRESHOLD = 0.60
@@ -371,39 +372,50 @@ def lookup_symbol_via_openfigi(company_name, api_key=None):
         _OPENFIGI_CACHE[cache_key] = None
         return None
 
-    payload = [
-        {
-            "idType": "NAME",
-            "idValue": company_name,
-            "securityType2": "Common Stock",
-        }
-    ]
     headers = {
         "Content-Type": "application/json",
         "X-OPENFIGI-APIKEY": api_key,
     }
 
-    try:
-        response = requests.post(OPENFIGI_ENDPOINT, headers=headers, json=payload, timeout=20)
-        response.raise_for_status()
-    except requests.RequestException:
-        logger.warning("FDA advisor: OpenFIGI lookup failed for '%s'", company_name)
+    # Use SEARCH endpoint for company name lookup
+    # Try both full name and normalized name
+    search_queries = [
+        company_name,
+        _normalize_company_name(company_name),
+    ]
+
+    data_entries = None
+    for query in search_queries:
+        if not query:
+            continue
+        try:
+            payload = {
+                "query": query,
+                "securityType2": "Common Stock",
+            }
+            response = requests.post(OPENFIGI_SEARCH_ENDPOINT, headers=headers, json=payload, timeout=20)
+            response.raise_for_status()
+            
+            results = response.json()
+            
+            # Check if we got results
+            if isinstance(results, dict):
+                data_entries = results.get("data") or []
+                if data_entries:
+                    break
+            elif isinstance(results, list) and results:
+                data_entries = results
+                break
+        except requests.RequestException:
+            # Continue to next query
+            continue
+        except ValueError:
+            # Continue to next query
+            continue
+
+    if not data_entries:
         _OPENFIGI_CACHE[cache_key] = None
         return None
-
-    try:
-        results = response.json()
-    except ValueError:
-        logger.warning("FDA advisor: OpenFIGI returned invalid JSON for '%s'", company_name)
-        _OPENFIGI_CACHE[cache_key] = None
-        return None
-
-    if not isinstance(results, list) or not results:
-        _OPENFIGI_CACHE[cache_key] = None
-        return None
-
-    mapping_result = results[0] or {}
-    data_entries = mapping_result.get("data") or []
 
     ticker = _select_best_openfigi_ticker(data_entries)
     _OPENFIGI_CACHE[cache_key] = ticker

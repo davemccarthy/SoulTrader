@@ -659,9 +659,9 @@ class Insider(AdvisorBase):
             # Pass sell instructions to siacovery
             sell_instructions = [
                 ("STOP_LOSS", 0.99),
-                ("TARGET_PRICE", 1.20),
+                #("TARGET_PRICE", 1.50),
                 ("AFTER_DAYS", 7.0),
-                ('DESCENDING_TREND', 0.00)
+                ('DESCENDING_TREND', -0.20)
             ]
             
             # Group purchases by ticker

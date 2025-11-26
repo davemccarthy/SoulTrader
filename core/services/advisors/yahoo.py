@@ -389,7 +389,7 @@ class Yahoo(AdvisorBase):
             sell_instructions = [
                 ("TARGET_PRICE", 1.20),
                 ("STOP_LOSS", 0.98),
-                ('DESCENDING_TREND', -0.40),
+                ('DESCENDING_TREND', -0.20),
                 ('CS FLOOR', 0.00)
             ]
             

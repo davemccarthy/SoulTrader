@@ -284,6 +284,13 @@ def holding_detail(request, stock_id):
                     instruction_data['value'] = float(confidence_low)
                     instruction_data['status'] = 'pending'  # CS_FLOOR is checked during analysis
                     instruction_data['current_consensus'] = float(holding.consensus) if holding.consensus else None
+                elif instruction.instruction == 'DESCENDING_TREND' and instruction.value is not None:
+                    # DESCENDING_TREND value is a threshold (e.g., -0.20 means sell if trend < -0.20)
+                    instruction_data['value'] = float(instruction.value)
+                    instruction_data['status'] = 'pending'  # Status determined during analysis
+                    if holding.stock.trend is not None:
+                        instruction_data['current_trend'] = float(holding.stock.trend)
+                        instruction_data['status'] = 'active' if holding.stock.trend < instruction.value else 'pending'
                 
                 sell_instructions.append(instruction_data)
             trade_payload['sell_instructions'] = sell_instructions

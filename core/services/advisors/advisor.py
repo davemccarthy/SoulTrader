@@ -80,20 +80,18 @@ class AdvisorBase:
 
                 # Calculate value based on instruction type
                 if instruction_type == 'STOP_LOSS':
-                    # instruction_value is percentage (e.g., 0.99)
-                    # Calculate absolute price: stock.price * percentage
                     instruction.value = Decimal(str(stock.price)) * Decimal(str(instruction_value))
+
                 elif instruction_type == 'TARGET_PRICE':
-                    # instruction_value could be multiplier or absolute price
-                    # If < 10, treat as multiplier; otherwise absolute price
-                    if instruction_value < 10:
-                        instruction.value = Decimal(str(stock.price)) * Decimal(str(instruction_value))
-                    else:
-                        instruction.value = Decimal(str(instruction_value))
+                    instruction.value = Decimal(str(stock.price)) * Decimal(str(instruction_value))
+
                 elif instruction_type == 'AFTER_DAYS':
                     instruction.value = Decimal(str(instruction_value))
+
+                elif instruction_type == 'DESCENDING_TREND':
+                    instruction.value = Decimal(str(instruction_value))
+
                 elif instruction_type == 'CS_FLOOR':
-                    # Value ignored for CS_FLOOR (set to None or 0)
                     instruction.value = None
                 else:
                     logger.warning(f"Unknown instruction_type: {instruction_type}")
@@ -149,8 +147,10 @@ class AdvisorBase:
 
         # Pass sell instructions to siacovery
         sell_instructions = [
-            ("CS_FLOOR", 0.0),
+            ("TARGET_PRICE", 1.50),
             ("STOP_LOSS", 0.98),
+            ('DESCENDING_TREND', -0.20),
+            ('CS FLOOR', 0.00)
         ]
 
         # Call on 3rd part gemini AI - exhaust all models if unavailable
@@ -167,7 +167,7 @@ class AdvisorBase:
                 logger.info(f"{model}:\n{url}")
 
                 # In the Gods hand's now
-                response = genai.GenerativeModel(model).generate_content(prompt)
+                response = genai.GenerativeModel(model).generate_content(prompt, request_options={"timeout": 120.0})
 
                 # Extract text from nested structure
                 if not response.candidates or len(response.candidates) == 0:

@@ -35,9 +35,9 @@
                     </div>
                     <div class="holdings-col">
                         {% if holding.change_percent >= 0 %}
-                            <span class="holdings-change positive">+{{ holding.change_percent|floatformat:0 }}%</span>
+                            <span class="holdings-change positive">+{{ holding.change_percent|floatformat:2 }}%</span>
                         {% else %}
-                            <span class="holdings-change negative">{{ holding.change_percent|floatformat:0 }}%</span>
+                            <span class="holdings-change negative">{{ holding.change_percent|floatformat:2 }}%</span>
                         {% endif %}
                     </div>
                     <div class="holdings-col">
@@ -269,6 +269,7 @@ window.detailPanelRenderer = function(data) {
             'TARGET_PRICE': '🎯',
             'CS_FLOOR': '📉',
             'AFTER_DAYS': '📅',
+            'DESCENDING_TREND': '📉',
         };
 
         const instructionLabels = {
@@ -276,6 +277,7 @@ window.detailPanelRenderer = function(data) {
             'TARGET_PRICE': 'TARGET PRICE',
             'CS_FLOOR': 'CS FLOOR',
             'AFTER_DAYS': 'AFTER DAYS',
+            'DESCENDING_TREND': 'DESCENDING TREND',
         };
 
         const entries = sellInstructions.map((inst) => {
@@ -310,6 +312,12 @@ window.detailPanelRenderer = function(data) {
                     const diff = inst.current_consensus - inst.value;
                     extraInfo = ` (Current: ${inst.current_consensus.toFixed(2)}, ${diff >= 0 ? '+' : ''}${diff.toFixed(2)} above floor)`;
                 }
+            } else if (inst.instruction === 'DESCENDING_TREND' && inst.value != null) {
+                valueDisplay = `${(inst.value * 100).toFixed(1)}%`;
+                if (inst.current_trend != null) {
+                    const diff = inst.current_trend - inst.value;
+                    extraInfo = ` (Current trend: ${(inst.current_trend * 100).toFixed(1)}%, ${diff >= 0 ? '+' : ''}${(diff * 100).toFixed(1)}% from threshold)`;
+                }
             }
 
             const statusIndicator = inst.status === 'active' ? ' ⚠️ TRIGGERED' : '';
@@ -326,7 +334,7 @@ window.detailPanelRenderer = function(data) {
                 <div class="trade-detail-panel">
                     <div class="trade-recommendation-entry">
                         ${entries}
-                    </dive>
+                    </div>
                 </div>
             </div>
         `;

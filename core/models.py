@@ -34,27 +34,27 @@ class Profile(models.Model):
     # Risky business
     RISK = {
         "CONSERVATIVE": {
-            "confidence_high": 0.7,
-            "confidence_low": 0.55,
-            "min_price": 5.0,
-            "max_price": 1000.0,
+            "confidence_high": 0.85,
+            "confidence_low": 0.6,
             "stocks": 50
         },
         "MODERATE": {
-            "confidence_high": 0.55,
-            "confidence_low": 0.45,
-            "min_price": 2.0,
-            "max_price": 200.0,
+            "confidence_high": 0.7,
+            "confidence_low": 0.55,
             "stocks": 40
         },
         "AGGRESSIVE": {
-            "confidence_high": 0.0,
-            "confidence_low": 0.0,
-            "min_price": 0.0,
-            "max_price": 20.0,
+            "confidence_high": 0.55,
+            "confidence_low": 0.55,
             "stocks": 30
         },
+        "EXPERIMENTAL": {
+            "confidence_high": 0.0,
+            "confidence_low": 0.0,
+            "stocks": 40
+        },
     }
+
 
     user = models.ForeignKey(User, on_delete=models.DO_NOTHING)
     risk = models.CharField(max_length=20, choices=[(key, key.replace('_', ' ').title()) for key in RISK.keys()], default='MODERATE')
@@ -225,7 +225,7 @@ class SellInstruction(models.Model):
         ("TARGET_PRICE", "Target Price"),
         ("CS_FLOOR", "CS Floor"),
         ("AFTER_DAYS", "After Days"),
-        ("DESCENDING_TREND", 'Dedcending trend')
+        ("DESCENDING_TREND", 'Descending trend')
     ]
 
     discovery = models.ForeignKey(Discovery, on_delete=models.DO_NOTHING)
