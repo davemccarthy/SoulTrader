@@ -206,9 +206,6 @@ class SmartAnalysis(models.Model):
     started = models.DateTimeField(auto_now_add=True)
     username = models.CharField(max_length=150)
     duration = models.DurationField(default=timedelta)
-    # Other stats
-    # allowance (this sessions spend)
-    # spent
 
 
 #   Advisor suggested stock
@@ -262,12 +259,12 @@ class Trade(models.Model):
     sa = models.ForeignKey(SmartAnalysis, on_delete=models.DO_NOTHING)
     user = models.ForeignKey(User, on_delete=models.DO_NOTHING)
     stock = models.ForeignKey(Stock, on_delete=models.DO_NOTHING)
+    created = models.DateTimeField(auto_now_add=True)
     consensus = models.ForeignKey(Consensus, null=True, blank=True, on_delete=models.DO_NOTHING)
     action = models.CharField(max_length=20, choices=ACTION)
     price = models.DecimalField(max_digits=10, decimal_places=2)
     shares = models.IntegerField()
     explanation = models.CharField(max_length=256, null=True, blank=True)
-    # TODO NO DATE STAMP
 
 
 # Signal to auto-create Profile when User is created

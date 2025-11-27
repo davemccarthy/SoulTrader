@@ -393,6 +393,8 @@ def lookup_symbol_via_openfigi(company_name, api_key=None):
                 "query": query,
                 "securityType2": "Common Stock",
             }
+            logger.info("FDA advisor: looking up symbol via OpenFIGI for company: %s", query)
+
             response = requests.post(OPENFIGI_SEARCH_ENDPOINT, headers=headers, json=payload, timeout=20)
             response.raise_for_status()
             

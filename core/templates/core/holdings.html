@@ -242,6 +242,14 @@ window.detailPanelRenderer = function(data) {
         const discoveryBlock = renderDiscoverySection(trade.discovery);
         const recommendationsBlock = renderRecommendationsSection(trade.recommendations);
         const sellInstructionsBlock = renderSellInstructionsSection(trade.sell_instructions || [], currentPrice);
+        const tradeDate = new Date(trade.created);
+        const created = tradeDate.toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
 
         return `
             <div class="trade-card">
@@ -249,7 +257,7 @@ window.detailPanelRenderer = function(data) {
                     <h5 class="trade-card-title">${action} ${shares} @ ${price}</h5>
                     <div class="trade-card-meta">
                         <span>${valueLabel} ${value}</span>
-                        <span>SA #${saId}</span>
+                        <span>${created}</span>
                     </div>
                 </div>
                 ${discoveryBlock}
