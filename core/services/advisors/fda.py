@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup
 from django.utils import timezone
 
 from django.conf import settings
-from core.models import Discovery, SmartAnalysis
+from core.models import Discovery
 from core.services.advisors.advisor import AdvisorBase, register
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,6 @@ FDA_REPORT_HEADERS = {
 OPENFIGI_MAPPING_ENDPOINT = "https://api.openfigi.com/v3/mapping"
 OPENFIGI_SEARCH_ENDPOINT = "https://api.openfigi.com/v3/search"
 
-REPORT_WINDOW_DAYS = 14
 DISCOVERY_CONFIDENCE_THRESHOLD = 0.60
 RECOMMENDATION_CONFIDENCE_THRESHOLD = 0.85
 MAX_CONFIDENCE_SCORE = 1.5
@@ -124,50 +123,30 @@ FDA_ALLOW_IF_CONTAINS = (
 
 class FDA(AdvisorBase):
     def discover(self, sa):
-        sa_end = _ensure_aware(sa.started)
+        """Discover FDA approvals for today's date only."""
+        today = _ensure_aware(sa.started).date()
 
         try:
-            approvals = scrape_fda_approvals(days=REPORT_WINDOW_DAYS)
+            approvals = scrape_fda_approvals_for_date(today)
         except Exception as exc:
-            logger.error("FDA advisor: failed to scrape approvals: %s", exc, exc_info=True)
+            logger.error("FDA advisor: failed to scrape approvals for %s: %s", today, exc, exc_info=True)
             return
 
         if not approvals:
-            logger.info("FDA advisor: no approvals returned from FDA report.")
+            logger.info("FDA advisor: no approvals found for %s", today)
             return
 
-        prev_sa = (
-            SmartAnalysis.objects.filter(username=sa.username, id__lt=sa.id)
-            .order_by("-id")
-            .first()
-        )
-        if prev_sa:
-            sa_start = _ensure_aware(prev_sa.started)
-        else:
-            sa_start = sa_end - timedelta(days=REPORT_WINDOW_DAYS)
-
-        start_date = sa_start.date()
-        end_date = sa_end.date()
-
-        logger.info(
-            "FDA advisor: scanning approvals between %s and %s (inclusive)",
-            start_date,
-            end_date,
-        )
+        logger.info("FDA advisor: found %d approvals for %s", len(approvals), today)
 
         best_approvals = {}
 
         for approval in approvals:
-            approval_date = _parse_approval_date(approval.get("approval_date"))
-            if approval_date and (approval_date < start_date or approval_date > end_date):
-                continue
-
             stock_symbol = approval.get("stock_symbol")
             score = approval.get("confidence_score") or 0.0
 
             if not stock_symbol:
-                logger.debug(
-                    "FDA advisor: skipping %s (%s) due to missing symbol.",
+                logger.warning(
+                    "FDA advisor: skipping %s (%s) - no stock symbol found",
                     approval.get("drug_name"),
                     approval.get("company"),
                 )
@@ -186,14 +165,17 @@ class FDA(AdvisorBase):
             stock_symbol = approval.get("stock_symbol")
             score = approval.get("confidence_score") or 0.0
 
-            # Pass sell instructions to siacovery
             sell_instructions = [
                 ("TARGET_PRICE", 1.20),
                 ("STOP_LOSS", 0.99),
             ]
 
             explanation = build_discovery_explanation(approval, score)
-            stock = self.discovered(sa, stock_symbol, approval.get("company", ""), explanation, sell_instructions)
+            
+            # Set weight based on confidence score (1.0 = default, >1.0 = spend more, <1.0 = spend less)
+            weight = Decimal(f"{min(score, MAX_CONFIDENCE_SCORE):.2f}")
+            
+            stock = self.discovered(sa, stock_symbol, approval.get("company", ""), explanation, sell_instructions, weight=weight)
             if not stock:
                 continue
 
@@ -203,10 +185,16 @@ class FDA(AdvisorBase):
                 self.recommend(sa, stock, confidence_value, recommendation_note)
 
 
-def scrape_fda_approvals(days=7):
-    if days not in (7, 14):
-        raise ValueError("days must be either 7 or 14 to match available FDA reports")
-
+def scrape_fda_approvals_for_date(target_date):
+    """
+    Scrape FDA approvals for a specific date only.
+    
+    Args:
+        target_date: datetime.date object for the date to scrape
+        
+    Returns:
+        List of approval dictionaries for the given date
+    """
     try:
         response = requests.get(FDA_REPORT_URL, headers=FDA_REPORT_HEADERS, timeout=30)
         response.raise_for_status()
@@ -215,28 +203,28 @@ def scrape_fda_approvals(days=7):
         return []
 
     soup = BeautifulSoup(response.content, "html.parser")
-    tab_id = "example2-tab1" if days <= 7 else "example2-tab2"
-    tab_content = soup.find("div", id=tab_id)
-
+    
+    # Only use the 7-day report tab
+    tab_content = soup.find("div", id="example2-tab1")
+    
     if not tab_content:
-        logger.warning("FDA advisor: could not locate the %s-day report tab on the FDA page.", days)
+        logger.warning("FDA advisor: could not locate the 7-day report tab on the FDA page.")
         return []
 
-    approvals = []
+    # Find the heading that matches our target date
+    target_date_str = target_date.strftime("%B %d, %Y")
     headings = tab_content.find_all("h4")
-
-    if not headings:
-        logger.warning("FDA advisor: no report sections found in the %s-day tab.", days)
-        return []
-
+    
     for heading in headings:
         report_date_str = heading.get_text(strip=True)
-        table = heading.find_next("table")
-        if not table:
-            continue
-        approvals.extend(parse_report_table(table, report_date_str))
-
-    return approvals
+        if report_date_str == target_date_str:
+            table = heading.find_next("table")
+            if table:
+                return parse_report_table(table, report_date_str)
+    
+    # Date not found in report
+    logger.debug("FDA advisor: no approvals found for date %s", target_date_str)
+    return []
 
 
 def parse_report_table(table, report_date_str):
@@ -393,8 +381,6 @@ def lookup_symbol_via_openfigi(company_name, api_key=None):
                 "query": query,
                 "securityType2": "Common Stock",
             }
-            logger.info("FDA advisor: looking up symbol via OpenFIGI for company: %s", query)
-
             response = requests.post(OPENFIGI_SEARCH_ENDPOINT, headers=headers, json=payload, timeout=20)
             response.raise_for_status()
             
@@ -610,15 +596,6 @@ def build_recommendation_explanation(approval, score):
     if classification:
         pieces.append(f"Classification: {classification}")
     return " | ".join(filter(None, pieces))
-
-
-def _parse_approval_date(date_str):
-    if not date_str:
-        return None
-    try:
-        return datetime.strptime(date_str, "%m/%d/%Y").date()
-    except ValueError:
-        return None
 
 
 def _ensure_aware(dt):
