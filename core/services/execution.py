@@ -89,7 +89,7 @@ def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus, ex
 
     # No buy if have shares (surrender allowance for subsequent purchases)
     if shares - holding.shares < 0:
-        logger.info(f"Trade: {user.username} NOT buying shares of {consensus.stock.symbol}. Holding {holding.shares} shares already")
+        logger.info(f"{user.username} already has  {holding.shares} {consensus.stock.symbol} shares")
         return
 
     # Return allowance for existing shares TODO

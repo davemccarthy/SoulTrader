@@ -1,12 +1,41 @@
 import json
 import os
 import re
+import sys
 import time
 from datetime import datetime, timedelta
 
 import requests
 import yfinance as yf
 from bs4 import BeautifulSoup
+
+# Django setup for retrospective testing
+def setup_django():
+    """Setup Django environment for testing FDA advisor"""
+    import django
+    from django.conf import settings
+    
+    # Only setup if not already configured
+    if not settings.configured:
+        # Get the project directory (parent of this file)
+        project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        sys.path.insert(0, project_dir)
+        
+        # Configure Django settings - try common settings module names
+        settings_modules = ['config.settings', 'soultrader.settings', 'settings']
+        for settings_module in settings_modules:
+            try:
+                os.environ.setdefault('DJANGO_SETTINGS_MODULE', settings_module)
+                django.setup()
+                break
+            except Exception:
+                continue
+        else:
+            # If all failed, try the first one anyway
+            os.environ.setdefault('DJANGO_SETTINGS_MODULE', settings_modules[0])
+            django.setup()
+    
+    return True
 
 
 def scrape_fda_approvals(days=7):
@@ -764,6 +793,148 @@ def save_analysis_to_file(results, filename=None):
         return None
 
 
+def test_fda_advisor_retrospectively(days_back=7):
+    """
+    Test the FDA advisor retrospectively by creating a SmartAnalysis session
+    and running the advisor's discover() method.
+    
+    Args:
+        days_back: Number of days to look back for approvals (default: 7)
+    
+    Returns:
+        List of discoveries that would have been made
+    """
+    setup_django()
+    
+    from django.utils import timezone
+    from core.models import SmartAnalysis, Advisor, Discovery
+    from core.services.advisors import advisors as advisor_modules
+    
+    print("\n" + "=" * 80)
+    print("TESTING FDA ADVISOR RETROSPECTIVELY")
+    print("=" * 80)
+    
+    # Get FDA advisor
+    try:
+        fda_advisor_model = Advisor.objects.get(python_class="FDA", enabled=True)
+    except Advisor.DoesNotExist:
+        print("ERROR: FDA advisor not found or not enabled in database.")
+        print("Make sure the FDA advisor is registered and enabled.")
+        return []
+    
+    # Create a SmartAnalysis session for testing
+    # Set the started time to now, which will make the advisor look back
+    # to the previous SA session (or 14 days if no previous session)
+    sa = SmartAnalysis()
+    sa.username = "test_user"
+    sa.started = timezone.now()
+    sa.save()
+    
+    print(f"\nCreated SmartAnalysis session {sa.id}")
+    print(f"Session started at: {sa.started}")
+    
+    # Check for previous SA session
+    prev_sa = (
+        SmartAnalysis.objects.filter(username=sa.username, id__lt=sa.id)
+        .order_by("-id")
+        .first()
+    )
+    
+    if prev_sa:
+        print(f"Previous SA session found: {prev_sa.id} (started: {prev_sa.started})")
+        date_range = (timezone.now() - prev_sa.started).days
+        print(f"Date range: {date_range} days")
+    else:
+        print("No previous SA session found - advisor will look back 14 days")
+    
+    # Instantiate FDA advisor
+    module_name = fda_advisor_model.python_class.lower()
+    module = getattr(advisor_modules, module_name)
+    python_class = getattr(module, fda_advisor_model.python_class)
+    fda_advisor = python_class(fda_advisor_model)
+    
+    print(f"\nRunning FDA advisor discovery...")
+    print("-" * 80)
+    
+    # Count discoveries before
+    discoveries_before = Discovery.objects.filter(sa=sa).count()
+    
+    # Run the advisor's discover method
+    try:
+        fda_advisor.discover(sa)
+    except Exception as e:
+        print(f"ERROR: Failed to run FDA advisor discovery: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+    
+    # Count discoveries after
+    discoveries_after = Discovery.objects.filter(sa=sa).count()
+    new_discoveries = discoveries_after - discoveries_before
+    
+    print(f"\nDiscoveries created: {new_discoveries}")
+    
+    # Get and display discoveries
+    discoveries = Discovery.objects.filter(sa=sa).select_related('stock', 'advisor')
+    
+    if discoveries.exists():
+        print("\n" + "=" * 80)
+        print("DISCOVERIES MADE BY FDA ADVISOR:")
+        print("=" * 80)
+        
+        for i, discovery in enumerate(discoveries, 1):
+            print(f"\n{i}. {discovery.stock.symbol} ({discovery.stock.company})")
+            print(f"   Discovery Price: ${discovery.price:.2f}" if discovery.price else "   Discovery Price: N/A")
+            print(f"   Current Price: ${discovery.stock.price:.2f}" if discovery.stock.price else "   Current Price: N/A")
+            print(f"   Explanation: {discovery.explanation[:200]}...")
+            print(f"   Created: {discovery.created}")
+            
+            # Check for recommendations
+            from core.models import Recommendation
+            recommendations = Recommendation.objects.filter(
+                sa=sa, 
+                stock=discovery.stock,
+                advisor=fda_advisor_model
+            )
+            if recommendations.exists():
+                for rec in recommendations:
+                    print(f"   Recommendation: Confidence {rec.confidence:.2f}")
+                    if rec.explanation:
+                        print(f"   Reason: {rec.explanation[:150]}...")
+    else:
+        print("\nNo discoveries were made by the FDA advisor.")
+        print("\nPossible reasons:")
+        print("  - No FDA approvals found in the date range")
+        print("  - Approvals found but confidence scores below threshold (0.60)")
+        print("  - Approvals found but no matching stock symbols")
+        print("  - Date range doesn't include any approvals")
+        
+        # Check recent FDA discoveries in the database
+        print("\n" + "-" * 80)
+        print("RECENT FDA DISCOVERIES IN DATABASE (last 7 days):")
+        print("-" * 80)
+        from datetime import timedelta
+        recent_cutoff = timezone.now() - timedelta(days=7)
+        recent_discoveries = Discovery.objects.filter(
+            advisor=fda_advisor_model,
+            created__gte=recent_cutoff
+        ).select_related('stock').order_by('-created')
+        
+        if recent_discoveries.exists():
+            print(f"Found {recent_discoveries.count()} FDA discoveries in the last 7 days:")
+            for disc in recent_discoveries[:10]:  # Show first 10
+                print(f"  - {disc.stock.symbol} discovered on {disc.created.strftime('%Y-%m-%d %H:%M')}")
+        else:
+            print("No FDA discoveries found in the database in the last 7 days.")
+            print("This confirms the concern that there haven't been any FDA discoveries recently.")
+    
+    # Clean up test session (optional - comment out if you want to keep it)
+    # sa.delete()
+    # print(f"\nCleaned up test SmartAnalysis session {sa.id}")
+    
+    return list(discoveries)
+
+
 def print_price_analysis_report(results):
     """
     Print a formatted analysis report of stock price changes.
@@ -853,14 +1024,14 @@ def print_price_analysis_report(results):
 
 
 if __name__ == "__main__":
-    import sys
-    
     # Test scraping current month
     print("Testing FDA approval scraper...")
     print("=" * 70)
     
+    # Check for retrospective test flag
+    retrospective_flag = '--retrospective' in sys.argv[1:] or '--retro' in sys.argv[1:]
     analyze_flag = '--analyze' in sys.argv[1:]
-    cli_args = [arg for arg in sys.argv[1:] if arg != '--analyze']
+    cli_args = [arg for arg in sys.argv[1:] if arg not in ['--analyze', '--retrospective', '--retro']]
 
     if not os.environ.get("OPENFIGI_API_KEY"):
         print("Tip: set OPENFIGI_API_KEY to enable OpenFIGI symbol lookups.")
@@ -973,6 +1144,12 @@ if __name__ == "__main__":
         else:
             print("\nNo tentative approvals with stock symbols to analyze.")
     
-    print(f"\nUsage: python test_fda.py [days] [--analyze]")
-    print(f"  Example: python test_fda.py            (scrapes last 7 days)")
-    print(f"  Example: python test_fda.py 14 --analyze  (scrapes 14 days, then analyzes)")
+    # Run retrospective test if requested
+    if retrospective_flag:
+        test_fda_advisor_retrospectively(days_back=7)
+    
+    print(f"\nUsage: python test_fda.py [days] [--analyze] [--retrospective]")
+    print(f"  Example: python test_fda.py                    (scrapes last 7 days)")
+    print(f"  Example: python test_fda.py 14 --analyze       (scrapes 14 days, then analyzes)")
+    print(f"  Example: python test_fda.py --retrospective    (tests FDA advisor retrospectively)")
+    print(f"  Example: python test_fda.py --retro            (short form for retrospective)")

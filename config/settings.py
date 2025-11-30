@@ -153,7 +153,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # To keep
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyCiVvWptLpmCGrQeTr2BaPfYJY04Sb21cU")
 
-OPENFIGI_API_KEY = os.getenv("GEMINI_API_KEY", "791f799e-e10d-49a2-a0b6-e5abbabc176d")
+OPENFIGI_API_KEY = os.getenv("OPENFIGI_API_KEY", "791f799e-e10d-49a2-a0b6-e5abbabc176d")
 
 # Logging Configuration
 LOGGING = {

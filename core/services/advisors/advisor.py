@@ -7,8 +7,6 @@ import google.generativeai as genai
 from core.models import Stock, Discovery, Recommendation, Advisor
 from google.api_core import exceptions
 from django.conf import settings
-from datetime import timedelta
-from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -41,17 +39,17 @@ class AdvisorBase:
     def analyze(self, sa, stock):
         return
 
-    def discovered(self, sa, symbol, company, explanation, sell_instructions = None):
+    def discovered(self, sa, symbol, company, explanation, sell_instructions = None, weight = 1.0):
         #-- find stock or create stock
         try:
             stock = Stock.objects.get(symbol=symbol)
         except Stock.DoesNotExist:
             stock = Stock()
             stock.symbol = symbol
-            stock.advisor = self.advisor
             logger.info(f"{self.advisor.name} created stock {stock.symbol}")
 
         # Latest price
+        stock.advisor = self.advisor
         stock.refresh()
 
         # REMOVED: 7-day duplicate discovery check - no longer needed since SA sessions are faster without Polygon
@@ -64,8 +62,10 @@ class AdvisorBase:
         discovery = Discovery()
         discovery.sa = sa
         discovery.stock = stock
+        discovery.price = stock.price  # NEW: Capture price at discovery time
         discovery.advisor = self.advisor
         discovery.explanation = explanation[:1000]
+        discovery.weight = weight
         discovery.save()
 
         # Create sell instructions if provided
@@ -126,6 +126,23 @@ class AdvisorBase:
 
     def news_flash(self, sa, title, url):
 
+        # Filter by title: reject articles containing common low-value phrases
+        title_lower = title.lower() if title else ""
+        filter_phrases = [
+            "stock market",
+            "market today",
+            "today nasdaq",
+            "nasdaq futures",
+            "futures slip",
+            "analyst questions",
+            "stocks"
+        ]
+        
+        for phrase in filter_phrases:
+            if phrase in title_lower:
+                logger.info(f"{self.advisor.name} filtering article (skipping Gemini): {title[:80]}")
+                return
+
         # Carefully worded script for the robot
         prompt = f"""
             Starting afresh
@@ -150,7 +167,7 @@ class AdvisorBase:
             ("TARGET_PRICE", 1.50),
             ("STOP_LOSS", 0.98),
             ('DESCENDING_TREND', -0.20),
-            ('CS FLOOR', 0.00)
+            ('CS_FLOOR', 0.00)
         ]
 
         # Call on 3rd part gemini AI - exhaust all models if unavailable
@@ -204,15 +221,19 @@ class AdvisorBase:
                 logger.info(f"{recommendation}: {tickers} | {title}")
 
                 # Anything better than DISMISS is put forward for consensus
-                if recommendation == "BUY" or recommendation == "STRONG_BUY":
-                    for ticker in tickers:
-                        stock = self.discovered(sa, ticker, '',
-                                                f"{model} recommended {recommendation} from reading article. | Article: {title} | {url} | {explanation} ", sell_instructions)
+                if recommendation != "BUY" and recommendation != "STRONG_BUY":
+                    break
 
-                        # A strong buy skews consensus in favour of BUY
-                        if recommendation == "STRONG_BUY":
-                            self.recommend(sa, stock, 0.85,
-                                           f"Submittied a high score based on above article | A strong buy skews consensus in favour of BUY")
+                for ticker in tickers:
+                    stock = self.discovered(sa, ticker, '',
+                                            f"{model} recommended {recommendation} from reading article. | Article: {title} | {url} | {explanation} ",
+                                            sell_instructions, 1.5 if recommendation == "STRONG_BUY" else 1.0)
+
+                    # A strong buy skews consensus in favour of BUY (This methodology will go soon)
+                    if recommendation == "STRONG_BUY":
+                        self.recommend(sa, stock, 0.85,
+                                       f"Submittied a high score based on above article | A strong buy skews consensus in favour of BUY")
+
                 # Give Gemini a rest
                 time.sleep(1)
                 break  # success, exit loop

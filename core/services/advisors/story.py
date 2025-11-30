@@ -47,11 +47,6 @@ class Story(AdvisorBase):
                     url, title = article_data
                     ticker_price_text = ""
                 
-                # Filter by title: reject articles containing "Analyst Questions" or "Stocks"
-                if "Analyst Questions" in title or "Stocks" in title:
-                    rejected_count += 1
-                    continue
-                
                 # Filter: only accept articles about a single stock
                 if self._is_single_stock_article(ticker_price_text):
                     self.news_flash(sa, title, url)

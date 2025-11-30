@@ -591,7 +591,7 @@ class Yahoo(AdvisorBase):
                 explanation_parts.extend(technical_explanation)
             
             # Add key factors that influenced the score
-            pe_ratio = info.get('trailingPE', 0)
+            pe_ratio = self._safe_float(info.get('trailingPE', 0)) or 0
             if pe_ratio > 0:
                 if pe_ratio < 1.0:
                     explanation_parts.append(f"⚠️ DISTRESSED: P/E={pe_ratio:.2f}")
@@ -600,7 +600,7 @@ class Yahoo(AdvisorBase):
                 elif pe_ratio < 15:
                     explanation_parts.append(f"🟢 UNDERVALUED: P/E={pe_ratio:.2f}")
             
-            profit_margin = info.get('profitMargins', 0)
+            profit_margin = self._safe_float(info.get('profitMargins', 0)) or 0
             if profit_margin > 0.20:
                 explanation_parts.append(f"💪 STRONG PROFITS: {profit_margin:.1%} margin")
             elif profit_margin < 0:
@@ -608,7 +608,7 @@ class Yahoo(AdvisorBase):
             elif profit_margin < 0.05:
                 explanation_parts.append(f"📉 WEAK PROFITS: {profit_margin:.1%} margin")
             
-            change_52w = info.get('fiftyTwoWeekChangePercent', 0)
+            change_52w = self._safe_float(info.get('fiftyTwoWeekChangePercent', 0)) or 0
             if change_52w < -0.50:
                 explanation_parts.append(f"📉 CATASTROPHIC: {change_52w:.1%} yearly loss")
             elif change_52w < -0.20:
@@ -618,23 +618,23 @@ class Yahoo(AdvisorBase):
             elif change_52w > 0.10:
                 explanation_parts.append(f"📈 POSITIVE MOMENTUM: {change_52w:.1%} yearly gain")
             
-            market_cap = info.get('marketCap', 0)
+            market_cap = self._safe_float(info.get('marketCap', 0)) or 0
             if market_cap < 100_000_000:
                 explanation_parts.append(f"⚠️ MICRO-CAP RISK: ${market_cap:,.0f}")
             elif market_cap > 1_000_000_000_000:
                 explanation_parts.append(f"🏢 MEGA-CAP STABILITY: ${market_cap:,.0f}")
             
             
-            debt_to_equity = info.get('debtToEquity', 0)
+            debt_to_equity = self._safe_float(info.get('debtToEquity', 0)) or 0
             if debt_to_equity > 2.0:
                 explanation_parts.append(f"⚠️ HIGH DEBT: {debt_to_equity:.1f} D/E")
             elif debt_to_equity < 0.5:
                 explanation_parts.append(f"💪 LOW DEBT: {debt_to_equity:.1f} D/E")
             
             # Add target price information if available
-            target_mean_price = info.get('targetMeanPrice')
+            target_mean_price = self._safe_float(info.get('targetMeanPrice'))
             if target_mean_price:
-                current_price = info.get('currentPrice') or info.get('regularMarketPrice')
+                current_price = self._safe_float(info.get('currentPrice') or info.get('regularMarketPrice'))
                 if current_price:
                     upside_percent = ((target_mean_price - current_price) / current_price) * 100
                     if upside_percent > 20:
@@ -658,7 +658,7 @@ class Yahoo(AdvisorBase):
         negative_flag = False
 
         # VALUATION ANALYSIS
-        pe_ratio = info.get('trailingPE', 0)
+        pe_ratio = self._safe_float(info.get('trailingPE', 0)) or 0
         if pe_ratio > 0:
             if pe_ratio < 1.0:  # Very low P/E = distressed company
                 score -= 0.3
@@ -673,7 +673,7 @@ class Yahoo(AdvisorBase):
                 negative_flag = True
 
         # PROFITABILITY ANALYSIS
-        profit_margin = info.get('profitMargins', 0)
+        profit_margin = self._safe_float(info.get('profitMargins', 0)) or 0
         if profit_margin < 0:  # Losing money
             score -= 0.2
             negative_flag = True
@@ -686,7 +686,7 @@ class Yahoo(AdvisorBase):
             negative_flag = True
 
         # MOMENTUM ANALYSIS
-        change_52w = info.get('fiftyTwoWeekChangePercent', 0)
+        change_52w = self._safe_float(info.get('fiftyTwoWeekChangePercent', 0)) or 0
         if change_52w < -0.50:  # >50% loss = catastrophic
             score -= 0.3
             negative_flag = True
@@ -702,7 +702,7 @@ class Yahoo(AdvisorBase):
             score += 0.1
 
         # MARKET POSITION ANALYSIS
-        market_cap = info.get('marketCap', 0)
+        market_cap = self._safe_float(info.get('marketCap', 0)) or 0
         if market_cap > 1_000_000_000_000:  # >$1T
             score += 0.1
         elif market_cap > 100_000_000_000:  # >$100B
@@ -712,7 +712,7 @@ class Yahoo(AdvisorBase):
             negative_flag = True
 
         # ANALYST CONSENSUS
-        analyst_rating = info.get('recommendationMean', 3.0)
+        analyst_rating = self._safe_float(info.get('recommendationMean', 3.0)) or 3.0
         if analyst_rating < 2.0:
             score += 0.15
         elif analyst_rating < 2.5:
@@ -722,7 +722,7 @@ class Yahoo(AdvisorBase):
             negative_flag = True
 
         # DEBT ANALYSIS
-        debt_to_equity = info.get('debtToEquity', 0)
+        debt_to_equity = self._safe_float(info.get('debtToEquity', 0)) or 0
         if debt_to_equity > 2.0:
             score -= 0.2
             negative_flag = True
@@ -733,8 +733,8 @@ class Yahoo(AdvisorBase):
             score += 0.1
 
         # VOLUME ANALYSIS
-        volume = info.get('volume', 0)
-        avg_volume = info.get('averageVolume', 0)
+        volume = self._safe_float(info.get('volume', 0)) or 0
+        avg_volume = self._safe_float(info.get('averageVolume', 0)) or 0
         if avg_volume > 0:
             volume_ratio = volume / avg_volume
             if volume > avg_volume * 1.5:
@@ -743,9 +743,9 @@ class Yahoo(AdvisorBase):
                 score -= 0.05
 
         # TARGET PRICE ANALYSIS
-        target_mean_price = info.get('targetMeanPrice')
+        target_mean_price = self._safe_float(info.get('targetMeanPrice'))
         if target_mean_price:
-            current_price = info.get('currentPrice') or info.get('regularMarketPrice')
+            current_price = self._safe_float(info.get('currentPrice') or info.get('regularMarketPrice'))
             if current_price and current_price > 0:
                 upside_percent = ((target_mean_price - current_price) / current_price) * 100
                 # Conservative scaling: 35% weight and clamp extreme moves

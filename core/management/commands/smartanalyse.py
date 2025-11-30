@@ -11,7 +11,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from core.services import analysis
 from core.services.advisors.advisor import AdvisorBase
-from core.models import SmartAnalysis, Advisor, Profile
+from core.models import SmartAnalysis, Advisor, Profile, Snapshot, Holding
 from django.contrib.auth.models import User
 from django.utils import timezone
 from decimal import Decimal
@@ -89,6 +89,32 @@ class Command(BaseCommand):
                 raise CommandError(f'User "{options["username"]}" does not exist')
         else:
             users = list(User.objects.filter(is_active=True, is_superuser=False))
+
+        # Create snapshots for all users at the start of SA
+        today = timezone.now().date()
+        for user in users:
+            try:
+                profile = Profile.objects.get(user=user)
+                cash_value = profile.cash or Decimal('0')
+                
+                # Calculate holdings value
+                holdings_value = Decimal('0')
+                for holding in Holding.objects.filter(user=user).select_related('stock'):
+                    if holding.stock and holding.stock.price and holding.shares:
+                        holdings_value += holding.stock.price * Decimal(holding.shares)
+                
+                # Create or update snapshot for today
+                Snapshot.objects.update_or_create(
+                    user=user,
+                    date=today,
+                    defaults={
+                        'cash_value': cash_value,
+                        'holdings_value': holdings_value,
+                    }
+                )
+            except Profile.DoesNotExist:
+                # Skip users without profiles
+                continue
 
         # Session smart analysis
         if not param_resuse:

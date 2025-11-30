@@ -69,6 +69,7 @@ class Advisor(models.Model):
     enabled = models.BooleanField(default=True)
     endpoint = models.CharField(max_length=500, default="")
     key = models.CharField(max_length=255, default="")
+    score = models.DecimalField(max_digits=5, decimal_places=2, default=1.0)  # Win rate
 
     def is_enabled(self):
         self.refresh_from_db(fields=['enabled'])
@@ -212,8 +213,10 @@ class SmartAnalysis(models.Model):
 class Discovery(models.Model):
     sa = models.ForeignKey(SmartAnalysis, on_delete=models.DO_NOTHING)
     stock = models.ForeignKey(Stock, on_delete=models.DO_NOTHING)
+    price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     advisor = models.ForeignKey(Advisor, on_delete=models.DO_NOTHING)
     created = models.DateTimeField(auto_now_add=True)
+    weight = models.DecimalField(max_digits=5, decimal_places=2, default=1.0)
     explanation = models.CharField(max_length=1000)
 
 class SellInstruction(models.Model):
@@ -265,6 +268,22 @@ class Trade(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2)
     shares = models.IntegerField()
     explanation = models.CharField(max_length=256, null=True, blank=True)
+
+
+class Snapshot(models.Model):
+    """Daily snapshot of user's portfolio (cash + holdings value)"""
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    created = models.DateTimeField(auto_now_add=True)
+    date = models.DateField()  # For easy daily filtering
+    cash_value = models.DecimalField(max_digits=10, decimal_places=2)
+    holdings_value = models.DecimalField(max_digits=10, decimal_places=2)
+    # wealth = cash_value + holdings_value (calculated, not stored)
+    
+    class Meta:
+        unique_together = [['user', 'date']]  # One snapshot per user per day
+        indexes = [
+            models.Index(fields=['user', '-date']),  # For efficient querying
+        ]
 
 
 # Signal to auto-create Profile when User is created

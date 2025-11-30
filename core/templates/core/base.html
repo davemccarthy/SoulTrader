@@ -319,36 +319,39 @@
             white-space: nowrap;
             position: relative;
             margin: 0rem 0;
+            padding: 0 2rem;
         }
 
         .ticker-text {
             display: inline-block;
             font-family: 'VT323', monospace;
             font-size: 1.2rem;
-            color: #00ff00;
+            color: #eeeeee;
             padding: 0px 0;
-            animation: tickerScroll 20s linear infinite;
+            animation: tickerScroll 30s linear infinite;
         }
 
         @keyframes tickerScroll {
             0% {
-                transform: translateX(100%);
+                transform: translateX(0%);
             }
             100% {
-                transform: translateX(-100%);
+                transform: translateX(-50%);
             }
         }
 
         .ticker-text span {
-            margin-right: 2em;
+            margin-right: 3em;
         }
 
         .ticker-text .positive {
             color: #00ff00;
+            font-weight: normal;
         }
 
         .ticker-text .negative {
-            color: #ff0000;
+            color: #ff8888;
+            font-weight: normal;
         }
 
         .holdings-container {
@@ -878,21 +881,29 @@
     <!-- Stock Ticker -->
     <div class="ticker-container">
         <div class="ticker-text">
-            {% if portfolio_widget.ticker_data %}
-                {% for item in portfolio_widget.ticker_data %}
-                    <span class="{% if item.change >= 0 %}positive{% else %}negative{% endif %}">
-                        {{ item.symbol }} {% if item.change >= 0 %}↑ {{ item.change }}%{% else %}↓ {{ item.change|floatformat:1 }}%{% endif %}
-                    </span>
+            {% if portfolio_widget.ticker_messages %}
+                {% for message in portfolio_widget.ticker_messages %}
+                    {% if message.text %}
+                        <span class="{% if message.class %}{{ message.class }}{% endif %}">
+                            {{ message.text }}
+                        </span>
+                    {% else %}
+                        <span>{{ message }}</span>
+                    {% endif %}
+                {% endfor %}
+                {# Duplicate content for seamless loop #}
+                {% for message in portfolio_widget.ticker_messages %}
+                    {% if message.text %}
+                        <span class="{% if message.class %}{{ message.class }}{% endif %}">
+                            {{ message.text }}
+                        </span>
+                    {% else %}
+                        <span>{{ message }}</span>
+                    {% endif %}
                 {% endfor %}
             {% else %}
-                <span>Welcome David McCarthy</span>
-                <span class="positive">AAPL ↑ 3.5%</span>
-                <span class="positive">TSLA ↑ 1.2%</span>
-                <span class="negative">GOOG ↓ 0.8%</span>
-                <span class="positive">MSFT ↑ 2.1%</span>
-                <span class="positive">AMZN ↑ 0.4%</span>
-                <span class="positive">NVDA ↑ 4.7%</span>
-                <span class="positive">META ↑ 1.9%</span>
+                <span>Welcome {{ user.username }}</span>
+                <span>Welcome {{ user.username }}</span>
             {% endif %}
         </div>
     </div>

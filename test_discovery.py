@@ -329,17 +329,21 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
     for row in rows:
         per_advisor[row["advisor"]].append(row)
 
-    advisor_header = f"{'Advisor':<20} {'Discoveries':>12} {'Complete':>10} {'Avg Δ%':>10} {'Net Δ$':>12} {'Net %':>10}"
+    advisor_header = f"{'Advisor':<20} {'Discoveries':>12} {'Complete':>10} {'Gainers':>10} {'Win %':>8} {'Avg Δ%':>10} {'Net Δ$':>12} {'Net %':>10}"
     print("\nPer-advisor summary:")
     print(advisor_header)
     print("-" * len(advisor_header))
     for advisor_name, advisor_rows in sorted(per_advisor.items()):
         advisor_summary = _summarise(advisor_rows)
         complete = int(advisor_summary["count"] - advisor_summary.get("missing", 0))
+        gainers = int(advisor_summary.get("gainers", 0))
+        win_pct = (gainers / complete * 100) if complete > 0 else 0.0
         print(
             f"{advisor_name:<20} "
             f"{int(advisor_summary['count']):>12} "
             f"{complete:>10} "
+            f"{gainers:>10} "
+            f"{win_pct:>7.1f}% "
             f"{advisor_summary['avg_change']:+10.2f} "
             f"{advisor_summary['net_change']:+12.2f} "
             f"{advisor_summary['total_pct']:+10.2f}"
