@@ -55,9 +55,6 @@ class AdvisorBase:
         # REMOVED: 7-day duplicate discovery check - no longer needed since SA sessions are faster without Polygon
         # This allows stocks to be re-discovered and bought again if they show strong movement
 
-        # TMP to track stock trend
-        explanation = f"{explanation} | Trend: {stock.trend}"
-
         # Create new Discovery record
         discovery = Discovery()
         discovery.sa = sa

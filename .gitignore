@@ -38,3 +38,7 @@ Thumbs.db
 logs/*.log
 !logs/.gitkeep
 
+# Data files (not required in repository)
+*.csv
+*.txt
+
