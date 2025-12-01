@@ -13,7 +13,7 @@ import h11
 from django.db import connection
 from django.db.models import Sum
 from django.utils import timezone
-from core.models import Stock, Holding, Discovery, Recommendation, Consensus, Trade, Profile
+from core.models import Stock, Holding, Discovery, Recommendation, Consensus, Trade, Profile, Advisor
 from core.services.execution import execute_buy, execute_sell
 
 logger = logging.getLogger(__name__)
@@ -72,6 +72,8 @@ def analyze_holdings(sa, users, advisors):
 
                 # Check sell conditions in priority order
                 try:
+                    consensus = None  # Initialize consensus variable
+
                     for instruction in instructions:
                         if instruction.instruction == 'STOP_LOSS':
                             if holding.stock.price < instruction.value:
@@ -132,27 +134,66 @@ def analyze_discovery(sa, users, advisors):
     # 3. Filter stocks to buy on a per user basis
     for u in users:
         profile = Profile.objects.get(user=u)
-        buy_from = Profile.RISK[profile.risk]["confidence_high"]
+        risk_settings = Profile.RISK[profile.risk]
+        buy_from = risk_settings["confidence_high"]
+        allowed_advisors = risk_settings.get("advisors", [])
 
-        # Limit to stocks discovered in this SA and above confidence threshold
-        discovered_stock_ids = Discovery.objects.filter(sa=sa).values_list('stock_id', flat=True)
-        consensus = Consensus.objects.filter(
-            sa=sa.id,
-            stock_id__in=discovered_stock_ids,
-            avg_confidence__gte=buy_from
-        )
+        # 1. Filter discoveries by allowed advisors (if specified)
+        discoveries_qs = Discovery.objects.filter(sa=sa)
+        
+        if allowed_advisors:
+            # Get Advisor objects for the allowed advisor names
+            allowed_advisor_objects = Advisor.objects.filter(name__in=allowed_advisors)
+            if allowed_advisor_objects.exists():
+                discoveries_qs = discoveries_qs.filter(advisor__in=allowed_advisor_objects)
+                logger.info(f"User {u.username} ({profile.risk}): Filtering to advisors: {allowed_advisors}")
+            else:
+                logger.warning(f"User {u.username} ({profile.risk}): No advisors found matching {allowed_advisors}")
+                continue
 
-        # Calculate allowance based on target slot count
-        allowance = len(consensus) * (profile.investment / Decimal(str(Profile.RISK[profile.risk]["stocks"])))
-
-        # Get tot_consensus so buy allowance can be decided by each stocks confidence score
-        tot_confidence = consensus.aggregate(Sum('avg_confidence'))['avg_confidence__sum']
-        if not tot_confidence:
+        # 2. Get filtered discoveries (will check consensus for each)
+        filtered_discoveries = list(discoveries_qs.select_related('advisor', 'stock'))
+        
+        if not filtered_discoveries:
+            logger.info(f"User {u.username} ({profile.risk}): No discoveries from allowed advisors")
             continue
 
-        # Do the buy process
-        for c in consensus:
-            # Buy stock
-            execute_buy(sa, u, c, allowance, tot_confidence, c.avg_confidence)
+        # 3. Base allowance calculation (to be enhanced with different risk methods)
+        base_allowance = profile.investment / Decimal(str(risk_settings["stocks"]))
+        risk_weight = Decimal(str(risk_settings["weight"]))
 
+        # 4. Iterate through discoveries and calculate allowance per discovery
+        for discovery in filtered_discoveries:
+            # Check if this discovery has consensus that passes threshold
+            consensus = Consensus.objects.filter(
+                sa=sa.id,
+                stock_id=discovery.stock_id,
+                avg_confidence__gte=buy_from
+            ).first()
 
+            if not consensus:
+                logger.debug(f"Discovery {discovery.stock.symbol} by {discovery.advisor.name} did not pass consensus threshold ({buy_from})")
+                continue
+
+            # Get advisor weight (normalized)
+            advisor_weight = discovery.advisor.weight
+
+            # Calculate allowance with weighting
+            allowance = base_allowance
+
+            # Apply advisor weight and risk weight
+            # Exaggerate: if advisor weight > 1.0, multiply by risk.weight; if < 1.0, divide by risk.weight
+            if advisor_weight > Decimal('1.0'):
+                allowance = allowance * (advisor_weight * risk_weight)
+            else:
+                allowance = allowance * (advisor_weight / risk_weight)
+
+            # TODO: Will update execute_buy function later
+            # For now, using existing signature - may need to adapt
+            logger.info(
+                f"User {u.username}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "
+                f"(advisor_weight={advisor_weight:.3f}, risk_weight={risk_weight:.3f}, allowance=${allowance:.2f})"
+            )
+            
+            # Call execute_buy (signature may need updating)
+            execute_buy(sa, u, consensus, allowance)

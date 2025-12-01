@@ -39,7 +39,7 @@ def execute_sell(sa, user, profile, consensus, holding, explanation):
 
     profile.save()
 
-def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus, explanation=""):
+def execute_buy(sa, user, consensus, allowance, explanation=""):
 
     # Check for existing stock
     profile = Profile.objects.get(user=user)
@@ -48,36 +48,19 @@ def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus, ex
     if holding is None:
         holding = Holding()
 
-    # Calculate potential spend for this stock based on confidence (no more than half allowance for single stock)
-    allowance = (stk_consensus / tot_consensus) * allowance
+    stock = consensus.stock
+
+    # Check cash
+    if allowance > profile.cash:
+        logger.warning(f"{user.username} low on cash ${profile.cash}")
+        allowance = profile.cash
 
     # Latest price
-    consensus.stock.refresh()
+    stock.refresh()
 
     # Verify stock price
-    if consensus.stock.price == 0.0:
+    if stock.price == 0.0:
         logger.warning(f"Trade: no price for {consensus.stock.symbol}")
-        return
-
-    # Check price against user's risk profile min/max buy prices
-    risk_settings = Profile.RISK.get(profile.risk, {})
-    min_price = Decimal(str(risk_settings.get('min_price', 0.0)))
-    max_price = Decimal(str(risk_settings.get('max_price', float('inf'))))
-    
-    stock_price = consensus.stock.price
-    
-    if stock_price < min_price:
-        logger.info(
-            f"Trade: {user.username} NOT buying {consensus.stock.symbol} at ${stock_price:.2f}. "
-            f"Price ${stock_price:.2f} below minimum ${min_price:.2f} for {profile.risk} risk profile"
-        )
-        return
-    
-    if stock_price > max_price:
-        logger.info(
-            f"Trade: {user.username} NOT buying {consensus.stock.symbol} at ${stock_price:.2f}. "
-            f"Price ${stock_price:.2f} above maximum ${max_price:.2f} for {profile.risk} risk profile"
-        )
         return
 
     # Calculate no. shares to buy
@@ -98,6 +81,10 @@ def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus, ex
     cost = shares * consensus.stock.price
     # TODO plus commission
 
+    if profile.cash < cost:
+        logger.info(f"Trade: {user.username} NOT buying shares of {consensus.stock.symbol}. Not enough cash")
+        return
+    """
     # Sacrifce stock for better stock
     while profile.cash < cost:
         # Only sacrifice stocks that have CS_FLOOR instruction from their discovery
@@ -126,6 +113,7 @@ def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus, ex
         else:
             logger.warning("Low on cash. %s not worthy of sellnig existing stock", consensus.stock.symbol)
             return
+    """
 
     logger.info(f"Trade: {user.username} buying {shares} shares of {consensus.stock.symbol} at ${consensus.stock.price}. Holding {holding.shares}")
 
@@ -138,8 +126,8 @@ def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus, ex
     trade.user = user
     trade.consensus = consensus
     trade.action = "BUY"
-    trade.stock = consensus.stock
-    trade.price = consensus.stock.price
+    trade.stock = stock
+    trade.price = stock.price
     trade.shares = shares
     trade.explanation = explanation
     trade.save()
@@ -150,7 +138,7 @@ def execute_buy(sa, user, consensus, allowance, tot_consensus, stk_consensus, ex
     old_shares = holding.shares
     old_avg = holding.average_price or Decimal('0')
     holding.shares += shares
-    holding.consensus = stk_consensus
+    holding.consensus = consensus.avg_confidence
 
     if holding.shares > 0:
         total_cost = (old_avg * Decimal(old_shares)) + (consensus.stock.price * shares)

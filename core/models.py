@@ -36,21 +36,29 @@ class Profile(models.Model):
         "CONSERVATIVE": {
             "confidence_high": 0.85,
             "confidence_low": 0.6,
+            "advisors": ['StockStory', 'Polygon.io', 'Yahoo', 'FDA', 'Insider'],
+            "weight": 1.0,
             "stocks": 50
         },
         "MODERATE": {
             "confidence_high": 0.7,
             "confidence_low": 0.55,
+            "advisors": ['StockStory', 'Polygon.io', 'Yahoo', 'FDA', 'Insider'],
+            "weight": 1.00,
             "stocks": 40
         },
         "AGGRESSIVE": {
             "confidence_high": 0.55,
             "confidence_low": 0.55,
+            "advisors": ['User', 'FDA', 'Insider'],
+            "weight": 1.25,
             "stocks": 30
         },
         "EXPERIMENTAL": {
             "confidence_high": 0.0,
             "confidence_low": 0.0,
+            "advisors": ['Intraday'],  # Intraday momentum advisor for experimental users
+            "weight": 1.0,
             "stocks": 40
         },
     }
@@ -69,7 +77,7 @@ class Advisor(models.Model):
     enabled = models.BooleanField(default=True)
     endpoint = models.CharField(max_length=500, default="")
     key = models.CharField(max_length=255, default="")
-    score = models.DecimalField(max_digits=5, decimal_places=2, default=1.0)  # Win rate
+    weight = models.DecimalField(max_digits=5, decimal_places=2, default=1.0)  # Win rate
 
     def is_enabled(self):
         self.refresh_from_db(fields=['enabled'])
