@@ -293,3 +293,4 @@ class Command(BaseCommand):
             top_phrases = [phrase for phrase, count in phrase_counts.most_common(10) if count >= 2]
             if top_phrases:
                 self.stdout.write(f"\nTop phrases to consider filtering: {', '.join(top_phrases[:5])}")
+

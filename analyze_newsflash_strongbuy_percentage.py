@@ -200,3 +200,4 @@ def analyze_newsflash_strongbuy():
 
 if __name__ == '__main__':
     analyze_newsflash_strongbuy()
+
