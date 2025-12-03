@@ -71,49 +71,16 @@ def execute_buy(sa, user, consensus, allowance, explanation=""):
         return
 
     # No buy if have shares (surrender allowance for subsequent purchases)
-    if shares - holding.shares < 0:
+    if shares - holding.shares <= 0:
         logger.info(f"{user.username} already has  {holding.shares} {consensus.stock.symbol} shares")
         return
 
-    # Return allowance for existing shares TODO
-    #profile.allowance += (shares - holding.shares) * consensus.stock.price
     shares -= holding.shares
     cost = shares * consensus.stock.price
-    # TODO plus commission
 
     if profile.cash < cost:
         logger.info(f"Trade: {user.username} NOT buying shares of {consensus.stock.symbol}. Not enough cash")
         return
-    """
-    # Sacrifce stock for better stock
-    while profile.cash < cost:
-        # Only sacrifice stocks that have CS_FLOOR instruction from their discovery
-        sacrifice = (
-            Holding.objects.filter(
-                user=user,
-                consensus__lt=stk_consensus,
-                consensus__gt=0,
-                shares__gt=0,
-                stock__discovery__sellinstruction__instruction='CS_FLOOR'
-            )
-            .order_by("consensus")
-            .first()
-        )
-
-        if sacrifice:
-            logger.warning(
-                "Sacrificing %s (CS %.2f) for %s (CS %.2f)",
-                sacrifice.stock.symbol,
-                float(sacrifice.consensus or 0),
-                consensus.stock.symbol,
-                stk_consensus,
-            )
-            execute_sell(sa, user, profile, None, sacrifice, f"Sacrificed for better stock {consensus.stock.symbol}")
-            profile.refresh_from_db(fields=["cash"])
-        else:
-            logger.warning("Low on cash. %s not worthy of sellnig existing stock", consensus.stock.symbol)
-            return
-    """
 
     logger.info(f"Trade: {user.username} buying {shares} shares of {consensus.stock.symbol} at ${consensus.stock.price}. Holding {holding.shares}")
 
@@ -145,6 +112,6 @@ def execute_buy(sa, user, consensus, allowance, explanation=""):
         holding.average_price = total_cost / Decimal(holding.shares)
     else:
         holding.average_price = consensus.stock.price
-    holding.save()
 
+    holding.save()
     profile.save()

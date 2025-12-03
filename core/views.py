@@ -128,19 +128,7 @@ def holdings(request):
             # Fallback to stock.advisor if no discovery found
             discovery = stock.advisor.name if stock.advisor else ""
             discovery_advisor = stock.advisor
-        
-        # Determine trend class (positive = uptrend, negative = downtrend, neutral = sideways)
-        trend_value = stock.trend
-        if trend_value is not None:
-            if trend_value > 0:
-                trend_class = 'positive'
-            elif trend_value < 0:
-                trend_class = 'negative'
-            else:
-                trend_class = 'neutral'
-        else:
-            trend_class = 'neutral'
-        
+
         holdings_data.append({
             'symbol': stock.symbol,
             'company': stock.company,
@@ -154,8 +142,6 @@ def holdings(request):
             'average_price': avg_price,
             'total_value': total_value,
             'price_class': price_class,
-            'trend': trend_value,
-            'trend_class': trend_class,
         })
     
     context = {
@@ -289,9 +275,12 @@ def holding_detail(request, stock_id):
                     # DESCENDING_TREND value is a threshold (e.g., -0.20 means sell if trend < -0.20)
                     instruction_data['value'] = float(instruction.value)
                     instruction_data['status'] = 'pending'  # Status determined during analysis
-                    if holding.stock.trend is not None:
-                        instruction_data['current_trend'] = float(holding.stock.trend)
-                        instruction_data['status'] = 'active' if holding.stock.trend < instruction.value else 'pending'
+
+                    trend = holding.stock.calc_trend()
+
+                    if trend is not None:
+                        instruction_data['current_trend'] = float(trend)
+                        instruction_data['status'] = 'active' if trend < instruction.value else 'pending'
                 
                 sell_instructions.append(instruction_data)
             trade_payload['sell_instructions'] = sell_instructions
@@ -326,7 +315,7 @@ def holding_detail(request, stock_id):
         trades_payload.append(trade_payload)
 
     # Determine trend class for detail view
-    trend_value = stock.trend
+    trend_value = stock.calc_trend()
     if trend_value is not None:
         if trend_value > 0:
             trend_class = 'positive'

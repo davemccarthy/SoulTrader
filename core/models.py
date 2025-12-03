@@ -36,21 +36,21 @@ class Profile(models.Model):
         "CONSERVATIVE": {
             "confidence_high": 0.85,
             "confidence_low": 0.6,
-            "advisors": ['StockStory', 'Polygon.io', 'Yahoo', 'FDA', 'Insider'],
+            "advisors": ['StockStory', 'Polygon', 'Yahoo', 'FDA', 'Insider'],
             "weight": 1.0,
             "stocks": 50
         },
         "MODERATE": {
             "confidence_high": 0.7,
             "confidence_low": 0.55,
-            "advisors": ['StockStory', 'Polygon.io', 'Yahoo', 'FDA', 'Insider'],
+            "advisors": ['StockStory', 'Polygon', 'Yahoo', 'FDA', 'Insider'],
             "weight": 1.00,
             "stocks": 40
         },
         "AGGRESSIVE": {
             "confidence_high": 0.55,
             "confidence_low": 0.55,
-            "advisors": ['User', 'FDA', 'Insider'],
+            "advisors": ['User', 'FDA', 'Yahoo', 'Insider'],
             "weight": 1.25,
             "stocks": 30
         },
@@ -89,7 +89,6 @@ class Stock(models.Model):
     company = models.CharField(max_length=200)
     exchange = models.CharField(max_length=32)
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0.0)
-    trend = models.DecimalField(max_digits=5, decimal_places=4, null=True, blank=True)
     advisor = models.ForeignKey(Advisor, on_delete=models.DO_NOTHING, null=True, blank=True, default=None)
     updated = models.DateTimeField(auto_now=True)
 
@@ -103,10 +102,12 @@ class Stock(models.Model):
             hours: Optional - limit to last N hours of data (default: 12 hours)
         
         Returns:
-            Decimal: normalized slope value (positive = uptrend, negative = downtrend, ~0 = sideways) or None if calculation fails
+            Decimal: normalized slope value (positive = uptrend, negative = downtrend, ~0 = sideways) or None if calculation fails or markets closed
         """
         import numpy as np
         from sklearn.linear_model import LinearRegression
+        import pytz
+        from datetime import datetime
 
         logger = logging.getLogger(__name__)
 
@@ -114,12 +115,58 @@ class Stock(models.Model):
             if not self.price or self.price == 0:
                 return None
 
+            # Only check market hours for intraday periods (short periods with minute intervals)
+            # For longer periods (e.g., 5d, 1mo, 1y), use historical data regardless of market status
+            is_intraday = False
+            if period in ["1d", "5d"] and interval in ["1m", "2m", "5m", "15m", "30m", "60m", "90m"]:
+                is_intraday = True
+            
+            if is_intraday:
+                # Check if markets are open or recently opened
+                et = pytz.timezone('US/Eastern')
+                now_et = datetime.now(et)
+                
+                # Check if it's a weekday (Monday=0, Sunday=6)
+                if now_et.weekday() >= 5:  # Saturday or Sunday
+                    logger.debug(f"Markets closed: weekend for {self.symbol}")
+                    return None
+                
+                # Market hours: 9:30 AM - 4:00 PM ET
+                market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+                market_close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+                
+                # If before market open or after market close, return None
+                if now_et.time() < market_open.time() or now_et.time() >= market_close.time():
+                    logger.debug(f"Markets closed: outside trading hours for {self.symbol}")
+                    return None
+                
+                # Check if market just opened (less than 2 hours of trading)
+                hours_since_open = (now_et - market_open).total_seconds() / 3600
+                if hours_since_open < 2:
+                    logger.debug(f"Market recently opened (< 2 hours) for {self.symbol}")
+                    return None
+
             ticker = yf.Ticker(self.symbol)
             hist = ticker.history(period=period, interval=interval)
 
             if hist.empty or 'Close' not in hist.columns:
                 logger.warning(f"No history data for {self.symbol}")
                 return None
+
+            # For intraday, check if the last data point is recent (within last 30 minutes)
+            if is_intraday and not hist.index.empty:
+                et = pytz.timezone('US/Eastern')
+                now_et = datetime.now(et)
+                last_timestamp = hist.index[-1]
+                # Convert to ET if needed
+                if last_timestamp.tzinfo is None:
+                    last_timestamp = pytz.UTC.localize(last_timestamp)
+                last_timestamp_et = last_timestamp.astimezone(et)
+                minutes_since_last = (now_et - last_timestamp_et).total_seconds() / 60
+                
+                if minutes_since_last > 30:
+                    logger.debug(f"Data too stale ({minutes_since_last:.1f} minutes old) for {self.symbol}")
+                    return None
 
             # If hours specified, slice to last N hours
             if hours is not None:
@@ -191,10 +238,8 @@ class Stock(models.Model):
                     self.exchange = exchange
 
             # Calculate trend using last 12 hours of 15-minute history
-            self.trend = self.calc_trend()
+            #self.trend = self.calc_trend()
             self.save()
-
-            logger.debug(f"Updated {self.symbol} {self.price} (trend: {self.trend})") # TMP
         except Exception as e:
             logger.warning(f"Could not auto-update {self.symbol}: {e}")
 

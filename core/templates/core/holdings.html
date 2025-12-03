@@ -26,9 +26,6 @@
                     </div>
                     <div class="holdings-col holdings-col-company">
                         <span class="holdings-company" title="{{ holding.company }}">{{ holding.company|default:"—"|truncatechars:40 }}</span>
-                        <span class="holdings-company-meta">
-                            {{ holding.shares|default:"—" }} @ ${{ holding.average_price|floatformat:2 }}<span class="holdings-trend {{ holding.trend_class }}">{% if holding.trend > 0 %}+{% elif holding.trend < 0 %}−{% else %}→{% endif %}</span>
-                        </span>
                     </div>
                     <div class="holdings-col">
                         <span class="holdings-price {{ holding.price_class }}">${{ holding.price|floatformat:2 }}</span>

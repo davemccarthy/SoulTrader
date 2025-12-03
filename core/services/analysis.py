@@ -92,9 +92,11 @@ def analyze_holdings(sa, users, advisors):
                                 break
 
                         elif instruction.instruction == 'DESCENDING_TREND':
-                            if holding.stock.trend < instruction.value:
+
+                            trend = holding.stock.calc_trend(hours=2)
+
+                            if trend and trend < instruction.value:
                                 execute_sell(sa, user, profile, consensus, holding, f"{holding.stock.symbol} descending detection of ${instruction.value:.2f}")
-                                print(f"*************** HAVE SOLD {holding.stock.symbol} descending detection of ${holding.stock.trend:.2f}")
                                 break
 
                         elif instruction.instruction == 'CS_FLOOR':
@@ -142,8 +144,9 @@ def analyze_discovery(sa, users, advisors):
         discoveries_qs = Discovery.objects.filter(sa=sa)
         
         if allowed_advisors:
-            # Get Advisor objects for the allowed advisor names
-            allowed_advisor_objects = Advisor.objects.filter(name__in=allowed_advisors)
+            # Get Advisor objects for the allowed advisor python_class values
+            allowed_advisor_objects = Advisor.objects.filter(python_class__in=allowed_advisors)
+
             if allowed_advisor_objects.exists():
                 discoveries_qs = discoveries_qs.filter(advisor__in=allowed_advisor_objects)
                 logger.info(f"User {u.username} ({profile.risk}): Filtering to advisors: {allowed_advisors}")
@@ -158,12 +161,23 @@ def analyze_discovery(sa, users, advisors):
             logger.info(f"User {u.username} ({profile.risk}): No discoveries from allowed advisors")
             continue
 
+        # Deduplicate by stock - only process each stock once per user
+        seen_stocks = set()
+        unique_discoveries = []
+        for discovery in filtered_discoveries:
+            if discovery.stock_id not in seen_stocks:
+                seen_stocks.add(discovery.stock_id)
+                unique_discoveries.append(discovery)
+
+        if not unique_discoveries:
+            continue
+
         # 3. Base allowance calculation (to be enhanced with different risk methods)
         base_allowance = profile.investment / Decimal(str(risk_settings["stocks"]))
         risk_weight = Decimal(str(risk_settings["weight"]))
 
-        # 4. Iterate through discoveries and calculate allowance per discovery
-        for discovery in filtered_discoveries:
+        # 4. Iterate through unique discoveries and calculate allowance per discovery
+        for discovery in unique_discoveries:
             # Check if this discovery has consensus that passes threshold
             consensus = Consensus.objects.filter(
                 sa=sa.id,

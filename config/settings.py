@@ -151,7 +151,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 #POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "MSVhtqDKV9HyMOdla5UunU2EFs53MweY")
 
 # To keep
-GEMINI_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyCiVvWptLpmCGrQeTr2BaPfYJY04Sb21cU")
+GEMINI_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyA-9IS9-bzuXsRVvYFA-eGZyutve9Htp1I")
 
 OPENFIGI_API_KEY = os.getenv("OPENFIGI_API_KEY", "791f799e-e10d-49a2-a0b6-e5abbabc176d")
 

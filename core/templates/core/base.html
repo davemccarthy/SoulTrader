@@ -912,7 +912,7 @@
     <div class="portfolio-widget">
         <div class="portfolio-widget-content">
             <div class="portfolio-stat">
-                <div class="portfolio-stat-header">Value</div>
+                <div class="portfolio-stat-header">Wealth</div>
                 <div class="portfolio-stat-value">${{ portfolio_widget.total_value|default:"0"|floatformat:2 }}</div>
             </div>
             <div class="portfolio-stat">
@@ -922,7 +922,7 @@
                 </div>
             </div>
             <div class="portfolio-stat">
-                <div class="portfolio-stat-header">Investment</div>
+                <div class="portfolio-stat-header">Portfolio</div>
                 <div class="portfolio-stat-value">${{ portfolio_widget.invested|default:"0"|floatformat:2 }}</div>
             </div>
             <div class="portfolio-stat">
@@ -938,11 +938,13 @@
                 <div class="portfolio-stat-value">{{ portfolio_widget.trades_count|default:"0" }}</div>
             </div>
             <div class="portfolio-stat">
-                <div class="portfolio-stat-header">Shares</div>
-                <div class="portfolio-stat-value">{{ portfolio_widget.shares_count|default:"0" }}</div>
+                <div class="portfolio-stat-header">PORTFOLIO P&L</div>
+                <div class="portfolio-stat-value {% if portfolio_widget.holdings_pnl >= 0 %}positive{% else %}negative{% endif %}">
+                    {{ portfolio_widget.holdings_pnl|default:"0"|floatformat:2 }}%
+                </div>
             </div>
             <div class="portfolio-stat">
-                <div class="portfolio-stat-header">P&L</div>
+                <div class="portfolio-stat-header">TOTAL P&L</div>
                 <div class="portfolio-stat-value {% if portfolio_widget.return_percent >= 0 %}positive{% else %}negative{% endif %}">
                     {{ portfolio_widget.return_percent|default:"0"|floatformat:2 }}%
                 </div>

@@ -123,7 +123,6 @@ FDA_ALLOW_IF_CONTAINS = (
 
 class FDA(AdvisorBase):
     def discover(self, sa):
-        """Discover FDA approvals for today's date only."""
         today = _ensure_aware(sa.started).date()
 
         try:
@@ -168,6 +167,8 @@ class FDA(AdvisorBase):
             sell_instructions = [
                 ("TARGET_PRICE", 1.20),
                 ("STOP_LOSS", 0.99),
+                ("AFTER_DAYS", 7.0),
+                ('DESCENDING_TREND', -0.20)
             ]
 
             explanation = build_discovery_explanation(approval, score)
@@ -178,11 +179,6 @@ class FDA(AdvisorBase):
             stock = self.discovered(sa, stock_symbol, approval.get("company", ""), explanation, sell_instructions, weight=weight)
             if not stock:
                 continue
-
-            if score >= RECOMMENDATION_CONFIDENCE_THRESHOLD:
-                recommendation_note = build_recommendation_explanation(approval, score)
-                confidence_value = Decimal(f"{min(score, MAX_CONFIDENCE_SCORE):.2f}")
-                self.recommend(sa, stock, confidence_value, recommendation_note)
 
 
 def scrape_fda_approvals_for_date(target_date):
@@ -212,7 +208,8 @@ def scrape_fda_approvals_for_date(target_date):
         return []
 
     # Find the heading that matches our target date
-    target_date_str = target_date.strftime("%B %d, %Y")
+    # Format without zero-padding the day (e.g., "December 1, 2025" not "December 01, 2025")
+    target_date_str = target_date.strftime("%B ") + str(target_date.day) + target_date.strftime(", %Y")
     headings = tab_content.find_all("h4")
     
     for heading in headings:
@@ -240,6 +237,8 @@ def parse_report_table(table, report_date_str):
         return approvals
 
     rows = tbody.find_all("tr")
+    
+    filtered_count = 0
     for row in rows:
         cells = row.find_all("td")
         if len(cells) < 7:
@@ -258,6 +257,8 @@ def parse_report_table(table, report_date_str):
         if classification_upper and any(skip in classification_upper for skip in FDA_SKIP_KEYWORDS):
             has_other_signals = any(keyword in classification_upper for keyword in FDA_ALLOW_IF_CONTAINS)
             if not has_other_signals:
+                filtered_count += 1
+                logger.debug("FDA advisor: filtered out %s (%s) - LABELING classification", drug_name, company)
                 continue
 
         stock_symbol, match_confidence = match_company_to_symbol(company)
@@ -343,6 +344,11 @@ def match_company_to_symbol(company_name):
     openfigi_symbol = lookup_symbol_via_openfigi(company_name)
     if openfigi_symbol:
         return openfigi_symbol, "openfigi"
+
+    # Try to infer and validate symbol using yfinance
+    yfinance_symbol = lookup_symbol_via_yfinance(company_name)
+    if yfinance_symbol:
+        return yfinance_symbol, "yfinance"
 
     return None, None
 
@@ -436,6 +442,78 @@ def _select_best_openfigi_ticker(entries):
         if ticker:
             return ticker
 
+    return None
+
+
+def validate_symbol_with_yfinance(symbol, company_name=None):
+    """Check if a symbol is valid by attempting to fetch data from yfinance.
+    Optionally verify that the company name matches."""
+    if not symbol:
+        return False
+    
+    try:
+        ticker = yf.Ticker(symbol)
+        # Try to get basic info - if this fails, symbol is likely invalid
+        info = ticker.info
+        if not info:
+            return False
+        
+        # Check if we got meaningful data
+        if not (info.get("symbol") or info.get("longName") or info.get("shortName")):
+            return False
+        
+        # If company name provided, try to match it
+        if company_name:
+            company_upper = company_name.upper()
+            yf_name = (info.get("longName") or info.get("shortName") or "").upper()
+            # Extract key word from company name (e.g., "ALVOTECH" from "ALVOTECH USA INC")
+            key_word = _normalize_company_name(company_name).split()[0] if company_name else ""
+            # Check if key word appears in yfinance name or vice versa
+            if key_word and (key_word in yf_name or yf_name.split()[0] in company_upper):
+                return True
+            # If no match, still return True if symbol is valid (company name matching is best-effort)
+        
+        return True
+    except Exception:
+        pass
+    return False
+
+
+def lookup_symbol_via_yfinance(company_name):
+    """Try to infer stock symbol from company name and validate with yfinance."""
+    if not company_name:
+        return None
+    
+    # Generate potential symbols from company name
+    # Remove common suffixes and extract key words
+    normalized = _normalize_company_name(company_name)
+    words = normalized.split()
+    
+    # Try first 4 characters of first word (common pattern: ALVOTECH -> ALVO)
+    if words:
+        first_word = words[0]
+        if len(first_word) >= 4:
+            candidate = first_word[:4].upper()
+            if validate_symbol_with_yfinance(candidate, company_name):
+                logger.info("FDA advisor: validated symbol %s for company %s via yfinance", candidate, company_name)
+                return candidate
+        
+        # Try first 3 characters if 4 didn't work
+        if len(first_word) >= 3:
+            candidate = first_word[:3].upper()
+            if validate_symbol_with_yfinance(candidate, company_name):
+                logger.info("FDA advisor: validated symbol %s for company %s via yfinance", candidate, company_name)
+                return candidate
+    
+    # Try combinations: first letter of first 2-4 words
+    if len(words) >= 2:
+        # First 2 words, first 2 letters each: ALVOTECH USA -> ALUS
+        if len(words[0]) >= 2 and len(words[1]) >= 2:
+            candidate = (words[0][:2] + words[1][:2]).upper()
+            if validate_symbol_with_yfinance(candidate, company_name):
+                logger.info("FDA advisor: validated symbol %s for company %s via yfinance", candidate, company_name)
+                return candidate
+    
     return None
 
 

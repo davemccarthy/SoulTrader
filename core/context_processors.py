@@ -43,8 +43,6 @@ def get_ticker_messages(user):
         if buy_trades.exists():
             messages.append(f"BUYs {buy_trades.count()} stocks")
             for trade in buy_trades:
-                # Refresh stock to get current price
-                trade.stock.refresh()
                 
                 # Calculate percentage change from buy price to current price
                 if trade.price > 0:
@@ -71,8 +69,6 @@ def get_ticker_messages(user):
         if sell_trades.exists():
             messages.append(f"SELLs {sell_trades.count()} stocks")
             for trade in sell_trades:
-                # Refresh stock to get current price
-                trade.stock.refresh()
                 
                 # Find the original BUY trade to get the buy price
                 buy_trade = Trade.objects.filter(
@@ -136,6 +132,21 @@ def get_portfolio_widget_data(user):
     
     # Get trade count
     trades_count = user.trade_set.count()
+
+    # Total cost basis using average_price
+    holdings_cost_basis = sum(
+        (h.average_price or Decimal('0')) * Decimal(str(h.shares))
+        for h in holdings
+    )
+
+    # Portfolio P&L
+    holdings_pnl = holdings_value - holdings_cost_basis
+
+    # Portfolio P&L percentage
+    if holdings_cost_basis > 0:
+        holdings_pnl = (holdings_pnl / holdings_cost_basis) * 100
+    else:
+        holdings_pnl = Decimal('0.0')
     
     return {
         'total_value': float(total_value),
@@ -144,7 +155,7 @@ def get_portfolio_widget_data(user):
         'invested': float(invested),
         'holdings_count': holdings_count,
         'trades_count': trades_count,
-        'shares_count': shares_count,
+        'holdings_pnl': holdings_pnl,
         'return_percent': float(return_percent),
     }
 

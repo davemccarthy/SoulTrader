@@ -425,13 +425,14 @@ def check_entry_signal(symbol, period="7d", interval="1h",
                       ema_short=8, ema_long=21, rsi_period=14, 
                       rsi_overbought=75, vol_multiplier=1.5,
                       sl_atr_mult=2.0, tp_atr_mult=3.0,
-                      max_price=None):
+                      max_price=None, return_diagnostics=False):
     """
     Check if a stock currently meets ALL entry conditions.
     Returns discovery dict if signals present, None otherwise.
     
     Args:
         max_price: Maximum price to consider (filters out expensive stocks early)
+        return_diagnostics: If True, returns (discovery, diagnostics) tuple
     """
     try:
         ticker = yf.Ticker(symbol)
@@ -442,6 +443,8 @@ def check_entry_signal(symbol, period="7d", interval="1h",
                 fast_info = ticker.fast_info
                 current_price = fast_info.get('lastPrice') or fast_info.get('regularMarketPrice')
                 if current_price and current_price > max_price:
+                    if return_diagnostics:
+                        return None, {'filtered': 'price_too_high', 'price': current_price, 'max_price': max_price}
                     return None  # Skip expensive stocks early
             except:
                 pass  # Continue if price check fails
@@ -453,6 +456,8 @@ def check_entry_signal(symbol, period="7d", interval="1h",
         
         # Need at least 40 bars for reliable indicators (EMA_L=21, Vol_MA=20, RSI/ATR=14 + buffer)
         if df.empty or len(df) < 40:
+            if return_diagnostics:
+                return None, {'filtered': 'insufficient_data', 'bars': len(df) if not df.empty else 0}
             return None
         
         # Calculate indicators
@@ -465,7 +470,31 @@ def check_entry_signal(symbol, period="7d", interval="1h",
         atr_val = float(latest['ATR']) if not np.isnan(latest['ATR']) else 0.0
         
         # Check ALL entry conditions (must all be true)
-        if not latest.get('enter_long', False):
+        price_above_vwap = latest['Close'] > latest['VWAP']
+        ema_bullish = latest['EMA_S'] > latest['EMA_L']
+        rsi_ok = latest['RSI'] < rsi_overbought
+        vol_ok = latest['Volume'] > latest['Vol_MA'] * vol_multiplier
+        
+        # Build diagnostics if requested
+        diagnostics = {}
+        if return_diagnostics or not (price_above_vwap and ema_bullish and rsi_ok and vol_ok):
+            diagnostics = {
+                'price_above_vwap': price_above_vwap,
+                'ema_bullish': ema_bullish,
+                'rsi_ok': rsi_ok,
+                'vol_ok': vol_ok,
+                'price': float(current_price),
+                'vwap': float(latest['VWAP']),
+                'ema_s': float(latest['EMA_S']),
+                'ema_l': float(latest['EMA_L']),
+                'rsi': float(latest['RSI']),
+                'volume_ratio': float(latest['Volume'] / latest['Vol_MA']) if latest['Vol_MA'] > 0 else 0.0,
+                'required_vol_mult': vol_multiplier,
+            }
+        
+        if not (price_above_vwap and ema_bullish and rsi_ok and vol_ok):
+            if return_diagnostics:
+                return None, diagnostics
             return None
         
         # Calculate stop/target based on ATR
@@ -494,7 +523,7 @@ def check_entry_signal(symbol, period="7d", interval="1h",
             f"Volume {latest['Volume']/latest['Vol_MA']:.1f}x avg"
         ]
         
-        return {
+        result = {
             'symbol': symbol,
             'company': company_name,
             'entry_price': current_price,
@@ -511,12 +540,18 @@ def check_entry_signal(symbol, period="7d", interval="1h",
             'ema_long': float(latest['EMA_L']),
             'market_cap': market_cap,
         }
+        if return_diagnostics:
+            return result, {}
+        return result
     except Exception as e:
+        if return_diagnostics:
+            return None, {'error': str(e)}
         print(f"  Error checking {symbol}: {e}")
         return None
 
 def discover_opportunities(max_stocks=50, min_market_cap=100_000_000, 
-                          max_price=None, period="7d", interval="1h"):
+                          max_price=None, period="7d", interval="1h",
+                          vol_multiplier=1.5):
     """
     Scan active stocks for intraday momentum entry opportunities.
     Returns list of discoveries sorted by volume ratio (strongest momentum first).
@@ -580,14 +615,57 @@ def discover_opportunities(max_stocks=50, min_market_cap=100_000_000,
     skipped_price = 0
     skipped_mcap = 0
     
+    # Diagnostic counters
+    diag_failed_price_vwap = 0
+    diag_failed_ema = 0
+    diag_failed_rsi = 0
+    diag_failed_volume = 0
+    diag_failed_multiple = 0
+    diag_errors = 0
+    all_diagnostics = []
+    
     for i, symbol in enumerate(symbols, 1):
         if i % 10 == 0:
             print(f"   Processed {i}/{len(symbols)}...")
         
-        discovery = check_entry_signal(symbol, period=period, interval=interval, max_price=max_price)
+        discovery, diagnostics = check_entry_signal(symbol, period=period, interval=interval, 
+                                                    max_price=max_price, vol_multiplier=vol_multiplier,
+                                                    return_diagnostics=True)
         
         if discovery is None:
             skipped_no_signal += 1
+            
+            # Track diagnostic reasons (skip 'filtered' entries - those are pre-filters, not signal failures)
+            if diagnostics and 'filtered' not in diagnostics:
+                if 'error' in diagnostics:
+                    diag_errors += 1
+                else:
+                    failures = []
+                    if not diagnostics.get('price_above_vwap', True):
+                        failures.append('Price<=VWAP')
+                    if not diagnostics.get('ema_bullish', True):
+                        failures.append('EMA')
+                    if not diagnostics.get('rsi_ok', True):
+                        failures.append('RSI')
+                    if not diagnostics.get('vol_ok', True):
+                        failures.append('Volume')
+                    
+                    # Count individual failures
+                    if len(failures) == 1:
+                        if 'Price<=VWAP' in failures:
+                            diag_failed_price_vwap += 1
+                        elif 'EMA' in failures:
+                            diag_failed_ema += 1
+                        elif 'RSI' in failures:
+                            diag_failed_rsi += 1
+                        elif 'Volume' in failures:
+                            diag_failed_volume += 1
+                    elif len(failures) > 1:
+                        diag_failed_multiple += 1
+                    
+                    # Store first 10 for detailed display
+                    if len(all_diagnostics) < 10:
+                        all_diagnostics.append((symbol, diagnostics, failures))
             continue
         
         # Filter by market cap
@@ -613,6 +691,28 @@ def discover_opportunities(max_stocks=50, min_market_cap=100_000_000,
         if skipped_price > 0:
             print(f"   Skipped - price > ${max_price:.2f}: {skipped_price}")
         print(f"   Total evaluated: {len(symbols)}\n")
+    
+    # Diagnostic breakdown
+    if skipped_no_signal > 0:
+        print(f"\n🔍 Diagnostic breakdown of {skipped_no_signal} failed signals:")
+        print(f"   ❌ Price <= VWAP: {diag_failed_price_vwap}")
+        print(f"   ❌ EMA_S <= EMA_L: {diag_failed_ema}")
+        print(f"   ❌ RSI >= 75: {diag_failed_rsi}")
+        print(f"   ❌ Volume < {vol_multiplier}x avg: {diag_failed_volume}")
+        print(f"   ❌ Multiple conditions failed: {diag_failed_multiple}")
+        if diag_errors > 0:
+            print(f"   ⚠️  Errors/data issues: {diag_errors}")
+        
+        # Show sample failures with details
+        if all_diagnostics:
+            print(f"\n📋 Sample failures (first {len(all_diagnostics)}):")
+            for sym, diag, failures in all_diagnostics:
+                fail_str = ", ".join(failures) if failures else "No data"
+                vol_info = f"vol={diag.get('volume_ratio', 0):.2f}x (need {diag.get('required_vol_mult', vol_multiplier)}x)" if 'volume_ratio' in diag else ""
+                rsi_info = f"RSI={diag.get('rsi', 0):.1f}" if 'rsi' in diag else ""
+                price_info = f"${diag.get('price', 0):.2f} vs VWAP ${diag.get('vwap', 0):.2f}" if 'price' in diag else ""
+                print(f"   {sym:6s}: {fail_str:20s} | {vol_info} {rsi_info} {price_info}")
+            print()
     
     # Sort by volume ratio (highest first) - strongest volume surge = best momentum signal
     discoveries.sort(key=lambda x: x['volume_ratio'], reverse=True)
@@ -1158,6 +1258,8 @@ Trading Hours:
                                 help='Historical period for indicators (default: 7d = ~50 hourly bars)')
     parser_discover.add_argument('--interval', type=str, default='1h',
                                 help='Data interval (default: 1h)')
+    parser_discover.add_argument('--volume-threshold', type=float, default=1.5,
+                                help='Volume surge multiplier - current volume must be > this × average (default: 1.5). Lower for quiet days (e.g., 0.5 for early hours)')
     parser_discover.add_argument('--force', action='store_true',
                                 help='Force run even during lunch lull or off-hours (not recommended)')
     
@@ -1231,7 +1333,8 @@ Trading Hours:
             min_market_cap=args.min_market_cap,
             max_price=args.max_price,
             period=args.period,
-            interval=args.interval
+            interval=args.interval,
+            vol_multiplier=getattr(args, 'volume_threshold', 1.5)
         )
         
         print(f"\n✅ Found {len(discoveries)} opportunities\n")

@@ -16,7 +16,8 @@ MAX_PRICE = 5.0
 UNDERVALUED_RATIO_THRESHOLD = 0.66
 MIN_PROFIT_MARGIN = 0.0
 MAX_YEARLY_LOSS = -50.0
-MIN_MARKET_CAP = 100_000_000
+MIN_MARKET_CAP = 25_000_000  # Lowered from 100M to 25M to be less strict
+MAX_RECENT_TREND_PCT = 5.0  # Filter out stocks with >5% gain over last 5 days (avoid stocks that already ran up)
 
 
 CUSTOM_SCREEN_QUERY = YfEquityQuery(
@@ -288,6 +289,26 @@ class Yahoo(AdvisorBase):
             logger.warning(f"Error fetching active stocks: {e}")
             return []
 
+    def _calculate_recent_trend(self, symbol, days=5):
+        """Calculate price trend over the last N trading days."""
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period=f"{days}d", interval="1d")
+            
+            if hist.empty or len(hist) < 2:
+                return None
+            
+            # Get first and last close prices
+            first_close = hist['Close'].iloc[0]
+            last_close = hist['Close'].iloc[-1]
+            
+            # Calculate percentage change
+            trend_pct = ((last_close - first_close) / first_close) * 100
+            return trend_pct
+        except Exception as e:
+            logger.debug(f"Could not calculate recent trend for {symbol}: {e}")
+            return None
+
     def _filter_fundamentals(self, results):
         """Filter stocks by fundamental metrics."""
         filtered = []
@@ -309,6 +330,35 @@ class Yahoo(AdvisorBase):
             if market_cap < MIN_MARKET_CAP:
                 continue
             
+            filtered.append(stock)
+        
+        return filtered
+
+    def _filter_recent_trend(self, results):
+        """Filter out stocks with strong upward trends over recent days."""
+        filtered = []
+        
+        for stock in results:
+            symbol = stock.get('symbol')
+            if not symbol:
+                continue
+            
+            # Calculate trend over last 5 trading days
+            trend_pct = self._calculate_recent_trend(symbol, days=5)
+            
+            # If we can't calculate trend, include the stock (don't exclude due to data issues)
+            if trend_pct is None:
+                filtered.append(stock)
+                continue
+            
+            # Filter out stocks with strong upward trends (> MAX_RECENT_TREND_PCT)
+            # Keep stocks with flat (0-2%) or slightly positive (2-5%) trends
+            if trend_pct > MAX_RECENT_TREND_PCT:
+                logger.debug(f"Filtered out {symbol} - recent trend too strong: {trend_pct:.2f}%")
+                continue
+            
+            # Store trend for reference
+            stock['recent_trend_pct'] = trend_pct
             filtered.append(stock)
         
         return filtered
@@ -375,9 +425,16 @@ class Yahoo(AdvisorBase):
                 logger.info("No stocks passed fundamental filters")
                 return
             
+            # Filter out stocks with strong recent upward trends
+            trend_filtered = self._filter_recent_trend(fundamental_filtered)
+            
+            if not trend_filtered:
+                logger.info("No stocks passed recent trend filter")
+                return
+            
             # Filter for undervalued (actual/notional <= threshold)
             undervalued = [
-                r for r in fundamental_filtered 
+                r for r in trend_filtered 
                 if r['discount_ratio'] <= UNDERVALUED_RATIO_THRESHOLD
             ]
             
@@ -400,12 +457,15 @@ class Yahoo(AdvisorBase):
                 upside = stock['notional_price'] - stock['actual_price']
                 upside_pct = (upside / stock['actual_price']) * 100 if stock['actual_price'] > 0 else 0
                 
+                recent_trend = stock.get('recent_trend_pct')
+                trend_str = f", Recent trend: {recent_trend:+.1f}%" if recent_trend is not None else ""
+                
                 explanation_parts = [
                     f"Actual: ${stock['actual_price']:.2f}",
                     f"Notional: ${stock['notional_price']:.2f}",
                     f"Discount: {discount_pct:.1f}%",
                     f"Upside: {upside_pct:.1f}%",
-                    f"Method: {stock['method']}",
+                    f"Method: {stock['method']}{trend_str}",
                 ]
                 
                 explanation = " | ".join(explanation_parts)

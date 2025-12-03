@@ -226,11 +226,6 @@ class AdvisorBase:
                                             f"{model} recommended {recommendation} from reading article. | Article: {title} | {url} | {explanation} ",
                                             sell_instructions, 1.5 if recommendation == "STRONG_BUY" else 1.0)
 
-                    # A strong buy skews consensus in favour of BUY (This methodology will go soon)
-                    if recommendation == "STRONG_BUY":
-                        self.recommend(sa, stock, 0.85,
-                                       f"Submittied a high score based on above article | A strong buy skews consensus in favour of BUY")
-
                 # Give Gemini a rest
                 time.sleep(1)
                 break  # success, exit loop

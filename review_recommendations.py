@@ -77,8 +77,11 @@ def review_sa_recommendations(sa_id):
         print(f"📈 {symbol} - {stock.company}")
         print(f"{'='*100}")
         print(f"Current Price: ${stock.price}")
-        if stock.trend is not None:
-            print(f"Trend: {stock.trend:+.2f}")
+
+        trend = stock.calc_trend()
+
+        if trend is not None:
+            print(f"Trend: {trend:+.2f}")
         
         # Show discovery info
         discovery = discoveries.filter(stock=stock).first()
@@ -160,6 +163,12 @@ if __name__ == "__main__":
         sys.exit(1)
     
     review_sa_recommendations(sa_id)
+
+
+
+
+
+
 
 
 
