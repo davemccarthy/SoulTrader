@@ -328,7 +328,7 @@
             font-size: 1.2rem;
             color: #eeeeee;
             padding: 0px 0;
-            animation: tickerScroll 30s linear infinite;
+            animation: tickerScroll var(--ticker-duration, 60s) linear infinite;
         }
 
         @keyframes tickerScroll {
@@ -908,6 +908,30 @@
         </div>
     </div>
 
+    <script>
+    // Set ticker animation speed based on content length
+    document.addEventListener('DOMContentLoaded', function() {
+        const tickerText = document.querySelector('.ticker-text');
+        if (!tickerText) return;
+        
+        // Wait a tiny bit to ensure fonts and content are fully rendered
+        setTimeout(function() {
+            // Calculate the actual content width (scrollWidth includes duplicated content)
+            const contentWidth = tickerText.scrollWidth / 2;
+            
+            // Set a readable speed: pixels per second (lower = slower, higher = faster)
+            // Adjust this value to make it slower (lower number) or faster (higher number)
+            const pixelsPerSecond = 60;
+            
+            // Calculate duration in seconds
+            const duration = Math.max(30, contentWidth / pixelsPerSecond); // Minimum 30 seconds
+            
+            // Set the CSS custom property
+            tickerText.style.setProperty('--ticker-duration', duration + 's');
+        }, 100);
+    });
+    </script>
+
     <!-- Portfolio Dashboard Widget -->
     <div class="portfolio-widget">
         <div class="portfolio-widget-content">
@@ -934,8 +958,10 @@
                 <div class="portfolio-stat-value">{{ portfolio_widget.holdings_count|default:"0" }}</div>
             </div>
             <div class="portfolio-stat">
-                <div class="portfolio-stat-header">Trades</div>
-                <div class="portfolio-stat-value">{{ portfolio_widget.trades_count|default:"0" }}</div>
+                <div class="portfolio-stat-header">Trade P&L</div>
+                <div class="portfolio-stat-value {% if portfolio_widget.trade_pnl >= 0 %}positive{% else %}negative{% endif %}">
+                    {{ portfolio_widget.trade_pnl|default:"0"|floatformat:2 }}%
+                </div>
             </div>
             <div class="portfolio-stat">
                 <div class="portfolio-stat-header">PORTFOLIO P&L</div>

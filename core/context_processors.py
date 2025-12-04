@@ -6,71 +6,75 @@ from datetime import timedelta
 
 def get_ticker_messages(user):
     """Generate ticker messages for display"""
-    from core.models import SmartAnalysis, Holding, Trade
+    from core.models import Trade
 
     # Space before content
     messages = ['','','','','','','','','','','','','','','']
     
-    # Welcome message with account age
+    # Welcome message with account age and risk level
     account_age = (timezone.now() - user.date_joined).days
-    messages.append(f"Welcome {user.username} ({account_age} days old)")
     
-    # Get latest SmartAnalysis for this user, or latest overall if none exists
-    latest_sa = SmartAnalysis.objects.order_by('-started').first()
+    # Get user's risk level
+    user_profile = user.profile_set.first()
+    risk_level = user_profile.risk if user_profile else 'MODERATE'
+    risk_display = risk_level.capitalize()  # Convert "MODERATE" to "Moderate"
     
-    if latest_sa:
-        # Format date
-        now = timezone.now()
-        sa_time = latest_sa.started
-        time_diff = now - sa_time
-        
-        if sa_time.date() == now.date():
-            time_str = f"today {sa_time.strftime('%H:%M')}"
-        elif sa_time.date() == (now - timedelta(days=1)).date():
-            time_str = f"yesterday {sa_time.strftime('%H:%M')}"
-        else:
-            time_str = f"{sa_time.strftime('%A')}* {sa_time.strftime('%H:%M')}"
-        
-        messages.append(f"Last SmartAnalysis #{latest_sa.id} {time_str}")
-        
-        # Get BUY recommendations from latest SA
-        buy_trades = Trade.objects.filter(
-            sa=latest_sa,
-            user=user,
-            action='BUY'
-        ).select_related('stock').order_by('-created')[:13]
-        
-        if buy_trades.exists():
-            messages.append(f"BUYs {buy_trades.count()} stocks")
-            for trade in buy_trades:
-                
-                # Calculate percentage change from buy price to current price
-                if trade.price > 0:
-                    pct_change = ((trade.stock.price - trade.price) / trade.price) * 100
-                else:
-                    pct_change = 0
-                
-                if pct_change > 0:
-                    pct_str = f"+{pct_change:.2f}%"
-                    messages.append({'text': f"{trade.stock.symbol}: {trade.shares} shares @ {trade.stock.price:.2f} {pct_str}", 'class': 'positive'})
-                elif pct_change < 0:
-                    pct_str = f"{pct_change:.2f}%"
-                    messages.append({'text': f"{trade.stock.symbol}: {trade.shares} shares @ {trade.stock.price:.2f} {pct_str}", 'class': 'negative'})
-                else:
-                    messages.append({'text': f"{trade.stock.symbol}: {trade.shares} shares @ {trade.stock.price:.2f} 0.00", 'class': ''})
-        
-        # Get SELL trades from latest SA
-        sell_trades = Trade.objects.filter(
-            sa=latest_sa,
-            user=user,
-            action='SELL'
-        ).select_related('stock').order_by('-created')[:10]
-        
-        if sell_trades.exists():
-            messages.append(f"SELLs {sell_trades.count()} stocks")
-            for trade in sell_trades:
-                
-                # Find the original BUY trade to get the buy price
+    messages.append(f"Welcome {user.username} ({risk_display} - {account_age} days old)")
+    
+    # Get current day trades instead of last SmartAnalysis
+    now = timezone.now()
+    today = now.date()
+    
+    # Get BUY trades from today
+    buy_trades = Trade.objects.filter(
+        user=user,
+        action='BUY',
+        created__date=today
+    ).select_related('stock').order_by('-created')[:13]
+    
+    # Get SELL trades from today
+    sell_trades = Trade.objects.filter(
+        user=user,
+        action='SELL',
+        created__date=today
+    ).select_related('stock').order_by('-created')[:10]
+    
+    # Show today's trading activity message
+    total_trades_today = buy_trades.count() + sell_trades.count()
+    if total_trades_today > 0:
+        messages.append(f"Today's Trading Activity ({total_trades_today} trades)")
+    else:
+        messages.append("Today's Trading Activity (no trades yet)")
+    
+    if buy_trades.exists():
+        messages.append(f"BUYs {buy_trades.count()} stocks")
+        for trade in buy_trades:
+            
+            # Calculate percentage change from buy price to current price
+            if trade.price > 0:
+                pct_change = ((trade.stock.price - trade.price) / trade.price) * 100
+            else:
+                pct_change = 0
+            
+            if pct_change > 0:
+                pct_str = f"+{pct_change:.2f}%"
+                messages.append({'text': f"{trade.stock.symbol}: {trade.shares} shares @ {trade.stock.price:.2f} {pct_str}", 'class': 'positive'})
+            elif pct_change < 0:
+                pct_str = f"{pct_change:.2f}%"
+                messages.append({'text': f"{trade.stock.symbol}: {trade.shares} shares @ {trade.stock.price:.2f} {pct_str}", 'class': 'negative'})
+            else:
+                messages.append({'text': f"{trade.stock.symbol}: {trade.shares} shares @ {trade.stock.price:.2f} 0.00", 'class': ''})
+    
+    if sell_trades.exists():
+        messages.append(f"SELLs {sell_trades.count()} stocks")
+        for trade in sell_trades:
+            
+            # Use stored cost basis if available (more accurate than finding first buy)
+            if trade.cost and trade.cost > 0:
+                # Calculate percentage change from cost basis to sell price (realized P&L)
+                pct_change = ((trade.price - trade.cost) / trade.cost) * 100
+            else:
+                # Fallback: Find the original BUY trade to get the buy price
                 buy_trade = Trade.objects.filter(
                     user=user,
                     stock=trade.stock,
@@ -78,20 +82,20 @@ def get_ticker_messages(user):
                 ).order_by('created').first()  # Get the first buy (original purchase)
                 
                 if buy_trade and buy_trade.price > 0:
-                    # Calculate percentage change from buy price to current price
-                    pct_change = ((trade.stock.price - buy_trade.price) / buy_trade.price) * 100
+                    # Calculate percentage change from buy price to sell price
+                    pct_change = ((trade.price - buy_trade.price) / buy_trade.price) * 100
                 else:
-                    # Fallback: compare current price to sell price (if no buy trade found)
-                    pct_change = ((trade.stock.price - trade.price) / trade.price) * 100
-                
-                if pct_change > 0:
-                    pct_str = f"+{pct_change:.2f}%"
-                    messages.append({'text': f"{trade.stock.symbol}: {trade.shares} shares @ {trade.stock.price:.2f} {pct_str}", 'class': 'positive'})
-                elif pct_change < 0:
-                    pct_str = f"{pct_change:.2f}%"
-                    messages.append({'text': f"{trade.stock.symbol}: {trade.shares} shares @ {trade.stock.price:.2f} {pct_str}", 'class': 'negative'})
-                else:
-                    messages.append({'text': f"{trade.stock.symbol}: {trade.shares} shares @ {trade.stock.price:.2f} 0.00", 'class': ''})
+                    # Fallback: compare sell price to itself (no buy trade found)
+                    pct_change = 0
+            
+            if pct_change > 0:
+                pct_str = f"+{pct_change:.2f}%"
+                messages.append({'text': f"{trade.stock.symbol}: {trade.shares} shares @ {trade.stock.price:.2f} {pct_str}", 'class': 'positive'})
+            elif pct_change < 0:
+                pct_str = f"{pct_change:.2f}%"
+                messages.append({'text': f"{trade.stock.symbol}: {trade.shares} shares @ {trade.stock.price:.2f} {pct_str}", 'class': 'negative'})
+            else:
+                messages.append({'text': f"{trade.stock.symbol}: {trade.shares} shares @ {trade.stock.price:.2f} 0.00", 'class': ''})
     
     return messages
 
@@ -133,6 +137,27 @@ def get_portfolio_widget_data(user):
     # Get trade count
     trades_count = user.trade_set.count()
 
+    # Calculate Trade P&L (realized P&L from SELL trades with cost basis)
+    sell_trades = user.trade_set.filter(action='SELL', cost__isnull=False)
+    trade_pnl = sum(
+        (Decimal(str(trade.price)) - Decimal(str(trade.cost))) * Decimal(trade.shares)
+        for trade in sell_trades
+        if trade.cost
+    )
+
+    # Calculate total cost basis for SELL trades (for percentage calculation)
+    trade_cost_basis = sum(
+        Decimal(str(trade.cost)) * Decimal(trade.shares)
+        for trade in sell_trades
+        if trade.cost
+    )
+
+    # Calculate Trade P&L as percentage
+    if trade_cost_basis > 0:
+        trade_pnl_percent = (trade_pnl / trade_cost_basis) * 100
+    else:
+        trade_pnl_percent = Decimal('0.0')
+
     # Total cost basis using average_price
     holdings_cost_basis = sum(
         (h.average_price or Decimal('0')) * Decimal(str(h.shares))
@@ -155,6 +180,7 @@ def get_portfolio_widget_data(user):
         'invested': float(invested),
         'holdings_count': holdings_count,
         'trades_count': trades_count,
+        'trade_pnl': float(trade_pnl_percent),  # Trade P&L as percentage
         'holdings_pnl': holdings_pnl,
         'return_percent': float(return_percent),
     }
