@@ -121,6 +121,74 @@ class AdvisorBase:
 
         logger.info(f"{self.advisor.name} scores {stock.symbol} a confidences of {confidence:.2f}")
 
+    def ask_gemini(self, prompt, timeout=120.0):
+        """
+        Call Gemini API with retry logic.
+        Returns tuple (model, results) or (None, None) on failure.
+        
+        Note: Gemini models
+        https://ai.google.dev/gemini-api/docs/rate-limits
+        """
+        # Call on 3rd party gemini AI - exhaust all models if unavailable
+        for attempt in range(len(models)):
+            try:
+                retry_exceptions = (
+                    exceptions.ServiceUnavailable,  # 503
+                    exceptions.ResourceExhausted,   # 429
+                    exceptions.DeadlineExceeded,    # 504
+                    exceptions.InternalServerError, # 500
+                )
+
+                model = models[self.gemini_model]
+                logger.info(f"{self.advisor.name} using {model}")
+
+                # In the Gods hand's now
+                response = genai.GenerativeModel(model).generate_content(
+                    prompt, 
+                    request_options={"timeout": timeout}
+                )
+
+                # Extract text from nested structure
+                if not response.candidates or len(response.candidates) == 0:
+                    logger.warning(f"No candidates in Gemini response for {self.advisor.name}")
+                    return None, None
+
+                candidate = response.candidates[0]
+                if not candidate.content or not candidate.content.parts:
+                    logger.warning(f"No content/parts in Gemini response for {self.advisor.name}")
+                    return None, None
+
+                response_text = candidate.content.parts[0].text
+
+                if not response_text:
+                    logger.warning(f"Empty text in Gemini response for {self.advisor.name}")
+                    return None, None
+
+                # Verify feedback
+                results = self._extract_json(response_text)
+
+                if not results:
+                    logger.warning(f"Cannot parse response for {self.advisor.name}")
+                    return None, None
+
+                # Give Gemini a rest
+                time.sleep(1)
+                return model, results
+
+            except retry_exceptions as e:
+                logger.warning(f"Attempt {attempt + 1}: Service {model} unavailable. Retrying...")
+                # Try another model
+                self.gemini_model += 1
+                self.gemini_model %= len(models)
+
+            except Exception as e:
+                logger.error(f"Unexpected error in ask_gemini for {self.advisor.name}: {e}")
+                return None, None
+        
+        # All retries exhausted
+        logger.error(f"All Gemini models exhausted for {self.advisor.name}")
+        return None, None
+
     def news_flash(self, sa, title, url):
 
         # Filter by title: reject articles containing common low-value phrases
@@ -159,87 +227,40 @@ class AdvisorBase:
 
             url: {url}"""
 
-        # Pass sell instructions to siacovery
+        # Pass sell instructions to discovery
         sell_instructions = [
-            ("TARGET_PRICE", 1.50),
-            ("STOP_LOSS", 0.98),
+            ("TARGET_PERCENTAGE", 1.50),
+            ("STOP_PERCENTAGE", 0.98),
             ('DESCENDING_TREND', -0.20),
             ('CS_FLOOR', 0.00)
         ]
 
-        # Call on 3rd part gemini AI - exhaust all models if unavailable
-        for attempt in range(len(models)):
-            try:
-                retry_exceptions = (
-                    exceptions.ServiceUnavailable,  # 503
-                    exceptions.ResourceExhausted,   # 429
-                    exceptions.DeadlineExceeded,    # 504
-                    exceptions.InternalServerError, # 500
-                )
+        # Ask AI for opinion
+        model, results = self.ask_gemini(prompt)
 
-                model = models[self.gemini_model]
-                logger.info(f"{model}:\n{url}")
+        if not results:
+            return
 
-                # In the Gods hand's now
-                response = genai.GenerativeModel(model).generate_content(prompt, request_options={"timeout": 120.0})
+        explanation = results.get("explanation", "")
+        recommendation = results.get("recommendation", "")
+        tickers = results.get("tickers", [])
 
-                # Extract text from nested structure
-                if not response.candidates or len(response.candidates) == 0:
-                    logger.warning(f"No candidates in Gemini response for {self.advisor.name} article")
-                    return False
+        # tmp
+        #print(url)
+        if explanation:
+            print(explanation)
 
-                candidate = response.candidates[0]
-                if not candidate.content or not candidate.content.parts:
-                    logger.warning(f"No content/parts in Gemini response for {self.advisor.name} article")
-                    return False
+        # Log it
+        logger.info(f"{recommendation}: {tickers} | {title}")
 
-                response_text = candidate.content.parts[0].text
+        # Anything better than DISMISS is put forward for consensus
+        if recommendation != "BUY" and recommendation != "STRONG_BUY":
+            return
 
-                if not response_text:
-                    logger.warning(f"Empty text in Gemini response for {self.advisor.name} article")
-                    return False
-
-                # Verify feedback
-                results = self._extract_json(response_text)
-
-                if not results:
-                    logger.warning(f"Cannot parse response for {self.advisor.name} article")
-                    return False
-
-                # tmp
-                #print(url)
-                print(results["explanation"])
-
-                explanation = results["explanation"]
-                recommendation = results["recommendation"]
-                tickers = results["tickers"]
-
-                # Log it
-                logger.info(f"{recommendation}: {tickers} | {title}")
-
-                # Anything better than DISMISS is put forward for consensus
-                if recommendation != "BUY" and recommendation != "STRONG_BUY":
-                    break
-
-                for ticker in tickers:
-                    stock = self.discovered(sa, ticker, '',
-                                            f"{model} recommended {recommendation} from reading article. | Article: {title} | {url} | {explanation} ",
-                                            sell_instructions, 1.5 if recommendation == "STRONG_BUY" else 1.0)
-
-                # Give Gemini a rest
-                time.sleep(1)
-                break  # success, exit loop
-
-            except retry_exceptions as e:
-                print(f"Attempt {attempt + 1}: Service {model} unavailable. Retrying...")
-
-                # Try another model
-                self.gemini_model += 1
-                self.gemini_model %= len(models)
-
-            except Exception as e:
-                print(f"Unexpected error: {e}")
-                break
+        for ticker in tickers:
+            self.discovered(sa, ticker, '',
+                f"{model} recommended {recommendation} from reading article. | Article: {title} | {url} | {explanation} ",
+                sell_instructions, 1.5 if recommendation == "STRONG_BUY" else 1.0)
 
 
     def _extract_json(self, text):

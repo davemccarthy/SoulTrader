@@ -658,8 +658,8 @@ class Insider(AdvisorBase):
 
             # Pass sell instructions to siacovery
             sell_instructions = [
-                ("STOP_LOSS", 0.99),
-                ("TARGET_PRICE", 1.50),
+                ("STOP_PERCENTAGE", 0.99),
+                ("TARGET_PERCENTAGE", 1.50),
                 ("AFTER_DAYS", 7.0),
                 ('DESCENDING_TREND', -0.20)
             ]

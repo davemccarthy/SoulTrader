@@ -18,6 +18,12 @@ def execute_sell(sa, user, profile, consensus, holding, explanation):
     holding.stock.refresh()
     logger.info(f"Trade: {user.username} selling {holding.shares} shares of {holding.stock.symbol} at ${holding.stock.price}.")
 
+    # Capture cost basis and references BEFORE deleting holding
+    cost_basis = holding.average_price or Decimal('0')
+    stock_ref = holding.stock  # Save reference before deleting
+    shares_ref = holding.shares  # Save reference before deleting
+    sell_price = stock_ref.price  # Save price before deleting
+
     # Transfer funds
     profile.cash += holding.shares * holding.stock.price
 
@@ -31,9 +37,10 @@ def execute_sell(sa, user, profile, consensus, holding, explanation):
     trade.user = user
     trade.consensus = consensus
     trade.action = "SELL"
-    trade.stock = holding.stock
-    trade.price = holding.stock.price
-    trade.shares = holding.shares
+    trade.stock = stock_ref
+    trade.price = sell_price
+    trade.shares = shares_ref
+    trade.cost = cost_basis  # Store cost basis for P&L calculation
     trade.explanation = explanation
     trade.save()
 
@@ -72,7 +79,7 @@ def execute_buy(sa, user, consensus, allowance, explanation=""):
 
     # No buy if have shares (surrender allowance for subsequent purchases)
     if shares - holding.shares <= 0:
-        logger.info(f"{user.username} already has  {holding.shares} {consensus.stock.symbol} shares")
+        logger.info(f"{user.username} already has {holding.shares} {consensus.stock.symbol} shares")
         return
 
     shares -= holding.shares

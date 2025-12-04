@@ -50,7 +50,7 @@ class Profile(models.Model):
         "AGGRESSIVE": {
             "confidence_high": 0.55,
             "confidence_low": 0.55,
-            "advisors": ['User', 'FDA', 'Yahoo', 'Insider'],
+            "advisors": ['User', 'FDA', 'Yahoo', 'Insider','StockStory', 'Polygon'],
             "weight": 1.25,
             "stocks": 30
         },
@@ -274,11 +274,15 @@ class Discovery(models.Model):
 
 class SellInstruction(models.Model):
     choices = [
-        ("STOP_LOSS", "Stop Loss"),
-        ("TARGET_PRICE", "Target Price"),
+        ("STOP_PRICE", "Stop Loss (Price)"),
+        ("TARGET_PRICE", "Target Price (Price)"),
+        ("STOP_PERCENTAGE", "Stop Loss (Percentage)"),
+        ("TARGET_PERCENTAGE", "Target Price (Percentage)"),
         ("CS_FLOOR", "CS Floor"),
         ("AFTER_DAYS", "After Days"),
-        ("DESCENDING_TREND", 'Descending trend')
+        ("DESCENDING_TREND", 'Descending trend'),
+        ("END_WEEK", "End of current week"),
+        ("END_DAY", "End of current day")
     ]
 
     discovery = models.ForeignKey(Discovery, on_delete=models.DO_NOTHING)
@@ -320,6 +324,8 @@ class Trade(models.Model):
     action = models.CharField(max_length=20, choices=ACTION)
     price = models.DecimalField(max_digits=10, decimal_places=2)
     shares = models.IntegerField()
+    cost = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True,
+                                help_text="Average cost basis at time of SELL (for P&L calculation)")
     explanation = models.CharField(max_length=256, null=True, blank=True)
 
 

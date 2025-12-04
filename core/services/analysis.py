@@ -75,12 +75,12 @@ def analyze_holdings(sa, users, advisors):
                     consensus = None  # Initialize consensus variable
 
                     for instruction in instructions:
-                        if instruction.instruction == 'STOP_LOSS':
+                        if instruction.instruction in ['STOP_PRICE', 'STOP_PERCENTAGE']:
                             if holding.stock.price < instruction.value:
                                 execute_sell(sa, user, profile, consensus, holding, f"{holding.stock.symbol} fell to stop-loss of ${instruction.value:.2f}")
                                 break
 
-                        elif instruction.instruction == 'TARGET_PRICE' and instruction.value != 0.0: # TMP CHECK
+                        elif instruction.instruction in ['TARGET_PRICE', 'TARGET_PERCENTAGE']:
                             if holding.stock.price >= instruction.value:
                                 execute_sell(sa, user, profile, consensus, holding, f"{holding.stock.symbol} reached target price of ${instruction.value:.2f}")
                                 break
@@ -124,10 +124,9 @@ def analyze_holdings(sa, users, advisors):
 def analyze_discovery(sa, users, advisors):
     logger.info(f"Analyzing discovery for SA session {sa.id}")
 
-    # 1. Look for new stock (only once per sa to save API calls)
-    if not Discovery.objects.filter(sa=sa).exists():
-        for a in advisors:
-            a.discover(sa)
+    # 1. Look for new stock
+    for a in advisors:
+        a.discover(sa)
 
     # 2. Build consensus on discovered stocl
     for d in Discovery.objects.filter(sa=sa):

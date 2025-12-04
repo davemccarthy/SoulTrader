@@ -256,10 +256,10 @@ def holding_detail(request, stock_id):
                 }
                 
                 # Add status/context for each instruction type
-                if instruction.instruction == 'STOP_LOSS' and instruction.value:
+                if instruction.instruction in ['STOP_LOSS', 'STOP_PERCENTAGE', 'STOP_PRICE'] and instruction.value:
                     instruction_data['status'] = 'active' if current_price <= instruction.value else 'pending'
                     instruction_data['current_price'] = float(current_price)
-                elif instruction.instruction == 'TARGET_PRICE' and instruction.value:
+                elif instruction.instruction in ['TARGET_PRICE', 'TARGET_PERCENTAGE'] and instruction.value:
                     instruction_data['status'] = 'active' if current_price >= instruction.value else 'pending'
                     instruction_data['current_price'] = float(current_price)
                 elif instruction.instruction == 'AFTER_DAYS' and instruction.value:
@@ -386,7 +386,11 @@ def trades(request):
                 'realized': False,
             }
         else:
-            avg_cost = state['avg_cost'] if state['shares'] > 0 else price
+            # Use stored cost if available (for SELL trades), otherwise use inventory tracking
+            if trade.cost:
+                avg_cost = trade.cost
+            else:
+                avg_cost = state['avg_cost'] if state['shares'] > 0 else price
             pl_amount = (price - avg_cost) * shares if shares else Decimal('0')
             pl_percent = ((price / avg_cost) * Decimal('100') - Decimal('100')) if avg_cost > 0 else None
             state['shares'] = max(state['shares'] - shares, Decimal('0'))
@@ -524,6 +528,59 @@ def trade_detail(request, trade_id):
                 'explanation': recommendation.explanation,
             })
 
+    # Calculate P&L
+    current_price = Decimal(stock.price or 0)
+    pl_amount = None
+    pl_percent = None
+    pl_class = 'neutral'
+    realized = False
+    
+    if trade.action == 'SELL':
+        # For SELL trades, use stored cost if available
+        if trade.cost:
+            cost_basis = Decimal(trade.cost)
+            pl_amount = (price - cost_basis) * shares
+            pl_percent = ((price / cost_basis) * Decimal('100') - Decimal('100')) if cost_basis > 0 else None
+            realized = True
+        else:
+            # Fallback: find BUY trades before this SELL to calculate cost basis
+            buy_trades = Trade.objects.filter(
+                user=trade.user,
+                stock=trade.stock,
+                action='BUY',
+                created__lt=trade.created
+            ).order_by('created')
+            
+            if buy_trades.exists():
+                # Calculate weighted average cost basis from all BUY trades
+                total_cost = Decimal('0')
+                total_shares = Decimal('0')
+                for buy_trade in buy_trades:
+                    buy_shares = Decimal(buy_trade.shares or 0)
+                    buy_price = Decimal(buy_trade.price or 0)
+                    total_cost += buy_shares * buy_price
+                    total_shares += buy_shares
+                
+                if total_shares > 0:
+                    cost_basis = total_cost / total_shares
+                    pl_amount = (price - cost_basis) * shares
+                    pl_percent = ((price / cost_basis) * Decimal('100') - Decimal('100')) if cost_basis > 0 else None
+                    realized = True
+    else:
+        # For BUY trades, calculate unrealized P&L
+        pl_amount = (current_price - price) * shares
+        pl_percent = ((current_price / price) * Decimal('100') - Decimal('100')) if price > 0 else None
+        realized = False
+    
+    # Determine class for styling
+    if pl_amount is not None:
+        if pl_amount > 0:
+            pl_class = 'positive'
+        elif pl_amount < 0:
+            pl_class = 'negative'
+        else:
+            pl_class = 'neutral'
+
     payload = {
         'trade': {
             'id': trade.id,
@@ -535,6 +592,10 @@ def trade_detail(request, trade_id):
             'sa_started': trade.sa.started.isoformat() if trade.sa and trade.sa.started else None,
             'created': trade.created.isoformat() if trade.created else None,
             'explanation': trade.explanation,
+            'pl_amount': float(pl_amount) if pl_amount is not None else None,
+            'pl_percent': float(pl_percent) if pl_percent is not None else None,
+            'pl_class': pl_class,
+            'realized': realized,
         },
         'stock': {
             'id': stock.id,

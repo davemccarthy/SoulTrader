@@ -320,17 +320,24 @@ window.detailPanelRenderer = function(data) {
     const saId = escapeHtml(trade.sa_id || '—');
     const saStarted = trade.sa_started ? escapeHtml(new Date(trade.sa_started).toLocaleString()) : '';
 
+    // Calculate return display
+    const plAmount = trade.pl_amount != null ? trade.pl_amount : null;
+    const plPercent = trade.pl_percent != null ? trade.pl_percent : null;
+    let returnDisplay = '';
+    if (plAmount != null && plPercent != null) {
+        const returnAmount = escapeHtml(formatCurrency(plAmount));
+        const returnPercent = escapeHtml(formatPercent(plPercent));
+        const returnClass = trade.pl_class || 'neutral';
+        returnDisplay = `<span class="holding-detail-return ${returnClass}">Return ${returnAmount} (${returnPercent})</span>`;
+    }
+
     const metricItems = [
         `<span>Action <span class="trade-action ${actionClass}">${action}</span></span>`,
         `<span>Shares ${shares}</span>`,
         `<span>Price ${price}</span>`,
         `<span>${valueLabel} ${value}</span>`,
-        `<span>SA #${saId}</span>`,
-    ];
-
-    if (saStarted) {
-        metricItems.push(`<span>Date ${saStarted}</span>`);
-    }
+        returnDisplay,
+    ].filter(item => item !== ''); // Remove empty return display if not available
 
     if (data.consensus) {
         const consensus = data.consensus;

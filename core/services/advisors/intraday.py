@@ -354,7 +354,7 @@ class Intraday(AdvisorBase):
             take_profit_price = discovery_data['take_profit_price']
             
             sell_instructions = [
-                ("STOP_LOSS", stop_loss_price),  # Actual dollar price
+                ("STOP_PRICE", stop_loss_price),  # Actual dollar price
                 ("TARGET_PRICE", take_profit_price),  # Actual dollar price
             ]
             

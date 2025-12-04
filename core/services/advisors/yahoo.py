@@ -444,8 +444,8 @@ class Yahoo(AdvisorBase):
 
             # Pass sell instructions 
             sell_instructions = [
-                ("TARGET_PRICE", 1.20),
-                ("STOP_LOSS", 0.98),
+                ("TARGET_PERCENTAGE", 1.20),
+                ("STOP_PERCENTAGE", 0.98),
                 ('DESCENDING_TREND', -0.20),
                 ('CS FLOOR', 0.00)
             ]

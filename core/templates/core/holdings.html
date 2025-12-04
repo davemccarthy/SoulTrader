@@ -271,7 +271,10 @@ window.detailPanelRenderer = function(data) {
 
         const instructionEmojis = {
             'STOP_LOSS': '🛑',
+            'STOP_PRICE': '🛑',
+            'STOP_PERCENTAGE': '🛑',
             'TARGET_PRICE': '🎯',
+            'TARGET_PERCENTAGE': '🎯',
             'CS_FLOOR': '📉',
             'AFTER_DAYS': '📅',
             'DESCENDING_TREND': '📉',
@@ -279,7 +282,10 @@ window.detailPanelRenderer = function(data) {
 
         const instructionLabels = {
             'STOP_LOSS': 'STOP LOSS',
+            'STOP_PRICE': 'STOP PRICE',
+            'STOP_PERCENTAGE': 'STOP %',
             'TARGET_PRICE': 'TARGET PRICE',
+            'TARGET_PERCENTAGE': 'TARGET %',
             'CS_FLOOR': 'CS FLOOR',
             'AFTER_DAYS': 'AFTER DAYS',
             'DESCENDING_TREND': 'DESCENDING TREND',
@@ -291,14 +297,14 @@ window.detailPanelRenderer = function(data) {
             let valueDisplay = '';
             let extraInfo = '';
 
-            if (inst.instruction === 'STOP_LOSS' && inst.value != null) {
+            if (['STOP_LOSS', 'STOP_PERCENTAGE', 'STOP_PRICE'].includes(inst.instruction) && inst.value != null) {
                 valueDisplay = formatCurrency(inst.value);
                 if (inst.current_price != null) {
                     const diff = inst.current_price - inst.value;
-                    const diffPercent = inst.value > 0 ? ((diff / inst.value) * 100) : 0;
+                    const diffPercent = inst.current_price > 0 ? ((diff / inst.current_price) * 100) : 0;
                     extraInfo = ` (${diffPercent >= 0 ? '+' : ''}${diffPercent.toFixed(1)}% from current)`;
                 }
-            } else if (inst.instruction === 'TARGET_PRICE' && inst.value != null) {
+            } else if (['TARGET_PRICE', 'TARGET_PERCENTAGE'].includes(inst.instruction) && inst.value != null) {
                 valueDisplay = formatCurrency(inst.value);
                 if (inst.current_price != null) {
                     const upside = inst.value - inst.current_price;

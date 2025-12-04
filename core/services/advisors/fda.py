@@ -165,8 +165,8 @@ class FDA(AdvisorBase):
             score = approval.get("confidence_score") or 0.0
 
             sell_instructions = [
-                ("TARGET_PRICE", 1.20),
-                ("STOP_LOSS", 0.99),
+                ("TARGET_PERCENTAGE", 1.20),
+                ("STOP_PERCENTAGE", 0.99),
                 ("AFTER_DAYS", 7.0),
                 ('DESCENDING_TREND', -0.20)
             ]
