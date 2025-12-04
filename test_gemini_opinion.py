@@ -88,24 +88,24 @@ def ask_gemini(prompt, timeout=120.0):
             # Extract text from nested structure
             if not response.candidates or len(response.candidates) == 0:
                 print("No candidates in Gemini response")
-                return None
+                return None, None
 
             candidate = response.candidates[0]
             if not candidate.content or not candidate.content.parts:
                 print("No content/parts in Gemini response")
-                return None
+                return None, None
 
             response_text = candidate.content.parts[0].text
 
             if not response_text:
                 print("Empty text in Gemini response")
-                return None
+                return None, None
 
             print(f"\nRaw Response:\n{response_text}\n")
 
             # Extract JSON
             results = extract_json(response_text)
-            return results
+            return model, results
 
         except retry_exceptions as e:
             print(f"Attempt {attempt + 1}: Service {model} unavailable. Retrying...")
@@ -114,9 +114,9 @@ def ask_gemini(prompt, timeout=120.0):
 
         except Exception as e:
             print(f"Unexpected error: {e}")
-            return None
+            return None, None
     
-    return None
+    return None, None
 
 
 def get_stock_info(symbol):
@@ -211,6 +211,55 @@ Return JSON:
     return prompt
 
 
+def prompt_v5_nervous_investor(symbol, company, price):
+    """Nervous investor perspective with 5-tier recommendation scale."""
+    prompt = f"""
+Starting afresh,
+
+From the perspective of a nervous investor, would you recommend buying {symbol} ({company}) @ ${price:.2f}?
+
+Considering:
+- Recent news and media coverage
+- Market sentiment
+- Any significant developments
+
+Respond in JSON format:
+{{
+    "recommendation": "STRONG_BUY|BUY|NEUTRAL|AVOID|STRONG_AVOID",
+    "explanation": "Your reasoning based on recent news and sentiment"
+}}
+
+Thank you
+"""
+    return prompt
+
+
+def prompt_v5_with_insider(symbol, company, price, insider_info):
+    """V5 prompt with insider buying information included."""
+    prompt = f"""
+Starting afresh,
+
+From the perspective of a nervous investor, would you recommend buying {symbol} ({company}) @ ${price:.2f}?
+
+Additional context: There has been recent insider buying/investment activity in this stock. {insider_info}
+
+Considering:
+- Recent news and media coverage
+- Market sentiment
+- Any significant developments
+- The significance of insider buying activity
+
+Respond in JSON format:
+{{
+    "recommendation": "STRONG_BUY|BUY|NEUTRAL|AVOID|STRONG_AVOID",
+    "explanation": "Your reasoning based on recent news and sentiment, including your assessment of the insider buying activity"
+}}
+
+Thank you
+"""
+    return prompt
+
+
 def test_gemini_opinion(symbol, prompt_func, prompt_name):
     """Test a Gemini prompt approach."""
     print(f"\n{'='*60}")
@@ -237,7 +286,7 @@ def test_gemini_opinion(symbol, prompt_func, prompt_name):
     print(f"\nPrompt:\n{prompt}\n")
     
     # Call Gemini
-    result = ask_gemini(prompt)
+    model, result = ask_gemini(prompt)
     
     if result:
         print(f"\n✅ Success!")
@@ -256,26 +305,67 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Test Gemini opinion prompts for stocks")
     parser.add_argument('symbol', help='Stock symbol to test')
-    parser.add_argument('--prompt', choices=['v1', 'v2', 'v3', 'v4', 'all'], 
+    parser.add_argument('--prompt', choices=['v1', 'v2', 'v3', 'v4', 'v5', 'v5-insider', 'all'], 
                        default='all', help='Which prompt version to test')
+    parser.add_argument('--insider-info', type=str, 
+                       help='Information about insider buying to include (used with v5-insider)')
     
     args = parser.parse_args()
     
-    prompts = {
+    # For prompts that need extra args, we'll handle them separately
+    prompts_simple = {
         'v1': (prompt_v1_simple, "V1: Simple Recommendation"),
         'v2': (prompt_v2_with_context, "V2: With Independent Context"),
         'v3': (prompt_v3_emphasis_news, "V3: Emphasis on News/Sentiment"),
-        'v4': (prompt_v4_buy_decision, "V4: Direct Buy Decision")
+        'v4': (prompt_v4_buy_decision, "V4: Direct Buy Decision"),
+        'v5': (prompt_v5_nervous_investor, "V5: Nervous Investor Perspective")
     }
     
     print("="*60)
     print("Gemini Opinion Test")
     print("="*60)
     
-    if args.prompt == 'all':
+    if args.prompt == 'v5-insider':
+        # Special handling for insider prompt
+        if not args.insider_info:
+            print("Error: --insider-info is required when using --prompt v5-insider")
+            print("Example: python test_gemini_opinion.py CFND --prompt v5-insider --insider-info 'Multiple insiders have purchased shares in the last quarter'")
+            sys.exit(1)
+        
+        # Get stock info
+        stock_info = get_stock_info(args.symbol.upper())
+        if not stock_info:
+            print(f"Failed to get stock info for {args.symbol}")
+            sys.exit(1)
+        
+        # Create prompt with insider info
+        prompt = prompt_v5_with_insider(
+            stock_info['symbol'],
+            stock_info['company'],
+            stock_info['price'],
+            args.insider_info
+        )
+        
+        print(f"Symbol: {stock_info['symbol']}")
+        print(f"Company: {stock_info['company']}")
+        print(f"Price: ${stock_info['price']:.2f}")
+        print(f"Insider Info: {args.insider_info}")
+        print(f"\nPrompt:\n{prompt}\n")
+        
+        # Call Gemini
+        model, result = ask_gemini(prompt)
+        
+        if result:
+            print(f"\n✅ Success!")
+            print(f"Recommendation: {result.get('recommendation', 'N/A')}")
+            print(f"Explanation: {result.get('explanation', 'N/A')}")
+        else:
+            print(f"\n❌ Failed to get response")
+    
+    elif args.prompt == 'all':
         # Test all versions
         results = {}
-        for key, (func, name) in prompts.items():
+        for key, (func, name) in prompts_simple.items():
             result = test_gemini_opinion(args.symbol.upper(), func, name)
             results[key] = result
             time.sleep(2)  # Rate limiting
@@ -284,7 +374,7 @@ if __name__ == "__main__":
         print(f"\n{'='*60}")
         print("Summary of All Approaches")
         print(f"{'='*60}")
-        for key, (_, name) in prompts.items():
+        for key, (_, name) in prompts_simple.items():
             result = results[key]
             if result:
                 rec = result.get('recommendation', 'N/A')
@@ -293,11 +383,13 @@ if __name__ == "__main__":
                 print(f"{name}: FAILED")
     else:
         # Test single version
-        if args.prompt in prompts:
-            func, name = prompts[args.prompt]
+        if args.prompt in prompts_simple:
+            func, name = prompts_simple[args.prompt]
             test_gemini_opinion(args.symbol.upper(), func, name)
         else:
             print(f"Unknown prompt version: {args.prompt}")
+
+
 
 
 

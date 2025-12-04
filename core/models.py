@@ -57,7 +57,7 @@ class Profile(models.Model):
         "EXPERIMENTAL": {
             "confidence_high": 0.0,
             "confidence_low": 0.0,
-            "advisors": ['Intraday'],  # Intraday momentum advisor for experimental users
+            "advisors": ['Intraday', 'FDA', 'Insider'],  # Intraday momentum advisor for experimental users
             "weight": 1.0,
             "stocks": 40
         },
@@ -82,6 +82,7 @@ class Advisor(models.Model):
     def is_enabled(self):
         self.refresh_from_db(fields=['enabled'])
         return self.enabled
+
 
 # Basic stock at the core of everything
 class Stock(models.Model):
@@ -245,6 +246,7 @@ class Stock(models.Model):
 
         return self
 
+
 # Users stock holdingß
 class Holding(models.Model):
     user = models.ForeignKey(User, on_delete=models.DO_NOTHING)
@@ -253,6 +255,24 @@ class Holding(models.Model):
     average_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.0)
     consensus = models.DecimalField(max_digits=4, decimal_places=2, default=5.0)
     volatile = models.BooleanField(default=False)  # Your flag!
+
+# Stock health check
+class Health(models.Model):
+    stock = models.ForeignKey(Stock, on_delete=models.CASCADE, related_name='health')
+    sa = models.ForeignKey('SmartAnalysis', on_delete=models.DO_NOTHING)
+    created = models.DateTimeField(auto_now_add=True)
+    score = models.DecimalField(max_digits=5, decimal_places=1)
+    meta = models.JSONField(default=dict)
+
+    class Meta:
+        verbose_name_plural = "Health"
+        indexes = [
+            models.Index(fields=['stock', '-created']),
+            models.Index(fields=['-created']),
+        ]
+
+    def __str__(self):
+        return f"{self.stock.symbol} - Health: {self.score}"
 
 
 # Smart analysis session
