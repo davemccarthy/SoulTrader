@@ -22,6 +22,14 @@
             color: #333;
             line-height: 1.6;
         }
+
+        p {
+            margin-bottom: 0.8rem;
+        }
+
+        p:last-child {
+            margin-bottom: 0;
+        }
         
         .header {
             background: linear-gradient(135deg, #00843D 0%, #00B04F 100%);
@@ -743,11 +751,17 @@
             margin-top: 0;
         }
 
-        .sell-instruction-entry {
+        .sell-instructions-list {
+            list-style-position: outside;
+            padding-left: 1.5rem;
+            margin-top: 0.75rem;
+        }
+
+        .sell-instructions-list li {
             margin-bottom: 0.5rem;
         }
 
-        .sell-instruction-entry:last-child {
+        .sell-instructions-list li:last-child {
             margin-bottom: 0;
         }
 
@@ -778,13 +792,12 @@
         .health-record-score {
             font-size: 1.125rem;
             font-weight: 600;
-            color: #00843D;
         }
 
         .health-record-meta {
             margin-top: 0.75rem;
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: 1fr 1fr 1fr;
             gap: 2rem;
         }
 

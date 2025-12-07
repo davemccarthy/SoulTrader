@@ -410,20 +410,31 @@ def holding_history(request, stock_id):
             'sa_id': discovery_obj.sa_id,
             'url': None,  # Extract URL from explanation if present
         }
-        # Try to extract URL from explanation (format: "Article: [title] | [url]")
+        # Extract URL from explanation (format: "Article: [title] | [url] | ...")
+        # The URL is the segment immediately after "Article: [title]"
         if 'Article:' in discovery_obj.explanation:
-            parts = discovery_obj.explanation.split('|')
-            if len(parts) > 1:
-                discovery['url'] = parts[-1].strip()
+            parts = [p.strip() for p in discovery_obj.explanation.split('|')]
+            for i, part in enumerate(parts):
+                if part.startswith('Article:'):
+                    # Found "Article: [title]", URL should be next part if it looks like a URL
+                    if i + 1 < len(parts):
+                        potential_url = parts[i + 1].strip()
+                        if potential_url.startswith('http://') or potential_url.startswith('https://'):
+                            discovery['url'] = potential_url
+                            break
         
         # Get sell instructions for this discovery
         profile = Profile.objects.get(user=request.user)
         confidence_low = Decimal(str(Profile.RISK[profile.risk]["confidence_low"]))
         
         instructions = SellInstruction.objects.filter(discovery=discovery_obj).order_by('id')
+        # Create mapping from instruction code to description
+        instruction_choices = dict(SellInstruction.choices)
+        
         for instruction in instructions:
             instruction_data = {
                 'instruction': instruction.instruction,
+                'description': instruction_choices.get(instruction.instruction, instruction.instruction),
                 'value': float(instruction.value) if instruction.value is not None else None,
             }
             
@@ -475,7 +486,7 @@ def holding_history(request, stock_id):
             'piotroski': meta.get('piotroski'),
             'altman_z': meta.get('altman_z'),
             'gemini_weight': meta.get('gemini_weight'),
-            'gemini_rec': meta.get('gemini_rec'),
+            'gemini_rec': meta.get('gemini_recommendation'),
             'gemini_explanation': meta.get('gemini_explanation'),
         }
         health_history.append(health_data)

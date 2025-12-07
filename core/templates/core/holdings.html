@@ -537,15 +537,41 @@ window.holdingHistoryRenderer = function(data) {
         const explanation = discovery.explanation || '';
         const created = discovery.created ? formatDateTime(discovery.created) : '—';
         const saId = discovery.sa_id || '—';
-        const url = discovery.url || '';
 
-        // Format explanation - convert "Article:" to link if URL exists
-        let formattedExplanation = escapeHtml(explanation);
-        if (url && formattedExplanation.includes('Article:')) {
-            formattedExplanation = formattedExplanation.replace(/Article:\s*([^|]+)/, `Article: <a href="${escapeHtml(url)}" target="_blank">$1</a>`);
+        // Format explanation - parse segments and handle "Article: {title} | {url}" pattern
+        // Split by | and process each segment
+        const segments = explanation.split('|').map(s => s.trim()).filter(s => s);
+        const processedSegments = [];
+        let i = 0;
+        
+        while (i < segments.length) {
+            const current = segments[i];
+            
+            // Check if this is "Article: {title}" and next is a URL
+            const articleMatch = current.match(/^Article:\s*(.+)$/i);
+            if (articleMatch && i + 1 < segments.length) {
+                const title = articleMatch[1].trim();
+                const nextSegment = segments[i + 1];
+                
+                // Check if next segment is a URL
+                if (nextSegment.match(/^https?:\/\//i)) {
+                    // Create linked article title, skip the URL, wrap in <p> tag
+                    const safeTitle = escapeHtml(title);
+                    const safeUrl = escapeHtml(nextSegment);
+                    processedSegments.push(`<p>Article: <a href="${safeUrl}" target="_blank" rel="noopener">${safeTitle}</a></p>`);
+                    i += 2; // Skip both the article title and URL
+                    continue;
+                }
+            }
+            
+            // Regular segment - escape and wrap in <p> tag
+            const escapedSegment = escapeHtml(current);
+            processedSegments.push(`<p>${escapedSegment}</p>`);
+            i++;
         }
-        // Replace | with line breaks
-        formattedExplanation = formattedExplanation.replace(/\s*\|\s*/g, '<br>');
+        
+        // Join segments (all segments are wrapped in <p> tags)
+        const formattedExplanation = processedSegments.join('');
 
         return `
             <div class="holdings-history-panel">
@@ -671,31 +697,8 @@ window.holdingHistoryRenderer = function(data) {
             return '';
         }
 
-        const instructionEmojis = {
-            'STOP_LOSS': '🛑',
-            'STOP_PRICE': '🛑',
-            'STOP_PERCENTAGE': '🛑',
-            'TARGET_PRICE': '🎯',
-            'TARGET_PERCENTAGE': '🎯',
-            'CS_FLOOR': '📉',
-            'AFTER_DAYS': '📅',
-            'DESCENDING_TREND': '📉',
-        };
-
-        const instructionLabels = {
-            'STOP_LOSS': 'STOP LOSS',
-            'STOP_PRICE': 'STOP PRICE',
-            'STOP_PERCENTAGE': 'STOP %',
-            'TARGET_PRICE': 'TARGET PRICE',
-            'TARGET_PERCENTAGE': 'TARGET %',
-            'CS_FLOOR': 'CS FLOOR',
-            'AFTER_DAYS': 'AFTER DAYS',
-            'DESCENDING_TREND': 'DESCENDING TREND',
-        };
-
-        const entries = sellInstructions.map((inst) => {
-            const emoji = instructionEmojis[inst.instruction] || '📌';
-            const label = instructionLabels[inst.instruction] || inst.instruction;
+        const listItems = sellInstructions.map((inst) => {
+            const label = inst.description || inst.instruction;
             let valueDisplay = '';
             let extraInfo = '';
 
@@ -734,16 +737,17 @@ window.holdingHistoryRenderer = function(data) {
             }
 
             const statusIndicator = inst.status === 'active' ? ' ⚠️ TRIGGERED' : '';
-            const text = `${emoji} ${label}: ${valueDisplay}${extraInfo}${statusIndicator}`;
+            const text = `${label}: ${valueDisplay}${extraInfo}${statusIndicator}`;
             
-            return `
-                <div class="holdings-history-text sell-instruction-entry">${escapeHtml(text)}</div>
-            `;
+            return `<li class="holdings-history-text">${escapeHtml(text)}</li>`;
         }).join('');
 
         return `
-            <div class="holdings-history-panel">
-                ${entries}
+            <div class="holdings-history-panel sell-instructions-section">
+                <h4 class="holdings-history-title">Sell instructions ${sellInstructions.length}</h4>
+                <ul class="sell-instructions-list">
+                    ${listItems}
+                </ul>
             </div>
         `;
     }
