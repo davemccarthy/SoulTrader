@@ -8,7 +8,7 @@ from django.http import JsonResponse, Http404
 from django.templatetags.static import static
 from decimal import Decimal
 from collections import defaultdict
-from .models import Profile, Holding, Stock, Discovery, Trade, Consensus, Recommendation, SellInstruction
+from .models import Profile, Holding, Stock, Discovery, Trade, Consensus, Recommendation, SellInstruction, Health, Health
 
 
 def home(request):
@@ -344,6 +344,193 @@ def holding_detail(request, stock_id):
             'pl_percent': float(pl_percent),
         },
         'trades': trades_payload,
+    }
+
+    return JsonResponse(payload)
+
+
+@login_required
+def holding_history(request, stock_id):
+    """Holdings history view - unified view with heading, discovery, health history, and trade history"""
+    from django.utils import timezone
+    
+    try:
+        holding = (
+            Holding.objects
+            .select_related('stock')
+            .get(user=request.user, stock_id=stock_id)
+        )
+    except Holding.DoesNotExist:
+        raise Http404("Holding not found")
+
+    stock = holding.stock
+    shares = holding.shares or 0
+    avg_price = holding.average_price or Decimal('0')
+    current_price = stock.price or Decimal('0')
+    worth = current_price * shares
+
+    # Calculate change (from average price, like holdings view)
+    stock.refresh()
+    change_percent = 0.0
+    if avg_price and avg_price > 0:
+        change_percent = float(((current_price / avg_price) * 100 - 100))
+
+    # Heading data
+    heading = {
+        'symbol': stock.symbol,
+        'company': stock.company,
+        'image': f"https://images.financialmodelingprep.com/symbol/{stock.symbol}.png",
+        'average_price': float(avg_price),
+        'worth': float(worth),
+        'shares': shares,
+        'price': float(current_price),
+        'change_percent': change_percent,
+        'price_class': 'positive' if change_percent >= 0 else 'negative',
+        'change_class': 'positive' if change_percent >= 0 else 'negative',
+    }
+
+    # Discovery data (most recent)
+    discovery = None
+    sell_instructions = []
+    discovery_obj = (
+        Discovery.objects
+        .select_related('advisor', 'sa')
+        .filter(stock=stock)
+        .order_by('-created')
+        .first()
+    )
+    
+    if discovery_obj:
+        discovery = {
+            'id': discovery_obj.id,
+            'advisor': discovery_obj.advisor.name if discovery_obj.advisor else '',
+            'advisor_logo': _advisor_logo_url(discovery_obj.advisor),
+            'explanation': discovery_obj.explanation,
+            'created': discovery_obj.created.isoformat() if discovery_obj.created else None,
+            'sa_id': discovery_obj.sa_id,
+            'url': None,  # Extract URL from explanation if present
+        }
+        # Try to extract URL from explanation (format: "Article: [title] | [url]")
+        if 'Article:' in discovery_obj.explanation:
+            parts = discovery_obj.explanation.split('|')
+            if len(parts) > 1:
+                discovery['url'] = parts[-1].strip()
+        
+        # Get sell instructions for this discovery
+        profile = Profile.objects.get(user=request.user)
+        confidence_low = Decimal(str(Profile.RISK[profile.risk]["confidence_low"]))
+        
+        instructions = SellInstruction.objects.filter(discovery=discovery_obj).order_by('id')
+        for instruction in instructions:
+            instruction_data = {
+                'instruction': instruction.instruction,
+                'value': float(instruction.value) if instruction.value is not None else None,
+            }
+            
+            # Add status/context for each instruction type
+            if instruction.instruction in ['STOP_PRICE', 'STOP_PERCENTAGE'] and instruction.value:
+                instruction_data['status'] = 'active' if current_price <= instruction.value else 'pending'
+                instruction_data['current_price'] = float(current_price)
+            elif instruction.instruction in ['TARGET_PRICE', 'TARGET_PERCENTAGE'] and instruction.value:
+                instruction_data['status'] = 'active' if current_price >= instruction.value else 'pending'
+                instruction_data['current_price'] = float(current_price)
+            elif instruction.instruction == 'AFTER_DAYS' and instruction.value:
+                days_held = (timezone.now() - discovery_obj.created).days
+                instruction_data['days_held'] = days_held
+                instruction_data['status'] = 'active' if days_held >= instruction.value else 'pending'
+            elif instruction.instruction == 'CS_FLOOR':
+                # CS_FLOOR value is always None in DB, populate with user's risk profile confidence_low
+                instruction_data['value'] = float(confidence_low)
+                instruction_data['status'] = 'pending'  # CS_FLOOR is checked during analysis
+            elif instruction.instruction == 'DESCENDING_TREND' and instruction.value is not None:
+                instruction_data['value'] = float(instruction.value)
+                trend = stock.calc_trend()
+                if trend is not None:
+                    instruction_data['current_trend'] = float(trend)
+                    instruction_data['status'] = 'active' if trend < instruction.value else 'pending'
+                else:
+                    instruction_data['status'] = 'pending'
+            
+            sell_instructions.append(instruction_data)
+
+    # Health history (all health checks for this stock)
+    health_history = []
+    health_checks = (
+        Health.objects
+        .select_related('sa')
+        .filter(stock=stock)
+        .order_by('-created')
+    )
+    
+    for health in health_checks:
+        meta = health.meta or {}
+        health_data = {
+            'id': health.id,
+            'score': float(health.score),
+            'created': health.created.isoformat() if health.created else None,
+            'meta': meta,
+            'confidence_score': meta.get('confidence_score'),
+            'health_score': meta.get('health_score'),
+            'valuation_score': meta.get('valuation_score'),
+            'piotroski': meta.get('piotroski'),
+            'altman_z': meta.get('altman_z'),
+            'gemini_weight': meta.get('gemini_weight'),
+            'gemini_rec': meta.get('gemini_rec'),
+            'gemini_explanation': meta.get('gemini_explanation'),
+        }
+        health_history.append(health_data)
+
+    # Trade history
+    trades_data = []
+    trades_qs = (
+        Trade.objects
+        .select_related('sa')
+        .filter(user=request.user, stock_id=stock_id)
+        .order_by('-created', '-id')
+    )
+    
+    for trade in trades_qs:
+        # Calculate P&L
+        pl_amount = None
+        pl_percent = None
+        pl_class = 'neutral'
+        
+        if trade.action == 'SELL' and trade.cost:
+            # Realized P&L for SELL trades
+            cost_basis = Decimal(str(trade.cost))
+            pl_amount = float((Decimal(str(trade.price)) - cost_basis) * trade.shares)
+            if cost_basis > 0:
+                pl_percent = float(((Decimal(str(trade.price)) - cost_basis) / cost_basis) * 100)
+        elif trade.action == 'BUY':
+            # Unrealized P&L for BUY trades
+            buy_price = Decimal(str(trade.price))
+            pl_amount = float((current_price - buy_price) * trade.shares)
+            if buy_price > 0:
+                pl_percent = float(((current_price - buy_price) / buy_price) * 100)
+        
+        if pl_amount is not None:
+            pl_class = 'positive' if pl_amount >= 0 else 'negative'
+        
+        trade_data = {
+            'id': trade.id,
+            'action': trade.action,
+            'price': float(trade.price) if trade.price is not None else None,
+            'shares': trade.shares,
+            'cost': float(trade.cost) if trade.cost is not None else None,
+            'pl_amount': pl_amount,
+            'pl_percent': pl_percent,
+            'pl_class': pl_class,
+            'created': trade.created.isoformat() if trade.created else None,
+            'sa_id': trade.sa_id,
+        }
+        trades_data.append(trade_data)
+
+    payload = {
+        'heading': heading,
+        'discovery': discovery,
+        'health_history': health_history,
+        'trades': trades_data,
+        'sell_instructions': sell_instructions,
     }
 
     return JsonResponse(payload)

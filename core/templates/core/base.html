@@ -638,6 +638,249 @@
             color: #475569;
         }
 
+        /* Holdings History Styles */
+        .holding-heading {
+            display: flex;
+            gap: 1.5rem;
+            align-items: flex-start;
+            margin-bottom: 2rem;
+        }
+
+        .holding-heading-logo {
+            width: 80px;
+            height: 80px;
+            object-fit: contain;
+            flex-shrink: 0;
+        }
+
+        .holding-heading-info h2 {
+            margin: 0 0 1rem;
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+
+        .holding-heading-metrics {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 1.5rem;
+        }
+
+        .holding-heading-metric {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .holding-heading-label {
+            font-size: 0.875rem;
+            color: #64748b;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .holding-heading-value {
+            font-size: 1.125rem;
+            font-weight: 600;
+        }
+
+        .holding-heading-value.positive {
+            color: #10b981;
+        }
+
+        .holding-heading-value.negative {
+            color: #ef4444;
+        }
+
+        .holdings-history-panel {
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .discovery-header {
+            display: flex;
+            align-items: flex-start;
+            gap: 1rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .discovery-logo {
+            height: 3.5rem;
+            width: auto;
+            object-fit: contain;
+            flex-shrink: 0;
+            align-self: flex-start;
+        }
+
+        .discovery-text {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .holdings-history-title {
+            margin: 0;
+            font-size: 1.125rem;
+            font-weight: 600;
+        }
+
+        .holdings-history-subtitle {
+            margin: 0;
+            font-size: 0.875rem;
+            color: #64748b;
+            font-weight: 400;
+        }
+
+        .holdings-history-text {
+            font-size: 0.9375rem;
+            line-height: 1.6;
+            color: #334155;
+        }
+
+        .discovery-explanation {
+            margin-top: 0;
+        }
+
+        .sell-instruction-entry {
+            margin-bottom: 0.5rem;
+        }
+
+        .sell-instruction-entry:last-child {
+            margin-bottom: 0;
+        }
+
+        .discovery-explanation a {
+            color: #00843D;
+            text-decoration: underline;
+        }
+
+        .health-history-section {
+            margin-bottom: 1.5rem;
+        }
+
+        .health-record {
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .health-record-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .health-record-score {
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: #00843D;
+        }
+
+        .health-record-meta {
+            margin-top: 0.75rem;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+        }
+
+        .health-record-meta-single {
+            grid-template-columns: 1fr;
+        }
+
+        @media (max-width: 768px) {
+            .health-record-meta {
+                grid-template-columns: 1fr;
+                gap: 1rem;
+            }
+        }
+
+        .health-meta-section {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .health-meta-label {
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #475569;
+            margin-bottom: 0.5rem;
+        }
+
+        .health-meta-item {
+            display: block;
+            font-size: 0.9375rem;
+        }
+
+        .health-meta-key {
+            font-weight: 500;
+            color: #64748b;
+        }
+
+        .health-meta-value {
+            color: #1e293b;
+            margin-left: 0.5rem;
+        }
+
+        .health-meta-explanation-full {
+            margin-top: 1.5rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid #e2e8f0;
+            width: 100%;
+            max-width: 100%;
+            word-wrap: break-word;
+        }
+
+        .holdings-grid-trades {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr 1fr 1fr 2fr;
+            gap: 1rem;
+            padding: 0.75rem 0;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .holdings-grid-trades:last-child {
+            border-bottom: none;
+        }
+
+        .holdings-grid-trades-header {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr 1fr 1fr 2fr;
+            gap: 1rem;
+            padding: 0.75rem 0;
+            border-bottom: 2px solid #e2e8f0;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.875rem;
+            letter-spacing: 0.05em;
+            color: #64748b;
+        }
+
+        .trade-action {
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.875rem;
+        }
+
+        .trade-action.buy {
+            color: #059669;
+        }
+
+        .trade-action.sell {
+            color: #dc2626;
+        }
+
+        .trade-timestamp {
+            font-size: 0.875rem;
+            color: #64748b;
+        }
+
         .sell-instruction-item {
             display: grid;
             gap: 0.4rem;

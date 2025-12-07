@@ -8,7 +8,7 @@
      data-detail-panel="#holding-detail-panel"
      data-detail-content="#holding-detail-content"
      data-detail-back="#holding-detail-back"
-     data-detail-endpoint="/holdings/{id}/detail/"
+     data-detail-endpoint="/holdings/{id}/history/"
      data-detail-id-attr="data-stock-id">
     {% if holdings %}
         <div id="holdings-list" class="holdings-panel">
@@ -423,6 +423,359 @@ window.detailPanelRenderer = function(data) {
             ${tradesHtml}
         </div>
     `;
+};
+
+// Holdings history renderer - unified view with heading, discovery, health history, and trade history
+window.holdingHistoryRenderer = function(data) {
+    function escapeHtml(value) {
+        return String(value ?? '').replace(/[&<>"]/g, (char) => ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+        })[char]);
+    }
+
+    function formatCurrency(value) {
+        if (value == null) return '—';
+        const formatted = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
+        return formatted.replace(/^US\s*/, ''); // Remove "US " prefix if present
+    }
+
+    function formatPercent(value) {
+        if (value == null) return '—';
+        const fixed = Number(value).toFixed(2);
+        return `${value >= 0 ? '+' : ''}${fixed}%`;
+    }
+
+    function formatDate(dateString) {
+        if (!dateString) return '—';
+        const date = new Date(dateString);
+        return date.toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+        });
+    }
+
+    function formatDateTime(dateString) {
+        if (!dateString) return '—';
+        const date = new Date(dateString);
+        return date.toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric'
+        }) + ' ' + date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+    }
+
+    function formatGeminiExplanation(text) {
+        if (!text) return '';
+        // Convert markdown-style formatting to HTML
+        let html = escapeHtml(text);
+        // Bold text **text**
+        html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+        // Lists starting with * or -
+        html = html.replace(/^[\*\-]\s+(.+)$/gm, '<li>$1</li>');
+        // Wrap consecutive list items in <ul>
+        html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
+        // Line breaks
+        html = html.replace(/\n/g, '<br>');
+        return html;
+    }
+
+    // Render heading section
+    function renderHeadingSection(heading) {
+        if (!heading) return '';
+        const symbol = escapeHtml(heading.symbol || '');
+        const company = escapeHtml(heading.company || '');
+        const image = heading.image || '';
+        const avgPrice = formatCurrency(heading.average_price);
+        const worth = formatCurrency(heading.worth);
+        const shares = heading.shares || 0;
+        const price = formatCurrency(heading.price);
+        const changePercent = formatPercent(heading.change_percent);
+        const priceClass = heading.price_class || 'neutral';
+        const changeClass = heading.change_class || 'neutral';
+
+        return `
+            <div class="holding-heading">
+                ${image ? `<img src="${escapeHtml(image)}" alt="${symbol}" class="holding-heading-logo" onerror="this.style.display='none';">` : ''}
+                <div class="holding-heading-info">
+                    <h2>${symbol} · ${company}</h2>
+                    <div class="holding-heading-metrics">
+                        <div class="holding-heading-metric">
+                            <span class="holding-heading-label">Avg Price</span>
+                            <span class="holding-heading-value">${avgPrice}</span>
+                        </div>
+                        <div class="holding-heading-metric">
+                            <span class="holding-heading-label">Worth</span>
+                            <span class="holding-heading-value">${worth}</span>
+                        </div>
+                        <div class="holding-heading-metric">
+                            <span class="holding-heading-label">Shares</span>
+                            <span class="holding-heading-value">${shares}</span>
+                        </div>
+                        <div class="holding-heading-metric">
+                            <span class="holding-heading-label">Price</span>
+                            <span class="holding-heading-value ${priceClass}">${price}</span>
+                        </div>
+                        <div class="holding-heading-metric">
+                            <span class="holding-heading-label">Change</span>
+                            <span class="holding-heading-value ${changeClass}">${changePercent}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    // Render discovery section
+    function renderDiscoverySection(discovery) {
+        if (!discovery) return '';
+        const advisor = escapeHtml(discovery.advisor || '');
+        const advisorLogo = discovery.advisor_logo || '';
+        const explanation = discovery.explanation || '';
+        const created = discovery.created ? formatDateTime(discovery.created) : '—';
+        const saId = discovery.sa_id || '—';
+        const url = discovery.url || '';
+
+        // Format explanation - convert "Article:" to link if URL exists
+        let formattedExplanation = escapeHtml(explanation);
+        if (url && formattedExplanation.includes('Article:')) {
+            formattedExplanation = formattedExplanation.replace(/Article:\s*([^|]+)/, `Article: <a href="${escapeHtml(url)}" target="_blank">$1</a>`);
+        }
+        // Replace | with line breaks
+        formattedExplanation = formattedExplanation.replace(/\s*\|\s*/g, '<br>');
+
+        return `
+            <div class="holdings-history-panel">
+                <div class="discovery-header">
+                    ${advisorLogo ? `<img src="${escapeHtml(advisorLogo)}" alt="${advisor}" class="discovery-logo">` : ''}
+                    <div class="discovery-text">
+                        <h3 class="holdings-history-title">Discovered by ${advisor}</h3>
+                        <h5 class="holdings-history-subtitle">${created} · SA #${saId}</h5>
+                    </div>
+                </div>
+                <div class="discovery-explanation holdings-history-text">${formattedExplanation}</div>
+            </div>
+        `;
+    }
+
+    // Render health history section
+    function renderHealthHistorySection(healthHistory) {
+        if (!healthHistory || healthHistory.length === 0) return '';
+
+        const healthRecords = healthHistory.map(health => {
+            const date = formatDate(health.created);
+            const score = health.score != null ? health.score.toFixed(1) : '—';
+            const confidenceScore = health.confidence_score;
+            const healthScore = health.health_score;
+            const valuationScore = health.valuation_score;
+            const piotroski = health.piotroski;
+            const altmanZ = health.altman_z;
+            const geminiWeight = health.gemini_weight;
+            const geminiRec = health.gemini_rec;
+            const geminiExplanation = health.gemini_explanation;
+
+            const hasGeminiDataForColumns = geminiWeight != null || geminiRec != null;
+
+            return `
+                <div class="health-record" data-health-id="${health.id}">
+                    <div class="health-record-header">
+                        <h3 class="holdings-history-title">Health check ${date}</h3>
+                        <div class="health-record-score">Score ${score}</div>
+                    </div>
+                    <div class="health-record-meta ${!hasGeminiDataForColumns ? 'health-record-meta-single' : ''}">
+                        <div class="health-meta-section">
+                            <div class="health-meta-label">Algorithm Components</div>
+                            ${confidenceScore != null ? `<div class="health-meta-item holdings-history-text"><span class="health-meta-key">Confidence Score:</span> <span class="health-meta-value">${escapeHtml(confidenceScore)}</span></div>` : ''}
+                            ${healthScore != null ? `<div class="health-meta-item holdings-history-text"><span class="health-meta-key">Health Score:</span> <span class="health-meta-value">${escapeHtml(healthScore)}</span></div>` : ''}
+                            ${valuationScore != null ? `<div class="health-meta-item holdings-history-text"><span class="health-meta-key">Valuation Score:</span> <span class="health-meta-value">${escapeHtml(valuationScore)}</span></div>` : ''}
+                            ${piotroski != null ? `<div class="health-meta-item holdings-history-text"><span class="health-meta-key">Piotroski:</span> <span class="health-meta-value">${escapeHtml(piotroski.toString())}/4</span></div>` : ''}
+                            ${altmanZ != null ? `<div class="health-meta-item holdings-history-text"><span class="health-meta-key">Altman Z:</span> <span class="health-meta-value">${escapeHtml(altmanZ)}</span></div>` : ''}
+                        </div>
+                        ${hasGeminiDataForColumns ? `
+                        <div class="health-meta-section">
+                            <div class="health-meta-label">Gemini Analysis</div>
+                            ${geminiWeight != null ? `<div class="health-meta-item holdings-history-text"><span class="health-meta-key">Weight:</span> <span class="health-meta-value">${escapeHtml(geminiWeight)}</span></div>` : ''}
+                            ${geminiRec != null ? `<div class="health-meta-item holdings-history-text"><span class="health-meta-key">Recommendation:</span> <span class="health-meta-value">${escapeHtml(geminiRec)}</span></div>` : ''}
+                        </div>
+                        ` : ''}
+                    </div>
+                    ${geminiExplanation ? `<div class="health-meta-explanation-full holdings-history-text">${formatGeminiExplanation(geminiExplanation)}</div>` : ''}
+                </div>
+            `;
+        }).join('');
+
+        return `<div class="health-history-section">${healthRecords}</div>`;
+    }
+
+    // Render trade history section
+    function renderTradeHistorySection(trades) {
+        if (!trades || trades.length === 0) return '';
+
+        const tradesHtml = trades.map(trade => {
+            const action = escapeHtml(trade.action || 'UNKNOWN');
+            const shares = trade.shares || 0;
+            const price = formatCurrency(trade.price);
+            const plAmount = trade.pl_amount != null ? formatCurrency(trade.pl_amount) : '—';
+            const plPercent = trade.pl_percent != null ? formatPercent(trade.pl_percent) : '—';
+            const plClass = trade.pl_class || 'neutral';
+            const created = formatDateTime(trade.created);
+            const actionClass = action.toLowerCase();
+
+            return `
+                <div class="holdings-row holdings-grid-trades" data-trade-id="${trade.id}">
+                    <div class="holdings-col">
+                        <span class="trade-action ${actionClass}">${action}</span>
+                    </div>
+                    <div class="holdings-col">
+                        <span class="holdings-price">${price}</span>
+                    </div>
+                    <div class="holdings-col">
+                        <span>${shares}</span>
+                    </div>
+                    <div class="holdings-col">
+                        <span class="${plClass}">${plAmount}</span>
+                    </div>
+                    <div class="holdings-col">
+                        <span class="${plClass}">${plPercent}</span>
+                    </div>
+                    <div class="holdings-col">
+                        <span class="trade-timestamp">${created}</span>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        return `
+            <div class="holdings-history-panel">
+                <div class="holdings-history-content">
+                    <div class="holdings-grid-trades-header">
+                        <div class="holdings-col">Action</div>
+                        <div class="holdings-col">Price</div>
+                        <div class="holdings-col">Shares</div>
+                        <div class="holdings-col">P&L</div>
+                        <div class="holdings-col">P&L %</div>
+                        <div class="holdings-col">Date</div>
+                    </div>
+                    ${tradesHtml}
+                </div>
+            </div>
+        `;
+    }
+
+    // Render sell instructions section
+    function renderSellInstructionsSection(sellInstructions, currentPrice) {
+        if (!sellInstructions || !sellInstructions.length) {
+            return '';
+        }
+
+        const instructionEmojis = {
+            'STOP_LOSS': '🛑',
+            'STOP_PRICE': '🛑',
+            'STOP_PERCENTAGE': '🛑',
+            'TARGET_PRICE': '🎯',
+            'TARGET_PERCENTAGE': '🎯',
+            'CS_FLOOR': '📉',
+            'AFTER_DAYS': '📅',
+            'DESCENDING_TREND': '📉',
+        };
+
+        const instructionLabels = {
+            'STOP_LOSS': 'STOP LOSS',
+            'STOP_PRICE': 'STOP PRICE',
+            'STOP_PERCENTAGE': 'STOP %',
+            'TARGET_PRICE': 'TARGET PRICE',
+            'TARGET_PERCENTAGE': 'TARGET %',
+            'CS_FLOOR': 'CS FLOOR',
+            'AFTER_DAYS': 'AFTER DAYS',
+            'DESCENDING_TREND': 'DESCENDING TREND',
+        };
+
+        const entries = sellInstructions.map((inst) => {
+            const emoji = instructionEmojis[inst.instruction] || '📌';
+            const label = instructionLabels[inst.instruction] || inst.instruction;
+            let valueDisplay = '';
+            let extraInfo = '';
+
+            if (['STOP_LOSS', 'STOP_PERCENTAGE', 'STOP_PRICE'].includes(inst.instruction) && inst.value != null) {
+                valueDisplay = formatCurrency(inst.value);
+                if (inst.current_price != null) {
+                    const diff = inst.current_price - inst.value;
+                    const diffPercent = inst.current_price > 0 ? ((diff / inst.current_price) * 100) : 0;
+                    extraInfo = ` (${diffPercent >= 0 ? '+' : ''}${diffPercent.toFixed(1)}% from current)`;
+                }
+            } else if (['TARGET_PRICE', 'TARGET_PERCENTAGE'].includes(inst.instruction) && inst.value != null) {
+                valueDisplay = formatCurrency(inst.value);
+                if (inst.current_price != null) {
+                    const upside = inst.value - inst.current_price;
+                    const upsidePercent = inst.current_price > 0 ? ((upside / inst.current_price) * 100) : 0;
+                    extraInfo = ` (+${upsidePercent.toFixed(1)}% upside)`;
+                }
+            } else if (inst.instruction === 'AFTER_DAYS' && inst.value != null) {
+                valueDisplay = `${inst.value} days`;
+                if (inst.days_held != null) {
+                    const remaining = Math.max(0, inst.value - inst.days_held);
+                    extraInfo = ` (${inst.days_held} days held, ${remaining} remaining)`;
+                }
+            } else if (inst.instruction === 'CS_FLOOR' && inst.value != null) {
+                valueDisplay = inst.value.toFixed(2);
+                if (inst.current_consensus != null) {
+                    const diff = inst.current_consensus - inst.value;
+                    extraInfo = ` (Current: ${inst.current_consensus.toFixed(2)}, ${diff >= 0 ? '+' : ''}${diff.toFixed(2)} above floor)`;
+                }
+            } else if (inst.instruction === 'DESCENDING_TREND' && inst.value != null) {
+                valueDisplay = `${(inst.value * 100).toFixed(1)}%`;
+                if (inst.current_trend != null) {
+                    const diff = inst.current_trend - inst.value;
+                    extraInfo = ` (Current trend: ${(inst.current_trend * 100).toFixed(1)}%, ${diff >= 0 ? '+' : ''}${(diff * 100).toFixed(1)}% from threshold)`;
+                }
+            }
+
+            const statusIndicator = inst.status === 'active' ? ' ⚠️ TRIGGERED' : '';
+            const text = `${emoji} ${label}: ${valueDisplay}${extraInfo}${statusIndicator}`;
+            
+            return `
+                <div class="holdings-history-text sell-instruction-entry">${escapeHtml(text)}</div>
+            `;
+        }).join('');
+
+        return `
+            <div class="holdings-history-panel">
+                ${entries}
+            </div>
+        `;
+    }
+
+    // Main rendering logic
+    try {
+        const headingSection = renderHeadingSection(data.heading);
+        const discoverySection = renderDiscoverySection(data.discovery);
+        const healthHistorySection = renderHealthHistorySection(data.health_history || []);
+        const tradeHistorySection = renderTradeHistorySection(data.trades || []);
+        const sellInstructionsSection = renderSellInstructionsSection(
+            data.sell_instructions || [],
+            data.heading ? data.heading.price : null
+        );
+
+        return headingSection + discoverySection + healthHistorySection + tradeHistorySection + sellInstructionsSection;
+    } catch (error) {
+        console.error('Error rendering holdings history:', error);
+        return '<div class="error">Error loading holdings history. Please try again.</div>';
+    }
+};
+
+// Update detailPanelRenderer to delegate to holdingHistoryRenderer when available
+const originalDetailPanelRenderer = window.detailPanelRenderer;
+window.detailPanelRenderer = function(data) {
+    if (typeof window.holdingHistoryRenderer === 'function') {
+        return window.holdingHistoryRenderer(data);
+    }
+    if (typeof originalDetailPanelRenderer === 'function') {
+        return originalDetailPanelRenderer(data);
+    }
+    return '<div>Loading...</div>';
 };
 </script>
 {% endblock %}
