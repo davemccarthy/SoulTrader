@@ -6,12 +6,14 @@ Usage:
     python manage.py smartanalyse --all
 """
 from operator import attrgetter
+from datetime import timedelta
 
 from django.core.management.base import BaseCommand, CommandError
+from django.db.models import Sum, F, DecimalField
 
 from core.services import analysis
 from core.services.advisors.advisor import AdvisorBase
-from core.models import SmartAnalysis, Advisor, Profile, Snapshot, Holding
+from core.models import SmartAnalysis, Advisor, Profile, Snapshot, Holding, Trade
 from django.contrib.auth.models import User
 from django.utils import timezone
 from decimal import Decimal
@@ -25,6 +27,60 @@ import logging
 
 
 logger = logging.getLogger(__name__)
+
+
+def calculate_trade_pnl_percentages(user, snapshot_date):
+    """
+    Calculate Trade P&L percentages for a user.
+    
+    Args:
+        user: User instance
+        snapshot_date: Date for the snapshot (used to determine yesterday for daily calculation)
+    
+    Returns:
+        tuple: (trade_cumulative, trade_daily) as Decimal percentages
+    """
+    # Cumulative: 100 - (sum(cost*shares) * 100) / sum(price*shares)
+    # For all SELL trades (all-time)
+    cumulative_trades = Trade.objects.filter(
+        user=user,
+        action='SELL',
+        cost__isnull=False
+    ).aggregate(
+        total_cost=Sum(F('cost') * F('shares'), output_field=DecimalField()),
+        total_proceeds=Sum(F('price') * F('shares'), output_field=DecimalField())
+    )
+    
+    total_cost = cumulative_trades['total_cost'] or Decimal('0')
+    total_proceeds = cumulative_trades['total_proceeds'] or Decimal('0')
+    
+    if total_proceeds > 0:
+        trade_cumulative = Decimal('100') - ((total_cost * Decimal('100')) / total_proceeds)
+    else:
+        trade_cumulative = Decimal('0.0')
+    
+    # Daily: 100 - (sum(cost*shares) * 100) / sum(price*shares)
+    # For SELL trades from yesterday (previous day's trading)
+    yesterday = snapshot_date - timedelta(days=1)
+    daily_trades = Trade.objects.filter(
+        user=user,
+        action='SELL',
+        cost__isnull=False,
+        created__date=yesterday
+    ).aggregate(
+        daily_cost=Sum(F('cost') * F('shares'), output_field=DecimalField()),
+        daily_proceeds=Sum(F('price') * F('shares'), output_field=DecimalField())
+    )
+    
+    daily_cost = daily_trades['daily_cost'] or Decimal('0')
+    daily_proceeds = daily_trades['daily_proceeds'] or Decimal('0')
+    
+    if daily_proceeds > 0:
+        trade_daily = Decimal('100') - ((daily_cost * Decimal('100')) / daily_proceeds)
+    else:
+        trade_daily = Decimal('0.0')
+    
+    return trade_cumulative, trade_daily
 
 
 class Command(BaseCommand):
@@ -103,13 +159,18 @@ class Command(BaseCommand):
                     if holding.stock and holding.stock.price and holding.shares:
                         holdings_value += holding.stock.price * Decimal(holding.shares)
                 
+                # Calculate Trade P&L percentages
+                trade_cumulative, trade_daily = calculate_trade_pnl_percentages(user, today)
+                
                 # Create or update snapshot for today
-                Snapshot.objects.update_or_create(
+                Snapshot.objects.get_or_create(
                     user=user,
                     date=today,
                     defaults={
                         'cash_value': cash_value,
                         'holdings_value': holdings_value,
+                        'trade_cumulative': trade_cumulative,
+                        'trade_daily': trade_daily,
                     }
                 )
             except Profile.DoesNotExist:

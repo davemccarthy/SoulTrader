@@ -34,6 +34,7 @@ class Profile(models.Model):
     # Risky business
     RISK = {
         "CONSERVATIVE": {
+            "min_health": 50.0,  # Only top ~20% of your scores
             "confidence_high": 0.85,
             "confidence_low": 0.6,
             "advisors": ['StockStory', 'Polygon', 'Yahoo', 'FDA', 'Insider'],
@@ -41,6 +42,7 @@ class Profile(models.Model):
             "stocks": 50
         },
         "MODERATE": {
+            "min_health": 40.0,  # Above average
             "confidence_high": 0.7,
             "confidence_low": 0.55,
             "advisors": ['StockStory', 'Polygon', 'Yahoo', 'FDA', 'Insider'],
@@ -48,6 +50,7 @@ class Profile(models.Model):
             "stocks": 40
         },
         "AGGRESSIVE": {
+            "min_health": 30.0,  # Below average but not bottom
             "confidence_high": 0.55,
             "confidence_low": 0.55,
             "advisors": ['User', 'FDA', 'Yahoo', 'Insider','StockStory', 'Polygon'],
@@ -55,6 +58,7 @@ class Profile(models.Model):
             "stocks": 30
         },
         "EXPERIMENTAL": {
+            "min_health": 0.0,  # No filter
             "confidence_high": 0.0,
             "confidence_low": 0.0,
             "advisors": ['Intraday', 'FDA', 'Insider'],  # Intraday momentum advisor for experimental users
@@ -356,7 +360,8 @@ class Snapshot(models.Model):
     date = models.DateField()  # For easy daily filtering
     cash_value = models.DecimalField(max_digits=10, decimal_places=2)
     holdings_value = models.DecimalField(max_digits=10, decimal_places=2)
-    # wealth = cash_value + holdings_value (calculated, not stored)
+    trade_cumulative = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0'))
+    trade_daily = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0'))
     
     class Meta:
         unique_together = [['user', 'date']]  # One snapshot per user per day
