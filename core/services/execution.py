@@ -6,17 +6,17 @@ Executes buy/sell trades and updates holdings
 
 import logging
 from decimal import Decimal
-from core.models import Stock, Holding, Discovery, Recommendation, Consensus, Trade, Profile
+from core.models import Holding, Trade, Profile
 
 logger = logging.getLogger(__name__)
 
 
 # Sell all for now
-def execute_sell(sa, user, profile, consensus, holding, explanation):
+def execute_sell(sa, user, profile, holding, explanation):
 
     # Latest price
     holding.stock.refresh()
-    logger.info(f"Trade: {user.username} selling {holding.shares} shares of {holding.stock.symbol} at ${holding.stock.price}.")
+    logger.info(f"Trade: {user.username} selling {holding.shares} shares of {holding.stock.symbol} at ${holding.stock.price}. {explanation}")
 
     # Capture cost basis and references BEFORE deleting holding
     cost_basis = holding.average_price or Decimal('0')
@@ -35,7 +35,6 @@ def execute_sell(sa, user, profile, consensus, holding, explanation):
 
     trade.sa = sa
     trade.user = user
-    trade.consensus = consensus
     trade.action = "SELL"
     trade.stock = stock_ref
     trade.price = sell_price
@@ -46,16 +45,14 @@ def execute_sell(sa, user, profile, consensus, holding, explanation):
 
     profile.save()
 
-def execute_buy(sa, user, consensus, allowance, explanation=""):
+def execute_buy(sa, user, stock, allowance, explanation=""):
 
     # Check for existing stock
     profile = Profile.objects.get(user=user)
-    holding = Holding.objects.filter(user=user, stock=consensus.stock).first()
+    holding = Holding.objects.filter(user=user, stock=stock).first()
 
     if holding is None:
         holding = Holding()
-
-    stock = consensus.stock
 
     # Check cash
     if allowance > profile.cash:
@@ -67,29 +64,29 @@ def execute_buy(sa, user, consensus, allowance, explanation=""):
 
     # Verify stock price
     if stock.price == 0.0:
-        logger.warning(f"Trade: no price for {consensus.stock.symbol}")
+        logger.warning(f"Trade: no price for {stock.symbol}")
         return
 
     # Calculate no. shares to buy
-    shares = int(allowance / consensus.stock.price)
+    shares = int(allowance / stock.price)
 
     if shares ==  0:
-        logger.info(f"Trade: {user.username} NOT buying shares of {consensus.stock.symbol}. Can't afford any")
+        logger.info(f"Trade: {user.username} NOT buying shares of {stock.symbol}. Can't afford any")
         return
 
     # No buy if have shares (surrender allowance for subsequent purchases)
     if shares - holding.shares <= 0:
-        logger.info(f"{user.username} already has {holding.shares} {consensus.stock.symbol} shares")
+        logger.info(f"{user.username} already has {holding.shares} {stock.symbol} shares")
         return
 
     shares -= holding.shares
-    cost = shares * consensus.stock.price
+    cost = shares * stock.price
 
     if profile.cash < cost:
-        logger.info(f"Trade: {user.username} NOT buying shares of {consensus.stock.symbol}. Not enough cash")
+        logger.info(f"Trade: {user.username} NOT buying shares of {stock.symbol}. Not enough cash")
         return
 
-    logger.info(f"Trade: {user.username} buying {shares} shares of {consensus.stock.symbol} at ${consensus.stock.price}. Holding {holding.shares}")
+    logger.info(f"Trade: {user.username} buying {shares} shares of {stock.symbol} at ${stock.price}. Holding {holding.shares}")
 
     profile.cash -= cost
 
@@ -98,7 +95,6 @@ def execute_buy(sa, user, consensus, allowance, explanation=""):
 
     trade.sa = sa
     trade.user = user
-    trade.consensus = consensus
     trade.action = "BUY"
     trade.stock = stock
     trade.price = stock.price
@@ -108,17 +104,16 @@ def execute_buy(sa, user, consensus, allowance, explanation=""):
 
     # Update holdings
     holding.user = user
-    holding.stock = consensus.stock
+    holding.stock = stock
     old_shares = holding.shares
     old_avg = holding.average_price or Decimal('0')
     holding.shares += shares
-    holding.consensus = consensus.avg_confidence
 
     if holding.shares > 0:
-        total_cost = (old_avg * Decimal(old_shares)) + (consensus.stock.price * shares)
+        total_cost = (old_avg * Decimal(old_shares)) + (stock.price * shares)
         holding.average_price = total_cost / Decimal(holding.shares)
     else:
-        holding.average_price = consensus.stock.price
+        holding.average_price = stock.price
 
     holding.save()
     profile.save()

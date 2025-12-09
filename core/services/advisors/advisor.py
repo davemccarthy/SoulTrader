@@ -25,7 +25,6 @@ genai.configure(api_key=getattr(settings, 'GEMINI_KEY', None))
 models = [
     "gemini-2.5-pro",
     "gemini-2.5-flash",
-    "gemini-2.5-pro-preview-03-25",
     "gemini-2.0-flash",
 ]
 
@@ -33,10 +32,8 @@ class AdvisorBase:
 
     def __init__(self, advisor):
         self.advisor = advisor
-        #self.gemini = genai.Client(api_key=getattr(settings, 'GEMINI_KEY', None))
         self.gemini_model = 0
 
-    # Are these two needed?
     def discover(self, sa):
         return
 
@@ -63,9 +60,12 @@ class AdvisorBase:
             if health:
                 logger.info(f"Successfully created health check for {stock.symbol}")
             else:
-                logger.warning(f"Health check returned None for {stock.symbol}")
+                logger.error(f"Health check returned None for {stock.symbol}")
+                return None
+
         except Exception as e:
             logger.error(f"Health check failed for {stock.symbol} during discovery: {e}", exc_info=True)
+            return None
 
         # REMOVED: 7-day duplicate discovery check - no longer needed since SA sessions are faster without Polygon
         # This allows stocks to be re-discovered and bought again if they show strong movement
@@ -109,23 +109,12 @@ class AdvisorBase:
                 elif instruction_type == 'DESCENDING_TREND':
                     instruction.value = Decimal(str(instruction_value))
 
-                elif instruction_type == 'CS_FLOOR':
-                    instruction.value = None
                 else:
                     logger.warning(f"Unknown instruction_type: {instruction_type}")
                     continue
 
                 instruction.save()
                 logger.info(f"Created {instruction_type} sell instruction for {stock.symbol}: {instruction.value}")
-        else:
-            # Default: create CS_FLOOR instruction so existing behavior continues
-            from core.models import SellInstruction
-            instruction = SellInstruction()
-            instruction.discovery = discovery
-            instruction.instruction = 'CS_FLOOR'
-            instruction.value = None  # CS_FLOOR value is determined at sell time from profile risk
-            instruction.save()
-            logger.info(f"Created default CS_FLOOR sell instruction for {stock.symbol}")
 
         logger.info(f"{self.advisor.name} discovers {stock.symbol}")
         return stock
@@ -145,17 +134,32 @@ class AdvisorBase:
     def health_check(self, stock, sa):
         """
         Calculate health check for a stock.
+        Only creates a new health check if one doesn't exist or if the latest one is more than a week old.
 
         Args:
             stock: Stock model instance (with symbol, company, price populated)
             sa: SmartAnalysis session instance
 
         Returns:
-            Health object or None if calculation fails
+            Health object or None if calculation fails or skipped
         """
         logger.info(f"Starting health_check for {stock.symbol}")
         try:
             from core.models import Health
+            from django.utils import timezone
+            from datetime import timedelta
+
+            # Check if a recent health check exists (within last week)
+            one_week_ago = timezone.now() - timedelta(days=7)
+            recent_health = Health.objects.filter(
+                stock=stock
+            ).order_by('-created').first()
+
+            if recent_health and recent_health.created > one_week_ago:
+                logger.info(
+                    f"Skipping health check for {stock.symbol}: existing check from {recent_health.created} is less than a week old"
+                )
+                return recent_health  # Return existing health check
 
             # 1. Run algorithm to get confidence score
             logger.info(f"Calculating confidence score for {stock.symbol}...")
@@ -184,7 +188,7 @@ class AdvisorBase:
             # 3. Calculate final score
             final_score = confidence_score * gemini_weight
 
-            # 4. Create Health record (always create new record)
+            # 4. Create Health record (only if none exists or existing one is old)
             health = Health.objects.create(
                 stock=stock,
                 sa=sa,

@@ -1,62 +1,20 @@
 """
 Stock Analysis Service
-
-Analyzes stocks using AI advisors and builds consensus
-Maps to build_consensus() from your analysis.py
 """
 
 import logging
-import random
 from decimal import Decimal
-
-import h11
-from django.db import connection
-from django.db.models import Sum
 from django.utils import timezone
-from core.models import Stock, Holding, Discovery, Recommendation, Consensus, Trade, Profile, Advisor
+from core.models import Stock, Holding, Discovery, Profile, Advisor
 from core.services.execution import execute_buy, execute_sell
 
 logger = logging.getLogger(__name__)
-
-
-#  Build consensus on given stock
-def build_consensus(sa, advisors, stock):
-
-    # Only build consensus once for stock in a session (saves on API calls)
-    consensus = Consensus.objects.filter(sa_id=sa.id, stock_id=stock.id).first()
-    if consensus is not None:
-        return consensus
-
-    logger.info(f"Building consensus for stock {stock.symbol}")
-
-    # Gather advice from external financial services
-    for a in advisors:
-        a.analyze(sa, stock)
-
-    # Verify recommendations for this stock
-    if Recommendation.objects.filter(sa=sa.id,stock_id=stock.id).first() is None:
-        logger.info(f"No recommendations for stock {stock.symbol}")
-        return None
-
-    # Collate advice and form a consensus
-    with connection.cursor() as cursor:
-        cursor.execute('''insert into core_consensus(sa_id, stock_id, recommendations, tot_confidence, avg_confidence) 
-            select %s, %s, count(*) as recommendations,
-            sum(case when confidence > 1 then 1 else confidence end) as tot_confidence,
-            avg(case when confidence > 1 then 1 else confidence end) as avg_confidence
-            from core_recommendation
-            where sa_id = %s and stock_id = %s
-        ''', [sa.id, stock.id, sa.id, stock.id])
-    # TODO research alternative to raw SQL
-
-    return Consensus.objects.filter(sa=sa,stock=stock).first()
 
 def analyze_holdings(sa, users, advisors):
     logger.info(f"Analyzing holdings for SA session {sa.id}")
 
     for user in users:
         profile = Profile.objects.get(user=user)
-        sell_below = Decimal(str(Profile.RISK[profile.risk]["confidence_low"]))
 
         for holding in Holding.objects.filter(user=user):
 
@@ -72,45 +30,31 @@ def analyze_holdings(sa, users, advisors):
 
                 # Check sell conditions in priority order
                 try:
-                    consensus = None  # Initialize consensus variable
 
                     for instruction in instructions:
                         if instruction.instruction in ['STOP_PRICE', 'STOP_PERCENTAGE']:
                             if holding.stock.price < instruction.value:
-                                execute_sell(sa, user, profile, consensus, holding, f"{holding.stock.symbol} fell to stop-loss of ${instruction.value:.2f}")
+                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} fell to stop-loss of ${instruction.value:.2f}")
                                 break
 
                         elif instruction.instruction in ['TARGET_PRICE', 'TARGET_PERCENTAGE']:
                             if holding.stock.price >= instruction.value:
-                                execute_sell(sa, user, profile, consensus, holding, f"{holding.stock.symbol} reached target price of ${instruction.value:.2f}")
+                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} reached target price of ${instruction.value:.2f}")
                                 break
 
                         elif instruction.instruction == 'AFTER_DAYS':
                             days_held = (timezone.now() - discovery.created).days
                             if days_held >= instruction.value:
-                                execute_sell(sa, user, profile, consensus, holding, f"{holding.stock.symbol} after holding for {days_held} days (target: {instruction.value} days)")
+                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} after holding for {days_held} days (target: {instruction.value} days)")
                                 break
 
                         elif instruction.instruction == 'DESCENDING_TREND':
-
                             trend = holding.stock.calc_trend(hours=2)
 
                             if trend and trend < instruction.value:
-                                execute_sell(sa, user, profile, consensus, holding, f"{holding.stock.symbol} descending detection of ${instruction.value:.2f}")
+                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} descending detection of ${instruction.value:.2f}")
                                 break
 
-                        elif instruction.instruction == 'CS_FLOOR':
-
-                            consensus = build_consensus(sa, advisors, holding.stock)
-                            if consensus is None or consensus.avg_confidence is None:
-                                continue
-
-                            holding.consensus = consensus.avg_confidence
-                            holding.save(update_fields=["consensus"])
-
-                            if consensus.avg_confidence < sell_below:
-                                execute_sell(sa, user, profile, consensus, holding, f"Consensus confidence ({consensus.avg_confidence:.2f}) fell below threshold ({sell_below:.2f})")
-                                break
                 except Exception as e:
                     logger.error(
                         f"Error checking sell instructions for {holding.stock.symbol} (holding {holding.id}): {e}",
@@ -128,15 +72,10 @@ def analyze_discovery(sa, users, advisors):
     for a in advisors:
         a.discover(sa)
 
-    # 2. Build consensus on discovered stocl
-    for d in Discovery.objects.filter(sa=sa):
-        build_consensus(sa, advisors, d.stock)
-
-    # 3. Filter stocks to buy on a per user basis
+    # 2. Filter stocks to buy on a per user basis
     for u in users:
         profile = Profile.objects.get(user=u)
         risk_settings = Profile.RISK[profile.risk]
-        buy_from = risk_settings["confidence_high"]
         allowed_advisors = risk_settings.get("advisors", [])
 
         # 1. Filter discoveries by allowed advisors (if specified)
@@ -148,12 +87,11 @@ def analyze_discovery(sa, users, advisors):
 
             if allowed_advisor_objects.exists():
                 discoveries_qs = discoveries_qs.filter(advisor__in=allowed_advisor_objects)
-                logger.info(f"User {u.username} ({profile.risk}): Filtering to advisors: {allowed_advisors}")
             else:
                 logger.warning(f"User {u.username} ({profile.risk}): No advisors found matching {allowed_advisors}")
                 continue
 
-        # 2. Get filtered discoveries (will check consensus for each)
+        # 3. Get filtered discoveries
         filtered_discoveries = list(discoveries_qs.select_related('advisor', 'stock'))
         
         if not filtered_discoveries:
@@ -177,15 +115,24 @@ def analyze_discovery(sa, users, advisors):
 
         # 4. Iterate through unique discoveries and calculate allowance per discovery
         for discovery in unique_discoveries:
-            # Check if this discovery has consensus that passes threshold
-            consensus = Consensus.objects.filter(
-                sa=sa.id,
-                stock_id=discovery.stock_id,
-                avg_confidence__gte=buy_from
-            ).first()
+            # Get most recent health check for this stock
+            from core.models import Health
+            health_check = Health.objects.filter(
+                stock=discovery.stock
+            ).order_by('-created').first()
 
-            if not consensus:
-                logger.debug(f"Discovery {discovery.stock.symbol} by {discovery.advisor.name} did not pass consensus threshold ({buy_from})")
+            # Skip stocks without health check or with score below threshold
+            if not health_check:
+                logger.warning(f"Discovery {discovery.stock.symbol} by {discovery.advisor.name} has no health check")
+                continue
+
+            min_health = Decimal(str(risk_settings["min_health"]))
+
+            if health_check.score < min_health:
+                logger.info(
+                    f"User {u.username}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "
+                    f"health check score ({health_check.score}) below threshold ({min_health})"
+                )
                 continue
 
             # Get advisor weight (normalized)
@@ -201,12 +148,10 @@ def analyze_discovery(sa, users, advisors):
             else:
                 allowance = allowance * (advisor_weight / risk_weight)
 
-            # TODO: Will update execute_buy function later
-            # For now, using existing signature - may need to adapt
             logger.info(
                 f"User {u.username}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "
                 f"(advisor_weight={advisor_weight:.3f}, risk_weight={risk_weight:.3f}, allowance=${allowance:.2f})"
             )
             
             # Call execute_buy (signature may need updating)
-            execute_buy(sa, u, consensus, allowance)
+            execute_buy(sa, u, discovery.stock, allowance)

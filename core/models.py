@@ -35,38 +35,29 @@ class Profile(models.Model):
     RISK = {
         "CONSERVATIVE": {
             "min_health": 50.0,  # Only top ~20% of your scores
-            "confidence_high": 0.85,
-            "confidence_low": 0.6,
-            "advisors": ['StockStory', 'Polygon', 'Yahoo', 'FDA', 'Insider'],
+            "advisors": ['StockStory', 'Polygon', 'FDA', 'Insider'],
             "weight": 1.0,
             "stocks": 50
         },
         "MODERATE": {
             "min_health": 40.0,  # Above average
-            "confidence_high": 0.7,
-            "confidence_low": 0.55,
-            "advisors": ['StockStory', 'Polygon', 'Yahoo', 'FDA', 'Insider'],
+            "advisors": ['StockStory', 'Polygon', 'FDA', 'Insider'],
             "weight": 1.00,
             "stocks": 40
         },
         "AGGRESSIVE": {
             "min_health": 30.0,  # Below average but not bottom
-            "confidence_high": 0.55,
-            "confidence_low": 0.55,
-            "advisors": ['User', 'FDA', 'Yahoo', 'Insider','StockStory', 'Polygon'],
+            "advisors": ['User', 'FDA', 'Insider','StockStory', 'Polygon'],
             "weight": 1.25,
             "stocks": 30
         },
         "EXPERIMENTAL": {
             "min_health": 0.0,  # No filter
-            "confidence_high": 0.0,
-            "confidence_low": 0.0,
-            "advisors": ['Intraday', 'FDA', 'Insider'],  # Intraday momentum advisor for experimental users
+            "advisors": ['Intraday'],  # Intraday momentum advisor for experimental users
             "weight": 1.0,
             "stocks": 40
         },
     }
-
 
     user = models.ForeignKey(User, on_delete=models.DO_NOTHING)
     risk = models.CharField(max_length=20, choices=[(key, key.replace('_', ' ').title()) for key in RISK.keys()], default='MODERATE')

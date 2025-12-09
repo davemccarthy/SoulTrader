@@ -64,14 +64,15 @@
      data-detail-panel="#trade-detail-panel"
      data-detail-content="#trade-detail-content"
      data-detail-back="#trade-detail-back"
-     data-detail-endpoint="/trades/{id}/detail/"
-     data-detail-id-attr="data-trade-id">
+     data-detail-endpoint="/holdings/{id}/history/"
+     data-detail-id-attr="data-stock-id">
     {% if trades %}
         <div id="trades-list" class="holdings-panel">
             {% for trade in trades %}
                 <div class="holdings-row holdings-grid"
                      data-trade-id="{{ trade.id }}"
-                     data-stock-id="{{ trade.stock_id }}">
+                     data-stock-id="{{ trade.stock_id }}"
+                     data-action="{{ trade.action }}">
                     <div class="holdings-col">
                         <img src="https://images.financialmodelingprep.com/symbol/{{ trade.symbol }}.png" alt="{{ trade.symbol }}" class="holdings-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
                         <span class="trade-image-fallback" style="display:none;">{{ trade.symbol|slice:":2" }}</span>
@@ -338,19 +339,6 @@ window.detailPanelRenderer = function(data) {
         `<span>${valueLabel} ${value}</span>`,
         returnDisplay,
     ].filter(item => item !== ''); // Remove empty return display if not available
-
-    if (data.consensus) {
-        const consensus = data.consensus;
-        if (consensus.recommendations != null) {
-            metricItems.push(`<span>Recommendations ${escapeHtml(consensus.recommendations)}</span>`);
-        }
-        if (consensus.avg_confidence != null) {
-            metricItems.push(`<span>Average confidence ${escapeHtml(formatDecimal(consensus.avg_confidence))}</span>`);
-        }
-        if (consensus.tot_confidence != null) {
-            metricItems.push(`<span>Total confidence ${escapeHtml(formatDecimal(consensus.tot_confidence))}</span>`);
-        }
-    }
 
     function renderTradeCard(trade, stock, discovery, recommendations) {
         const action = escapeHtml(trade.action || 'UNKNOWN');

@@ -8,7 +8,7 @@ from django.http import JsonResponse, Http404
 from django.templatetags.static import static
 from decimal import Decimal
 from collections import defaultdict
-from .models import Profile, Holding, Stock, Discovery, Trade, Consensus, Recommendation, SellInstruction, Health, Health
+from .models import Profile, Holding, Discovery, Trade, Recommendation, SellInstruction, Health
 
 
 def home(request):
@@ -178,8 +178,6 @@ def holding_detail(request, stock_id):
 
     # Get user's profile for risk-based values
     profile = Profile.objects.get(user=request.user)
-    confidence_low = Decimal(str(Profile.RISK[profile.risk]["confidence_low"]))
-
     stock = holding.stock
     shares = holding.shares or 0
     avg_price = holding.average_price or Decimal('0')
@@ -196,7 +194,6 @@ def holding_detail(request, stock_id):
 
     trades_qs = list(
         Trade.objects
-        .select_related('sa', 'consensus', 'consensus__stock')
         .filter(user=request.user, stock_id=stock_id)
         .order_by('-id')
     )
@@ -207,11 +204,6 @@ def holding_detail(request, stock_id):
     if sa_ids:
         for discovery in Discovery.objects.select_related('advisor', 'sa').filter(sa_id__in=sa_ids, stock_id=stock_id):
             discoveries_map[discovery.sa_id] = discovery
-
-    consensus_map = {}
-    if sa_ids:
-        for consensus in Consensus.objects.filter(sa_id__in=sa_ids, stock_id=stock_id):
-            consensus_map[consensus.sa_id] = consensus
 
     recommendations_map = defaultdict(list)
     if sa_ids:
@@ -266,11 +258,6 @@ def holding_detail(request, stock_id):
                     days_held = (timezone.now() - discovery.created).days
                     instruction_data['days_held'] = days_held
                     instruction_data['status'] = 'active' if days_held >= instruction.value else 'pending'
-                elif instruction.instruction == 'CS_FLOOR':
-                    # CS_FLOOR value is always None in DB, populate with user's risk profile confidence_low
-                    instruction_data['value'] = float(confidence_low)
-                    instruction_data['status'] = 'pending'  # CS_FLOOR is checked during analysis
-                    instruction_data['current_consensus'] = float(holding.consensus) if holding.consensus else None
                 elif instruction.instruction == 'DESCENDING_TREND' and instruction.value is not None:
                     # DESCENDING_TREND value is a threshold (e.g., -0.20 means sell if trend < -0.20)
                     instruction_data['value'] = float(instruction.value)
@@ -287,18 +274,6 @@ def holding_detail(request, stock_id):
         else:
             trade_payload['discovery'] = None
             trade_payload['sell_instructions'] = []
-
-        consensus = trade.consensus or consensus_map.get(trade.sa_id)
-        if consensus:
-            trade_payload['consensus'] = {
-                'id': consensus.id,
-                'recommendations': consensus.recommendations,
-                'avg_confidence': float(consensus.avg_confidence) if consensus.avg_confidence is not None else None,
-                'tot_confidence': float(consensus.tot_confidence) if consensus.tot_confidence is not None else None,
-                'sa_id': consensus.sa_id,
-            }
-        else:
-            trade_payload['consensus'] = None
 
         recommendations = recommendations_map.get(trade.sa_id, [])
         trade_payload['recommendations'] = [
@@ -425,8 +400,6 @@ def holding_history(request, stock_id):
         
         # Get sell instructions for this discovery
         profile = Profile.objects.get(user=request.user)
-        confidence_low = Decimal(str(Profile.RISK[profile.risk]["confidence_low"]))
-        
         instructions = SellInstruction.objects.filter(discovery=discovery_obj).order_by('id')
         # Create mapping from instruction code to description
         instruction_choices = dict(SellInstruction.choices)
@@ -449,10 +422,6 @@ def holding_history(request, stock_id):
                 days_held = (timezone.now() - discovery_obj.created).days
                 instruction_data['days_held'] = days_held
                 instruction_data['status'] = 'active' if days_held >= instruction.value else 'pending'
-            elif instruction.instruction == 'CS_FLOOR':
-                # CS_FLOOR value is always None in DB, populate with user's risk profile confidence_low
-                instruction_data['value'] = float(confidence_low)
-                instruction_data['status'] = 'pending'  # CS_FLOOR is checked during analysis
             elif instruction.instruction == 'DESCENDING_TREND' and instruction.value is not None:
                 instruction_data['value'] = float(instruction.value)
                 trend = stock.calc_trend()
@@ -649,7 +618,6 @@ def trade_detail(request, trade_id):
     try:
         trade = (
             Trade.objects
-            .select_related('stock', 'sa', 'consensus')
             .get(id=trade_id, user=request.user)
         )
     except Trade.DoesNotExist:
@@ -688,28 +656,6 @@ def trade_detail(request, trade_id):
             'sa_id': discovery_obj.sa_id,
             'sa_started': discovery_obj.sa.started.isoformat() if discovery_obj.sa and discovery_obj.sa.started else None,
         }
-
-    # Get consensus
-    consensus = None
-    if trade.consensus:
-        consensus = {
-            'id': trade.consensus.id,
-            'recommendations': trade.consensus.recommendations,
-            'avg_confidence': float(trade.consensus.avg_confidence) if trade.consensus.avg_confidence is not None else None,
-            'tot_confidence': float(trade.consensus.tot_confidence) if trade.consensus.tot_confidence is not None else None,
-            'sa_id': trade.consensus.sa_id,
-        }
-    elif trade.sa_id:
-        # Try to find consensus for this SA
-        consensus_obj = Consensus.objects.filter(sa_id=trade.sa_id, stock_id=stock.id).first()
-        if consensus_obj:
-            consensus = {
-                'id': consensus_obj.id,
-                'recommendations': consensus_obj.recommendations,
-                'avg_confidence': float(consensus_obj.avg_confidence) if consensus_obj.avg_confidence is not None else None,
-                'tot_confidence': float(consensus_obj.tot_confidence) if consensus_obj.tot_confidence is not None else None,
-                'sa_id': consensus_obj.sa_id,
-            }
 
     # Get recommendations
     recommendations = []
@@ -802,7 +748,6 @@ def trade_detail(request, trade_id):
             'price': float(stock.price) if stock.price else 0.0,
         },
         'discovery': discovery,
-        'consensus': consensus,
         'recommendations': recommendations,
     }
 
