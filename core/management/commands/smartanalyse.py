@@ -162,7 +162,8 @@ class Command(BaseCommand):
                 # Calculate Trade P&L percentages
                 trade_cumulative, trade_daily = calculate_trade_pnl_percentages(user, today)
                 
-                # Create or update snapshot for today
+                # Create snapshot for today (only if it doesn't exist)
+                # get_or_create ensures one snapshot per day - created on first SA run, never updated
                 Snapshot.objects.get_or_create(
                     user=user,
                     date=today,

@@ -46,7 +46,11 @@ DISCOVERY_END_MINUTE = 30
 def get_current_et_time():
     """Get current time in Eastern Time (ET)."""
     et = tz('US/Eastern')
-    return datetime.now(et)
+    utc = tz('UTC')
+    # Get current UTC time first, then convert to ET
+    # This ensures correct timezone conversion regardless of system timezone
+    utc_now = datetime.now(utc)
+    return utc_now.astimezone(et)
 
 
 def is_discovery_window():
