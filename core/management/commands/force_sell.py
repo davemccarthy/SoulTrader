@@ -116,7 +116,6 @@ class Command(BaseCommand):
                         sa=sa,
                         user=user,
                         profile=profile,
-                        consensus=None,
                         holding=holding,
                         explanation=f'{explanation} ({symbol})'
                     )
@@ -136,6 +135,14 @@ class Command(BaseCommand):
                     f'\nForce sell complete: Sold {total_sold} total shares worth ${total_value:.2f}'
                 )
             )
+
+
+
+
+
+
+
+
 
 
 

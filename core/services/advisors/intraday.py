@@ -30,7 +30,7 @@ EMA_SHORT = 8
 EMA_LONG = 21
 RSI_PERIOD = 14
 RSI_OVERBOUGHT = 75
-VOL_MULTIPLIER = 1.5
+VOL_MULTIPLIER = 1.0
 SL_ATR_MULT = 2.0
 TP_ATR_MULT = 3.0
 MIN_MARKET_CAP = 100_000_000
@@ -360,6 +360,7 @@ class Intraday(AdvisorBase):
             sell_instructions = [
                 ("STOP_PRICE", stop_loss_price),  # Actual dollar price
                 ("TARGET_PRICE", take_profit_price),  # Actual dollar price
+                ("END_DAY", 0.0),  # Sell at EOD if P&L >= 0.0% (sell any winner at end of day)
             ]
             
             # Create discovery

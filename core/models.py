@@ -52,8 +52,8 @@ class Profile(models.Model):
             "stocks": 30
         },
         "EXPERIMENTAL": {
-            "min_health": 0.0,  # No filter
-            "advisors": ['Intraday'],  # Intraday momentum advisor for experimental users
+            "min_health": 30.0,
+            "advisors": ['Intraday','Flux','User'],  # Intraday momentum advisor for experimental users
             "weight": 1.0,
             "stocks": 40
         },
@@ -207,6 +207,61 @@ class Stock(models.Model):
             logger.warning(f"Could not calculate trend for {self.symbol}: {e}")
             return None
 
+    def is_trending(self, lookback_days=5, volume_threshold_pct=0.2, min_volume=100000):
+        """
+        Check if stock is still trending based on trading volume.
+        
+        Args:
+            lookback_days: Number of days to look back for average volume (default: 5)
+            volume_threshold_pct: Current volume must be at least this % of average (default: 0.2 = 20%)
+            min_volume: Absolute minimum volume threshold in shares (default: 100000)
+        
+        Returns:
+            bool: True if stock is trending (high volume), False if not trending (low volume), None if can't determine
+        """
+        import yfinance as yf
+        
+        logger = logging.getLogger(__name__)
+        
+        try:
+            if not self.price or self.price == 0:
+                return None
+            
+            ticker = yf.Ticker(self.symbol)
+            # Get last (lookback_days + 2) days to have enough data
+            hist = ticker.history(period=f"{lookback_days + 2}d", interval="1d")
+            
+            if hist.empty or 'Volume' not in hist.columns or len(hist) < 2:
+                logger.debug(f"Not enough volume data for {self.symbol}")
+                return None
+            
+            # Get current day's volume (last row)
+            current_volume = hist['Volume'].iloc[-1]
+            
+            # Calculate average volume over last N days (excluding current day)
+            # Use last lookback_days rows, or all available if fewer
+            available_days = min(lookback_days, len(hist) - 1)
+            if available_days < 1:
+                return None
+            
+            avg_volume = hist['Volume'].iloc[-(available_days + 1):-1].mean()
+            
+            if avg_volume <= 0:
+                return None
+            
+            # Stock is "not trending" if current volume is very low
+            # Threshold: less than volume_threshold_pct of recent average, or below absolute minimum
+            volume_threshold = avg_volume * volume_threshold_pct
+            absolute_threshold = max(volume_threshold, min_volume)
+            
+            is_trending = current_volume >= absolute_threshold
+            
+            return is_trending
+            
+        except Exception as e:
+            logger.warning(f"Could not check trending status for {self.symbol}: {e}")
+            return None
+
     def refresh(self):
 
         logger = logging.getLogger(__name__)
@@ -297,7 +352,8 @@ class SellInstruction(models.Model):
         ("AFTER_DAYS", "After Days"),
         ("DESCENDING_TREND", 'Descending trend'),
         ("END_WEEK", "End of current week"),
-        ("END_DAY", "End of current day")
+        ("END_DAY", "End of current day"),
+        ("NOT_TRENDING", "No longer trending (low volume)")
     ]
 
     discovery = models.ForeignKey(Discovery, on_delete=models.DO_NOTHING)

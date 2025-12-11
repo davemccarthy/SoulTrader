@@ -4,6 +4,8 @@ Stock Analysis Service
 
 import logging
 from decimal import Decimal
+from datetime import datetime
+from pytz import timezone as tz
 from django.utils import timezone
 from core.models import Stock, Holding, Discovery, Profile, Advisor
 from core.services.execution import execute_buy, execute_sell
@@ -52,8 +54,43 @@ def analyze_holdings(sa, users, advisors):
                             trend = holding.stock.calc_trend(hours=2)
 
                             if trend and trend < instruction.value:
-                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} descending detection of ${instruction.value:.2f}")
+                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} descending detected of ${instruction.value:.2f}")
                                 break
+
+                        elif instruction.instruction == 'NOT_TRENDING':
+                            is_trending = holding.stock.is_trending()
+                            if is_trending is False:  # Explicitly False (not None)
+                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} no longer trending (low volume)")
+                                break
+
+                        elif instruction.instruction == 'END_DAY':
+                            # Check if we're in the last 30 minutes of trading day (3:30 PM ET onwards)
+                            et = tz('US/Eastern')
+                            now_et = timezone.now().astimezone(et)
+                            current_time = now_et.time()
+                            weekday = now_et.weekday()
+                            
+                            # Only check on weekdays (0=Monday, 4=Friday)
+                            if weekday < 5:
+                                # Check if after 3:30 PM ET (last 30 minutes of trading)
+                                end_day_check_time = datetime.strptime("15:30", "%H:%M").time()
+                                
+                                if current_time >= end_day_check_time:
+                                    # Value is the target price (calculated in advisor from discovery price + P&L % threshold)
+                                    # Direct price comparison like TARGET_PRICE
+                                    if instruction.value and holding.stock.price >= instruction.value:
+                                        # Calculate actual P&L % for logging
+                                        discovery_price = discovery.price if discovery.price else holding.average_price
+                                        if discovery_price:
+                                            pnl_pct = ((holding.stock.price - discovery_price) / discovery_price) * 100
+                                        else:
+                                            pnl_pct = 0.0
+                                        
+                                        execute_sell(
+                                            sa, user, profile, holding,
+                                            f"{holding.stock.symbol} end of day sell: P&L {pnl_pct:+.2f}% (target: ${instruction.value:.2f})"
+                                        )
+                                        break
 
                 except Exception as e:
                     logger.error(
@@ -153,5 +190,5 @@ def analyze_discovery(sa, users, advisors):
                 f"(advisor_weight={advisor_weight:.3f}, risk_weight={risk_weight:.3f}, allowance=${allowance:.2f})"
             )
             
-            # Call execute_buy (signature may need updating)
-            execute_buy(sa, u, discovery.stock, allowance)
+            # Call execute_buy
+            execute_buy(sa, u, discovery.stock, allowance,f"Stock health score {health_check.score} exceeded minimum score {min_health}")
