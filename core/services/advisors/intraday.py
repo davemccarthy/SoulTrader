@@ -360,14 +360,13 @@ class Intraday(AdvisorBase):
             sell_instructions = [
                 ("STOP_PRICE", stop_loss_price),  # Actual dollar price
                 ("TARGET_PRICE", take_profit_price),  # Actual dollar price
-                ("END_DAY", 0.0),  # Sell at EOD if P&L >= 0.0% (sell any winner at end of day)
+                ("END_DAY", 1.0),  # Sell at EOD if P&L >= 0.0% (sell any winner at end of day)
             ]
             
             # Create discovery
             self.discovered(
                 sa=sa,
                 symbol=discovery_data['symbol'],
-                company=discovery_data['company'],
                 explanation=discovery_data['explanation'],
                 sell_instructions=sell_instructions,
                 weight=1.0

@@ -469,7 +469,7 @@ class Yahoo(AdvisorBase):
                 ]
                 
                 explanation = " | ".join(explanation_parts)
-                self.discovered(sa, stock['symbol'], stock['name'], explanation)
+                self.discovered(sa, stock['symbol'], explanation)
                 discovered += 1
             
             logger.info("Yahoo notional price discovery complete: %s stocks found", discovered)
@@ -510,7 +510,7 @@ class Yahoo(AdvisorBase):
             explanation_parts.append(f"Price ${last_price:.2f}")
 
             explanation = " | ".join(explanation_parts)
-            self.discovered(sa, symbol, company, explanation)
+            self.discovered(sa, symbol, explanation)
             discovered += 1
 
         logger.info("Yahoo Finance discovery complete: %s stocks found", discovered)

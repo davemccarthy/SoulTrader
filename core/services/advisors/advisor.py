@@ -42,17 +42,15 @@ class AdvisorBase:
     def analyze(self, sa, stock):
         return
 
-    def discovered(self, sa, symbol, company, explanation, sell_instructions = None, weight = 1.0):
+    def discovered(self, sa, symbol, explanation, sell_instructions = None, weight = 1.0):
         #-- find stock or create stock
         try:
             stock = Stock.objects.get(symbol=symbol)
         except Stock.DoesNotExist:
-            stock = Stock()
-            stock.symbol = symbol
+            stock = Stock.create(symbol, self.advisor)
             logger.info(f"{self.advisor.name} created stock {stock.symbol}")
 
         # Latest price
-        stock.advisor = self.advisor
         stock.refresh()
 
         # Always attempt health check (graceful failure - don't block discovery)
@@ -92,47 +90,15 @@ class AdvisorBase:
                 instruction.discovery = discovery
                 instruction.instruction = instruction_type
 
-                # Calculate value based on instruction type
-                if instruction_type == 'STOP_PERCENTAGE':
+                if instruction_type  in ['STOP_PERCENTAGE', 'TARGET_PERCENTAGE','END_DAY']:
                     instruction.value = Decimal(str(stock.price)) * Decimal(str(instruction_value))
-
-                elif instruction_type == 'TARGET_PERCENTAGE' :
-                    instruction.value = Decimal(str(stock.price)) * Decimal(str(instruction_value))
-
-                elif instruction_type == 'STOP_PRICE':
-                    instruction.value = Decimal(str(instruction_value))
-
-                elif instruction_type == 'TARGET_PRICE':
-                    instruction.value = Decimal(str(instruction_value))
-
-                elif instruction_type == 'AFTER_DAYS':
-                    instruction.value = Decimal(str(instruction_value))
-
-                elif instruction_type == 'DESCENDING_TREND':
-                    instruction.value = Decimal(str(instruction_value))
 
                 elif instruction_type == 'NOT_TRENDING':
-                    # NOT_TRENDING doesn't need a value - it's checked directly via stock.is_trending()
                     instruction.value = None
-
-                elif instruction_type == 'END_DAY':
-                    # END_DAY: instruction_value is P&L % threshold (e.g., 0.0 for sell any winner, 2.0 for sell if >= +2%)
-                    # Calculate target price: discovery_price * (1 + threshold/100)
-                    # This works like TARGET_PRICE - we store the calculated price, then compare directly
-                    threshold_pct = Decimal(str(instruction_value)) if instruction_value is not None else Decimal('0.0')
-                    discovery_price = stock.price  # Use current stock price (which is discovery price at this point)
-                    target_price = discovery_price * (Decimal('1.0') + threshold_pct / Decimal('100.0'))
-                    instruction.value = target_price
-
                 else:
-                    logger.warning(f"Unknown instruction_type: {instruction_type}")
-                    continue
+                    instruction.value = Decimal(str(instruction_value))
 
                 instruction.save()
-                if instruction.value is not None:
-                    logger.info(f"Created {instruction_type} sell instruction for {stock.symbol}: {instruction.value}")
-                else:
-                    logger.info(f"Created {instruction_type} sell instruction for {stock.symbol} (no value needed)")
 
         logger.info(f"{self.advisor.name} discovers {stock.symbol}")
         return stock
@@ -620,7 +586,7 @@ Thank you
             ("TARGET_PERCENTAGE", 1.50),
             ("STOP_PERCENTAGE", 0.98),
             ('DESCENDING_TREND', -0.20),
-            ('CS_FLOOR', 0.00)
+            ('NOT_TRENDING', None)
         ]
 
         # Ask AI for opinion
@@ -646,7 +612,7 @@ Thank you
             return
 
         for ticker in tickers:
-            self.discovered(sa, ticker, '', f"{model} recommended {recommendation} from reading article. | Article: {title} | {url} | {explanation} ",
+            self.discovered(sa, ticker, f"{model} recommended {recommendation} from reading article. | Article: {title} | {url} | {explanation} ",
                 sell_instructions, 1.5 if recommendation == "STRONG_BUY" else 1.0)
 
 

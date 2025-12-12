@@ -405,10 +405,12 @@ class Flux(AdvisorBase):
             # 1. STOP_PERCENTAGE: 10% below buy price (loss protection)
             # 2. TARGET_PRICE: resistance price (profit taking)
             # 3. NOT_TRENDING: exit if volume drops significantly (no value needed)
+            # 4. END_WEEK: if up 5% after 7 days the following friday
             sell_instructions = [
                 ("STOP_PERCENTAGE", Decimal(str(STOP_LOSS_MULTIPLIER))),
                 ("TARGET_PRICE", Decimal(str(resistance))),
-                ("NOT_TRENDING", None),  # No value needed - method checks volume directly
+                ("NOT_TRENDING", None),
+                ("END_WEEK", 1.05)
             ]
             
             # Weight based on pattern score (higher score = higher weight)
@@ -417,7 +419,6 @@ class Flux(AdvisorBase):
             self.discovered(
                 sa,
                 symbol,
-                '',  # Company name (will be fetched by Stock.refresh())
                 explanation,
                 sell_instructions,
                 weight

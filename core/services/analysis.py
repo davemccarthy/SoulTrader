@@ -15,6 +15,27 @@ logger = logging.getLogger(__name__)
 def analyze_holdings(sa, users, advisors):
     logger.info(f"Analyzing holdings for SA session {sa.id}")
 
+    # Check if we're in the last 30 minutes of trading day (3:30 PM ET onwards)
+    et = tz('US/Eastern')
+    now_et = timezone.now().astimezone(et)
+    current_time = now_et.time()
+    weekday = now_et.weekday()
+    end_day = False
+    end_week = False
+
+    # Only check on weekdays (0=Monday, 4=Friday)
+    if weekday < 5:
+        # Check if after 3:30 PM ET (last 30 minutes of trading)
+        end_day_check_time = datetime.strptime("15:30", "%H:%M").time()
+
+        if current_time >= end_day_check_time:
+            end_day = True
+    
+    # Check if it's Friday and end of day trading
+    if weekday == 4 and end_day == True:  # Friday
+        end_week = True
+
+    # Iterate thru users
     for user in users:
         profile = Profile.objects.get(user=user)
 
@@ -58,39 +79,28 @@ def analyze_holdings(sa, users, advisors):
                                 break
 
                         elif instruction.instruction == 'NOT_TRENDING':
-                            is_trending = holding.stock.is_trending()
-                            if is_trending is False:  # Explicitly False (not None)
+                            trending = holding.stock.is_trending()
+                            if trending is False:  # Explicitly False (not None)
                                 execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} no longer trending (low volume)")
                                 break
 
-                        elif instruction.instruction == 'END_DAY':
-                            # Check if we're in the last 30 minutes of trading day (3:30 PM ET onwards)
-                            et = tz('US/Eastern')
-                            now_et = timezone.now().astimezone(et)
-                            current_time = now_et.time()
-                            weekday = now_et.weekday()
-                            
-                            # Only check on weekdays (0=Monday, 4=Friday)
-                            if weekday < 5:
-                                # Check if after 3:30 PM ET (last 30 minutes of trading)
-                                end_day_check_time = datetime.strptime("15:30", "%H:%M").time()
-                                
-                                if current_time >= end_day_check_time:
-                                    # Value is the target price (calculated in advisor from discovery price + P&L % threshold)
-                                    # Direct price comparison like TARGET_PRICE
-                                    if instruction.value and holding.stock.price >= instruction.value:
-                                        # Calculate actual P&L % for logging
-                                        discovery_price = discovery.price if discovery.price else holding.average_price
-                                        if discovery_price:
-                                            pnl_pct = ((holding.stock.price - discovery_price) / discovery_price) * 100
-                                        else:
-                                            pnl_pct = 0.0
-                                        
+                        elif instruction.instruction == 'END_DAY' and end_day:
+                            if holding.stock.price >= instruction.value:
+                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} end of day sell target: ${instruction.value:.2f}")
+                                break
+
+                        elif instruction.instruction == 'END_WEEK' and end_week:
+                            # Only apply END_WEEK if holding has been held for at least 7 days
+                            if holding.created:
+                                days_held = (timezone.now() - holding.created).days
+                                if days_held >= 7:
+                                    if holding.stock.price >= instruction.value:
                                         execute_sell(
                                             sa, user, profile, holding,
-                                            f"{holding.stock.symbol} end of day sell: P&L {pnl_pct:+.2f}% (target: ${instruction.value:.2f})"
+                                            f"{holding.stock.symbol} end of week sell target: ${instruction.value:.2f} (held {days_held} days)"
                                         )
                                         break
+                            # If holding.created is None, skip END_WEEK (edge case - no BUY trade found)
 
                 except Exception as e:
                     logger.error(

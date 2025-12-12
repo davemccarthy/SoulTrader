@@ -627,11 +627,11 @@ def check_net_selling(ticker: str) -> tuple:
         if has_net_selling:
             logger.info(f"{ticker}: Net selling detected - ${total_sale_value:,.0f} sold vs ${total_purchase_value:,.0f} bought")
         
-        return (has_net_selling, total_purchase_value, total_sale_value)
+        return has_net_selling, total_purchase_value, total_sale_value
     
     except Exception as e:
         logger.warning(f"Error checking net selling for {ticker}: {e}")
-        return (False, 0, 0)
+        return False, 0, 0
 
 
 class Insider(AdvisorBase):
@@ -661,7 +661,8 @@ class Insider(AdvisorBase):
                 ("STOP_PERCENTAGE", 0.99),
                 ("TARGET_PERCENTAGE", 1.50),
                 ("AFTER_DAYS", 7.0),
-                ('DESCENDING_TREND', -0.20)
+                ('DESCENDING_TREND', -0.20),
+                ('NOT_TRENDING', None)
             ]
             
             # Group purchases by ticker
@@ -730,8 +731,7 @@ class Insider(AdvisorBase):
                 )
                 
                 # Discover the stock
-                company = purchases_list[0].get("company", ticker)
-                stock = self.discovered(sa, ticker, company, explanation, sell_instructions)
+                stock = self.discovered(sa, ticker, explanation, sell_instructions)
                 
                 discovered_count += 1
             

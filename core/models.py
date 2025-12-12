@@ -35,19 +35,19 @@ class Profile(models.Model):
     RISK = {
         "CONSERVATIVE": {
             "min_health": 50.0,  # Only top ~20% of your scores
-            "advisors": ['StockStory', 'Polygon', 'FDA', 'Insider'],
+            "advisors": ['Story', 'Polygon', 'FDA', 'Insider'],
             "weight": 1.0,
             "stocks": 50
         },
         "MODERATE": {
             "min_health": 40.0,  # Above average
-            "advisors": ['StockStory', 'Polygon', 'FDA', 'Insider'],
+            "advisors": ['Story', 'Polygon', 'FDA', 'Insider'],
             "weight": 1.00,
             "stocks": 40
         },
         "AGGRESSIVE": {
             "min_health": 30.0,  # Below average but not bottom
-            "advisors": ['User', 'FDA', 'Insider','StockStory', 'Polygon'],
+            "advisors": ['User', 'FDA', 'Insider','Story', 'Polygon'],
             "weight": 1.25,
             "stocks": 30
         },
@@ -82,11 +82,67 @@ class Advisor(models.Model):
 # Basic stock at the core of everything
 class Stock(models.Model):
     symbol = models.CharField(max_length=10, unique=True)
-    company = models.CharField(max_length=200)
-    exchange = models.CharField(max_length=32)
+    company = models.CharField(max_length=200, blank=True, default="")
+    exchange = models.CharField(max_length=32, blank=True, default="")
+    sector = models.CharField(max_length=100, blank=True, default="")
+    industry = models.CharField(max_length=200, blank=True, default="")
+    website = models.URLField(blank=True, default="")
+    beta = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0.0)
     advisor = models.ForeignKey(Advisor, on_delete=models.DO_NOTHING, null=True, blank=True, default=None)
     updated = models.DateTimeField(auto_now=True)
+
+    @classmethod
+    def create(cls, symbol, advisor):
+
+        logger = logging.getLogger(__name__)
+
+        # Create base class
+        stock = cls(symbol=symbol, advisor=advisor)
+
+        try:
+            ticker = yf.Ticker(symbol)
+            info = ticker.info
+
+            # Company
+            company = info.get('longName') or info.get('shortName') or info.get('name')
+            if company:
+                stock.company = company[:200]
+
+            # Exchange
+            exchange = info.get('fullExchangeName') or info.get('exchange')
+            if exchange:
+                stock.exchange = exchange[:32]
+
+            # Sector
+            sector = info.get('sector')
+            if sector:
+                stock.sector = sector[:100]
+
+            # Industry
+            industry = info.get('industry')
+            if industry:
+                stock.industry = industry[:200]
+
+            # Website
+            website = info.get('website')
+            if website:
+                stock.website = website[:200]  # URLField will validate URL format
+
+            # Beta
+            beta = info.get('beta')
+            if beta is not None:
+                try:
+                    stock.beta = Decimal(str(beta))
+                except (ValueError, TypeError):
+                    pass
+
+            stock.save()
+
+        except Exception as e:
+            logger.warning(f"Could not fetch info for {symbol}: {e}")
+
+        return stock
 
     def calc_trend(self, period="1d", interval="15m", hours=12):
         """
@@ -275,22 +331,8 @@ class Stock(models.Model):
             if price:
                 self.price =  Decimal(str(price))
 
-            # Update company (and exchange) if missing
-            if not self.company:
-                full_info = ticker.info
-
-                company = full_info.get('longName') or full_info.get('shortName')
-                exchange = full_info.get('fullExchangeName') or full_info.get('exchange')
-
-                if company:
-                    self.company = company
-
-                if exchange:
-                    self.exchange = exchange
-
-            # Calculate trend using last 12 hours of 15-minute history
-            #self.trend = self.calc_trend()
             self.save()
+
         except Exception as e:
             logger.warning(f"Could not auto-update {self.symbol}: {e}")
 
@@ -305,6 +347,7 @@ class Holding(models.Model):
     average_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.0)
     consensus = models.DecimalField(max_digits=4, decimal_places=2, default=5.0)
     volatile = models.BooleanField(default=False)  # Your flag!
+    created = models.DateTimeField(auto_now_add=True, null=True, blank=True)  # When holding was first created (backfilled from first BUY trade)
 
 # Stock health check
 class Health(models.Model):
@@ -348,7 +391,6 @@ class SellInstruction(models.Model):
         ("TARGET_PRICE", "Target Price (Price)"),
         ("STOP_PERCENTAGE", "Stop Loss (Percentage)"),
         ("TARGET_PERCENTAGE", "Target Price (Percentage)"),
-        ("CS_FLOOR", "CS Floor"),
         ("AFTER_DAYS", "After Days"),
         ("DESCENDING_TREND", 'Descending trend'),
         ("END_WEEK", "End of current week"),

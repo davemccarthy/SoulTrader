@@ -168,7 +168,8 @@ class FDA(AdvisorBase):
                 ("TARGET_PERCENTAGE", 1.20),
                 ("STOP_PERCENTAGE", 0.99),
                 ("AFTER_DAYS", 7.0),
-                ('DESCENDING_TREND', -0.20)
+                ('DESCENDING_TREND', -0.20),
+                ('NOT_TRENDING', None)
             ]
 
             explanation = build_discovery_explanation(approval, score)
@@ -176,7 +177,7 @@ class FDA(AdvisorBase):
             # Set weight based on confidence score (1.0 = default, >1.0 = spend more, <1.0 = spend less)
             weight = Decimal(f"{min(score, MAX_CONFIDENCE_SCORE):.2f}")
             
-            stock = self.discovered(sa, stock_symbol, approval.get("company", ""), explanation, sell_instructions, weight=weight)
+            stock = self.discovered(sa, stock_symbol, explanation, sell_instructions, weight=weight)
             if not stock:
                 continue
 

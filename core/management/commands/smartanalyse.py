@@ -5,29 +5,23 @@ Usage:
     python manage.py smartanalyse <username>
     python manage.py smartanalyse --all
 """
-from operator import attrgetter
 from datetime import timedelta
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Sum, F, DecimalField
 
 from core.services import analysis
-from core.services.advisors.advisor import AdvisorBase
 from core.models import SmartAnalysis, Advisor, Profile, Snapshot, Holding, Trade
 from django.contrib.auth.models import User
 from django.utils import timezone
 from decimal import Decimal
 
 # Register advisors from here
-from core.services.advisors import alpha
 from core.services import advisors as advisor_modules
 
 import logging
 
-
-
 logger = logging.getLogger(__name__)
-
 
 def calculate_trade_pnl_percentages(user, snapshot_date):
     """
@@ -40,7 +34,7 @@ def calculate_trade_pnl_percentages(user, snapshot_date):
     Returns:
         tuple: (trade_cumulative, trade_daily) as Decimal percentages
     """
-    # Cumulative: 100 - (sum(cost*shares) * 100) / sum(price*shares)
+    # Cumulative: ((proceeds - cost) / cost) * 100
     # For all SELL trades (all-time)
     cumulative_trades = Trade.objects.filter(
         user=user,
@@ -54,12 +48,12 @@ def calculate_trade_pnl_percentages(user, snapshot_date):
     total_cost = cumulative_trades['total_cost'] or Decimal('0')
     total_proceeds = cumulative_trades['total_proceeds'] or Decimal('0')
     
-    if total_proceeds > 0:
-        trade_cumulative = Decimal('100') - ((total_cost * Decimal('100')) / total_proceeds)
+    if total_cost > 0:
+        trade_cumulative = ((total_proceeds - total_cost) / total_cost) * Decimal('100')
     else:
         trade_cumulative = Decimal('0.0')
     
-    # Daily: 100 - (sum(cost*shares) * 100) / sum(price*shares)
+    # Daily: ((proceeds - cost) / cost) * 100
     # For SELL trades from yesterday (previous day's trading)
     yesterday = snapshot_date - timedelta(days=1)
     daily_trades = Trade.objects.filter(
@@ -75,8 +69,8 @@ def calculate_trade_pnl_percentages(user, snapshot_date):
     daily_cost = daily_trades['daily_cost'] or Decimal('0')
     daily_proceeds = daily_trades['daily_proceeds'] or Decimal('0')
     
-    if daily_proceeds > 0:
-        trade_daily = Decimal('100') - ((daily_cost * Decimal('100')) / daily_proceeds)
+    if daily_cost > 0:
+        trade_daily = ((daily_proceeds - daily_cost) / daily_cost) * Decimal('100')
     else:
         trade_daily = Decimal('0.0')
     
