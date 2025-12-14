@@ -43,69 +43,6 @@ DISCOVERY_END_HOUR = 16
 DISCOVERY_END_MINUTE = 30
 
 
-def get_current_et_time():
-    """Get current time in Eastern Time (ET)."""
-    et = tz('US/Eastern')
-    utc = tz('UTC')
-    # Get current UTC time first, then convert to ET
-    # This ensures correct timezone conversion regardless of system timezone
-    utc_now = datetime.now(utc)
-    return utc_now.astimezone(et)
-
-
-def is_discovery_window():
-    """
-    Check if current time is within discovery window.
-    GMT: 15:30-16:30 (10:30-11:30 ET) - hours 1-2 of market opening.
-    Returns: (is_valid: bool, message: str)
-    """
-    now_et = get_current_et_time()
-    current_time = now_et.time()
-    weekday = now_et.weekday()  # 0=Monday, 6=Sunday
-    
-    # Market is closed on weekends
-    if weekday >= 5:
-        return False, f"Market closed (weekend). Current ET: {now_et.strftime('%H:%M:%S %Z')}"
-    
-    # Check if within discovery window (10:30-11:30 ET)
-    discovery_start = datetime.strptime("10:30", "%H:%M").time()
-    discovery_end = datetime.strptime("11:30", "%H:%M").time()
-    
-    if discovery_start <= current_time < discovery_end:
-        return True, f"Within discovery window. ET: {now_et.strftime('%H:%M:%S %Z')}"
-    
-    # Before market open
-    market_open = datetime.strptime("09:30", "%H:%M").time()
-    if current_time < market_open:
-        return False, f"Before market open. ET: {now_et.strftime('%H:%M:%S %Z')}"
-    
-    # After discovery window but before market close
-    market_close = datetime.strptime("16:00", "%H:%M").time()
-    if current_time < market_close:
-        return False, f"Discovery window closed (10:30-11:30 ET only). Current ET: {now_et.strftime('%H:%M:%S %Z')}"
-    
-    # After market close
-    return False, f"Market closed. Current ET: {now_et.strftime('%H:%M:%S %Z')}"
-
-
-def has_discovered_today(sa):
-    """
-    Check if Intraday advisor has already discovered stocks in this SA session.
-    Returns True if discoveries exist for this session.
-    """
-    # Check if any Intraday discoveries exist for this SA session
-    from core.models import Advisor
-    try:
-        intraday_advisor = Advisor.objects.get(name="Intraday")
-        discoveries_exist = Discovery.objects.filter(
-            sa=sa,
-            advisor=intraday_advisor
-        ).exists()
-        return discoveries_exist
-    except Advisor.DoesNotExist:
-        return False
-
-
 def normalize_dataframe(df):
     """
     Normalize DataFrame from yfinance download/history.
@@ -299,15 +236,8 @@ def get_active_stocks(limit=MAX_STOCKS_TO_CHECK):
         return [s['symbol'] for s in stocks[:limit]]
         
     except Exception as e:
-        logger.warning(f"Screener failed, using fallback list: {e}")
-        # Fallback: Top liquid + volatile stocks
-        return [
-            "TSLA", "AMD", "PLTR",
-            "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA",
-            "SPY", "QQQ", "IWM",
-            "NIO", "RIVN", "LCID",
-            "SOFI", "SNAP", "HOOD", "RBLX"
-        ]
+        logger.warning(f"Screener failed: {e}")
+        return []  # Fail gracefully - return empty list
 
 
 class Intraday(AdvisorBase):
@@ -324,14 +254,9 @@ class Intraday(AdvisorBase):
         Only runs during discovery window (10:30-11:30 ET) and once per day.
         """
         # Check if within discovery window
-        is_valid, message = is_discovery_window()
-        if not is_valid:
-            logger.info(f"Intraday discovery skipped: {message}")
-            return
-        
-        # Check if already discovered today
-        if has_discovered_today(sa):
-            logger.info("Intraday advisor has already discovered stocks today. Skipping.")
+        market_status = self.market_open()
+        if market_status is None or market_status < 60:
+            logger.info(f"Intraday discovery skipped: outside time window")
             return
         
         logger.info("Starting Intraday discovery scan...")
@@ -350,10 +275,12 @@ class Intraday(AdvisorBase):
             
             if discovery_data is None:
                 continue
-            
+
+            # Check if already discovered - skip if discovered within last 1 day
+            if not self.allow_discovery(symbol, period=24):
+                continue
+
             # Create discovery with sell instructions
-            # Store actual dollar prices (analysis.py compares price directly to instruction.value)
-            entry_price = discovery_data['entry_price']
             stop_loss_price = discovery_data['stop_loss_price']
             take_profit_price = discovery_data['take_profit_price']
             

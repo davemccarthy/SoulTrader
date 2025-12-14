@@ -729,6 +729,10 @@ class Insider(AdvisorBase):
                     f"{total_qty:,} shares @ ${avg_price:.2f} avg = ${total_value:,.0f} | "
                     f"Insiders: {title_info} | Dates: {date_info}"
                 )
+
+                # Check if already discovered - rediscover if >1 days ago
+                if not self.allow_discovery(ticker, period=24):
+                    continue
                 
                 # Discover the stock
                 stock = self.discovered(sa, ticker, explanation, sell_instructions)

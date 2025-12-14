@@ -164,6 +164,10 @@ class FDA(AdvisorBase):
             stock_symbol = approval.get("stock_symbol")
             score = approval.get("confidence_score") or 0.0
 
+            # Check if already discovered - rediscover if >1 days ago
+            if not self.allow_discovery(stock_symbol, period=24):
+                continue
+
             sell_instructions = [
                 ("TARGET_PERCENTAGE", 1.20),
                 ("STOP_PERCENTAGE", 0.99),

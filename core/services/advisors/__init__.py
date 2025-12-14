@@ -8,6 +8,7 @@ import core.services.advisors.insider as insider
 import core.services.advisors.user as user
 import core.services.advisors.intraday as intraday
 import core.services.advisors.flux as flux
+import core.services.advisors.vunder as vunder
 
 # Create advisors namespace
 advisors = type('Advisors', (), {
@@ -18,4 +19,5 @@ advisors = type('Advisors', (), {
     'fda': fda,
     'intraday': intraday,
     'flux': flux,
+    'vunder': vunder,
 })()

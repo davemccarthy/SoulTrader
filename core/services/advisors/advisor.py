@@ -36,6 +36,95 @@ class AdvisorBase:
         self.advisor = advisor
         self.gemini_model = 0
 
+    def market_open(self):
+        """
+        Check market open status.
+        
+        Returns:
+            int: Minutes until market opens (negative = not open yet, positive = already open)
+                 Examples:
+                 - -30 = market opens in 30 minutes
+                 - 0 = market just opened
+                 - +30 = market has been open for 30 minutes
+                 - None = market is closed (weekend or after hours)
+        """
+        import pytz
+        from datetime import datetime
+        
+        et = pytz.timezone('US/Eastern')
+        now_et = datetime.now(et)
+        
+        # Check if it's a weekday (Monday=0, Sunday=6)
+        if now_et.weekday() >= 5:  # Saturday or Sunday
+            return None
+        
+        # Market hours: 9:30 AM - 4:00 PM ET
+        market_open_time = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+        market_close_time = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+        
+        # If after market close, return None (market closed)
+        if now_et.time() >= market_close_time.time():
+            return None
+        
+        # Calculate minutes until/from market open
+        minutes_diff = (now_et - market_open_time).total_seconds() / 60
+        
+        return int(minutes_diff)
+
+    def allow_discovery(self, symbol, period=None, price_decline=None):
+        """
+        Allow discovery based on previous discoveries.
+        
+        Args:
+
+            symbol: Stock symbol to check
+            period: Optional hours to look back (e.g., 24 for 1 day, 168 for 7 days)
+                    If None, no time-based filtering
+            price_decline: Optional price decline ratio (e.g., 0.8 = 80% of discovery price)
+                   If None, no price-based filtering
+        
+        Returns:
+            True if discovery should be allowed, False if not
+        """
+        from core.models import Discovery, Stock
+        from django.utils import timezone
+        
+        try:
+            stock = Stock.objects.get(symbol=symbol)
+        except Stock.DoesNotExist:
+            return True  # Stock doesn't exist, so proceed with discovery
+        
+        # Get most recent discovery by this advisor for this stock
+        discovery = Discovery.objects.filter(
+            advisor=self.advisor,
+            stock=stock
+        ).order_by('-created').first()
+        
+        # If not discovered before, proceed
+        if not discovery:
+            return True
+        
+        discovery_price = discovery.price
+        time_diff = timezone.now() - discovery.created
+        hours_ago = time_diff.total_seconds() / 3600
+        
+        # Time-based filtering: skip if discovered within period (hours)
+        if period is not None:
+            if hours_ago < period:
+                logger.info(f"{self.advisor.name}: Skipping {symbol} - discovered {hours_ago:.1f} hours ago (within {period}h period)")
+                return False  # Filtered out - too recent
+        
+        # Price-based filtering: skip if price hasn't dropped below discounted price
+        if price_decline is not None:
+            stock.refresh()
+
+            if stock.price > (discovery_price * price_decline):
+                logger.info(f"{self.advisor.name}: Skipping {symbol} - price ${discovery_price:.2f} hasn't dropped to {price_decline} threshold")
+                return False  # Disallow discovery - hasn't dropped enough
+        
+        # Passed all filters
+        return True
+
     def discover(self, sa):
         return
 
@@ -561,6 +650,17 @@ Thank you
             if phrase in title_lower:
                 logger.info(f"{self.advisor.name} filtering article (skipping Gemini): {title[:80]}")
                 return
+
+        # Check if this article has already been processed by this advisor
+        from core.models import Discovery
+        existing = Discovery.objects.filter(
+            advisor=self.advisor,
+            explanation__contains=url
+        ).exists()
+
+        if existing:
+            logger.info(f"{self.advisor.name} skipping article (already processed): {title[:80]} | {url}")
+            return
 
         # Carefully worded script for the robot
         prompt = f"""

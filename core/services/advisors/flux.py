@@ -352,6 +352,15 @@ class Flux(AdvisorBase):
         """
         logger.info(f"{self.advisor.name if self.advisor else 'Flux'} starting discovery...")
         
+        # Check if market is open - Flux buys are price sensitive, so don't discover when market is closed
+        market_status = self.market_open()
+        if market_status is None:
+            logger.info("Market is closed (weekend or after hours) - skipping Flux discovery")
+            return
+        if market_status < 0:
+            logger.info(f"Market not open yet (opens in {-market_status} minutes) - skipping Flux discovery")
+            return
+        
         # Get high-volume stocks
         symbols = get_high_volume_stocks(limit=STOCK_LIMIT, min_price=MIN_PRICE)
         
@@ -387,6 +396,12 @@ class Flux(AdvisorBase):
         # Create discoveries for top signals
         for signal in buy_signals:
             symbol = signal['symbol']
+            current_price = signal['analysis_price']
+
+            # Check if already discovered - rediscover if >5 days ago OR price dropped to 90%
+            if not self.allow_discovery(symbol, period=5 * 24, price_decline=0.9):
+                continue
+
             price = signal['analysis_price']
             support = signal['support_price']
             resistance = signal['resistance_price']
