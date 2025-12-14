@@ -13,11 +13,19 @@ logger = logging.getLogger(__name__)
 MAX_PRICE = 5.0
 
 # Notional price discovery settings
-UNDERVALUED_RATIO_THRESHOLD = 0.66
+UNDERVALUED_RATIO_THRESHOLD = 0.70  # Changed from 0.66 to capture more opportunities (e.g., WDH at 31.2% discount)
 MIN_PROFIT_MARGIN = 0.0
 MAX_YEARLY_LOSS = -50.0
 MIN_MARKET_CAP = 25_000_000  # Lowered from 100M to 25M to be less strict
 MAX_RECENT_TREND_PCT = 5.0  # Filter out stocks with >5% gain over last 5 days (avoid stocks that already ran up)
+
+# Additional quality filters (Phase 1)
+MIN_REVENUE_GROWTH = -5.0  # Reject if revenue decline >5% (catches declining companies)
+MAX_30_DAY_DECLINE = -15.0  # Reject if down >15% in last 30 days (catches sustained declines)
+
+# Average low filter (TEMPORARY - experimental)
+# Set to None to disable, or a value like 1.10 to allow price up to 10% above 50-day SMA
+MAX_PRICE_VS_SMA50 = 1.10  # TEMPORARY: Filter stocks trading >10% above 50-day SMA (None = disabled)
 
 
 CUSTOM_SCREEN_QUERY = YfEquityQuery(
@@ -245,8 +253,17 @@ class Yahoo(AdvisorBase):
     # DISCOVERY HELPER METHODS
     # ============================================================================
 
-    def _get_active_stocks(self, limit=200):
-        """Get most active stocks from Yahoo Finance."""
+    def _get_active_stocks(self, limit=200, min_volume=None, max_volume=None, sort_volume_asc=False):
+        """
+        Get stocks from Yahoo Finance with configurable volume filtering.
+        
+        Args:
+            limit: Maximum number of stocks to return
+            min_volume: Optional minimum daily volume (filters out illiquid stocks)
+            max_volume: Optional maximum daily volume (filters out over-traded stocks)
+            sort_volume_asc: If True, sort by volume ascending (lowest first, for less discovered stocks).
+                           If False, sort descending (highest first, current default behavior)
+        """
         try:
             most_active_query = YfEquityQuery(
                 "and",
@@ -282,7 +299,16 @@ class Yahoo(AdvisorBase):
                         'volume': float(volume) if volume else 0.0,
                     })
             
-            stocks.sort(key=lambda x: x['volume'], reverse=True)
+            # Filter by volume range if specified
+            if min_volume is not None or max_volume is not None:
+                stocks = [
+                    s for s in stocks 
+                    if (min_volume is None or s['volume'] >= min_volume) and
+                       (max_volume is None or s['volume'] <= max_volume)
+                ]
+            
+            # Sort by volume (ascending or descending based on param)
+            stocks.sort(key=lambda x: x['volume'], reverse=not sort_volume_asc)
             return stocks[:limit]
             
         except Exception as e:
@@ -314,12 +340,13 @@ class Yahoo(AdvisorBase):
         filtered = []
         
         for stock in results:
-            profit_margin = stock.get('profit_margin', 0) or 0
+            profit_margin = stock.get('profit_margin')
             yearly_change = stock.get('yearly_change_pct', 0) or 0
             market_cap = stock.get('market_cap', 0) or 0
+            revenue_growth = stock.get('revenue_growth')
             
-            # Check profit margin
-            if profit_margin < MIN_PROFIT_MARGIN:
+            # Check profit margin - None means missing data (unprofitable companies often have None)
+            if profit_margin is None or profit_margin < MIN_PROFIT_MARGIN:
                 continue
             
             # Check yearly loss
@@ -328,6 +355,11 @@ class Yahoo(AdvisorBase):
             
             # Check market cap
             if market_cap < MIN_MARKET_CAP:
+                continue
+            
+            # Check revenue growth - reject if revenue declining >5% (Phase 1 filter)
+            if revenue_growth is not None and revenue_growth < MIN_REVENUE_GROWTH:
+                logger.debug(f"Filtered out {stock.get('symbol', 'unknown')} - revenue declining: {revenue_growth:.2f}%")
                 continue
             
             filtered.append(stock)
@@ -359,6 +391,34 @@ class Yahoo(AdvisorBase):
             
             # Store trend for reference
             stock['recent_trend_pct'] = trend_pct
+            filtered.append(stock)
+        
+        return filtered
+
+    def _filter_longer_term_trend(self, results):
+        """Filter out stocks with sustained declines over longer periods (Phase 1 filter)."""
+        filtered = []
+        
+        for stock in results:
+            symbol = stock.get('symbol')
+            if not symbol:
+                continue
+            
+            # Calculate trend over last 30 trading days
+            trend_pct = self._calculate_recent_trend(symbol, days=30)
+            
+            # If we can't calculate trend, include the stock (don't exclude due to data issues)
+            if trend_pct is None:
+                filtered.append(stock)
+                continue
+            
+            # Filter out stocks with sustained declines (> MAX_30_DAY_DECLINE)
+            if trend_pct < MAX_30_DAY_DECLINE:
+                logger.debug(f"Filtered out {symbol} - 30-day decline too severe: {trend_pct:.2f}%")
+                continue
+            
+            # Store 30-day trend for reference
+            stock['thirty_day_trend_pct'] = trend_pct
             filtered.append(stock)
         
         return filtered
@@ -395,9 +455,13 @@ class Yahoo(AdvisorBase):
                             discount_ratio = actual_price / notional_price
                             
                             # Get fundamental metrics
-                            profit_margin = info.get('profitMargins', 0) or 0
-                            yearly_change = (info.get('fiftyTwoWeekChangePercent', 0) or 0) * 100
+                            # Store None if profitMargins is missing (unprofitable companies often have None)
+                            profit_margin = info.get('profitMargins')
+                            # fiftyTwoWeekChangePercent is already a percentage (e.g., -29.47 = -29.47%), don't multiply by 100
+                            yearly_change = (info.get('fiftyTwoWeekChangePercent', 0) or 0)
                             market_cap = info.get('marketCap', 0) or 0
+                            # Revenue growth as percentage (e.g., -0.069 = -6.9%), multiply by 100 to get percentage
+                            revenue_growth = (info.get('revenueGrowth') * 100) if info.get('revenueGrowth') is not None else None
                             
                             results.append({
                                 'symbol': stock['symbol'],
@@ -406,9 +470,10 @@ class Yahoo(AdvisorBase):
                                 'notional_price': notional_price,
                                 'discount_ratio': discount_ratio,
                                 'method': method,
-                                'profit_margin': profit_margin,
+                                'profit_margin': profit_margin,  # Can be None for unprofitable companies
                                 'yearly_change_pct': yearly_change,
                                 'market_cap': market_cap,
+                                'revenue_growth': revenue_growth,  # Phase 1: revenue growth filter
                             })
                     except Exception as e:
                         logger.debug(f"Error processing {stock.get('symbol', 'unknown')}: {e}")
@@ -432,9 +497,23 @@ class Yahoo(AdvisorBase):
                 logger.info("No stocks passed recent trend filter")
                 return
             
+            # Filter out stocks with sustained longer-term declines (Phase 1 filter)
+            longer_term_filtered = self._filter_longer_term_trend(trend_filtered)
+            
+            if not longer_term_filtered:
+                logger.info("No stocks passed longer-term trend filter")
+                return
+            
+            # Filter for stocks trading near/below average (TEMPORARY - experimental)
+            average_low_filtered = self._filter_average_low(longer_term_filtered)
+            
+            if not average_low_filtered:
+                logger.info("No stocks passed average low filter")
+                return
+            
             # Filter for undervalued (actual/notional <= threshold)
             undervalued = [
-                r for r in trend_filtered 
+                r for r in average_low_filtered 
                 if r['discount_ratio'] <= UNDERVALUED_RATIO_THRESHOLD
             ]
             

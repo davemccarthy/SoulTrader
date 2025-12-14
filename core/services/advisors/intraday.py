@@ -255,7 +255,7 @@ class Intraday(AdvisorBase):
         """
         # Check if within discovery window
         market_status = self.market_open()
-        if market_status is None or market_status < 60:
+        if market_status is None or market_status < 60 or market_status >= 120:
             logger.info(f"Intraday discovery skipped: outside time window")
             return
         

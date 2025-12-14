@@ -30,10 +30,15 @@ def analyze_holdings(sa, users, advisors):
 
         if current_time >= end_day_check_time:
             end_day = True
-    
-    # Check if it's Friday and end of day trading
-    if weekday == 4 and end_day == True:  # Friday
-        end_week = True
+
+    # Check if it's Friday and market is open (anytime during trading hours)
+    if weekday == 4:  # Friday
+        market_open_time = datetime.strptime("09:30", "%H:%M").time()
+        market_close_time = datetime.strptime("16:00", "%H:%M").time()
+
+        # Check if within market hours (9:30 AM - 4:00 PM ET)
+        if market_open_time <= current_time < market_close_time:
+            end_week = True
 
     # Iterate thru users
     for user in users:
@@ -117,10 +122,13 @@ def analyze_discovery(sa, users, advisors):
 
     # 1. Look for new stock
     for a in advisors:
+        logger.info(f"Discovery ------------- {a.advisor.name}")
         a.discover(sa)
 
     # 2. Filter stocks to buy on a per user basis
     for u in users:
+        logger.info(f"Buying ------------- {u.username}")
+
         profile = Profile.objects.get(user=u)
         risk_settings = Profile.RISK[profile.risk]
         allowed_advisors = risk_settings.get("advisors", [])
@@ -142,7 +150,6 @@ def analyze_discovery(sa, users, advisors):
         filtered_discoveries = list(discoveries_qs.select_related('advisor', 'stock'))
         
         if not filtered_discoveries:
-            logger.info(f"User {u.username} ({profile.risk}): No discoveries from allowed advisors")
             continue
 
         # Deduplicate by stock - only process each stock once per user

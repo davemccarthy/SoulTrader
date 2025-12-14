@@ -5,10 +5,11 @@ Calculates advisor weights based on historical discovery performance (win rate)
 and updates the Advisor.weight field.
 
 Usage:
-    python manage.py analyse_discovery
-    python manage.py analyse_discovery --days 14
-    python manage.py analyse_discovery --start-sa 100 --end-sa 200
-    python manage.py analyse_discovery --dry-run
+    python manage.py analyse_discovery                    # Show results without updating
+    python manage.py analyse_discovery --set              # Calculate and update weights
+    python manage.py analyse_discovery --days 14 --set     # Update weights for last 14 days
+    python manage.py analyse_discovery --reset             # Show what would be reset to 1.0
+    python manage.py analyse_discovery --reset --set       # Reset all weights to 1.0
 """
 
 import argparse
@@ -233,14 +234,24 @@ class Command(BaseCommand):
             help='Last SmartAnalysis id (inclusive)'
         )
         parser.add_argument(
-            '--dry-run',
+            '--set',
             action='store_true',
-            help='Show what would be updated without saving'
+            help='Actually update advisor weights (default: show results without updating)'
+        )
+        parser.add_argument(
+            '--reset',
+            action='store_true',
+            help='Reset all advisor weights to 1.0 (skips discovery analysis)'
         )
         parser.add_argument(
             '--as-of',
             type=str,
             help='Reference timestamp for current price (ISO format, default: now)'
+        )
+        parser.add_argument(
+            '--after-days',
+            type=int,
+            help='Evaluate performance N days after discovery (0 = end of trading day, 7 = 1 week later). Overrides --as-of.'
         )
 
     def handle(self, *args, **options):
@@ -251,22 +262,46 @@ class Command(BaseCommand):
         days = options.get('days')
         start_sa = options.get('start_sa')
         end_sa = options.get('end_sa')
-        dry_run = options.get('dry_run', False)
+        set_weights = options.get('set', False)
+        reset_weights = options.get('reset', False)
         as_of_str = options.get('as_of')
+        after_days = options.get('after_days')
+        
+        # Handle --reset: set all advisors to weight 1.0 and exit
+        if reset_weights:
+            advisors = Advisor.objects.all()
+            count = 0
+            for advisor in advisors:
+                old_weight = advisor.weight
+                if set_weights:
+                    advisor.weight = Decimal('1.0')
+                    advisor.save(update_fields=['weight'])
+                self.stdout.write(f"{advisor.name:<20} Weight: {old_weight:.3f} → 1.000")
+                count += 1
+            
+            if not set_weights:
+                self.stdout.write(self.style.WARNING(f'\nDRY RUN - Would reset {count} advisor weights to 1.0'))
+                self.stdout.write(self.style.WARNING('Use --set to actually update weights'))
+            else:
+                self.stdout.write(self.style.SUCCESS(f'\nReset {count} advisor weights to 1.0'))
+            return
 
-        # Parse as_of if provided
-        if as_of_str:
-            try:
-                dt = datetime.fromisoformat(as_of_str)
-                if dt.tzinfo is None:
-                    as_of = timezone.make_aware(dt)
-                else:
-                    as_of = dt.astimezone(timezone.get_current_timezone())
-            except ValueError:
-                self.stdout.write(self.style.ERROR(f'Invalid --as-of format: {as_of_str}'))
-                return
+        # Parse as_of if provided (only if --after-days not specified)
+        if after_days is None:
+            if as_of_str:
+                try:
+                    dt = datetime.fromisoformat(as_of_str)
+                    if dt.tzinfo is None:
+                        as_of = timezone.make_aware(dt)
+                    else:
+                        as_of = dt.astimezone(timezone.get_current_timezone())
+                except ValueError:
+                    self.stdout.write(self.style.ERROR(f'Invalid --as-of format: {as_of_str}'))
+                    return
+            else:
+                as_of = timezone.now()
         else:
-            as_of = timezone.now()
+            as_of = None  # Will be calculated per discovery
 
         # Build discovery queryset
         qs = Discovery.objects.select_related("advisor", "stock", "sa").order_by("created")
@@ -288,6 +323,15 @@ class Command(BaseCommand):
         fetcher = YfPriceFetcher()
         rows = []
 
+        # Show evaluation period
+        if after_days is not None:
+            if after_days == 0:
+                self.stdout.write(f"Evaluating discoveries at end of trading day (4:00 PM ET) on discovery date")
+            else:
+                self.stdout.write(f"Evaluating discoveries {after_days} day(s) after discovery")
+        else:
+            self.stdout.write(f"Evaluating discoveries as of: {as_of.strftime('%Y-%m-%d %H:%M:%S')}")
+
         # Calculate performance for each discovery
         for discovery in unique_discoveries:
             symbol = discovery.stock.symbol
@@ -299,7 +343,33 @@ class Command(BaseCommand):
             else:
                 entry_price = fetcher.price_from(symbol, discovery_dt)
 
-            current_price = fetcher.latest_price(symbol, as_of)
+            # Determine evaluation date
+            if after_days is not None:
+                # Calculate date N days after discovery
+                evaluation_dt = discovery_dt + timedelta(days=after_days)
+                
+                # For --after-days 0, use end of trading day (4:00 PM ET)
+                if after_days == 0:
+                    import pytz
+                    et = pytz.timezone('US/Eastern')
+                    # Ensure discovery_dt is timezone-aware
+                    if discovery_dt.tzinfo is None:
+                        discovery_dt_aware = timezone.make_aware(discovery_dt)
+                    else:
+                        discovery_dt_aware = discovery_dt
+                    
+                    # Convert to ET and set to 4:00 PM on discovery date
+                    evaluation_dt_et = discovery_dt_aware.astimezone(et)
+                    evaluation_dt_et = evaluation_dt_et.replace(hour=16, minute=0, second=0, microsecond=0)
+                    
+                    # Convert back to discovery_dt's timezone
+                    evaluation_dt = evaluation_dt_et.astimezone(discovery_dt_aware.tzinfo)
+                # For other values, evaluation_dt is already set to discovery_dt + after_days
+                
+                current_price = fetcher.latest_price(symbol, evaluation_dt)
+            else:
+                # Use as_of (default: now)
+                current_price = fetcher.latest_price(symbol, as_of)
 
             pct_change = None
             abs_change = None
@@ -330,6 +400,7 @@ class Command(BaseCommand):
             advisor_summary = _summarise(advisor_rows)
             complete = int(advisor_summary["count"] - advisor_summary.get("missing", 0))
             gainers = int(advisor_summary.get("gainers", 0))
+            losers = int(advisor_summary.get("losers", 0))
 
             # Calculate win rate (score)
             if complete > 0:
@@ -342,6 +413,7 @@ class Command(BaseCommand):
             advisor_stats[advisor_name] = {
                 'complete': complete,
                 'gainers': gainers,
+                'losers': losers,
                 'win_rate': win_rate * 100 if complete > 0 else 0.0
             }
 
@@ -372,7 +444,7 @@ class Command(BaseCommand):
                 advisor = Advisor.objects.get(name=advisor_name)
                 old_weight = advisor.weight
 
-                if not dry_run:
+                if set_weights:
                     advisor.weight = weight
                     advisor.save(update_fields=['weight'])
 
@@ -386,18 +458,28 @@ class Command(BaseCommand):
                     'win_rate': stats['win_rate']
                 })
 
+                # Format ratio as "Gainers/Losers" or just "Gainers" if no losers
+                if stats['losers'] > 0:
+                    ratio_str = f"{stats['gainers']}/{stats['losers']}"
+                else:
+                    ratio_str = f"{stats['gainers']}/0"
+                
                 self.stdout.write(
                     f"{advisor_name:<20} "
-                    f"Complete: {stats['complete']:>4} "
-                    f"Gainers: {stats['gainers']:>4} "
-                    f"Score: {score:.3f} "
+                    f"Total: {stats['complete']:>3} | "
+                    f"Gainers: {stats['gainers']:>3} | "
+                    f"Losers: {stats['losers']:>3} | "
+                    f"Ratio: {ratio_str:>6} | "
+                    f"Win Rate: {stats['win_rate']:>5.1f}% | "
+                    f"Score: {score:.3f} | "
                     f"Weight: {old_weight:.3f} → {weight:.3f}"
                 )
             except Advisor.DoesNotExist:
                 self.stdout.write(self.style.WARNING(f'Advisor "{advisor_name}" not found in database'))
 
-        if dry_run:
+        if not set_weights:
             self.stdout.write(self.style.WARNING('\nDRY RUN - No changes saved'))
+            self.stdout.write(self.style.WARNING('Use --set to actually update advisor weights'))
         else:
             self.stdout.write(self.style.SUCCESS(f'\nUpdated {len(updates)} advisor weights'))
 
