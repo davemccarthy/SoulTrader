@@ -22,28 +22,57 @@
                     </div>
                     <div class="holdings-col holdings-col-symbol">
                         <span class="holdings-symbol">{{ holding.symbol }}</span>
-                        <span class="holdings-symbol-value">${{ holding.total_value|floatformat:2 }}</span>
+                        <span class="holdings-symbol-value">SHARES {{ holding.shares }}</span>
                     </div>
                     <div class="holdings-col holdings-col-company">
-                        <span class="holdings-company" title="{{ holding.company }}">{{ holding.company|default:"—"|truncatechars:40 }}</span>
+                        <span class="holdings-company" title="{{ holding.company }}">{{ holding.company|default:"—"|truncatechars:24 }}</span>
                     </div>
+
                     <div class="holdings-col">
-                        <span class="holdings-price {{ holding.price_class }}">${{ holding.price|floatformat:2 }}</span>
+                        <div class="holding-value-pair">
+                            <div class="holding-value-pair-label">WORTH</div>
+                            <div class="holding-value-pair-value">
+                                ${{ holding.total_value|floatformat:2 }}
+                            </div>
+                        </div>
                     </div>
+
                     <div class="holdings-col">
-                        {% if holding.change_percent >= 0 %}
-                            <span class="holdings-change positive">+{{ holding.change_percent|floatformat:2 }}%</span>
-                        {% else %}
-                            <span class="holdings-change negative">{{ holding.change_percent|floatformat:2 }}%</span>
-                        {% endif %}
+                        <div class="holding-value-pair">
+                            <div class="holding-value-pair-label">PRICE</div>
+                            <div class="holding-value-pair-value">
+                                ${{ holding.average_price|floatformat:2 }}
+                            </div>
+                        </div>
                     </div>
+
                     <div class="holdings-col">
-                        {% if holding.pl >= 0 %}
-                            <span class="holdings-pl positive">${{ holding.pl|floatformat:2 }}</span>
-                        {% else %}
-                            <span class="holdings-pl negative">${{ holding.pl|floatformat:2 }}</span>
-                        {% endif %}
+                        <div class="holding-value-pair">
+                            <div class="holding-value-pair-label">CURRENT</div>
+                            <div class="holding-value-pair-value">
+                                ${{ holding.price|floatformat:2 }}
+                            </div>
+                        </div>
                     </div>
+
+                    <div class="holdings-col">
+                        <div class="holding-value-pair">
+                            <div class="holding-value-pair-label">RETURN</div>
+                            <div class="holding-value-pair-value {% if holding.pl >= 0 %}positive{% else %}negative{% endif %}">
+                                {% if holding.pl >= 0 %}+{% endif %}${{ holding.pl|floatformat:2 }}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="holdings-col">
+                        <div class="holding-value-pair">
+                            <div class="holding-value-pair-label">PROFIT %</div>
+                            <div class="holding-value-pair-value {% if holding.pl >= 0 %}positive{% else %}negative{% endif %}">
+                                {% if holding.change_percent >= 0 %}+{% endif %}{{ holding.change_percent|floatformat:2 }}%
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="holdings-col">
                         {% if holding.discovery_logo %}
                             <span class="holdings-advisor" title="{{ holding.discovery }}">

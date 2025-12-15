@@ -381,7 +381,7 @@
 
         .holdings-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr 3fr 1fr 1fr 1fr 1fr;
+            grid-template-columns: 1fr 1fr 2fr 1fr 1fr 1fr 1fr 1fr 1fr;
             gap: 0.5rem;
             align-items: center;
             font-size: 0.875rem;
@@ -445,10 +445,36 @@
 
         .holdings-symbol-value,
         .holdings-company-meta {
-            font-size: 0.78rem;
+            font-size: 0.70rem;
             color: #475569;
             letter-spacing: 0.02em;
         }
+
+        holding-value-pair {
+            display: flex;
+            flex-direction: column;  /* vertical stack */
+            gap: 0.1rem;
+        }
+
+        .holding-value-pair-label {
+            font-size: 0.60rem;
+            color: #94a3b8;
+            text-transform: uppercase;
+            font-weight: 500;
+        }
+
+        .holding-value-pair-value {
+            font-size: 0.82rem;
+            color: #475569;
+            text-align: left;
+            font-weight: 600;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .holding-value-pair-value.positive { color: #10b981; }  /* green */
+        .holding-value-pair-value.negative { color: #ef4444; }  /* red */
         
         .holdings-trend {
             margin-left: 0;
