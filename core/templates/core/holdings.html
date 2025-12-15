@@ -38,12 +38,12 @@
                         <span class="holdings-symbol-value">SHARES {{ holding.shares }}</span>
                     </div>
                     <div class="holdings-col holdings-col-company">
-                        <span class="holdings-company" title="{{ holding.company }}">{{ holding.company|default:"—"|truncatechars:24 }}</span>
+                        <span class="holdings-company" title="{{ holding.company }}">{{ holding.company|default:"—"|truncatechars:30 }}</span>
                     </div>
 
                     <div class="holdings-col">
                         <div class="holding-value-pair">
-                            <div class="holding-value-pair-label">WORTH</div>
+                            <div class="holding-value-pair-label">VALUE</div>
                             <div class="holding-value-pair-value">
                                 ${{ holding.total_value|floatformat:2 }}
                             </div>
@@ -70,7 +70,7 @@
 
                     <div class="holdings-col">
                         <div class="holding-value-pair">
-                            <div class="holding-value-pair-label">RETURN</div>
+                            <div class="holding-value-pair-label">P&L $</div>
                             <div class="holding-value-pair-value {% if holding.pl >= 0 %}positive{% else %}negative{% endif %}">
                                 {% if holding.pl >= 0 %}+{% endif %}${{ holding.pl|floatformat:2 }}
                             </div>
@@ -79,7 +79,7 @@
 
                     <div class="holdings-col">
                         <div class="holding-value-pair">
-                            <div class="holding-value-pair-label">PROFIT %</div>
+                            <div class="holding-value-pair-label">P&L %</div>
                             <div class="holding-value-pair-value {% if holding.pl >= 0 %}positive{% else %}negative{% endif %}">
                                 {% if holding.change_percent >= 0 %}+{% endif %}{{ holding.change_percent|floatformat:2 }}%
                             </div>

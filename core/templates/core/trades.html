@@ -60,7 +60,7 @@
 
     .trades-grid {
         display: grid;
-        grid-template-columns: 1fr 1fr 4.5fr 1fr 1fr 1fr 1fr 0.9fr;
+        grid-template-columns: 0.8fr 0.8fr 4.0fr 1.1fr 1.1fr 0.8fr 0.8fr 0.8fr;
         gap: 0.5rem;
         align-items: center;
         font-size: 0.875rem;
@@ -101,9 +101,9 @@
 
                     <div class="holdings-col">
                         <div class="holding-value-pair">
-                            <div class="holding-value-pair-label">PRICE</div>
+                            <div class="holding-value-pair-label">SHARES</div>
                             <div class="holding-value-pair-value">
-                                ${{ trade.price|floatformat:2 }}
+                                {{ trade.shares }} @ ${{ trade.price|floatformat:2 }}
                             </div>
                         </div>
                     </div>
@@ -111,13 +111,13 @@
                     <div class="holdings-col">
                         <div class="holding-value-pair">
                             <div class="holding-value-pair-label">
-                                {% if trade.realized %}REALIZED{% else %}UNREALIZED{% endif %}
+                                {% if trade.action == 'BUY' %}OUTGOING ${% else %}INCOMING ${% endif %}
                             </div>
-                            <div class="holding-value-pair-value {{ trade.pl_class }}">
-                                {% if trade.pl_amount is not None %}
-                                    {% if trade.pl_amount >= 0 %}+{% endif %}${{ trade.pl_amount|floatformat:2 }}
+                            <div class="holding-value-pair-value {{ trade.price_class }}">
+                                {% if trade.action == 'BUY' %}
+                                    -${{ trade.cost|floatformat:2 }}
                                 {% else %}
-                                    —
+                                    +${{ trade.cost|floatformat:2 }}
                                 {% endif %}
                             </div>
                         </div>
@@ -125,9 +125,7 @@
 
                     <div class="holdings-col">
                         <div class="holding-value-pair">
-                            <div class="holding-value-pair-label">
-                                {% if trade.realized %}REALIZED %{% else %}UNREALIZED %{% endif %}
-                            </div>
+                            <div class="holding-value-pair-label">P&L %</div>
                             <div class="holding-value-pair-value {{ trade.pl_class }}">
                                 {% if trade.pl_percent is not None %}
                                     {% if trade.pl_percent >= 0 %}+{% endif %}{{ trade.pl_percent|floatformat:2 }}%
