@@ -6,8 +6,10 @@ from django.contrib import messages
 from django.db.models import F, Q, Case, When, Value, CharField, Max
 from django.http import JsonResponse, Http404
 from django.templatetags.static import static
+from django.utils import timezone
 from decimal import Decimal
 from collections import defaultdict
+import datetime
 from .models import Profile, Holding, Discovery, Trade, Recommendation, SellInstruction, Health
 
 
@@ -142,6 +144,7 @@ def holdings(request):
             'average_price': avg_price,
             'total_value': total_value,
             'price_class': price_class,
+            'website': stock.website,
         })
     
     context = {
@@ -149,6 +152,32 @@ def holdings(request):
         'holdings': holdings_data,
     }
     return render(request, 'core/holdings.html', context)
+
+
+def _format_trade_timestamp(dt):
+    """Friendly timestamp for trades: Today/Yesterday/Weekday/Date."""
+    if not dt:
+        return None
+
+    dt_local = timezone.localtime(dt)
+    now_local = timezone.localtime(timezone.now())
+
+    trade_date = dt_local.date()
+    today = now_local.date()
+
+    if trade_date == today:
+        return "Today"
+
+    if trade_date == today - datetime.timedelta(days=1):
+        return "Yesterday"
+
+    # Within the last 5 days (but not today/yesterday): show weekday
+    if today - datetime.timedelta(days=5) < trade_date < today - datetime.timedelta(days=1):
+        weekday = dt_local.strftime('%A')
+        return weekday
+
+    # Fallback: plain date
+    return dt_local.strftime('%Y-%m-%d')
 
 
 def _advisor_logo_url(advisor):
@@ -522,9 +551,23 @@ def trades(request):
     trade_qs = (
         Trade.objects
         .filter(user=request.user)
-        .select_related('stock', 'sa')
+        .select_related('stock', 'stock__advisor', 'sa')
         .order_by('sa__started', 'id')
     )
+
+    # Prefetch discoveries for all trades by (stock_id, sa_id)
+    sa_ids = {t.sa_id for t in trade_qs if t.sa_id}
+    stock_ids = {t.stock_id for t in trade_qs}
+
+    discoveries_map = {}
+    if sa_ids:
+        discoveries = (
+            Discovery.objects
+            .select_related('advisor')
+            .filter(sa_id__in=sa_ids, stock_id__in=stock_ids)
+        )
+        for discovery in discoveries:
+            discoveries_map[(discovery.stock_id, discovery.sa_id)] = discovery
 
     inventory = defaultdict(lambda: {'shares': Decimal('0'), 'avg_cost': Decimal('0')})
     metrics = {}
@@ -587,6 +630,28 @@ def trades(request):
             pl_class = 'muted'
             price_class = 'neutral'
 
+        # For BUY trades, prefer the specific discovery tied to this SA.
+        # For SELL or trades without a matching discovery, fall back to stock.advisor.
+        discovery_obj = discoveries_map.get((trade.stock_id, trade.sa_id)) if trade.action == 'BUY' else None
+
+        if discovery_obj and discovery_obj.advisor:
+            advisor_obj = discovery_obj.advisor
+            discovery_payload = {
+                'advisor': advisor_obj.name,
+                'advisor_logo': _advisor_logo_url(advisor_obj),
+                'sa_id': discovery_obj.sa_id,
+            }
+        else:
+            advisor_obj = getattr(trade.stock, 'advisor', None)
+            if advisor_obj:
+                discovery_payload = {
+                    'advisor': advisor_obj.name,
+                    'advisor_logo': _advisor_logo_url(advisor_obj),
+                    'sa_id': None,
+                }
+            else:
+                discovery_payload = None
+
         trades_payload.append({
             'id': trade.id,
             'stock_id': trade.stock_id,
@@ -596,6 +661,7 @@ def trades(request):
             'price': trade.price,
             'sa_id': trade.sa_id,
             'timestamp': trade.sa.started if trade.sa else None,
+            'timestamp_display': _format_trade_timestamp(trade.sa.started) if trade.sa else None,
             'action': trade.action,
             'cost': data.get('cost', Decimal('0')),
             'pl_amount': pl_amount,
@@ -604,6 +670,7 @@ def trades(request):
             'price_class': price_class,
             'realized': realized,
             'explanation': trade.explanation,
+            'discovery': discovery_payload,
         })
 
     context = {

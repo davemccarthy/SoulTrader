@@ -57,6 +57,15 @@
         color: #64748b;
         font-size: 1rem;
     }
+
+    .trades-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr 4.5fr 1fr 1fr 1fr 1fr 0.9fr;
+        gap: 0.5rem;
+        align-items: center;
+        font-size: 0.875rem;
+    }
+
 </style>
 
 <div class="holdings-container"
@@ -69,7 +78,7 @@
     {% if trades %}
         <div id="trades-list" class="holdings-panel">
             {% for trade in trades %}
-                <div class="holdings-row holdings-grid"
+                <div class="holdings-row trades-grid"
                      data-trade-id="{{ trade.id }}"
                      data-stock-id="{{ trade.stock_id }}"
                      data-action="{{ trade.action }}">
@@ -80,21 +89,81 @@
                     <div class="holdings-col trade-symbol">
                         <span class="holdings-symbol">{{ trade.symbol }}</span>
                         {% if trade.timestamp %}
-                            <span class="trade-timestamp">{{ trade.timestamp|date:"Y-m-d" }}</span>
+                            <span class="trade-timestamp">{{ trade.timestamp_display }}</span>
                         {% endif %}
                     </div>
                     <div class="holdings-col holdings-col-company trade-company-col">
                         <span class="trade-company" title="{{ trade.company }}">{{ trade.company|default:"—"|truncatechars:40 }}</span>
-                        <span class="trade-meta">
-                            SA&nbsp;#{{ trade.sa_id|default:"—" }}
-                            &nbsp;{{ trade.shares }}&nbsp;@&nbsp;
-                            {% if trade.action == 'SELL' %}
-                                <span class="trade-meta-price {{ trade.price_class }}">${{ trade.price|floatformat:2 }}</span>
-                            {% else %}
-                                ${{ trade.price|floatformat:2 }}
-                            {% endif %}
+                        <span class="trade-meta" title="{{ trade.explanation }}">
+                            {{ trade.explanation|default:"—"|truncatechars:80 }}
                         </span>
                     </div>
+
+                    <div class="holdings-col">
+                        <div class="holding-value-pair">
+                            <div class="holding-value-pair-label">PRICE</div>
+                            <div class="holding-value-pair-value">
+                                ${{ trade.price|floatformat:2 }}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="holdings-col">
+                        <div class="holding-value-pair">
+                            <div class="holding-value-pair-label">
+                                {% if trade.realized %}REALIZED{% else %}UNREALIZED{% endif %}
+                            </div>
+                            <div class="holding-value-pair-value {{ trade.pl_class }}">
+                                {% if trade.pl_amount is not None %}
+                                    {% if trade.pl_amount >= 0 %}+{% endif %}${{ trade.pl_amount|floatformat:2 }}
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="holdings-col">
+                        <div class="holding-value-pair">
+                            <div class="holding-value-pair-label">
+                                {% if trade.realized %}REALIZED %{% else %}UNREALIZED %{% endif %}
+                            </div>
+                            <div class="holding-value-pair-value {{ trade.pl_class }}">
+                                {% if trade.pl_percent is not None %}
+                                    {% if trade.pl_percent >= 0 %}+{% endif %}{{ trade.pl_percent|floatformat:2 }}%
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="holdings-col">
+                        <div class="holding-value-pair">
+                            <div class="holding-value-pair-label">ACTION</div>
+                            <div class="holding-value-pair-value">
+                                <span class="trade-action {{ trade.action|lower }}">{{ trade.action }}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="holdings-col">
+                        {% if trade.discovery and trade.discovery.advisor_logo %}
+                            <span class="holdings-advisor" title="{{ trade.discovery.advisor }}">
+                                <span class="advisor-logo">
+                                    <img src="{{ trade.discovery.advisor_logo }}" alt="{{ trade.discovery.advisor }}">
+                                </span>
+                                <span class="holdings-advisor-name">{{ trade.discovery.advisor }}</span>
+                            </span>
+                        {% elif trade.discovery and trade.discovery.advisor %}
+                            <span class="holdings-discovery">
+                                {{ trade.discovery.advisor|slice:":2"|upper }}
+                            </span>
+                        {% else %}
+                            <span class="holdings-discovery">—</span>
+                        {% endif %}
+                    </div>
+                    <!--
                     <div class="holdings-col">
                         {% if trade.action == 'BUY' %}
                             <span class="holdings-price">-${{ trade.cost|floatformat:2 }}</span>
@@ -124,9 +193,10 @@
                             <span class="holdings-pl muted">—</span>
                         {% endif %}
                     </div>
+
                     <div class="holdings-col">
                         <span class="trade-action {{ trade.action|lower }}">{{ trade.action }}</span>
-                    </div>
+                    </div>-->
                 </div>
             {% endfor %}
         </div>

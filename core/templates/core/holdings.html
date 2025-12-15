@@ -15,10 +15,23 @@
             {% for holding in holdings %}
                 <div class="holdings-row holdings-grid" data-stock-id="{{ holding.stock_id }}">
                     <div class="holdings-col">
-                        <img src="https://images.financialmodelingprep.com/symbol/{{ holding.symbol }}.png" alt="{{ holding.symbol }}" class="holdings-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-                        <div class="holdings-image" style="display:none; background: #f0f0f0; align-items: center; justify-content: center; font-size: 0.7rem; color: #999;">
-                            {{ holding.symbol|slice:":2" }}
-                        </div>
+                        {% if holding.website %}
+                            <a href="{{ holding.website }}"
+                               target="_blank"
+                               rel="noopener"
+                               title="Visit company website"
+                               class="holding-logo-link">
+                                <img src="https://images.financialmodelingprep.com/symbol/{{ holding.symbol }}.png" alt="{{ holding.symbol }}" class="holdings-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                                <div class="holdings-image" style="display:none; background: #f0f0f0; align-items: center; justify-content: center; font-size: 0.7rem; color: #999;">
+                                    {{ holding.symbol|slice:":2" }}
+                                </div>
+                            </a>
+                        {% else %}
+                            <img src="https://images.financialmodelingprep.com/symbol/{{ holding.symbol }}.png" alt="{{ holding.symbol }}" class="holdings-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                            <div class="holdings-image" style="display:none; background: #f0f0f0; align-items: center; justify-content: center; font-size: 0.7rem; color: #999;">
+                                {{ holding.symbol|slice:":2" }}
+                            </div>
+                        {% endif %}
                     </div>
                     <div class="holdings-col holdings-col-symbol">
                         <span class="holdings-symbol">{{ holding.symbol }}</span>

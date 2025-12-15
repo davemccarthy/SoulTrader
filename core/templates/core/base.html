@@ -1707,7 +1707,12 @@
 
             // Attach click handlers to list items
             listPanel.querySelectorAll(`[${idAttr}]`).forEach((row) => {
-                row.addEventListener('click', () => {
+                row.addEventListener('click', (event) => {
+                    // If user clicked a link inside the row, let the link handle it.
+                    if (event.target.closest('a')) {
+                        return;
+                    }
+
                     // Skip SELL trades (they don't have related holdings)
                     if (row.getAttribute('data-action') === 'SELL') {
                         return;
