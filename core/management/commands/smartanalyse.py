@@ -147,11 +147,14 @@ class Command(BaseCommand):
                 profile = Profile.objects.get(user=user)
                 cash_value = profile.cash or Decimal('0')
                 
-                # Calculate holdings value
+                # Calculate holdings value (refresh prices first to ensure accuracy)
                 holdings_value = Decimal('0')
                 for holding in Holding.objects.filter(user=user).select_related('stock'):
-                    if holding.stock and holding.stock.price and holding.shares:
-                        holdings_value += holding.stock.price * Decimal(holding.shares)
+                    if holding.stock and holding.shares:
+                        # Refresh stock price to get current market value
+                        holding.stock.refresh()
+                        if holding.stock.price:
+                            holdings_value += holding.stock.price * Decimal(holding.shares)
                 
                 # Calculate Trade P&L percentages
                 trade_cumulative, trade_daily = calculate_trade_pnl_percentages(user, today)

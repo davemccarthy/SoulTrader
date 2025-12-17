@@ -3,6 +3,17 @@
 {% block title %}Holdings - SOULTRADER{% endblock %}
 
 {% block content %}
+{% if holdings_chart_data_json %}
+<div class="holdings-graph-card">
+    <div class="holdings-graph-body">
+        <canvas id="holdings-chart" aria-label="Portfolio value over time" role="img"></canvas>
+    </div>
+</div>
+<script id="holdings-chart-data" type="application/json">
+    {{ holdings_chart_data_json|safe }}
+</script>
+{% endif %}
+
 <div class="holdings-container" 
      data-detail-list-panel="#holdings-list"
      data-detail-panel="#holding-detail-panel"

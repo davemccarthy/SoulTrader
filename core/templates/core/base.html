@@ -573,6 +573,31 @@
             text-overflow: ellipsis;
         }
 
+        .holdings-graph-card {
+            margin: 0 1rem 1rem 1rem;
+            padding: 1rem 1.25rem;
+            background: #ffffff;
+            border: 1px solid #e5e7eb;
+            border-radius: 6px;
+            box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+        }
+
+        .holdings-graph-header {
+            margin-bottom: 0.75rem;
+        }
+
+        .holdings-graph-header h2 {
+            margin: 0;
+            font-size: 1rem;
+            font-weight: 700;
+            color: #0f172a;
+        }
+
+        .holdings-graph-body {
+            position: relative;
+            height: 200px;
+        }
+
         .holding-detail-panel {
             padding: 1.5rem;
             display: flex;
@@ -586,6 +611,7 @@
         .holdings-panel[hidden] {
             display: none !important;
         }
+
 
         .holding-detail-back {
             display: inline-flex;
@@ -1676,6 +1702,11 @@
                 if (backButton) {
                     backButton.hidden = false;
                 }
+                // Hide graph card when detail panel is shown
+                const graphCard = document.querySelector('.holdings-graph-card');
+                if (graphCard) {
+                    graphCard.style.display = 'none';
+                }
                 detailContent.innerHTML = '<div class="holding-detail-loading">Loading details…</div>';
 
                 try {
@@ -1702,6 +1733,11 @@
                 detailContent.innerHTML = '';
                 if (backButton) {
                     backButton.hidden = true;
+                }
+                // Show graph card when returning to list
+                const graphCard = document.querySelector('.holdings-graph-card');
+                if (graphCard) {
+                    graphCard.style.display = '';
                 }
             }
 
@@ -1733,6 +1769,123 @@
             document.querySelectorAll('[data-detail-list-panel]').forEach(initDetailPanel);
         });
     })();
+    </script>
+
+    <!-- Chart.js for holdings snapshot graph -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" crossorigin="anonymous"></script>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const canvas = document.getElementById('holdings-chart');
+        const dataScript = document.getElementById('holdings-chart-data');
+        if (!canvas || !dataScript || typeof Chart === 'undefined') {
+            return;
+        }
+
+        let points;
+        try {
+            points = JSON.parse(dataScript.textContent || '[]');
+        } catch (e) {
+            console.error('Invalid holdings chart data', e);
+            return;
+        }
+
+        if (!Array.isArray(points) || points.length === 0) {
+            return;
+        }
+
+        const ctx = canvas.getContext('2d');
+
+        const chartConfig = {
+            type: 'bar',
+            data: {
+                labels: points.map(p => {
+                    const d = new Date(p.date);
+                    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                }),
+                datasets: [
+                    {
+                        label: 'Holdings',
+                        data: points.map(p => p.holdings),
+                        backgroundColor: 'rgba(37, 99, 235, 0.8)',
+                        borderColor: 'rgba(37, 99, 235, 1)',
+                        borderWidth: 0,
+                    },
+                    {
+                        label: 'Cash',
+                        data: points.map(p => p.cash),
+                        backgroundColor: 'rgba(16, 185, 129, 0.8)',
+                        borderColor: 'rgba(16, 185, 129, 1)',
+                        borderWidth: 0,
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                plugins: {
+                    legend: {
+                        display: false,
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false,
+                        callbacks: {
+                            label: function(context) {
+                                const value = context.parsed.y || 0;
+                                const label = context.dataset.label || '';
+                                const formatted = new Intl.NumberFormat('en-US', {
+                                    style: 'currency',
+                                    currency: 'USD'
+                                }).format(value);
+                                return label + ': ' + formatted;
+                            },
+                            footer: function(tooltipItems) {
+                                let total = 0;
+                                tooltipItems.forEach(item => {
+                                    total += item.parsed.y || 0;
+                                });
+                                return 'Total: ' + new Intl.NumberFormat('en-US', {
+                                    style: 'currency',
+                                    currency: 'USD'
+                                }).format(total);
+                            },
+                            title: function(items) {
+                                if (!items.length) return '';
+                                return items[0].label;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        stacked: true,
+                        grid: {
+                            display: false,
+                        }
+                    },
+                    y: {
+                        stacked: true,
+                        ticks: {
+                            callback: function(value) {
+                                return new Intl.NumberFormat('en-US', {
+                                    style: 'currency',
+                                    currency: 'USD',
+                                    maximumFractionDigits: 0
+                                }).format(value);
+                            }
+                        },
+                        grid: {
+                            color: 'rgba(148, 163, 184, 0.2)',
+                        }
+                    }
+                }
+            }
+        };
+
+        new Chart(ctx, chartConfig);
+    });
     </script>
 </body>
 </html>

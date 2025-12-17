@@ -10,7 +10,8 @@ from django.utils import timezone
 from decimal import Decimal
 from collections import defaultdict
 import datetime
-from .models import Profile, Holding, Discovery, Trade, Recommendation, SellInstruction, Health
+import json
+from .models import Profile, Holding, Discovery, Trade, Recommendation, SellInstruction, Health, Snapshot
 
 
 def home(request):
@@ -147,9 +148,27 @@ def holdings(request):
             'website': stock.website,
         })
     
+    # Build snapshot data for holdings stacked bar chart (last 30 days)
+    today = timezone.now().date()
+    start_date = today - datetime.timedelta(days=30)
+    snapshots_qs = (
+        Snapshot.objects
+        .filter(user=request.user, date__gte=start_date)
+        .order_by('date')
+    )
+
+    holdings_chart_data = []
+    for snap in snapshots_qs:
+        holdings_chart_data.append({
+            'date': snap.date.isoformat(),
+            'cash': float(snap.cash_value or Decimal('0')),
+            'holdings': float(snap.holdings_value or Decimal('0')),
+        })
+
     context = {
         'current_page': 'holdings',
         'holdings': holdings_data,
+        'holdings_chart_data_json': json.dumps(holdings_chart_data),
     }
     return render(request, 'core/holdings.html', context)
 
