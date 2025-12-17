@@ -52,7 +52,7 @@ class Profile(models.Model):
             "stocks": 30
         },
         "EXPERIMENTAL": {
-            "min_health": 30.0,
+            "min_health": 20.0,
             "advisors": ['Intraday', 'Flux', 'User', 'Vunder'],  # Intraday momentum advisor for experimental users
             "weight": 1.0,
             "stocks": 40

@@ -396,7 +396,6 @@ class Flux(AdvisorBase):
         # Create discoveries for top signals
         for signal in buy_signals:
             symbol = signal['symbol']
-            current_price = signal['analysis_price']
 
             # Check if already discovered - rediscover if >5 days ago OR price dropped to 90%
             if not self.allow_discovery(symbol, period=5 * 24, price_decline=0.9):

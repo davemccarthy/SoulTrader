@@ -584,7 +584,7 @@ class Vunder(AdvisorBase):
                 current_price = stock['actual_price']
 
                 # Check if already discovered - rediscover if >30 days ago OR price dropped to 80%
-                if not self.allow_discovery(symbol, period=30 * 24, price_decline = 0.8):
+                if not self.allow_discovery(symbol, period=30 * 24, price_decline = 0.75):
                     continue
 
                 discount_pct = (1 - stock['discount_ratio']) * 100

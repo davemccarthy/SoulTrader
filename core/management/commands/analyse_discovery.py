@@ -314,6 +314,9 @@ class Command(BaseCommand):
             cutoff = timezone.now() - timedelta(days=days)
             qs = qs.filter(created__gte=cutoff)
 
+        # Filter to only include discoveries from enabled advisors
+        qs = qs.filter(advisor__enabled=True)
+
         discoveries = list(qs)
         if not discoveries:
             self.stdout.write(self.style.WARNING('No discoveries found for provided criteria.'))
