@@ -169,3 +169,7 @@ if current_price < (fifty_two_week_high * 0.70):
 
 
 
+
+
+
+

@@ -117,8 +117,13 @@ class AdvisorBase:
         # Price-based filtering: skip if price hasn't dropped below discounted price
         if price_decline is not None:
             stock.refresh()
+            from decimal import Decimal
+            
+            # Convert price_decline to Decimal for proper multiplication
+            price_decline_decimal = Decimal(str(price_decline))
+            threshold_price = discovery_price * price_decline_decimal
 
-            if stock.price > (discovery_price * price_decline):
+            if stock.price > threshold_price:
                 logger.info(f"{self.advisor.name}: Skipping {symbol} - price ${discovery_price:.2f} hasn't dropped to {price_decline} threshold")
                 return False  # Disallow discovery - hasn't dropped enough
         
@@ -619,7 +624,7 @@ Thank you
                 return model, results
 
             except retry_exceptions as e:
-                logger.warning(f"Attempt {attempt + 1}: Service {model} unavailable. Retrying...")
+                logger.warning(f"Attempt {attempt + 1}: Service {model} unavailable. {e}. Retrying...")
                 # Try another model
                 self.gemini_model += 1
                 self.gemini_model %= len(models)

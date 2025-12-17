@@ -174,7 +174,7 @@ def holdings(request):
 
 
 def _format_trade_timestamp(dt):
-    """Friendly timestamp for trades: Today/Yesterday/Weekday/Date."""
+    """Friendly timestamp for trades: Today HH:MM/Yesterday/Weekday/Date."""
     if not dt:
         return None
 
@@ -185,7 +185,8 @@ def _format_trade_timestamp(dt):
     today = now_local.date()
 
     if trade_date == today:
-        return "Today"
+        # Show only time (24-hour format) for today's entries
+        return dt_local.strftime('%H:%M')
 
     if trade_date == today - datetime.timedelta(days=1):
         return "Yesterday"

@@ -1,7 +1,8 @@
 """
 Simple OpenInsider scraper for discovering stocks with insider purchases.
 
-Scrapes the main OpenInsider page (http://openinsider.com) for purchase transactions.
+Scrapes the OpenInsider screener page (http://openinsider.com/screener?daysago=0) for purchase transactions.
+Uses the screener URL to get today's transactions in a more structured format.
 Focuses on discovery - finds stocks with insider buying activity.
 Shows current prices and gains to explore insider data performance.
 Includes recency scoring - more recent purchases are weighted higher.
@@ -14,10 +15,18 @@ from datetime import datetime, date
 
 BASE_URL = "http://openinsider.com"
 
+# Discovery threshold - only discover stocks with score above this (matches insider.py)
+DISCOVERY_THRESHOLD = 0.3
+
+# Scoring normalization constants (matches insider.py)
+MAX_QTY = 1000000  # 1M shares
+MAX_VALUE = 5000000  # $5M
+
 
 def scrape_openinsider_purchases() -> List[Dict]:
     """
-    Scrape OpenInsider main page for purchase transactions (DISCOVERY).
+    Scrape OpenInsider screener page for purchase transactions (DISCOVERY).
+    Uses /screener?daysago=0 to get today's transactions.
     
     Returns:
         List of purchase dictionaries with details
@@ -27,8 +36,10 @@ def scrape_openinsider_purchases() -> List[Dict]:
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         
-        print(f"Fetching {BASE_URL}...")
-        resp = requests.get(BASE_URL, headers=headers, timeout=15)
+        # Use screener URL with daysago=0 to get today's transactions
+        screener_url = f"{BASE_URL}/screener?daysago=0"
+        print(f"Fetching {screener_url}...")
+        resp = requests.get(screener_url, headers=headers, timeout=15)
         
         if not resp.ok:
             print(f"❌ Request failed: {resp.status_code}")
@@ -36,325 +47,261 @@ def scrape_openinsider_purchases() -> List[Dict]:
         
         soup = BeautifulSoup(resp.text, "html.parser")
         
-        # Find all tables on the page
+        # The screener page has a single main table with all transactions
+        # Find the main data table (usually the largest one with transaction data)
         tables = soup.find_all("table")
         print(f"Found {len(tables)} table(s)")
         
-        # Look for specific sections: "Latest Penny Stock Buys" and "Latest Insider Purchases"
-        penny_stock_section = None
-        insider_purchases_section = None
-        
-        # Method 1: Find headings/links and their associated tables
-        for element in soup.find_all(["a", "h2", "h3", "h4", "strong", "b"]):
-            element_text = element.get_text().strip().lower()
-            
-            # Find "Latest Penny Stock Buys"
-            if "penny stock" in element_text and "buy" in element_text:
-                next_table = element.find_next("table")
-                if next_table and penny_stock_section is None:
-                    penny_stock_section = next_table
-                    print(f"  Found 'Latest Penny Stock Buys' table (by heading)")
-            
-            # Find "Latest Insider Purchases" or "Latest Insider Buys"
-            if ("insider" in element_text and "purchase" in element_text) or \
-               ("insider" in element_text and "buy" in element_text and "latest" in element_text):
-                next_table = element.find_next("table")
-                if next_table and insider_purchases_section is None:
-                    insider_purchases_section = next_table
-                    print(f"  Found 'Latest Insider Purchases' table (by heading)")
-        
-        # Method 2: Look for tables with section names in nearby text
-        for table in tables:
-            # Check previous elements for section identifiers
-            for prev in table.find_all_previous(limit=10):
-                if prev and hasattr(prev, 'get_text'):
-                    prev_text = prev.get_text().lower()
-                    
-                    if "penny stock" in prev_text and "buy" in prev_text and penny_stock_section is None:
-                        penny_stock_section = table
-                        print(f"  Found 'Latest Penny Stock Buys' table (by nearby text)")
-                    
-                    if (("insider" in prev_text and "purchase" in prev_text) or \
-                        ("insider" in prev_text and "buy" in prev_text and "latest" in prev_text)) and \
-                       insider_purchases_section is None:
-                        insider_purchases_section = table
-                        print(f"  Found 'Latest Insider Purchases' table (by nearby text)")
-        
-        # Collect all purchase tables to process
-        tables_to_process = []
-        if penny_stock_section:
-            tables_to_process.append(penny_stock_section)
-        if insider_purchases_section and insider_purchases_section not in tables_to_process:
-            tables_to_process.append(insider_purchases_section)
-        
-        # Also add any other purchase tables we might have missed
+        # Look for the main screener results table
+        # It typically has headers like "Filing Date", "Trade Date", "Ticker", etc.
+        main_table = None
         for table in tables:
             table_text = table.get_text()
-            # Only process tables that mention purchases
-            if "P - Purchase" in table_text or "Purchase" in table_text:
-                if table not in tables_to_process:
-                    tables_to_process.append(table)
+            # The screener table should have these key columns
+            if all(keyword in table_text for keyword in ["Filing Date", "Trade Date", "Ticker", "Trade Type"]):
+                main_table = table
+                print(f"  Found main screener table")
+                break
         
-        for table in tables_to_process:
-            table_text = table.get_text()
-            
-            # Identify table type - check if this is one of our identified sections
-            is_penny_stock = False
-            is_insider_purchases = False
-            
-            # Check by comparing table objects or by checking nearby text
-            if penny_stock_section and (table == penny_stock_section or id(table) == id(penny_stock_section)):
-                is_penny_stock = True
-            elif insider_purchases_section and (table == insider_purchases_section or id(table) == id(insider_purchases_section)):
-                is_insider_purchases = True
-            else:
-                # Fallback: check nearby text
-                prev = table.find_previous()
-                for _ in range(5):
-                    if prev:
-                        prev_text = prev.get_text().lower() if hasattr(prev, 'get_text') else str(prev).lower()
-                        if "penny stock" in prev_text and "buy" in prev_text:
-                            is_penny_stock = True
-                            break
-                        if ("insider" in prev_text and "purchase" in prev_text) or \
-                           ("insider" in prev_text and "buy" in prev_text and "latest" in prev_text):
-                            is_insider_purchases = True
-                            break
-                        prev = prev.find_previous() if hasattr(prev, 'find_previous') else None
-                    else:
-                        break
-            
-            if is_penny_stock:
-                print(f"  Processing PENNY STOCK BUYS table...")
-            elif is_insider_purchases:
-                print(f"  Processing LATEST INSIDER PURCHASES table...")
-            else:
-                print(f"  Processing table with purchase data...")
-            
-            # Find all rows in this table
-            rows = table.find_all("tr")
-            
-            # Look for header row (contains "Ticker" or "Trade Type")
-            header_idx = -1
+        if not main_table:
+            # Fallback: use the largest table
+            main_table = max(tables, key=lambda t: len(t.find_all("tr"))) if tables else None
+            if main_table:
+                print(f"  Using largest table as fallback")
+        
+        if not main_table:
+            print("❌ Could not find main data table")
+            return purchases
+        
+        # Find header row - try multiple strategies
+        rows = main_table.find_all("tr")
+        header_idx = -1
+        
+        # Strategy 1: Look for row with all key headers together
+        for i, row in enumerate(rows):
+            row_text = row.get_text().lower()
+            if "filing date" in row_text and "trade date" in row_text and "ticker" in row_text:
+                header_idx = i
+                print(f"    Found header at row {i+1} (strategy 1: all headers together)")
+                break
+        
+        # Strategy 2: Look for row with at least "ticker" and "trade type" or "price"
+        if header_idx < 0:
             for i, row in enumerate(rows):
                 row_text = row.get_text().lower()
                 if "ticker" in row_text and ("trade type" in row_text or "price" in row_text):
                     header_idx = i
-                    print(f"    Found header at row {i+1}")
+                    print(f"    Found header at row {i+1} (strategy 2: ticker + trade type/price)")
                     break
+        
+        # Strategy 3: Look for row with filing date or trade date plus ticker
+        if header_idx < 0:
+            for i, row in enumerate(rows):
+                row_text = row.get_text().lower()
+                if ("filing date" in row_text or "trade date" in row_text) and "ticker" in row_text:
+                    header_idx = i
+                    print(f"    Found header at row {i+1} (strategy 3: date + ticker)")
+                    break
+        
+        # Strategy 4: Look for row that looks like a header (has multiple column headers)
+        if header_idx < 0:
+            for i, row in enumerate(rows[:20]):  # Check first 20 rows
+                cells = row.find_all(["td", "th"])
+                if len(cells) >= 8:  # Screener table has many columns
+                    cell_texts = [c.get_text().strip().lower() for c in cells]
+                    # Count how many cells look like headers (short text, no numbers, common header terms)
+                    header_like_count = 0
+                    header_keywords = ["date", "ticker", "company", "insider", "title", "type", "price", "qty", "value", "owned"]
+                    for cell_text in cell_texts:
+                        if len(cell_text) < 30 and any(keyword in cell_text for keyword in header_keywords):
+                            header_like_count += 1
+                    if header_like_count >= 4:  # At least 4 cells look like headers
+                        header_idx = i
+                        print(f"    Found header at row {i+1} (strategy 4: multiple header-like cells)")
+                        break
+        
+        if header_idx < 0:
+            print("    Could not find header row, using row 10 as fallback")
+            header_idx = 9
+        
+        # Process data rows
+        data_rows = rows[header_idx + 1:]
+        print(f"    Found {len(data_rows)} data rows")
+        
+        rows_processed = 0
+        rows_skipped_no_purchase = 0
+        rows_skipped_no_ticker = 0
+        rows_skipped_essential_data = 0
+        
+        for row in data_rows:
+            rows_processed += 1
+            cells = row.find_all(["td", "th"])
             
-            # If no header found, look for rows with actual data (have ticker links)
-            if header_idx < 0:
-                # Try to find first row with a ticker link (format /TICKER)
-                for i, row in enumerate(rows):
-                    links = row.find_all("a", href=True)
+            if len(cells) < 8:  # Screener table has many columns
+                continue
+            
+            try:
+                row_text = " ".join([c.text.strip() for c in cells])
+                
+                # Check if this is a purchase row
+                if "P - Purchase" not in row_text and "Purchase" not in row_text:
+                    rows_skipped_no_purchase += 1
+                    continue
+                
+                # Extract data from cells
+                # Screener table column order is typically:
+                # [0]: X/indicators, [1]: Filing Date, [2]: Trade Date, [3]: Ticker, 
+                # [4]: Company, [5]: Insider, [6]: Title, [7]: Trade Type, [8]: Price, etc.
+                
+                ticker = ""
+                company = ""
+                insider_name = ""
+                title = ""
+                trade_type = ""
+                price = None
+                qty = None
+                value = None
+                filing_date = ""
+                trade_date = ""
+                
+                # Find ticker (look for links with format /TICKER)
+                for i, cell in enumerate(cells):
+                    cell_text = cell.text.strip()
+                    
+                    # Ticker is usually in a link
+                    links = cell.find_all("a", href=True)
                     for link in links:
                         href = link.get("href", "")
                         if href.startswith("/") and len(href) > 1:
                             potential_ticker = href[1:].split("/")[0].upper()
                             if 2 <= len(potential_ticker) <= 5 and potential_ticker.isalpha():
-                                header_idx = i - 1  # Assume header is one row before
-                                print(f"    Found data row at {i+1}, assuming header at {header_idx+1}")
+                                ticker = potential_ticker
+                                # Company name might be in the link text
+                                company_text = link.text.strip()
+                                if len(company_text) > 5:
+                                    company = company_text
                                 break
-                    if header_idx >= 0:
+                    
+                    if ticker:
                         break
-            
-            if header_idx < 0:
-                # Last resort: start from row 10 (skip complex headers)
-                header_idx = 9
-                print(f"    Using default header position: row {header_idx+1}")
-            
-            # Process data rows
-            data_rows = rows[header_idx + 1:]
-            print(f"    Found {len(data_rows)} data rows")
-            
-            for row in data_rows:
-                cells = row.find_all(["td", "th"])
                 
-                if len(cells) < 5:  # Need at least ticker, company, type, price, qty
+                if not ticker:
+                    rows_skipped_no_ticker += 1
                     continue
                 
-                try:
-                    # Extract data - look for cells with purchase info
-                    row_text = " ".join([c.text.strip() for c in cells])
+                # Extract other fields
+                for i, cell in enumerate(cells):
+                    cell_text = cell.text.strip()
                     
-                    # Check if this is a purchase row
-                    if "P - Purchase" not in row_text and "Purchase" not in row_text:
-                        continue
+                    # Dates (YYYY-MM-DD format or YYYY-MM-DD HH:MM:SS)
+                    if len(cell_text) >= 10 and cell_text.count("-") >= 2:
+                        try:
+                            # Extract date part (first 10 characters for YYYY-MM-DD)
+                            date_part = cell_text[:10]
+                            # Also check if it might be a timestamp format
+                            if len(cell_text) > 10 and " " in cell_text:
+                                # Could be YYYY-MM-DD HH:MM:SS format
+                                parts = cell_text.split()
+                                if len(parts) > 0:
+                                    date_part = parts[0]
+                            
+                            parsed_date = parse_date(date_part)
+                            if parsed_date:
+                                # Usually filing date comes before trade date
+                                # Check if it's a link (filing date) or not (trade date)
+                                if cell.find("a") and not filing_date:
+                                    filing_date = date_part
+                                elif not trade_date:
+                                    trade_date = date_part
+                        except:
+                            pass
                     
-                    # Find ticker (usually in a link or bold text)
-                    ticker = ""
-                    for cell in cells:
-                        # Look for links with ticker in href (format: /TICKER)
-                        links = cell.find_all("a", href=True)
-                        for link in links:
-                            href = link.get("href", "")
-                            # Ticker is often in the href like /TICKER or /TICKER/...
-                            if href.startswith("/") and len(href) > 1:
-                                # Extract first part after /
-                                parts = href[1:].split("/")
-                                potential_ticker = parts[0].upper()
-                                # Ticker should be 2-5 uppercase letters (skip single letters like "M")
-                                if 2 <= len(potential_ticker) <= 5 and potential_ticker.isalpha():
-                                    ticker = potential_ticker
-                                    break
-                        if ticker:
+                    # Trade type
+                    if "P - Purchase" in cell_text:
+                        trade_type = "P - Purchase"
+                    
+                    # Price (starts with $)
+                    if cell_text.startswith("$") and not cell_text.startswith("$0") and price is None:
+                        try:
+                            price = float(cell_text.replace("$", "").replace(",", "").split()[0])
+                        except ValueError:
+                            pass
+                    
+                    # Quantity (starts with +)
+                    if cell_text.startswith("+") and any(c.isdigit() for c in cell_text) and qty is None:
+                        try:
+                            qty = int(cell_text.replace("+", "").replace(",", "").split()[0])
+                        except ValueError:
+                            pass
+                    
+                    # Value (starts with +$)
+                    if cell_text.startswith("+$") and value is None:
+                        try:
+                            value = float(cell_text.replace("+$", "").replace(",", "").split()[0])
+                        except ValueError:
+                            pass
+                    
+                    # Insider name (links to /insider/)
+                    links = cell.find_all("a", href=True)
+                    for link in links:
+                        href = link.get("href", "")
+                        if "/insider/" in href:
+                            insider_name = link.text.strip()
                             break
-                        
-                        # Or in bold text within the cell
-                        bold = cell.find("b")
-                        if bold:
-                            text = bold.text.strip()
-                            # Remove any trailing colons or punctuation
-                            text = text.rstrip(":.,;")
-                            if 2 <= len(text) <= 5 and text.isupper() and text.isalpha():
-                                ticker = text
-                                break
-                        
-                        # Or just in cell text (but be more careful)
-                        text = cell.text.strip()
-                        # Remove trailing colons/punctuation
-                        text = text.rstrip(":.,;").split()[0] if text.split() else ""
-                        if 2 <= len(text) <= 5 and text.isupper() and text.isalpha():
-                            ticker = text
-                            break
                     
-                    if not ticker:
-                        continue
-                    
-                    # Find company name (usually near ticker)
-                    company = ""
-                    for cell in cells:
-                        text = cell.text.strip()
-                        # Company names are longer and often have links
-                        if len(text) > 5 and len(text) < 100 and ticker not in text:
-                            link = cell.find("a", href=True)
-                            if link:
-                                company = text
-                                break
-                    
-                    # Find trade type, price, quantity, value, insider info
-                    trade_type = ""
-                    price = None
-                    qty = None
-                    value = None
-                    insider_name = ""
-                    title = ""
-                    filing_date = ""
-                    trade_date = ""
-                    
-                    for i, cell in enumerate(cells):
-                        cell_text = cell.text.strip()
-                        
-                        # Trade type
-                        if "P - Purchase" in cell_text:
-                            trade_type = "P - Purchase"
-                        
-                        # Price (starts with $)
-                        if cell_text.startswith("$") and not cell_text.startswith("$0"):
-                            try:
-                                price = float(cell_text.replace("$", "").replace(",", ""))
-                            except ValueError:
-                                pass
-                        
-                        # Quantity (starts with + and has numbers)
-                        if cell_text.startswith("+") and any(c.isdigit() for c in cell_text):
-                            try:
-                                qty = int(cell_text.replace("+", "").replace(",", ""))
-                            except ValueError:
-                                pass
-                        
-                        # Value (starts with +$)
-                        if cell_text.startswith("+$"):
-                            try:
-                                value = float(cell_text.replace("+$", "").replace(",", ""))
-                            except ValueError:
-                                pass
-                        
-                        # Insider name and title (usually in cells with links to /insider/)
-                        links = cell.find_all("a", href=True)
-                        for link in links:
-                            href = link.get("href", "")
-                            if "/insider/" in href:
-                                insider_name = link.text.strip()
-                                # Title might be in next cell or same cell
-                                break
-                        
-                        # Look for common titles (check if cell contains title keywords)
-                        # Don't overwrite if we already found a title, but prefer more specific ones
-                        cell_text_upper = cell_text.upper()
-                        if not title or len(cell_text) < 50:  # Only set if empty or if cell looks like a title
-                            if "CEO" in cell_text_upper:
-                                title = "CEO"
-                            elif "CFO" in cell_text_upper:
-                                title = "CFO"
-                            elif "COO" in cell_text_upper:
-                                title = "COO"
-                            elif "PRESIDENT" in cell_text_upper:
-                                title = "President"
-                            elif "DIRECTOR" in cell_text_upper:
-                                title = "Director"
-                            elif "VP" in cell_text_upper or "VICE PRESIDENT" in cell_text_upper:
-                                title = "VP"
-                            elif "OFFICER" in cell_text_upper:
-                                title = "Officer"
-                        
-                        # Dates (format: YYYY-MM-DD)
-                        if len(cell_text) == 10 and cell_text.count("-") == 2:
-                            try:
-                                # Try to parse as date
-                                parts = cell_text.split("-")
-                                if len(parts) == 3 and all(p.isdigit() for p in parts):
-                                    if not filing_date:
-                                        filing_date = cell_text
-                                    else:
-                                        trade_date = cell_text
-                            except:
-                                pass
-                    
-                    # Skip if we don't have essential data
-                    # Also skip if ticker looks invalid (single letter or contains colon)
-                    if not ticker or len(ticker) < 2 or ":" in ticker or not trade_type or price is None:
-                        continue
-                    
-                    # Calculate value if not found
-                    if value is None and price is not None and qty is not None:
-                        value = price * qty
-                    
-                    # Determine source section
-                    source = "other"
-                    if is_penny_stock:
-                        source = "penny_stock_buys"
-                    elif is_insider_purchases:
-                        source = "insider_purchases"
-                    
-                    purchase = {
-                        "ticker": ticker,
-                        "company": company,
-                        "insider_name": insider_name,
-                        "title": title,
-                        "trade_type": trade_type,
-                        "price": price,
-                        "quantity": qty,
-                        "value": value,
-                        "is_penny_stock": is_penny_stock,
-                        "source": source,
-                        "filing_date": filing_date,
-                        "trade_date": trade_date,
-                    }
-                    
-                    purchases.append(purchase)
-                    
-                except Exception as e:
-                    continue  # Skip problematic rows
+                    # Title (check cell text for common titles)
+                    cell_text_upper = cell_text.upper()
+                    if not title or len(cell_text) < 50:
+                        if "CEO" in cell_text_upper:
+                            title = "CEO"
+                        elif "CFO" in cell_text_upper:
+                            title = "CFO"
+                        elif "COO" in cell_text_upper:
+                            title = "COO"
+                        elif "PRESIDENT" in cell_text_upper:
+                            title = "President"
+                        elif "DIRECTOR" in cell_text_upper:
+                            title = "Director"
+                        elif "VP" in cell_text_upper or "VICE PRESIDENT" in cell_text_upper:
+                            title = "VP"
+                        elif "OFFICER" in cell_text_upper:
+                            title = "Officer"
+                
+                # Skip if essential data missing
+                if not ticker or not trade_type or price is None:
+                    rows_skipped_essential_data += 1
+                    continue
+                
+                # Calculate value if not found
+                if value is None and price is not None and qty is not None:
+                    value = price * qty
+                
+                purchase = {
+                    "ticker": ticker,
+                    "company": company,
+                    "insider_name": insider_name,
+                    "title": title,
+                    "trade_type": trade_type,
+                    "price": price,
+                    "quantity": qty,
+                    "value": value,
+                    "is_penny_stock": price <= 5.0 if price else False,
+                    "source": "screener",
+                    "filing_date": filing_date,
+                    "trade_date": trade_date,
+                }
+                
+                purchases.append(purchase)
+                
+            except Exception as e:
+                print(f"  Error parsing row: {e}")
+                continue
         
-        print(f"✅ Found {len(purchases)} purchase transactions")
-        
-        # Show breakdown by source
-        penny_stock_count = sum(1 for p in purchases if p.get("source") == "penny_stock_buys")
-        insider_purchases_count = sum(1 for p in purchases if p.get("source") == "insider_purchases")
-        other_count = len(purchases) - penny_stock_count - insider_purchases_count
-        print(f"  Breakdown: {penny_stock_count} from Penny Stock Buys, {insider_purchases_count} from Insider Purchases, {other_count} from other tables")
+        print(f"✅ Found {len(purchases)} purchase transactions from screener")
+        print(f"  Processing summary: {rows_processed} rows processed, "
+              f"{rows_skipped_no_purchase} skipped (not purchase), "
+              f"{rows_skipped_no_ticker} skipped (no ticker), "
+              f"{rows_skipped_essential_data} skipped (missing data)")
         
     except Exception as e:
         print(f"❌ Error: {e}")
@@ -384,13 +331,24 @@ def get_current_price(ticker: str) -> Optional[float]:
 
 
 def parse_date(date_str: str) -> Optional[date]:
-    """Parse date string (YYYY-MM-DD) to date object."""
-    if not date_str or len(date_str) != 10:
+    """Parse date string (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS) to date object."""
+    if not date_str:
         return None
-    try:
-        return datetime.strptime(date_str, "%Y-%m-%d").date()
-    except:
-        return None
+    # Try exact format first (YYYY-MM-DD)
+    if len(date_str) == 10:
+        try:
+            return datetime.strptime(date_str, "%Y-%m-%d").date()
+        except:
+            pass
+    # Try with timestamp (YYYY-MM-DD HH:MM:SS)
+    if len(date_str) >= 10:
+        try:
+            # Extract just the date part (first 10 characters)
+            date_part = date_str[:10]
+            return datetime.strptime(date_part, "%Y-%m-%d").date()
+        except:
+            pass
+    return None
 
 
 def days_ago(date_obj: Optional[date]) -> Optional[int]:
@@ -423,6 +381,182 @@ def recency_score(days_ago_val: Optional[int], max_days: int = 7) -> float:
     
     # Linear decay: 0 days = 1.0, max_days = 0.0
     return 1.0 - (days_ago_val / max_days)
+
+
+def check_net_selling(ticker: str, days_lookback: int = 90) -> tuple:
+    """
+    Check if a ticker has net selling (more sales than purchases) by scraping the ticker page.
+    Only looks at recent transactions (within days_lookback days) to avoid counting old historical sales.
+    
+    Args:
+        ticker: Stock ticker symbol
+        days_lookback: Only consider transactions within this many days (default 90)
+        
+    Returns:
+        Tuple of (has_net_selling: bool, total_purchase_value: float, total_sale_value: float)
+        Returns (False, 0, 0) if unable to check (e.g., page not found)
+    """
+    url = f"{BASE_URL}/{ticker}"
+    
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        resp = requests.get(url, headers=headers, timeout=15)
+        
+        if not resp.ok:
+            print(f"  ⚠️  Could not check net selling for {ticker}: HTTP {resp.status_code}")
+            return (False, 0, 0)
+        
+        soup = BeautifulSoup(resp.text, "html.parser")
+        tables = soup.find_all("table")
+        
+        total_purchase_value = 0.0
+        total_sale_value = 0.0
+        total_purchase_shares = 0
+        total_sale_shares = 0
+        
+        for table in tables:
+            rows = table.find_all("tr")
+            
+            # Look for header row
+            header_idx = -1
+            for i, row in enumerate(rows):
+                row_text = row.get_text().lower()
+                if any(keyword in row_text for keyword in ["filing date", "trade date", "transaction", "insider", "price"]):
+                    header_idx = i
+                    break
+            
+            if header_idx < 0:
+                continue
+            
+            # Process data rows
+            for row in rows[header_idx + 1:]:
+                cells = row.find_all(["td", "th"])
+                if len(cells) < 5:
+                    continue
+                
+                try:
+                    row_text = " ".join([c.text.strip() for c in cells])
+                    row_text_lower = row_text.lower()
+                    
+                    # Determine transaction type
+                    is_purchase = any(indicator in row_text_lower for indicator in ["p - purchase", "purchase", "p -", "buy"])
+                    is_sale = any(indicator in row_text_lower for indicator in ["s - sale", "sale", "s -", "sell"])
+                    
+                    if not is_purchase and not is_sale:
+                        # Check individual cells for transaction type
+                        for cell in cells:
+                            cell_text = cell.text.strip().upper()
+                            if "P" == cell_text or "PURCHASE" in cell_text:
+                                is_purchase = True
+                                break
+                            elif "S" == cell_text or "SALE" in cell_text:
+                                is_sale = True
+                                break
+                    
+                    if not is_purchase and not is_sale:
+                        continue
+                    
+                    # Extract date first to check if transaction is recent (within lookback window)
+                    transaction_date = None
+                    transaction_is_recent = False
+                    
+                    for cell in cells:
+                        cell_text = cell.text.strip()
+                        # Dates (YYYY-MM-DD format or YYYY-MM-DD HH:MM:SS)
+                        if len(cell_text) >= 10 and cell_text.count("-") >= 2:
+                            try:
+                                date_part = cell_text[:10]
+                                transaction_date = parse_date(date_part)
+                                if transaction_date:
+                                    # Check if transaction is within lookback window
+                                    days_ago_val = days_ago(transaction_date)
+                                    if days_ago_val is not None and days_ago_val <= days_lookback:
+                                        transaction_is_recent = True
+                                    break
+                            except:
+                                pass
+                    
+                    # Skip if transaction is too old (outside lookback window)
+                    # If no date found, include it (to avoid missing valid transactions)
+                    if transaction_date is not None and not transaction_is_recent:
+                        continue
+                    
+                    # Extract price, quantity, and value
+                    price = None
+                    qty = None
+                    transaction_value = 0.0
+                    
+                    for cell in cells:
+                        cell_text = cell.text.strip()
+                        
+                        # Price (starts with $)
+                        if cell_text.startswith("$") and not cell_text.startswith("$0") and price is None:
+                            try:
+                                price = float(cell_text.replace("$", "").replace(",", "").split()[0])
+                            except:
+                                pass
+                        
+                        # Quantity (starts with + or -)
+                        if (cell_text.startswith("+") or cell_text.startswith("-")) and any(c.isdigit() for c in cell_text) and qty is None:
+                            try:
+                                qty_str = cell_text.replace("+", "").replace("-", "").replace(",", "")
+                                qty = int(qty_str)
+                            except:
+                                pass
+                        
+                        # Value (starts with +$ or -$)
+                        if cell_text.startswith("+$") or cell_text.startswith("-$"):
+                            try:
+                                value_str = cell_text.replace("+$", "").replace("-$", "").replace(",", "")
+                                transaction_value = float(value_str)
+                                break  # Found explicit value, use it
+                            except:
+                                pass
+                    
+                    # Calculate value if not found explicitly
+                    if transaction_value == 0.0 and price is not None and qty is not None:
+                        transaction_value = price * abs(qty)
+                    
+                    # Add to appropriate totals (track both shares and values)
+                    if is_purchase and transaction_value > 0:
+                        total_purchase_value += transaction_value
+                        if qty is not None and qty > 0:
+                            total_purchase_shares += qty
+                    elif is_sale and transaction_value > 0:
+                        total_sale_value += abs(transaction_value)  # Sales are always positive in our calculation
+                        if qty is not None and qty > 0:
+                            total_sale_shares += abs(qty)  # Use absolute value for shares
+                
+                except Exception as e:
+                    continue
+        
+        # Check net selling by share quantity (more meaningful for insider sentiment)
+        # Compare shares first, then dollar values as tiebreaker
+        has_net_selling = False
+        if total_sale_shares > 0 and total_purchase_shares > 0:
+            # If more shares sold than bought, that's net selling
+            has_net_selling = total_sale_shares > total_purchase_shares
+        elif total_sale_shares > 0 and total_purchase_shares == 0:
+            # If only sales and no purchases, that's net selling
+            has_net_selling = True
+        elif total_sale_shares == 0:
+            # No sales at all, so no net selling
+            has_net_selling = False
+        else:
+            # Fallback to dollar value comparison if share counts aren't available
+            has_net_selling = total_sale_value > total_purchase_value
+        
+        if has_net_selling:
+            if total_purchase_shares > 0 or total_sale_shares > 0:
+                print(f"  ⚠️  {ticker}: Net selling detected - {total_sale_shares:,} shares (${total_sale_value:,.0f}) sold vs {total_purchase_shares:,} shares (${total_purchase_value:,.0f}) bought")
+            else:
+                print(f"  ⚠️  {ticker}: Net selling detected - ${total_sale_value:,.0f} sold vs ${total_purchase_value:,.0f} bought (share counts unavailable)")
+        
+        return has_net_selling, total_purchase_value, total_sale_value
+    
+    except Exception as e:
+        print(f"  ⚠️  Error checking net selling for {ticker}: {e}")
+        return False, 0, 0
 
 
 def score_insider_purchase(purchase: Dict, max_qty: float = 1000000, max_value: float = 5000000, cluster_size: int = 1) -> float:
@@ -548,12 +682,52 @@ def discover_stocks_with_insider_purchases(show_prices: bool = True, filter_tick
         print(f"❌ No purchases found for filter: {filter_ticker}")
         return {}
     
-    print(f"\n✅ Found {len(by_ticker)} unique stocks with purchases:\n")
+    print(f"\n✅ Found {len(by_ticker)} unique stocks with purchases")
     
-    # Sort by total purchase value
+    # Calculate scores and filter by threshold to find "potential buys"
+    potential_buys = {}
+    ticker_counts = {ticker: len(purchases_list) for ticker, purchases_list in by_ticker.items()}
+    
+    skipped_net_selling = 0
+    for ticker, purchases_list in by_ticker.items():
+        # Check for net selling - filter out stocks where insiders are net sellers (matches advisor logic)
+        has_net_selling, total_purchase_val, total_sale_val = check_net_selling(ticker)
+        if has_net_selling:
+            print(f"  ❌ {ticker}: Skipping due to net selling (${total_sale_val:,.0f} sold vs ${total_purchase_val:,.0f} bought)")
+            skipped_net_selling += 1
+            continue
+        
+        # Calculate score for each purchase
+        scores = [
+            score_insider_purchase(p, MAX_QTY, MAX_VALUE, ticker_counts.get(ticker, 1))
+            for p in purchases_list
+        ]
+        # Sum all purchase scores (capped at 1.0) - multiple purchases = stronger signal
+        total_score = sum(scores)
+        avg_score = min(1.0, total_score)  # Cap at 1.0 to keep in valid range
+        
+        # Only include if score is above threshold (potential buy)
+        if avg_score >= DISCOVERY_THRESHOLD:
+            potential_buys[ticker] = {
+                'purchases': purchases_list,
+                'score': avg_score,
+                'total_score': total_score
+            }
+    
+    print(f"   → {len(potential_buys)} stocks meet discovery threshold (score >= {DISCOVERY_THRESHOLD})")
+    if skipped_net_selling > 0:
+        print(f"   → {skipped_net_selling} stocks skipped due to net selling\n")
+    else:
+        print()
+    
+    if not potential_buys:
+        print("❌ No stocks meet the discovery threshold. All purchases scored too low.")
+        return {}
+    
+    # Sort by score (best opportunities first)
     sorted_tickers = sorted(
-        by_ticker.items(),
-        key=lambda x: sum(p.get("value", 0) or 0 for p in x[1]),
+        potential_buys.items(),
+        key=lambda x: x[1]['score'],
         reverse=True,
     )
     
@@ -570,13 +744,15 @@ def discover_stocks_with_insider_purchases(show_prices: bool = True, filter_tick
                 print(f"  {ticker}: ❌ Price not available")
         print()
     
-    # Display results
-    for ticker, purchases_list in sorted_tickers:
+    # Display results (only potential buys)
+    for ticker, data in sorted_tickers:
+        purchases_list = data['purchases']
+        score = data['score']
         total_value = sum(p.get("value", 0) or 0 for p in purchases_list)
         avg_purchase_price = sum(p.get("price", 0) for p in purchases_list) / len(purchases_list)
         
         print(f"{'='*60}")
-        print(f"{ticker}: {len(purchases_list)} purchase(s), ${total_value:,.0f} total")
+        print(f"{ticker}: Score {score:.2f} | {len(purchases_list)} purchase(s), ${total_value:,.0f} total")
         print(f"{'='*60}")
         
         # Show purchase details
@@ -605,7 +781,8 @@ def discover_stocks_with_insider_purchases(show_prices: bool = True, filter_tick
         
         print()
     
-    return by_ticker
+    # Return in same format as before for compatibility, but only potential buys
+    return {ticker: data['purchases'] for ticker, data in potential_buys.items()}
 
 
 def check_ticker_manual(ticker: str, purchase_price: float):
