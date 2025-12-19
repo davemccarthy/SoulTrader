@@ -5,6 +5,19 @@
 {% block content %}
 {% if holdings_chart_data_json %}
 <div class="holdings-graph-card">
+    <div class="graph-header">
+        <span class="graph-title">Portfolio value</span>
+        <div class="graph-legend">
+            <span class="legend-item">
+                <span class="legend-line" style="background-color: rgba(37, 99, 235, 1);"></span>
+                <span class="legend-label">Holdings</span>
+            </span>
+            <span class="legend-item">
+                <span class="legend-line" style="background-color: rgba(16, 185, 129, 1);"></span>
+                <span class="legend-label">Cash</span>
+            </span>
+        </div>
+    </div>
     <div class="holdings-graph-body">
         <canvas id="holdings-chart" aria-label="Portfolio value over time" role="img"></canvas>
     </div>

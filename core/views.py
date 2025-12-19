@@ -11,7 +11,14 @@ from decimal import Decimal
 from collections import defaultdict
 import datetime
 import json
+import logging
+
+import yfinance as yf
+
 from .models import Profile, Holding, Discovery, Trade, Recommendation, SellInstruction, Health, Snapshot
+
+
+logger = logging.getLogger(__name__)
 
 
 def home(request):
@@ -393,6 +400,28 @@ def holding_history(request, stock_id):
     current_price = stock.price or Decimal('0')
     worth = current_price * shares
 
+    # Recent price history for chart (e.g., last 30 days, daily closes)
+    price_history = []
+    try:
+        hist = yf.Ticker(stock.symbol).history(period="1mo", interval="1d")
+        if not hist.empty and "Close" in hist.columns:
+            for ts, row in hist.iterrows():
+                close = row.get("Close")
+                if close is None:
+                    continue
+                try:
+                    close_value = float(close)
+                except (TypeError, ValueError):
+                    continue
+                price_history.append(
+                    {
+                        "date": ts.date().isoformat(),
+                        "close": close_value,
+                    }
+                )
+    except Exception as e:
+        logger.warning(f"Could not fetch price history for {stock.symbol}: {e}")
+
     # Calculate change (from average price, like holdings view)
     stock.refresh()
     change_percent = 0.0
@@ -560,6 +589,7 @@ def holding_history(request, stock_id):
         'health_history': health_history,
         'trades': trades_data,
         'sell_instructions': sell_instructions,
+        'price_history': price_history,
     }
 
     return JsonResponse(payload)
@@ -693,9 +723,27 @@ def trades(request):
             'discovery': discovery_payload,
         })
 
+    # Build snapshot data for trades stacked bar chart (last 30 days)
+    today = timezone.now().date()
+    start_date = today - datetime.timedelta(days=30)
+    snapshots_qs = (
+        Snapshot.objects
+        .filter(user=request.user, date__gte=start_date)
+        .order_by('date')
+    )
+
+    trades_chart_data = []
+    for snap in snapshots_qs:
+        trades_chart_data.append({
+            'date': snap.date.isoformat(),
+            'trade_daily': float(snap.trade_daily or Decimal('0')),
+            'trade_cumulative': float(snap.trade_cumulative or Decimal('0')),
+        })
+
     context = {
         'current_page': 'trades',
         'trades': trades_payload,
+        'trades_chart_data_json': json.dumps(trades_chart_data),
     }
     return render(request, 'core/trades.html', context)
 

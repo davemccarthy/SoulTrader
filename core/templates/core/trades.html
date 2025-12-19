@@ -3,6 +3,30 @@
 {% block title %}Trades - SOULTRADER{% endblock %}
 
 {% block content %}
+{% if trades_chart_data_json %}
+<div class="trades-graph-card">
+    <div class="graph-header">
+        <span class="graph-title">Trading history</span>
+        <div class="graph-legend">
+            <span class="legend-item">
+                <span class="legend-line" style="background-color: rgba(16, 185, 129, 1);"></span>
+                <span class="legend-label">Daily</span>
+            </span>
+            <span class="legend-item">
+                <span class="legend-line" style="background-color: rgba(37, 99, 235, 1);"></span>
+                <span class="legend-label">Cumulative</span>
+            </span>
+        </div>
+    </div>
+    <div class="trades-graph-body">
+        <canvas id="trades-chart" aria-label="Trade P&L over time" role="img"></canvas>
+    </div>
+</div>
+<script id="trades-chart-data" type="application/json">
+    {{ trades_chart_data_json|safe }}
+</script>
+{% endif %}
+
 <style>
 
     .trade-company {
@@ -64,6 +88,21 @@
         gap: 0.5rem;
         align-items: center;
         font-size: 0.875rem;
+    }
+
+    .trades-graph-card {
+        margin: 0 1rem 1rem 1rem;
+        padding: 1rem 1.25rem;
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 6px;
+        box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+    }
+
+
+    .trades-graph-body {
+        position: relative;
+        height: 200px;
     }
 
 </style>
@@ -208,5 +247,115 @@
         </div>
     {% endif %}
 </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const canvas = document.getElementById('trades-chart');
+    const dataScript = document.getElementById('trades-chart-data');
+    if (!canvas || !dataScript || typeof Chart === 'undefined') {
+        return;
+    }
+
+    let points;
+    try {
+        points = JSON.parse(dataScript.textContent || '[]');
+    } catch (e) {
+        console.error('Invalid trades chart data', e);
+        return;
+    }
+
+    if (!Array.isArray(points) || points.length === 0) {
+        return;
+    }
+
+    const ctx = canvas.getContext('2d');
+
+    const chartConfig = {
+        type: 'line',
+        data: {
+            labels: points.map(p => {
+                const d = new Date(p.date);
+                return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            }),
+            datasets: [
+                {
+                    label: 'Daily',
+                    data: points.map(p => p.trade_daily),
+                    borderColor: 'rgba(16, 185, 129, 1)',  // green
+                    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                    borderWidth: 2,
+                    fill: false,
+                    tension: 0.1,
+                    pointRadius: 3,
+                    pointHoverRadius: 5,
+                },
+                {
+                    label: 'Cumulative',
+                    data: points.map(p => p.trade_cumulative),
+                    borderColor: 'rgba(37, 99, 235, 1)',  // blue
+                    backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                    borderWidth: 2,
+                    fill: false,
+                    tension: 0.1,
+                    pointRadius: 3,
+                    pointHoverRadius: 5,
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            interaction: {
+                mode: 'index',
+                intersect: false,
+            },
+            plugins: {
+                title: {
+                    display: false,
+                },
+                legend: {
+                    display: false,
+                },
+                tooltip: {
+                    mode: 'index',
+                    intersect: false,
+                    callbacks: {
+                        label: function(context) {
+                            const value = context.parsed.y || 0;
+                            const formatted = (value >= 0 ? '+' : '') + value.toFixed(2) + '%';
+                            const label = context.dataset.label || '';
+                            return label + ': ' + formatted;
+                        },
+                        title: function(items) {
+                            if (!items.length) return '';
+                            return items[0].label;
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    grid: {
+                        display: false,
+                    }
+                },
+                y: {
+                    ticks: {
+                        callback: function(value) {
+                            return (value >= 0 ? '+' : '') + value.toFixed(1) + '%';
+                        }
+                    },
+                    grid: {
+                        color: 'rgba(148, 163, 184, 0.2)',
+                    }
+                }
+            }
+        }
+    };
+
+    new Chart(ctx, chartConfig);
+});
+</script>
 {% endblock %}
 
