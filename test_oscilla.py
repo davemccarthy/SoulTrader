@@ -38,7 +38,11 @@ REL_VOLUME_MAX = 1.3
 LOOKBACK_DAYS = 20
 MIN_RR = 1.8
 MIN_STOP_BUFFER_PCT = 0.10  # Minimum 10% stop distance from entry (stop at 90% of entry price)
-MAX_TARGET_PCT = 0.10  # Maximum target price as % gain (experimental: early exit for larger wins, e.g., 0.10 = 10%)
+MAX_TARGET_PCT = 0.10 # Maximum target price as % gain (applies only when TARGET_DIMINISHING_ENABLED=False)
+TARGET_DIMINISHING_MULTIPLIER = 0.75  # When diminishing enabled, cap target at this fraction of calculated target (0.75 = 75%)
+# Diminishing Target / Augmenting Stop Configuration
+TARGET_DIMINISHING_ENABLED = False   # Enable diminishing target over time (target → buy_price over max_days)
+STOP_AUGMENTING_ENABLED = True     # Enable trailing stop over time (stop → buy_price over max_days)
 # EXPERIMENTAL FILTERS (currently DISABLED - collecting more data for analysis):
 MAX_WAVE_POSITION = -999  # Maximum (most negative) wave_position to accept (filters strong downtrends) - DISABLED
 MIN_CONSISTENCY = 0.0  # Minimum consistency score (filters inconsistent wave patterns) - DISABLED
@@ -519,7 +523,8 @@ def format_results(df_results):
     return df_display.to_string(index=False)
 
 
-def backtest_signal(ticker, entry_date, buy_price, stop_price, target_price, max_days=40):
+def backtest_signal(ticker, entry_date, buy_price, stop_price, target_price, max_days=40,
+                    target_diminishing_enabled=False, stop_augmenting_enabled=False):
     """
     Backtest a single trading signal by checking if stop or target is hit first.
     
@@ -527,9 +532,11 @@ def backtest_signal(ticker, entry_date, buy_price, stop_price, target_price, max
         ticker: Stock ticker symbol
         entry_date: Entry date string (YYYY-MM-DD)
         buy_price: Entry price
-        stop_price: Stop loss price
-        target_price: Target price
-        max_days: Maximum days to hold (default: 40)
+        stop_price: Stop loss price (original)
+        target_price: Target price (original)
+        max_days: Maximum days to hold (also used for diminishing/augmenting period)
+        target_diminishing_enabled: If True, target diminishes from original_target → buy_price over max_days
+        stop_augmenting_enabled: If True, stop augments from original_stop → buy_price over max_days
     
     Returns:
         dict with results: {'outcome': 'win'|'loss'|'timeout', 'days_held': int, 
@@ -569,9 +576,24 @@ def backtest_signal(ticker, entry_date, buy_price, stop_price, target_price, max
             
             days_held = (row_date_only - entry_date_only).days
             
+            # Calculate adjusted target and stop based on diminishing/augmenting logic
+            if target_diminishing_enabled and days_held <= max_days:
+                # Diminish target linearly from original_target → buy_price over max_days
+                progress = days_held / max_days if max_days > 0 else 1.0
+                current_target = target_price - progress * (target_price - buy_price)
+            else:
+                current_target = target_price
+            
+            if stop_augmenting_enabled and days_held <= max_days:
+                # Augment stop linearly from original_stop → buy_price over max_days
+                progress = days_held / max_days if max_days > 0 else 1.0
+                current_stop = stop_price + progress * (buy_price - stop_price)
+            else:
+                current_stop = stop_price
+            
             # Check if stop was hit (price went below stop) - check first as more conservative
-            if low <= stop_price:
-                exit_price = stop_price
+            if low <= current_stop:
+                exit_price = current_stop
                 return_pct = ((exit_price - buy_price) / buy_price) * 100
                 return {
                     'outcome': 'loss',
@@ -581,8 +603,8 @@ def backtest_signal(ticker, entry_date, buy_price, stop_price, target_price, max
                 }
             
             # Check if target was hit (price went above target)
-            if high >= target_price:
-                exit_price = target_price
+            if high >= current_target:
+                exit_price = current_target
                 return_pct = ((exit_price - buy_price) / buy_price) * 100
                 return {
                     'outcome': 'win',
@@ -696,15 +718,30 @@ def run_backtest(start_date, end_date=None, num_dates=10, max_stocks=None, verbo
             min_stop_price = buy_price * (1 - MIN_STOP_BUFFER_PCT)
             stop_price = min(calculated_stop_price, min_stop_price)  # Use the wider stop
             
-            # Apply maximum target cap for backtesting only (early exit for small wins)
+            # Apply target cap based on TARGET_DIMINISHING_ENABLED setting
             calculated_target_price = target_price
-            max_target_price = buy_price * (1 + MAX_TARGET_PCT)
-            target_price = min(target_price, max_target_price)  # Use the lower target (earlier exit)
+            if not TARGET_DIMINISHING_ENABLED:
+                # Fixed 10% cap when diminishing disabled
+                max_target_price = buy_price * (1 + MAX_TARGET_PCT)
+                target_price = min(target_price, max_target_price)  # Cap at MAX_TARGET_PCT
+            else:
+                # Dynamic cap at TARGET_DIMINISHING_MULTIPLIER of calculated target when diminishing enabled
+                target_gain = target_price - buy_price
+                capped_target_gain = target_gain * TARGET_DIMINISHING_MULTIPLIER
+                target_price = buy_price + capped_target_gain
+            # Note: When TARGET_DIMINISHING_ENABLED=True, diminishing target will then reduce this capped target over time
             
             if verbose:
-                print(f"\n   Testing {ticker}: Buy=${buy_price:.2f}, Stop=${stop_price:.2f} (calc: ${calculated_stop_price:.2f}), Target=${target_price:.2f} (calc: ${calculated_target_price:.2f})")
+                dim_note = " (diminishing)" if TARGET_DIMINISHING_ENABLED else ""
+                aug_note = " (augmenting)" if STOP_AUGMENTING_ENABLED else ""
+                print(f"\n   Testing {ticker}: Buy=${buy_price:.2f}, Stop=${stop_price:.2f}{aug_note} (calc: ${calculated_stop_price:.2f}), Target=${target_price:.2f}{dim_note} (calc: ${calculated_target_price:.2f})")
             
-            result = backtest_signal(ticker, test_date, buy_price, stop_price, target_price)
+            result = backtest_signal(
+                ticker, test_date, buy_price, stop_price, target_price,
+                max_days=40,
+                target_diminishing_enabled=TARGET_DIMINISHING_ENABLED,
+                stop_augmenting_enabled=STOP_AUGMENTING_ENABLED
+            )
             
             result.update({
                 'test_date': test_date,
