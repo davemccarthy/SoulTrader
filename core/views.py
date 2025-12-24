@@ -440,6 +440,10 @@ def holding_history(request, stock_id):
         'change_percent': change_percent,
         'price_class': 'positive' if change_percent >= 0 else 'negative',
         'change_class': 'positive' if change_percent >= 0 else 'negative',
+        'sector': stock.sector or None,
+        'industry': stock.industry or None,
+        'exchange': stock.exchange or None,
+        'beta': float(stock.beta) if stock.beta is not None else None,
     }
 
     # Discovery data (most recent)
@@ -668,16 +672,16 @@ def trades(request):
         pl_amount = data.get('pl_amount')
         realized = data.get('realized', False)
 
+        if pl_amount is not None and pl_amount > 0:
+            pl_class = 'positive'
+        elif pl_amount is not None and pl_amount < 0:
+            pl_class = 'negative'
+        else:
+            pl_class = 'neutral'
+        
         if realized:
-            if pl_amount is not None and pl_amount > 0:
-                pl_class = 'positive'
-            elif pl_amount is not None and pl_amount < 0:
-                pl_class = 'negative'
-            else:
-                pl_class = 'neutral'
             price_class = pl_class
         else:
-            pl_class = 'muted'
             price_class = 'neutral'
 
         # For BUY trades, prefer the specific discovery tied to this SA.

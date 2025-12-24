@@ -624,7 +624,7 @@ Thank you
                 return model, results
 
             except retry_exceptions as e:
-                logger.warning(f"Attempt {attempt + 1}: Service {model} unavailable. {e}. Retrying...")
+                logger.warning(f"Attempt {attempt + 1}: Service {model} unavailable. Retrying...")
                 # Try another model
                 self.gemini_model += 1
                 self.gemini_model %= len(models)

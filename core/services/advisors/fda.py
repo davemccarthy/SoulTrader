@@ -217,15 +217,40 @@ def scrape_fda_approvals_for_date(target_date):
     target_date_str = target_date.strftime("%B ") + str(target_date.day) + target_date.strftime(", %Y")
     headings = tab_content.find_all("h4")
     
+    # First try to find exact match for today
     for heading in headings:
         report_date_str = heading.get_text(strip=True)
         if report_date_str == target_date_str:
             table = heading.find_next("table")
             if table:
+                logger.info("FDA advisor: found approvals for target date %s", target_date_str)
                 return parse_report_table(table, report_date_str)
     
-    # Date not found in report
-    logger.debug("FDA advisor: no approvals found for date %s", target_date_str)
+    # If today's date not found (report may not be updated yet), use most recent date in report
+    # This handles cases where the FDA report is updated later in the day
+    logger.info("FDA advisor: target date %s not found in report, checking most recent date", target_date_str)
+    most_recent_date = None
+    most_recent_table = None
+    
+    for heading in headings:
+        report_date_str = heading.get_text(strip=True)
+        try:
+            report_date = datetime.strptime(report_date_str, "%B %d, %Y").date()
+            # Only consider dates within the last 7 days and not in the future
+            if report_date <= target_date and report_date >= (target_date - timedelta(days=7)):
+                if most_recent_date is None or report_date > most_recent_date:
+                    most_recent_date = report_date
+                    most_recent_table = heading.find_next("table")
+        except ValueError:
+            continue
+    
+    if most_recent_table and most_recent_date:
+        logger.info("FDA advisor: using most recent approvals from %s (target was %s)", 
+                   most_recent_date.strftime("%B %d, %Y"), target_date_str)
+        return parse_report_table(most_recent_table, most_recent_date.strftime("%B %d, %Y"))
+    
+    # No dates found in report
+    logger.warning("FDA advisor: no approvals found for date %s or recent dates in report", target_date_str)
     return []
 
 

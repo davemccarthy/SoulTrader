@@ -152,7 +152,7 @@
                             <div class="holding-value-pair-label">
                                 {% if trade.action == 'BUY' %}OUTGOING ${% else %}INCOMING ${% endif %}
                             </div>
-                            <div class="holding-value-pair-value {{ trade.price_class }}">
+                            <div class="holding-value-pair-value">
                                 {% if trade.action == 'BUY' %}
                                     -${{ trade.cost|floatformat:2 }}
                                 {% else %}
