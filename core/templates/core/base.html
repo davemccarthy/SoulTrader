@@ -1552,15 +1552,30 @@
                     idx = -1;
                 }
 
+                // If exact match not found, try to find the closest date (buy date or later)
                 if (idx === -1) {
-                    idx = priceHistory.length - 1;
+                    try {
+                        const tradeDate = new Date(b.created);
+                        // Find the first price history entry on or after the trade date
+                        idx = priceHistory.findIndex((p) => {
+                            const pDate = new Date(p.date);
+                            return pDate >= tradeDate;
+                        });
+                        // If still not found (trade date is after all price history), skip this buy point
+                        if (idx === -1) {
+                            return null;
+                        }
+                    } catch (e) {
+                        // Skip this buy point if we can't process the date
+                        return null;
+                    }
                 }
 
                 return {
                     x: labels[idx],
                     y: b.price,
                 };
-            });
+            }).filter(Boolean);  // Filter out null entries (buy dates outside price history range)
 
             try {
                 new Chart(ctx, {
