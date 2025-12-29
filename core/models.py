@@ -395,7 +395,11 @@ class SellInstruction(models.Model):
         ("DESCENDING_TREND", 'Descending trend'),
         ("END_WEEK", "End of current week"),
         ("END_DAY", "End of current day"),
-        ("NOT_TRENDING", "No longer trending (low volume)")
+        ("NOT_TRENDING", "No longer trending (low volume)"),
+        ("TARGET_DIMINISHING", "Target Price (Diminishing)"),
+        ("STOP_AUGMENTING", "Stop Loss (Augmenting)"),
+        ("PERCENTAGE_DIMINISHING", "Target Price (Percentage diminishing)"),
+        ("PERCENTAGE_AUGMENTING", "Stop Loss (Percentage augmenting)"),
     ]
 
     discovery = models.ForeignKey(Discovery, on_delete=models.DO_NOTHING)

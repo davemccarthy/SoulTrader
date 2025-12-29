@@ -150,6 +150,9 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # Polygon news (to go)
 #POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "MSVhtqDKV9HyMOdla5UunU2EFs53MweY")
 
+# Oscilla testing - set to date string (YYYY-MM-DD) for testing with historical data
+OSCILLA_TEST_DATE = os.getenv("OSCILLA_TEST_DATE", "2025-01-03")
+
 # API Keys - Must be set via environment variables (.env file)
 # Never commit API keys to the repository!
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")

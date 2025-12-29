@@ -58,6 +58,9 @@ def analyze_holdings(sa, users, advisors):
 
                 # Check sell conditions in priority order
                 try:
+                    # Calculate days_held and buy_price for dynamic instructions
+                    days_held = (timezone.now() - discovery.created).days if discovery.created else 0
+                    buy_price = holding.average_price if holding.average_price else discovery.price
 
                     for instruction in instructions:
                         if instruction.instruction in ['STOP_PRICE', 'STOP_PERCENTAGE']:
@@ -69,6 +72,42 @@ def analyze_holdings(sa, users, advisors):
                             if holding.stock.price >= instruction.value:
                                 execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} reached target price of ${instruction.value:.2f}")
                                 break
+
+                        elif instruction.instruction in ['TARGET_DIMINISHING', 'PERCENTAGE_DIMINISHING']:
+                            # Calculate diminishing target: original_target → buy_price over max_days
+                            max_days = 14  # Constant value
+                            if instruction.value and buy_price:
+                                if days_held <= max_days:
+                                    progress = float(days_held) / float(max_days) if max_days > 0 else 1.0
+                                    original_target = float(instruction.value)
+                                    current_target = original_target - progress * (original_target - float(buy_price))
+                                else:
+                                    current_target = float(buy_price)  # After max_days, target = buy_price (break-even)
+                                
+                                if holding.stock.price >= Decimal(str(current_target)):
+                                    execute_sell(sa, user, profile, holding, 
+                                                f"{holding.stock.symbol} reached diminishing target price of ${current_target:.2f} (day {days_held}/{max_days})")
+                                    break
+                            else:
+                                logger.warning(f"TARGET_DIMINISHING instruction {instruction.id} missing required fields (value or buy_price)")
+
+                        elif instruction.instruction in ['STOP_AUGMENTING', 'PERCENTAGE_AUGMENTING']:
+                            # Calculate augmenting stop: original_stop → buy_price over max_days
+                            max_days = 28  # Constant value longer to allow stock recover
+                            if instruction.value and buy_price:
+                                if days_held <= max_days:
+                                    progress = float(days_held) / float(max_days) if max_days > 0 else 1.0
+                                    original_stop = float(instruction.value)
+                                    current_stop = original_stop + progress * (float(buy_price) - original_stop)
+                                else:
+                                    current_stop = float(buy_price)  # After max_days, stop = buy_price (break-even)
+                                
+                                if holding.stock.price < Decimal(str(current_stop)):
+                                    execute_sell(sa, user, profile, holding, 
+                                                f"{holding.stock.symbol} hit augmenting stop-loss of ${current_stop:.2f} (day {days_held}/{max_days})")
+                                    break
+                            else:
+                                logger.warning(f"STOP_AUGMENTING instruction {instruction.id} missing required fields (value or buy_price)")
 
                         elif instruction.instruction == 'AFTER_DAYS':
                             days_held = (timezone.now() - discovery.created).days
@@ -119,6 +158,10 @@ def analyze_holdings(sa, users, advisors):
 # Discovery new stock
 def analyze_discovery(sa, users, advisors):
     logger.info(f"Analyzing discovery for SA session {sa.id}")
+
+    # Clear Polygon cache at start of discovery run to ensure fresh data
+    from core.services.advisors.advisor import AdvisorBase
+    AdvisorBase.clear_polygon_cache()
 
     # 1. Look for new stock
     for a in advisors:
@@ -206,6 +249,9 @@ def analyze_discovery(sa, users, advisors):
                 f"User {u.username}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "
                 f"(advisor_weight={advisor_weight:.3f}, risk_weight={risk_weight:.3f}, allowance=${allowance:.2f})"
             )
-            
+
+            # Extract first clause from discovery explanation as summary
+            explanation = discovery.explanation.split(" | ")[0].strip() if discovery.explanation else f"Stock health score {health_check.score} exceeded minimum score {min_health}"
+
             # Call execute_buy
-            execute_buy(sa, u, discovery.stock, allowance,f"Stock health score {health_check.score} exceeded minimum score {min_health}")
+            execute_buy(sa, u, discovery.stock, allowance, explanation)
