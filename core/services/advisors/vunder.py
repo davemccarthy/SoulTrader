@@ -3,8 +3,8 @@ Vunder Advisor - The search for undervalued stocks
 
 Based on notional price calculation with comprehensive filtering:
 - Fundamental filters (profit margin, revenue growth, market cap)
-- Trend filters (5-day and 30-day)
-- Average low filter (50-day SMA)
+- Enhanced trend filters (5-day positive momentum, 30-day decline protection)
+- Price structure filters (20-day SMA hybrid, volatility, dollar volume)
 - Undervalued selection (discount ratio threshold)
 """
 import logging
@@ -12,28 +12,38 @@ from decimal import Decimal
 import pandas as pd
 
 import yfinance as yf
-from yfinance.screener import EquityQuery as YfEquityQuery
 
 from core.services.advisors.advisor import AdvisorBase, register
 
 logger = logging.getLogger(__name__)
 
 # Discovery settings
-UNDERVALUED_RATIO_THRESHOLD = 0.70  # Discount threshold (actual/notional <= 0.70)
+UNDERVALUED_RATIO_THRESHOLD = 0.75  # Discount threshold (actual/notional <= 0.75)
 MIN_PROFIT_MARGIN = 0.0
 MAX_YEARLY_LOSS = -50.0
 MIN_MARKET_CAP = 25_000_000
-MAX_RECENT_TREND_PCT = 5.0  # Filter out stocks with >5% gain over last 5 days
 
 # Quality filters (Phase 1)
 MIN_REVENUE_GROWTH = -5.0  # Reject if revenue decline >5%
-MAX_30_DAY_DECLINE = -15.0  # Reject if down >15% in last 30 days
+MAX_30_DAY_DECLINE = -10.0  # Reject if down >10% in last 30 days (stricter)
 
-# Average low filter
-MAX_PRICE_VS_SMA50 = 1.10  # Allow price up to 10% above 50-day SMA (None = disabled)
+# Enhanced price structure filters (ChatGPT recommendations - relaxed)
+MIN_PRICE_VS_SMA20 = 0.90  # Price must be >= 90% of 20-day SMA (relaxed from 95%)
+MAX_PRICE_VS_SMA20 = 1.10  # Price must be <= 110% of 20-day SMA (relaxed from 105%)
+MIN_5_DAY_TREND = -2.0     # Allow slightly negative 5-day trend (relaxed from 0.0)
+MAX_5_DAY_TREND = 5.0      # But not > 5% (avoid extended moves)
 
-# Volume strategy (can be configured)
-DEFAULT_VOLUME_STRATEGY = "high"  # "high" or "low" volume
+# Volume filter (enhanced)
+MIN_20_DAY_DOLLAR_VOLUME = 3_000_000  # $3M average dollar volume (20-day)
+
+# Volatility filter (relaxed)
+MAX_ATR_PCT = 0.07  # ATR(20) / Price <= 7% (relaxed from 5%)
+
+# Daily return spike filter
+MAX_DAILY_RETURN_PCT = 8.0  # |today's return| <= 8% (avoid distorted valuations)
+
+# Old average low filter (50-day SMA) - kept for compatibility, disabled by default
+MAX_PRICE_VS_SMA50 = None  # Set to None to disable, or value like 1.10 to enable
 
 
 class Vunder(AdvisorBase):
@@ -247,65 +257,66 @@ class Vunder(AdvisorBase):
     # STOCK FETCHING
     # ============================================================================
 
-    def _get_active_stocks(self, limit=200, min_volume=None, max_volume=None, sort_volume_asc=False):
+    def _get_active_stocks(self, limit=200, min_volume=None, max_volume=None, sort_volume_asc=False, sa=None):
         """
-        Get stocks from Yahoo Finance with configurable volume filtering.
+        Get stocks from Polygon using base advisor method with price and volume filtering.
         
         Args:
             limit: Maximum number of stocks to return
-            min_volume: Optional minimum daily volume
-            max_volume: Optional maximum daily volume
+            min_volume: Optional minimum daily volume (not used, average volume is calculated)
+            max_volume: Optional maximum daily volume (not used)
             sort_volume_asc: If True, sort by volume ascending (lowest first, for less discovered stocks)
+            sa: SmartAnalysis session (optional, for logging)
         """
         try:
-            most_active_query = YfEquityQuery(
-                "and",
-                [
-                    YfEquityQuery("is-in", ["exchange", "NMS", "NYQ"]),
-                    YfEquityQuery("gt", ["intradayprice", 1.0]),
-                ],
+            # Use base advisor method to fetch stocks from Polygon
+            # Filter by price range: $2 - $18
+            df = self.get_filtered_stocks(
+                sa=sa,
+                min_price=2.0,
+                max_price=18.0,
+                min_volume=None  # We'll filter by average volume below
             )
             
-            max_size = min(limit * 2, 250)
-            response = yf.screen(
-                most_active_query,
-                offset=0,
-                size=max_size,
-                sortField="intradayprice",
-                sortAsc=True,
-            )
+            if df.empty:
+                logger.warning("No stocks returned from Polygon")
+                return []
             
-            quotes = response.get("quotes", [])
+            # Calculate average volume and filter to stocks with at least average volume
+            avg_volume = df['today_volume'].mean()
+            initial_count = len(df)
+            df = df[df['today_volume'] >= avg_volume]
+            
+            if df.empty:
+                logger.warning("No stocks with average or above average volume")
+                return []
+            
+            logger.info(f"Filtered {initial_count} stocks (price $2-$18) to {len(df)} stocks with >= average volume ({avg_volume:,.0f})")
+            
+            # Convert DataFrame to list of dicts (matching original format)
             stocks = []
-            
-            for quote in quotes:
-                symbol = quote.get('symbol')
-                name = quote.get('shortName') or quote.get('longName', 'N/A')
-                price = quote.get('regularMarketPrice') or quote.get('intradayprice')
-                volume = quote.get('volume') or quote.get('regularMarketVolume') or 0
+            for _, row in df.iterrows():
+                # Get company name from yfinance (for display purposes)
+                try:
+                    ticker = yf.Ticker(row['ticker'])
+                    info = ticker.info
+                    name = info.get('shortName') or info.get('longName', 'N/A')
+                except:
+                    name = row['ticker']  # Fallback to ticker if name fetch fails
                 
-                if symbol and price:
-                    stocks.append({
-                        'symbol': symbol,
-                        'name': name,
-                        'price': float(price),
-                        'volume': float(volume) if volume else 0.0,
-                    })
-            
-            # Filter by volume range if specified
-            if min_volume is not None or max_volume is not None:
-                stocks = [
-                    s for s in stocks 
-                    if (min_volume is None or s['volume'] >= min_volume) and
-                       (max_volume is None or s['volume'] <= max_volume)
-                ]
+                stocks.append({
+                    'symbol': row['ticker'],
+                    'name': name,
+                    'price': float(row['price']),
+                    'volume': float(row['today_volume']),
+                })
             
             # Sort by volume (ascending or descending based on param)
             stocks.sort(key=lambda x: x['volume'], reverse=not sort_volume_asc)
             return stocks[:limit]
             
         except Exception as e:
-            logger.warning(f"Error fetching active stocks: {e}")
+            logger.warning(f"Error fetching stocks from Polygon: {e}", exc_info=True)
             return []
 
     # ============================================================================
@@ -330,6 +341,80 @@ class Vunder(AdvisorBase):
             return trend_pct
         except Exception as e:
             logger.debug(f"Could not calculate recent trend for {symbol}: {e}")
+            return None
+
+    def _calculate_sma20(self, symbol):
+        """Calculate 20-day Simple Moving Average."""
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period='30d', interval='1d')
+            
+            if hist.empty or len(hist) < 20:
+                return None
+            
+            sma20 = hist['Close'].rolling(window=20).mean().iloc[-1]
+            return float(sma20) if not pd.isna(sma20) else None
+        except Exception as e:
+            logger.debug(f"Could not calculate SMA20 for {symbol}: {e}")
+            return None
+
+    def _calculate_atr20(self, symbol):
+        """Calculate 20-day Average True Range."""
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period='30d', interval='1d')
+            
+            if hist.empty or len(hist) < 20:
+                return None
+            
+            # Calculate True Range
+            hist['High-Low'] = hist['High'] - hist['Low']
+            hist['High-PrevClose'] = abs(hist['High'] - hist['Close'].shift(1))
+            hist['Low-PrevClose'] = abs(hist['Low'] - hist['Close'].shift(1))
+            hist['TR'] = hist[['High-Low', 'High-PrevClose', 'Low-PrevClose']].max(axis=1)
+            
+            # Calculate 20-day ATR
+            atr20 = hist['TR'].rolling(window=20).mean().iloc[-1]
+            return float(atr20) if not pd.isna(atr20) else None
+        except Exception as e:
+            logger.debug(f"Could not calculate ATR20 for {symbol}: {e}")
+            return None
+
+    def _calculate_20day_dollar_volume(self, symbol):
+        """Calculate 20-day average dollar volume."""
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period='30d', interval='1d')
+            
+            if hist.empty or len(hist) < 20:
+                return None
+            
+            # Calculate dollar volume (price * volume) for each day
+            hist['DollarVolume'] = hist['Close'] * hist['Volume']
+            
+            # Calculate 20-day average
+            avg_dollar_volume = hist['DollarVolume'].tail(20).mean()
+            return float(avg_dollar_volume) if not pd.isna(avg_dollar_volume) else None
+        except Exception as e:
+            logger.debug(f"Could not calculate 20-day dollar volume for {symbol}: {e}")
+            return None
+
+    def _calculate_daily_return(self, symbol):
+        """Calculate today's return percentage."""
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period='2d', interval='1d')
+            
+            if hist.empty or len(hist) < 2:
+                return None
+            
+            prev_close = hist['Close'].iloc[-2]
+            current_close = hist['Close'].iloc[-1]
+            
+            daily_return = ((current_close - prev_close) / prev_close) * 100
+            return float(daily_return)
+        except Exception as e:
+            logger.debug(f"Could not calculate daily return for {symbol}: {e}")
             return None
 
     # ============================================================================
@@ -368,7 +453,7 @@ class Vunder(AdvisorBase):
         return filtered
 
     def _filter_recent_trend(self, results):
-        """Filter out stocks with strong upward trends over recent days."""
+        """Filter for stocks with positive but not extended 5-day momentum (enhanced)."""
         filtered = []
         
         for stock in results:
@@ -379,14 +464,19 @@ class Vunder(AdvisorBase):
             # Calculate trend over last 5 trading days
             trend_pct = self._calculate_recent_trend(symbol, days=5)
             
-            # If we can't calculate trend, include the stock
+            # If we can't calculate trend, include the stock (don't exclude due to data issues)
             if trend_pct is None:
                 filtered.append(stock)
                 continue
             
-            # Filter out stocks with strong upward trends
-            if trend_pct > MAX_RECENT_TREND_PCT:
-                logger.debug(f"Filtered out {symbol} - recent trend too strong: {trend_pct:.2f}%")
+            # Require positive momentum (early turn confirmation) - relaxed to allow slightly negative
+            if trend_pct < MIN_5_DAY_TREND:
+                logger.debug(f"Filtered out {symbol} - negative 5-day trend: {trend_pct:.2f}%")
+                continue
+            
+            # But not too extended
+            if trend_pct > MAX_5_DAY_TREND:
+                logger.debug(f"Filtered out {symbol} - trend too extended: {trend_pct:.2f}%")
                 continue
             
             # Store trend for reference
@@ -407,12 +497,12 @@ class Vunder(AdvisorBase):
             # Calculate trend over last 30 trading days
             trend_pct = self._calculate_recent_trend(symbol, days=30)
             
-            # If we can't calculate trend, include the stock
+            # If we can't calculate trend, include the stock (don't exclude due to data issues)
             if trend_pct is None:
                 filtered.append(stock)
                 continue
             
-            # Filter out stocks with sustained declines
+            # Filter out stocks with sustained declines (stricter: -10% instead of -15%)
             if trend_pct < MAX_30_DAY_DECLINE:
                 logger.debug(f"Filtered out {symbol} - 30-day decline too severe: {trend_pct:.2f}%")
                 continue
@@ -423,8 +513,146 @@ class Vunder(AdvisorBase):
         
         return filtered
 
+    def _filter_price_vs_sma20(self, results):
+        """Hybrid SMA filter: Price >= 90% of 20-day SMA AND <= 110% of 20-day SMA."""
+        filtered = []
+        ratios_below = []
+        ratios_above = []
+        ratios_valid = []
+        no_sma_count = 0
+        
+        for stock in results:
+            symbol = stock.get('symbol')
+            current_price = stock.get('actual_price', 0)
+            
+            if not symbol or not current_price:
+                continue
+            
+            sma20 = self._calculate_sma20(symbol)
+            
+            # If we can't calculate SMA20, include the stock (don't exclude due to data issues)
+            if sma20 is None or sma20 <= 0:
+                no_sma_count += 1
+                filtered.append(stock)
+                continue
+            
+            price_ratio = current_price / sma20
+            
+            # Hybrid: slightly below OK (>= 90%), but not far below, and not extended (<= 110%)
+            if price_ratio < MIN_PRICE_VS_SMA20:
+                ratios_below.append((symbol, price_ratio, current_price, sma20))
+                logger.debug(f"Filtered out {symbol} - too far below 20-day SMA: price=${current_price:.2f}, SMA20=${sma20:.2f}, ratio={price_ratio:.2%}")
+                continue
+            
+            if price_ratio > MAX_PRICE_VS_SMA20:
+                ratios_above.append((symbol, price_ratio, current_price, sma20))
+                logger.debug(f"Filtered out {symbol} - too far above 20-day SMA: price=${current_price:.2f}, SMA20=${sma20:.2f}, ratio={price_ratio:.2%}")
+                continue
+            
+            ratios_valid.append((symbol, price_ratio))
+            filtered.append(stock)
+        
+        # Log summary statistics
+        logger.info(f"SMA20 filter: {len(results)} stocks -> {len(filtered)} passed")
+        logger.info(f"  {no_sma_count} stocks included (no SMA20 data)")
+        logger.info(f"  {len(ratios_below)} stocks filtered (too far below: < {MIN_PRICE_VS_SMA20:.0%})")
+        logger.info(f"  {len(ratios_above)} stocks filtered (too far above: > {MAX_PRICE_VS_SMA20:.0%})")
+        logger.info(f"  {len(ratios_valid)} stocks passed (ratio between {MIN_PRICE_VS_SMA20:.0%} and {MAX_PRICE_VS_SMA20:.0%})")
+        
+        # Log sample of ratios below threshold (first 5)
+        if ratios_below:
+            logger.info(f"Sample stocks below threshold (first 5):")
+            for symbol, ratio, price, sma in ratios_below[:5]:
+                logger.info(f"  {symbol}: price=${price:.2f}, SMA20=${sma:.2f}, ratio={ratio:.2%}")
+        
+        # Log sample of ratios above threshold (first 5)
+        if ratios_above:
+            logger.info(f"Sample stocks above threshold (first 5):")
+            for symbol, ratio, price, sma in ratios_above[:5]:
+                logger.info(f"  {symbol}: price=${price:.2f}, SMA20=${sma:.2f}, ratio={ratio:.2%}")
+        
+        return filtered
+
+    def _filter_dollar_volume(self, results):
+        """Filter by 20-day average dollar volume."""
+        filtered = []
+        
+        for stock in results:
+            symbol = stock.get('symbol')
+            if not symbol:
+                continue
+            
+            avg_dollar_volume = self._calculate_20day_dollar_volume(symbol)
+            
+            # If we can't calculate, include the stock (don't exclude due to data issues)
+            if avg_dollar_volume is None:
+                filtered.append(stock)
+                continue
+            
+            if avg_dollar_volume < MIN_20_DAY_DOLLAR_VOLUME:
+                logger.debug(f"Filtered out {symbol} - dollar volume too low: ${avg_dollar_volume:,.0f}")
+                continue
+            
+            filtered.append(stock)
+        
+        return filtered
+
+    def _filter_volatility(self, results):
+        """Filter by ATR/Price ratio to avoid excessive volatility."""
+        filtered = []
+        
+        for stock in results:
+            symbol = stock.get('symbol')
+            current_price = stock.get('actual_price', 0)
+            
+            if not symbol or not current_price or current_price <= 0:
+                continue
+            
+            atr20 = self._calculate_atr20(symbol)
+            
+            # If we can't calculate ATR, include the stock (don't exclude due to data issues)
+            if atr20 is None or atr20 <= 0:
+                filtered.append(stock)
+                continue
+            
+            atr_pct = atr20 / current_price
+            
+            if atr_pct > MAX_ATR_PCT:
+                logger.debug(f"Filtered out {symbol} - volatility too high: {atr_pct:.2%}")
+                continue
+            
+            filtered.append(stock)
+        
+        return filtered
+
+    def _filter_daily_spikes(self, results):
+        """Filter out stocks with extreme daily return spikes."""
+        filtered = []
+        
+        for stock in results:
+            symbol = stock.get('symbol')
+            if not symbol:
+                continue
+            
+            daily_return = self._calculate_daily_return(symbol)
+            
+            # If we can't calculate, include the stock (don't exclude due to data issues)
+            if daily_return is None:
+                filtered.append(stock)
+                continue
+            
+            abs_return = abs(daily_return)
+            
+            if abs_return > MAX_DAILY_RETURN_PCT:
+                logger.debug(f"Filtered out {symbol} - daily return spike: {daily_return:.2f}%")
+                continue
+            
+            filtered.append(stock)
+        
+        return filtered
+
     def _check_average_low(self, symbol, current_price):
-        """Check if stock is trading near/below its 50-day SMA."""
+        """Check if stock is trading near/below its 50-day SMA (legacy filter, disabled by default)."""
         # If filter is disabled, always return True
         if MAX_PRICE_VS_SMA50 is None:
             return True
@@ -452,7 +680,7 @@ class Vunder(AdvisorBase):
             return True
 
     def _filter_average_low(self, results):
-        """Filter stocks to only include those trading near/below their 50-day average."""
+        """Filter stocks to only include those trading near/below their 50-day average (legacy, disabled by default)."""
         # If filter is disabled, return all results unchanged
         if MAX_PRICE_VS_SMA50 is None:
             return results
@@ -478,11 +706,19 @@ class Vunder(AdvisorBase):
     # ============================================================================
 
     def discover(self, sa):
-        """Discover undervalued stocks using notional price method with comprehensive filters."""
+        """Discover undervalued stocks using notional price method with comprehensive filters.
+        
+        Only runs during the first hour of market open (9:30-10:30 AM ET).
+        """
+        # Check if within first hour of market open
+        market_status = self.market_open()
+        if market_status is None or market_status < 0 or market_status >= 60:
+            logger.info(f"Vunder discovery skipped: outside first hour window (market_status={market_status})")
+            return
+        
         try:
-            # Get stocks (can be configured for high or low volume strategy)
-            # For now, use high volume (can be made configurable later)
-            stocks = self._get_active_stocks(limit=200, sort_volume_asc=False)
+            # Get stocks from Polygon with price filter ($2-$18) and average volume filter
+            stocks = self._get_active_stocks(limit=200, sort_volume_asc=False, sa=sa)
             if not stocks:
                 logger.warning("No active stocks retrieved")
                 return
@@ -531,55 +767,83 @@ class Vunder(AdvisorBase):
                 logger.info("No stocks with notional prices calculated")
                 return
             
-            # Filter by fundamentals
-            fundamental_filtered = self._filter_fundamentals(results)
+            # STEP 1: Filter for undervalued (discount ratio <= threshold) - EARLY FILTER FOR PERFORMANCE
+            undervalued_filtered = [
+                r for r in results 
+                if r['discount_ratio'] <= UNDERVALUED_RATIO_THRESHOLD
+            ]
+            
+            if not undervalued_filtered:
+                logger.info("No undervalued stocks found (ratio <= %.2f)", UNDERVALUED_RATIO_THRESHOLD)
+                return
+            
+            logger.info(f"Early filter: {len(results)} stocks with notional prices -> {len(undervalued_filtered)} undervalued stocks")
+            
+            # STEP 2: Filter by fundamentals
+            fundamental_filtered = self._filter_fundamentals(undervalued_filtered)
             
             if not fundamental_filtered:
                 logger.info("No stocks passed fundamental filters")
                 return
             
-            # Filter out stocks with strong recent upward trends
+            # STEP 3: Filter for stocks with positive but not extended 5-day momentum (enhanced)
             trend_filtered = self._filter_recent_trend(fundamental_filtered)
             
             if not trend_filtered:
                 logger.info("No stocks passed recent trend filter")
                 return
             
-            # Filter out stocks with sustained longer-term declines
+            # STEP 4: Filter out stocks with sustained longer-term declines
             longer_term_filtered = self._filter_longer_term_trend(trend_filtered)
             
             if not longer_term_filtered:
                 logger.info("No stocks passed longer-term trend filter")
                 return
             
-            # Filter for stocks trading near/below average
+            # STEP 5: Filter for stocks trading near/below average (legacy, disabled by default)
             average_low_filtered = self._filter_average_low(longer_term_filtered)
             
             if not average_low_filtered:
                 logger.info("No stocks passed average low filter")
                 return
             
-            # Filter for undervalued (actual/notional <= threshold)
-            undervalued = [
-                r for r in average_low_filtered 
-                if r['discount_ratio'] <= UNDERVALUED_RATIO_THRESHOLD
-            ]
+            # STEP 6: Filter by price vs 20-day SMA (hybrid)
+            sma20_filtered = self._filter_price_vs_sma20(average_low_filtered)
             
-            if not undervalued:
-                logger.info("No undervalued stocks found (ratio <= %.2f)", UNDERVALUED_RATIO_THRESHOLD)
+            if not sma20_filtered:
+                logger.info("No stocks passed 20-day SMA filter")
+                return
+            
+            # STEP 7: Filter by dollar volume
+            dollar_volume_filtered = self._filter_dollar_volume(sma20_filtered)
+            
+            if not dollar_volume_filtered:
+                logger.info("No stocks passed dollar volume filter")
+                return
+            
+            # STEP 8: Filter by volatility (ATR)
+            volatility_filtered = self._filter_volatility(dollar_volume_filtered)
+            
+            if not volatility_filtered:
+                logger.info("No stocks passed volatility filter")
+                return
+            
+            # STEP 9: Filter by daily return spikes
+            final_stocks = self._filter_daily_spikes(volatility_filtered)
+            
+            if not final_stocks:
+                logger.info("No stocks passed daily spike filter")
                 return
 
             # Pass sell instructions - Balanced approach for value discovery
             sell_instructions = [
-                ("TARGET_PERCENTAGE", 1.25),       # 25% gain target
-                ("STOP_PERCENTAGE", 0.95),         # 5% stop loss (wider tolerance)
-                ("AFTER_DAYS", 45.0),              # Exit after 45 days if no progress
-                ('DESCENDING_TREND', -0.25),       # Exit on significant downtrend (-25%)
+                ("PERCENTAGE_DIMINISHING", 1.30),
+                ("PERCENTAGE_AUGMENTING", 0.90),
             ]
             
-            # Discover each undervalued stock
+            # Discover each stock that passed all filters
             discovered = 0
-            for stock in undervalued:
+            for stock in final_stocks:
                 symbol = stock['symbol']
                 current_price = stock['actual_price']
 
@@ -613,4 +877,3 @@ class Vunder(AdvisorBase):
 
 
 register(name="Vunder", python_class="Vunder")
-

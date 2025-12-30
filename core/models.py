@@ -35,25 +35,25 @@ class Profile(models.Model):
     RISK = {
         "CONSERVATIVE": {
             "min_health": 50.0,  # Only top ~20% of your scores
-            "advisors": ['Story', 'Polygon', 'FDA', 'Insider'],
+            "advisors": ['Story', 'FDA', 'Insider'],
             "weight": 1.0,
             "stocks": 50
         },
         "MODERATE": {
             "min_health": 40.0,  # Above average
-            "advisors": ['Story', 'Polygon', 'FDA', 'Insider'],
+            "advisors": ['Story', 'FDA', 'Insider', 'Polygon'],
             "weight": 1.00,
             "stocks": 40
         },
         "AGGRESSIVE": {
             "min_health": 30.0,  # Below average but not bottom
-            "advisors": ['User', 'FDA', 'Insider','Story', 'Polygon'],
+            "advisors": ['User', 'FDA', 'Insider', 'Story', 'Polygon'],
             "weight": 1.25,
             "stocks": 30
         },
         "EXPERIMENTAL": {
-            "min_health": 20.0,
-            "advisors": ['Intraday', 'Flux', 'User', 'Vunder', 'Insider'],  # Intraday momentum advisor for experimental users
+            "min_health": 15.0,
+            "advisors": ['Oscilla', 'Vunder'],
             "weight": 1.0,
             "stocks": 40
         },
@@ -403,7 +403,7 @@ class SellInstruction(models.Model):
     ]
 
     discovery = models.ForeignKey(Discovery, on_delete=models.DO_NOTHING)
-    instruction = models.CharField(max_length=20, choices=choices)
+    instruction = models.CharField(max_length=25, choices=choices)
     value = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
 
 

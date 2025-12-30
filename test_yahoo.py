@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 """
-Test script for the Yahoo advisor's discover() method logic.
+Test script for the Vunder advisor's discover() method logic.
 
-This script tests the actual discovery logic used by the Yahoo advisor:
-- Active stock fetching
+This script tests the actual discovery logic used by the Vunder advisor:
+- Stock fetching from Polygon (price $5-$15, average volume)
 - Notional price calculation (DCF, P/E, EV/EBITDA, etc.)
 - Fundamental filtering
 - Recent trend filtering
@@ -20,13 +20,15 @@ Usage:
 import argparse
 import logging
 import sys
+import os
+from datetime import datetime, timedelta
+import pandas as pd
 
 import yfinance as yf
-from yfinance.screener import EquityQuery as YfEquityQuery
 
 # Constants from yahoo.py
 MAX_PRICE = 5.0
-UNDERVALUED_RATIO_THRESHOLD = 0.70  # Changed from 0.66 to capture more opportunities (e.g., WDH at 31.2% discount)
+UNDERVALUED_RATIO_THRESHOLD = 0.75  # Actual/notional price ratio threshold (allows up to 25% discount)
 MIN_PROFIT_MARGIN = 0.0
 MAX_YEARLY_LOSS = -50.0
 MIN_MARKET_CAP = 25_000_000
@@ -34,75 +36,186 @@ MAX_RECENT_TREND_PCT = 5.0
 
 # Additional quality filters (Phase 1)
 MIN_REVENUE_GROWTH = -5.0  # Reject if revenue decline >5% (catches declining companies)
-MAX_30_DAY_DECLINE = -15.0  # Reject if down >15% in last 30 days (catches sustained declines)
+MAX_30_DAY_DECLINE = -10.0  # Reject if down >10% in last 30 days (stricter - catches sustained declines)
 
-# Average low filter (TEMPORARY - experimental)
-# Set to None to disable, or a value like 1.10 to allow price up to 10% above 50-day SMA
-MAX_PRICE_VS_SMA50 = 1.10  # TEMPORARY: Filter stocks trading >10% above 50-day SMA (None = disabled)
+# Old average low filter (50-day SMA) - kept for compatibility, can be disabled
+MAX_PRICE_VS_SMA50 = None  # Set to None to disable, or value like 1.10 to enable
+
+# Enhanced price structure filters (ChatGPT recommendations - relaxed)
+MIN_PRICE_VS_SMA20 = 0.90  # Price must be >= 90% of 20-day SMA (relaxed from 95%)
+MAX_PRICE_VS_SMA20 = 1.10  # Price must be <= 110% of 20-day SMA (relaxed from 105%)
+MIN_5_DAY_TREND = -2.0     # Allow slightly negative 5-day trend (relaxed from 0.0)
+MAX_5_DAY_TREND = 5.0      # But not > 5% (avoid extended moves)
+
+# Volume filter (enhanced)
+MIN_20_DAY_DOLLAR_VOLUME = 3_000_000  # $3M average dollar volume (20-day)
+
+# Volatility filter (relaxed)
+MAX_ATR_PCT = 0.07  # ATR(20) / Price <= 7% (relaxed from 5%)
+
+# Daily return spike filter
+MAX_DAILY_RETURN_PCT = 8.0  # |today's return| <= 8% (avoid distorted valuations)
 
 logger = logging.getLogger(__name__)
 
 
+def get_last_trading_day(test_date=None):
+    """
+    Get the last trading day (previous business day).
+    Returns date string in YYYY-MM-DD format, or None if invalid.
+    """
+    if test_date:
+        # Parse test date and go back one day
+        test_dt = datetime.strptime(test_date, "%Y-%m-%d").date()
+        previous_day = test_dt - timedelta(days=1)
+        return previous_day.strftime("%Y-%m-%d")
+    
+    today = datetime.now().date()
+    weekday = today.weekday()  # Monday=0, Sunday=6
+    
+    # Only run Tue-Fri (1-4)
+    if weekday == 0:  # Monday
+        logger.info("Skipping discovery on Monday")
+        return None
+    elif weekday >= 5:  # Saturday (5) or Sunday (6)
+        logger.info("Skipping discovery on weekend")
+        return None
+    
+    # Tue-Fri: previous working day is just yesterday
+    previous_day = today - timedelta(days=1)
+    
+    # If yesterday was Sunday, go back to Friday
+    if previous_day.weekday() == 6:  # Yesterday was Sunday
+        previous_day = previous_day - timedelta(days=2)  # Go to Friday
+    # If yesterday was Saturday, go back to Friday
+    elif previous_day.weekday() == 5:  # Yesterday was Saturday
+        previous_day = previous_day - timedelta(days=1)  # Go to Friday
+    
+    return previous_day.strftime("%Y-%m-%d")
+
+
+def fetch_polygon_stocks(reference_date):
+    """
+    Fetch stocks using Polygon's get_grouped_daily_aggs (1 API call for all stocks on a date).
+    
+    Args:
+        reference_date: Date string (YYYY-MM-DD)
+        
+    Returns:
+        pandas DataFrame with columns: ticker, price, today_volume
+        Returns empty DataFrame on error or if no data available
+    """
+    polygon_api_key = os.getenv('POLYGON_API_KEY')
+    
+    if not polygon_api_key:
+        logger.warning("POLYGON_API_KEY not set in environment")
+        return pd.DataFrame()
+    
+    try:
+        from polygon import RESTClient
+        client = RESTClient(polygon_api_key)
+        
+        logger.info(f"Fetching all stocks for {reference_date} using Polygon (1 API call)...")
+        aggs = client.get_grouped_daily_aggs(
+            locale="us",
+            date=reference_date,
+            adjusted=False
+        )
+        
+        rows = []
+        for agg in aggs:
+            rows.append({
+                "ticker": agg.ticker,
+                "price": float(agg.close),
+                "today_volume": int(agg.volume)
+            })
+        
+        df = pd.DataFrame(rows)
+        
+        if not df.empty:
+            logger.info(f"Fetched {len(df)} stocks from Polygon for {reference_date}")
+        else:
+            logger.warning(f"No stocks returned from Polygon for {reference_date} (may be holiday)")
+        
+        return df
+        
+    except Exception as e:
+        logger.error(f"Error fetching stocks from Polygon for {reference_date}: {e}", exc_info=True)
+        return pd.DataFrame()
+
+
 def get_active_stocks(limit=200, min_volume=None, max_volume=None, sort_volume_asc=False):
     """
-    Get stocks from Yahoo Finance with configurable volume filtering (mimics _get_active_stocks).
+    Get stocks from Polygon with price filtering ($2-$18) and average volume filtering.
+    Mimics the updated Vunder advisor logic.
     
     Args:
         limit: Maximum number of stocks to return
-        min_volume: Optional minimum daily volume (filters out illiquid stocks)
-        max_volume: Optional maximum daily volume (filters out over-traded stocks)
+        min_volume: Optional minimum daily volume (not used, average volume is calculated)
+        max_volume: Optional maximum daily volume (not used)
         sort_volume_asc: If True, sort by volume ascending (lowest first, for less discovered stocks).
                         If False, sort descending (highest first, current default behavior)
     """
     try:
-        most_active_query = YfEquityQuery(
-            "and",
-            [
-                YfEquityQuery("is-in", ["exchange", "NMS", "NYQ"]),
-                YfEquityQuery("gt", ["intradayprice", 1.0]),
-            ],
-        )
+        # Get last trading day
+        last_trading_date = get_last_trading_day()
         
-        max_size = min(limit * 2, 250)
-        response = yf.screen(
-            most_active_query,
-            offset=0,
-            size=max_size,
-            sortField="intradayprice",
-            sortAsc=True,
-        )
+        if not last_trading_date:
+            logger.warning("No valid trading date available (Mon/weekend/holiday)")
+            return []
         
-        quotes = response.get("quotes", [])
+        # Fetch from Polygon
+        df = fetch_polygon_stocks(last_trading_date)
+        
+        if df.empty:
+            logger.warning(f"No stocks fetched for {last_trading_date}")
+            return []
+        
+        # Filter by price range: $2 - $18
+        df = df[(df['price'] >= 2.0) & (df['price'] <= 18.0)]
+        
+        if df.empty:
+            logger.warning("No stocks in price range $2-$18")
+            return []
+        
+        initial_count = len(df)
+        
+        # Calculate average volume from price-filtered stocks
+        avg_volume = df['today_volume'].mean()
+        
+        # Filter to stocks with at least average volume
+        df = df[df['today_volume'] >= avg_volume]
+        
+        if df.empty:
+            logger.warning(f"No stocks with >= average volume ({avg_volume:,.0f})")
+            return []
+        
+        print(f"Filtered {initial_count} stocks (price $2-$18) to {len(df)} stocks with >= average volume ({avg_volume:,.0f})")
+        
+        # Convert DataFrame to list of dicts (matching original format)
         stocks = []
-        
-        for quote in quotes:
-            symbol = quote.get('symbol')
-            name = quote.get('shortName') or quote.get('longName', 'N/A')
-            price = quote.get('regularMarketPrice') or quote.get('intradayprice')
-            volume = quote.get('volume') or quote.get('regularMarketVolume') or 0
+        for _, row in df.iterrows():
+            # Get company name from yfinance (for display purposes)
+            try:
+                ticker = yf.Ticker(row['ticker'])
+                info = ticker.info
+                name = info.get('shortName') or info.get('longName', 'N/A')
+            except:
+                name = row['ticker']  # Fallback to ticker if name fetch fails
             
-            if symbol and price:
-                stocks.append({
-                    'symbol': symbol,
-                    'name': name,
-                    'price': float(price),
-                    'volume': float(volume) if volume else 0.0,
-                })
-        
-        # Filter by volume range if specified
-        if min_volume is not None or max_volume is not None:
-            stocks = [
-                s for s in stocks 
-                if (min_volume is None or s['volume'] >= min_volume) and
-                   (max_volume is None or s['volume'] <= max_volume)
-            ]
+            stocks.append({
+                'symbol': row['ticker'],
+                'name': name,
+                'price': float(row['price']),
+                'volume': float(row['today_volume']),
+            })
         
         # Sort by volume (ascending or descending based on param)
         stocks.sort(key=lambda x: x['volume'], reverse=not sort_volume_asc)
         return stocks[:limit]
         
     except Exception as e:
-        logger.warning(f"Error fetching active stocks: {e}")
+        logger.warning(f"Error fetching stocks from Polygon: {e}", exc_info=True)
         return []
 
 
@@ -366,6 +479,84 @@ def calculate_recent_trend(symbol, days=5):
         return None
 
 
+def calculate_sma20(symbol):
+    """Calculate 20-day Simple Moving Average."""
+    try:
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period='30d', interval='1d')
+        
+        if hist.empty or len(hist) < 20:
+            return None
+        
+        sma20 = hist['Close'].rolling(window=20).mean().iloc[-1]
+        return float(sma20) if not pd.isna(sma20) else None
+    except Exception as e:
+        logger.debug(f"Could not calculate SMA20 for {symbol}: {e}")
+        return None
+
+
+def calculate_atr20(symbol):
+    """Calculate 20-day Average True Range."""
+    try:
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period='30d', interval='1d')
+        
+        if hist.empty or len(hist) < 20:
+            return None
+        
+        # Calculate True Range
+        hist['High-Low'] = hist['High'] - hist['Low']
+        hist['High-PrevClose'] = abs(hist['High'] - hist['Close'].shift(1))
+        hist['Low-PrevClose'] = abs(hist['Low'] - hist['Close'].shift(1))
+        hist['TR'] = hist[['High-Low', 'High-PrevClose', 'Low-PrevClose']].max(axis=1)
+        
+        # Calculate 20-day ATR
+        atr20 = hist['TR'].rolling(window=20).mean().iloc[-1]
+        return float(atr20) if not pd.isna(atr20) else None
+    except Exception as e:
+        logger.debug(f"Could not calculate ATR20 for {symbol}: {e}")
+        return None
+
+
+def calculate_20day_dollar_volume(symbol):
+    """Calculate 20-day average dollar volume."""
+    try:
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period='30d', interval='1d')
+        
+        if hist.empty or len(hist) < 20:
+            return None
+        
+        # Calculate dollar volume (price * volume) for each day
+        hist['DollarVolume'] = hist['Close'] * hist['Volume']
+        
+        # Calculate 20-day average
+        avg_dollar_volume = hist['DollarVolume'].tail(20).mean()
+        return float(avg_dollar_volume) if not pd.isna(avg_dollar_volume) else None
+    except Exception as e:
+        logger.debug(f"Could not calculate 20-day dollar volume for {symbol}: {e}")
+        return None
+
+
+def calculate_daily_return(symbol):
+    """Calculate today's return percentage."""
+    try:
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period='2d', interval='1d')
+        
+        if hist.empty or len(hist) < 2:
+            return None
+        
+        prev_close = hist['Close'].iloc[-2]
+        current_close = hist['Close'].iloc[-1]
+        
+        daily_return = ((current_close - prev_close) / prev_close) * 100
+        return float(daily_return)
+    except Exception as e:
+        logger.debug(f"Could not calculate daily return for {symbol}: {e}")
+        return None
+
+
 def filter_fundamentals(results):
     """Filter stocks by fundamental metrics."""
     filtered = []
@@ -399,7 +590,7 @@ def filter_fundamentals(results):
 
 
 def filter_recent_trend(results):
-    """Filter out stocks with strong upward trends over recent days."""
+    """Filter for stocks with positive but not extended 5-day momentum (enhanced)."""
     filtered = []
     
     for stock in results:
@@ -415,10 +606,14 @@ def filter_recent_trend(results):
             filtered.append(stock)
             continue
         
-        # Filter out stocks with strong upward trends (> MAX_RECENT_TREND_PCT)
-        # Keep stocks with flat (0-2%) or slightly positive (2-5%) trends
-        if trend_pct > MAX_RECENT_TREND_PCT:
-            logger.debug(f"Filtered out {symbol} - recent trend too strong: {trend_pct:.2f}%")
+        # Require positive momentum (early turn confirmation)
+        if trend_pct < MIN_5_DAY_TREND:
+            logger.debug(f"Filtered out {symbol} - negative 5-day trend: {trend_pct:.2f}%")
+            continue
+        
+        # But not too extended
+        if trend_pct > MAX_5_DAY_TREND:
+            logger.debug(f"Filtered out {symbol} - trend too extended: {trend_pct:.2f}%")
             continue
         
         # Store trend for reference
@@ -510,6 +705,121 @@ def filter_average_low(results):
             filtered.append(stock)
         else:
             logger.debug(f"Filtered out {symbol} - trading too far above 50-day SMA")
+    
+    return filtered
+
+
+def filter_price_vs_sma20(results):
+    """Hybrid SMA filter: Price >= 95% of 20-day SMA AND <= 105% of 20-day SMA."""
+    filtered = []
+    
+    for stock in results:
+        symbol = stock.get('symbol')
+        current_price = stock.get('actual_price', 0)
+        
+        if not symbol or not current_price:
+            continue
+        
+        sma20 = calculate_sma20(symbol)
+        
+        # If we can't calculate SMA20, include the stock (don't exclude due to data issues)
+        if sma20 is None or sma20 <= 0:
+            filtered.append(stock)
+            continue
+        
+        price_ratio = current_price / sma20
+        
+        # Hybrid: slightly below OK (>= 95%), but not far below, and not extended (<= 105%)
+        if price_ratio < MIN_PRICE_VS_SMA20:
+            logger.debug(f"Filtered out {symbol} - too far below 20-day SMA: {price_ratio:.2f}")
+            continue
+        
+        if price_ratio > MAX_PRICE_VS_SMA20:
+            logger.debug(f"Filtered out {symbol} - too far above 20-day SMA: {price_ratio:.2f}")
+            continue
+        
+        filtered.append(stock)
+    
+    return filtered
+
+
+def filter_dollar_volume(results):
+    """Filter by 20-day average dollar volume."""
+    filtered = []
+    
+    for stock in results:
+        symbol = stock.get('symbol')
+        if not symbol:
+            continue
+        
+        avg_dollar_volume = calculate_20day_dollar_volume(symbol)
+        
+        # If we can't calculate, include the stock (don't exclude due to data issues)
+        if avg_dollar_volume is None:
+            filtered.append(stock)
+            continue
+        
+        if avg_dollar_volume < MIN_20_DAY_DOLLAR_VOLUME:
+            logger.debug(f"Filtered out {symbol} - dollar volume too low: ${avg_dollar_volume:,.0f}")
+            continue
+        
+        filtered.append(stock)
+    
+    return filtered
+
+
+def filter_volatility(results):
+    """Filter by ATR/Price ratio to avoid excessive volatility."""
+    filtered = []
+    
+    for stock in results:
+        symbol = stock.get('symbol')
+        current_price = stock.get('actual_price', 0)
+        
+        if not symbol or not current_price or current_price <= 0:
+            continue
+        
+        atr20 = calculate_atr20(symbol)
+        
+        # If we can't calculate ATR, include the stock (don't exclude due to data issues)
+        if atr20 is None or atr20 <= 0:
+            filtered.append(stock)
+            continue
+        
+        atr_pct = atr20 / current_price
+        
+        if atr_pct > MAX_ATR_PCT:
+            logger.debug(f"Filtered out {symbol} - volatility too high: {atr_pct:.2%}")
+            continue
+        
+        filtered.append(stock)
+    
+    return filtered
+
+
+def filter_daily_spikes(results):
+    """Filter out stocks with extreme daily return spikes."""
+    filtered = []
+    
+    for stock in results:
+        symbol = stock.get('symbol')
+        if not symbol:
+            continue
+        
+        daily_return = calculate_daily_return(symbol)
+        
+        # If we can't calculate, include the stock (don't exclude due to data issues)
+        if daily_return is None:
+            filtered.append(stock)
+            continue
+        
+        abs_return = abs(daily_return)
+        
+        if abs_return > MAX_DAILY_RETURN_PCT:
+            logger.debug(f"Filtered out {symbol} - daily return spike: {daily_return:.2f}%")
+            continue
+        
+        filtered.append(stock)
     
     return filtered
 
@@ -876,7 +1186,7 @@ def test_notional_price_methods(stocks, limit=5):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Test Yahoo advisor discovery logic")
+    parser = argparse.ArgumentParser(description="Test Vunder advisor discovery logic (Polygon)")
     parser.add_argument(
         "--limit",
         type=int,
@@ -924,23 +1234,16 @@ def main():
         format="%(levelname)s %(message)s"
     )
     
-    print("Yahoo Advisor Discovery Pipeline")
+    print("Vunder Advisor Discovery Pipeline")
     print("=" * 60)
     print(f"Testing the actual discover() method logic (no Django, no database)")
+    print(f"Using Polygon API for stock fetching (price $2-$18, average volume)")
     print()
     
-    # STEP 1: Get stocks based on volume strategy
-    volume_strategy = "Low Volume (Less Discovered)" if args.low_volume else "High Volume (Most Active)"
-    print(f"STEP 1: Get Stocks - {volume_strategy}")
+    # STEP 1: Get stocks from Polygon with price and volume filtering
+    print(f"STEP 1: Get Stocks from Polygon")
     print("-" * 60)
-    
-    volume_filters = []
-    if args.min_volume:
-        volume_filters.append(f"min_volume >= {args.min_volume:,}")
-    if args.max_volume:
-        volume_filters.append(f"max_volume <= {args.max_volume:,}")
-    if volume_filters:
-        print(f"Volume filters: {', '.join(volume_filters)}")
+    print(f"Filters: price $2-$18, >= average volume")
     
     stocks = get_active_stocks(
         limit=args.limit,
@@ -952,8 +1255,7 @@ def main():
         print("✗ No active stocks retrieved")
         return
     
-    strategy_desc = "low volume" if args.low_volume else "high volume"
-    print(f"✓ Retrieved {len(stocks)} stocks (sorted by {strategy_desc})")
+    print(f"✓ Retrieved {len(stocks)} stocks (price $2-$18, >= average volume)")
     
     if stocks:
         volumes = [s['volume'] for s in stocks if s['volume'] > 0]
@@ -1017,14 +1319,29 @@ def main():
         print("\n⚠ Pipeline stopped: No stocks with valid notional prices")
         return
     
-    # STEP 3: Filter by fundamentals (profit margin, yearly change, market cap, revenue growth)
-    print(f"\n\nSTEP 3: Filter by Fundamentals")
+    # STEP 3: Filter for undervalued (discount ratio <= threshold) - MOVED EARLY FOR PERFORMANCE
+    print(f"\n\nSTEP 3: Filter by Undervalued Ratio (Early Filter)")
+    print("-" * 60)
+    print(f"Criteria: discount_ratio <= {UNDERVALUED_RATIO_THRESHOLD} (actual/notional <= {UNDERVALUED_RATIO_THRESHOLD})")
+    
+    undervalued_filtered = [
+        r for r in sample_results 
+        if r['discount_ratio'] <= UNDERVALUED_RATIO_THRESHOLD
+    ]
+    print(f"✓ Filtered {len(sample_results)} stocks down to {len(undervalued_filtered)} undervalued stocks")
+    
+    if not undervalued_filtered:
+        print("\n⚠ Pipeline stopped: No undervalued stocks found (ratio <= {:.2f})".format(UNDERVALUED_RATIO_THRESHOLD))
+        return
+    
+    # STEP 4: Filter by fundamentals (profit margin, yearly change, market cap, revenue growth)
+    print(f"\n\nSTEP 4: Filter by Fundamentals")
     print("-" * 60)
     print(f"Criteria: profit_margin >= {MIN_PROFIT_MARGIN:.0%}, yearly_change >= {MAX_YEARLY_LOSS:.1f}%, market_cap >= ${MIN_MARKET_CAP:,.0f}, revenue_growth >= {MIN_REVENUE_GROWTH:.1f}%")
     
     # Show why stocks are failing
     failing_reasons = {'profit_margin': 0, 'yearly_change': 0, 'market_cap': 0, 'revenue_growth': 0}
-    for stock in sample_results:
+    for stock in undervalued_filtered:
         pm = stock.get('profit_margin')
         yc = stock.get('yearly_change_pct', 0) or 0
         mc = stock.get('market_cap', 0) or 0
@@ -1045,8 +1362,8 @@ def main():
     print(f"  Market cap < $25M: {failing_reasons['market_cap']} stocks")
     print(f"  Revenue decline > 5%: {failing_reasons['revenue_growth']} stocks (NEW)")
     
-    fundamental_filtered = filter_fundamentals(sample_results)
-    print(f"\n✓ Filtered {len(sample_results)} stocks down to {len(fundamental_filtered)}")
+    fundamental_filtered = filter_fundamentals(undervalued_filtered)
+    print(f"\n✓ Filtered {len(undervalued_filtered)} stocks down to {len(fundamental_filtered)}")
     
     if fundamental_filtered:
         print(f"\nStocks passing fundamental filters ({len(fundamental_filtered)} stocks):")
@@ -1058,10 +1375,10 @@ def main():
         print("\n⚠ Pipeline stopped: No stocks passed fundamental filters")
         return
     
-    # STEP 4: Filter by recent trend
-    print(f"\n\nSTEP 4: Filter by Recent Trend (5-day)")
+    # STEP 5: Filter by recent trend (enhanced - requires positive momentum)
+    print(f"\n\nSTEP 5: Filter by Recent Trend (5-day) - Enhanced")
     print("-" * 60)
-    print(f"Criteria: recent_5day_trend <= {MAX_RECENT_TREND_PCT:.1f}% (exclude stocks that already ran up)")
+    print(f"Criteria: {MIN_5_DAY_TREND:.1f}% <= 5day_trend <= {MAX_5_DAY_TREND:.1f}% (positive momentum, not extended)")
     
     trend_filtered = filter_recent_trend(fundamental_filtered)
     print(f"✓ Filtered {len(fundamental_filtered)} stocks down to {len(trend_filtered)}")
@@ -1070,8 +1387,8 @@ def main():
         print("\n⚠ Pipeline stopped: No stocks passed recent trend filter")
         return
     
-    # STEP 4b: Filter by longer-term trend (30-day) - Phase 1 filter
-    print(f"\n\nSTEP 4b: Filter by Longer-Term Trend (30-day)")
+    # STEP 5b: Filter by longer-term trend (30-day) - Phase 1 filter
+    print(f"\n\nSTEP 5b: Filter by Longer-Term Trend (30-day)")
     print("-" * 60)
     print(f"Criteria: 30day_trend >= {MAX_30_DAY_DECLINE:.1f}% (exclude stocks with sustained declines)")
     
@@ -1082,9 +1399,9 @@ def main():
         print("\n⚠ Pipeline stopped: No stocks passed longer-term trend filter")
         return
     
-    # STEP 4c: Filter by average low (TEMPORARY - experimental)
+    # STEP 5c: Filter by average low (TEMPORARY - experimental)
     if MAX_PRICE_VS_SMA50 is not None:
-        print(f"\n\nSTEP 4c: Filter by Average Low (50-day SMA) - TEMPORARY")
+        print(f"\n\nSTEP 5c: Filter by Average Low (50-day SMA) - TEMPORARY")
         print("-" * 60)
         print(f"Criteria: price <= {MAX_PRICE_VS_SMA50:.0%} of 50-day SMA (exclude stocks trading too far above average)")
         
@@ -1107,29 +1424,69 @@ def main():
         average_low_filtered = longer_term_filtered
         print(f"\n⚠ Average low filter disabled (MAX_PRICE_VS_SMA50 = None)")
     
-    # STEP 5: Filter for undervalued (discount ratio <= threshold)
-    print(f"\n\nSTEP 5: Select Undervalued Stocks")
+    # STEP 5d: Filter by price vs 20-day SMA (hybrid)
+    print(f"\n\nSTEP 5d: Filter by Price vs 20-day SMA (Hybrid)")
     print("-" * 60)
-    print(f"Criteria: discount_ratio <= {UNDERVALUED_RATIO_THRESHOLD} (actual/notional <= {UNDERVALUED_RATIO_THRESHOLD})")
+    print(f"Criteria: {MIN_PRICE_VS_SMA20:.0%} <= price/SMA20 <= {MAX_PRICE_VS_SMA20:.0%} (slightly below OK, not extended)")
     
-    undervalued_stocks = [
-        r for r in average_low_filtered 
-        if r['discount_ratio'] <= UNDERVALUED_RATIO_THRESHOLD
-    ]
-    print(f"✓ Filtered {len(average_low_filtered)} stocks down to {len(undervalued_stocks)} undervalued stocks")
+    sma20_filtered = filter_price_vs_sma20(average_low_filtered)
+    print(f"✓ Filtered {len(average_low_filtered)} stocks down to {len(sma20_filtered)}")
     
-    if undervalued_stocks:
-        print(f"\n✓ FINAL RESULT: {len(undervalued_stocks)} stock(s) would be discovered:")
+    if not sma20_filtered:
+        print("\n⚠ Pipeline stopped: No stocks passed 20-day SMA filter")
+        return
+    
+    # STEP 5e: Filter by dollar volume
+    print(f"\n\nSTEP 5e: Filter by Dollar Volume")
+    print("-" * 60)
+    print(f"Criteria: 20-day avg dollar volume >= ${MIN_20_DAY_DOLLAR_VOLUME:,.0f}")
+    
+    dollar_volume_filtered = filter_dollar_volume(sma20_filtered)
+    print(f"✓ Filtered {len(sma20_filtered)} stocks down to {len(dollar_volume_filtered)}")
+    
+    if not dollar_volume_filtered:
+        print("\n⚠ Pipeline stopped: No stocks passed dollar volume filter")
+        return
+    
+    # STEP 5f: Filter by volatility (ATR)
+    print(f"\n\nSTEP 5f: Filter by Volatility (ATR)")
+    print("-" * 60)
+    print(f"Criteria: ATR(20) / Price <= {MAX_ATR_PCT:.0%} (avoid excessive volatility)")
+    
+    volatility_filtered = filter_volatility(dollar_volume_filtered)
+    print(f"✓ Filtered {len(dollar_volume_filtered)} stocks down to {len(volatility_filtered)}")
+    
+    if not volatility_filtered:
+        print("\n⚠ Pipeline stopped: No stocks passed volatility filter")
+        return
+    
+    # STEP 5g: Filter by daily return spikes
+    print(f"\n\nSTEP 5g: Filter by Daily Return Spikes")
+    print("-" * 60)
+    print(f"Criteria: |daily_return| <= {MAX_DAILY_RETURN_PCT:.1f}% (avoid distorted valuations)")
+    
+    spike_filtered = filter_daily_spikes(volatility_filtered)
+    print(f"✓ Filtered {len(volatility_filtered)} stocks down to {len(spike_filtered)}")
+    
+    if not spike_filtered:
+        print("\n⚠ Pipeline stopped: No stocks passed daily spike filter")
+        return
+    
+    # Final result (all remaining stocks are already undervalued from Step 3)
+    final_stocks = spike_filtered
+    
+    if final_stocks:
+        print(f"\n✓ FINAL RESULT: {len(final_stocks)} stock(s) would be discovered:")
         print(f"\n{'Symbol':<8} {'Actual':>10} {'Notional':>10} {'Discount':>10} {'Upside':>10} {'Method':<12}")
         print("-" * 70)
-        for stock in undervalued_stocks:
+        for stock in final_stocks:
             discount_pct = (1 - stock['discount_ratio']) * 100
             upside = stock['notional_price'] - stock['actual_price']
             upside_pct = (upside / stock['actual_price']) * 100 if stock['actual_price'] > 0 else 0
             print(f"{stock['symbol']:<8} ${stock['actual_price']:>9.2f} ${stock['notional_price']:>9.2f} "
                   f"{discount_pct:>9.1f}% {upside_pct:>9.1f}% {stock['method']:<12}")
     else:
-        print("\n⚠ Pipeline stopped: No undervalued stocks found")
+        print("\n⚠ Pipeline stopped: No stocks found")
     
     
     print("\n" + "=" * 60)
@@ -1139,12 +1496,17 @@ def main():
     print(f"\nResults:")
     print(f"  Step 1: {len(stocks)} stocks retrieved")
     print(f"  Step 2: {len(sample_results)} stocks with notional prices")
-    print(f"  Step 3: {len(fundamental_filtered) if 'fundamental_filtered' in locals() else 0} stocks passed fundamentals")
-    print(f"  Step 4: {len(trend_filtered) if 'trend_filtered' in locals() else 0} stocks passed 5-day trend filter")
-    print(f"  Step 4b: {len(longer_term_filtered) if 'longer_term_filtered' in locals() else 0} stocks passed 30-day trend filter")
+    print(f"  Step 3: {len(undervalued_filtered) if 'undervalued_filtered' in locals() else 0} stocks passed undervalued ratio (EARLY FILTER)")
+    print(f"  Step 4: {len(fundamental_filtered) if 'fundamental_filtered' in locals() else 0} stocks passed fundamentals")
+    print(f"  Step 5: {len(trend_filtered) if 'trend_filtered' in locals() else 0} stocks passed 5-day trend filter (enhanced)")
+    print(f"  Step 5b: {len(longer_term_filtered) if 'longer_term_filtered' in locals() else 0} stocks passed 30-day trend filter")
     if MAX_PRICE_VS_SMA50 is not None:
-        print(f"  Step 4c: {len(average_low_filtered) if 'average_low_filtered' in locals() else 0} stocks passed average low filter (TEMPORARY)")
-    print(f"  Step 5: {len(undervalued_stocks) if 'undervalued_stocks' in locals() else 0} stocks would be discovered")
+        print(f"  Step 5c: {len(average_low_filtered) if 'average_low_filtered' in locals() else 0} stocks passed average low filter (TEMPORARY)")
+    print(f"  Step 5d: {len(sma20_filtered) if 'sma20_filtered' in locals() else 0} stocks passed 20-day SMA filter (hybrid)")
+    print(f"  Step 5e: {len(dollar_volume_filtered) if 'dollar_volume_filtered' in locals() else 0} stocks passed dollar volume filter")
+    print(f"  Step 5f: {len(volatility_filtered) if 'volatility_filtered' in locals() else 0} stocks passed volatility filter")
+    print(f"  Step 5g: {len(spike_filtered) if 'spike_filtered' in locals() else 0} stocks passed daily spike filter")
+    print(f"  Final: {len(final_stocks) if 'final_stocks' in locals() else 0} stocks would be discovered")
 
 
 if __name__ == "__main__":
