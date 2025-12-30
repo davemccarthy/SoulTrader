@@ -1,7 +1,6 @@
 
 import logging
 import warnings
-import os
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -9,7 +8,6 @@ import pywt
 from datetime import datetime, timedelta
 from scipy.signal import find_peaks
 from decimal import Decimal
-from django.conf import settings
 
 from core.services.advisors.advisor import AdvisorBase, register
 
@@ -52,6 +50,7 @@ MIN_CONSISTENCY = 0.0  # Minimum consistency score (filters inconsistent wave pa
 def get_historical_data_yfinance(ticker, start_date, end_date):
     """
     Get historical data using yfinance (rate-limit friendly).
+    Always replaces the last entry's price with current price from yfinance.
     
     Args:
         ticker: Stock ticker symbol
@@ -85,6 +84,31 @@ def get_historical_data_yfinance(ticker, start_date, end_date):
             "low": hist['Low'].values,
             "volume": hist['Volume'].values
         })
+        
+        # Always replace last entry's price with current price from yfinance
+        # This ensures we use the actual current price for analysis, not just historical closing price
+        try:
+            if len(df) > 0:
+                info = ticker_obj.info
+                current_price = info.get('currentPrice') or info.get('regularMarketPrice')
+                
+                if current_price and current_price > 0:
+                    # Replace the last row's prices with current prices
+                    df.iloc[-1, df.columns.get_loc('close')] = current_price
+                    
+                    # Update high/low if available, otherwise use current_price
+                    current_low = info.get('dayLow') or current_price
+                    current_high = info.get('dayHigh') or current_price
+                    df.iloc[-1, df.columns.get_loc('low')] = current_low
+                    df.iloc[-1, df.columns.get_loc('high')] = current_high
+                    
+                    # Update volume if available
+                    current_volume = info.get('volume')
+                    if current_volume:
+                        df.iloc[-1, df.columns.get_loc('volume')] = current_volume
+        except Exception as e:
+            # If current price fetch fails, continue with historical data only
+            logger.debug(f"Error fetching current price for {ticker}: {e}")
         
         return df.reset_index(drop=True)
     except Exception as e:
@@ -254,17 +278,20 @@ class Oscilla(AdvisorBase):
         Args:
             sa: SmartAnalysis session
         """
+
+        # Check if within first hour of market open
+        market_status = self.market_open()
+        if market_status is None or market_status < 0 or market_status >= 60:
+            logger.info(f"Oscilla discovery skipped: outside first hour window (market_status={market_status})")
+            return
+
         try:
-            # Get environment variable, or settings (for testing)
-            test_date = os.getenv('OSCILLA_TEST_DATE') or getattr(settings, 'OSCILLA_TEST_DATE', None)
-            
             # Get filtered stocks from Polygon (uses cached list)
             df_stocks = AdvisorBase.get_filtered_stocks(
                 sa=sa,
                 min_price=MIN_PRICE,
                 max_price=MAX_PRICE,
-                min_volume=MIN_VOLUME,
-                test_date=test_date
+                min_volume=MIN_VOLUME
             )
             
             if df_stocks.empty:
@@ -273,11 +300,8 @@ class Oscilla(AdvisorBase):
             
             logger.info(f"Oscilla: Analyzing {len(df_stocks)} stocks with wavelet analysis...")
             
-            # Get reference date (use last trading day or test_date)
-            if test_date:
-                last_trading_date = test_date
-            else:
-                last_trading_date = AdvisorBase.get_last_trading_day()
+            # Get reference date (last trading day)
+            last_trading_date = AdvisorBase.get_last_trading_day()
             
             if not last_trading_date:
                 logger.warning("Oscilla: No valid trading date available")
@@ -391,13 +415,13 @@ class Oscilla(AdvisorBase):
                     ]
                     
                     # Create discovery (commented out for testing)
-                    # self.discovered(
-                    #     sa=sa,
-                    #     symbol=ticker,
-                    #     explanation=explanation,
-                    #     sell_instructions=sell_instructions,
-                    #     weight=1.0
-                    # )
+                    self.discovered(
+                        sa=sa,
+                        symbol=ticker,
+                        explanation=explanation,
+                        sell_instructions=sell_instructions,
+                        weight=1.0
+                    )
                     discoveries += 1
                     logger.info(f"Oscilla: Discovered {ticker} - R:R={wave_result['reward_risk']:.2f}, stop=${wave_result['stop']:.2f}, target=${wave_result['target']:.2f}")
                     
