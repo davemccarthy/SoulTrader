@@ -169,11 +169,10 @@ class FDA(AdvisorBase):
                 continue
 
             sell_instructions = [
-                ("TARGET_PERCENTAGE", 1.20),
-                ("STOP_PERCENTAGE", 0.99),
-                ("AFTER_DAYS", 7.0),
-                ('DESCENDING_TREND', -0.20),
-                ('NOT_TRENDING', None)
+                ("PERCENTAGE_DIMINISHING", 1.30, 7),
+                ("STOP_PERCENTAGE", 0.98, None),
+                ('DESCENDING_TREND', -0.20, None),
+                ('NOT_TRENDING', None, None)
             ]
 
             explanation = build_discovery_explanation(approval, score)

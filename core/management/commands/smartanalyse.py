@@ -140,41 +140,6 @@ class Command(BaseCommand):
         else:
             users = list(User.objects.filter(is_active=True, is_superuser=False))
 
-        # Create snapshots for all users at the start of SA
-        today = timezone.now().date()
-        for user in users:
-            try:
-                profile = Profile.objects.get(user=user)
-                cash_value = profile.cash or Decimal('0')
-                
-                # Calculate holdings value (refresh prices first to ensure accuracy)
-                holdings_value = Decimal('0')
-                for holding in Holding.objects.filter(user=user).select_related('stock'):
-                    if holding.stock and holding.shares:
-                        # Refresh stock price to get current market value
-                        holding.stock.refresh()
-                        if holding.stock.price:
-                            holdings_value += holding.stock.price * Decimal(holding.shares)
-                
-                # Calculate Trade P&L percentages
-                trade_cumulative, trade_daily = calculate_trade_pnl_percentages(user, today)
-                
-                # Create snapshot for today (only if it doesn't exist)
-                # get_or_create ensures one snapshot per day - created on first SA run, never updated
-                Snapshot.objects.get_or_create(
-                    user=user,
-                    date=today,
-                    defaults={
-                        'cash_value': cash_value,
-                        'holdings_value': holdings_value,
-                        'trade_cumulative': trade_cumulative,
-                        'trade_daily': trade_daily,
-                    }
-                )
-            except Profile.DoesNotExist:
-                # Skip users without profiles
-                continue
-
         # Session smart analysis
         if not param_resuse:
             sa = SmartAnalysis()
@@ -223,6 +188,41 @@ class Command(BaseCommand):
         sa.duration = timezone.now() - sa.started
         # save we all stats from session : users, trades, buys, sells, spend
         sa.save()
+        
+        # Update snapshots for all users at the end of SA (after trades execute)
+        today = timezone.now().date()
+        for user in users:
+            try:
+                profile = Profile.objects.get(user=user)
+                cash_value = profile.cash or Decimal('0')
+                
+                # Calculate holdings value (refresh prices first to ensure accuracy)
+                holdings_value = Decimal('0')
+                for holding in Holding.objects.filter(user=user).select_related('stock'):
+                    if holding.stock and holding.shares:
+                        # Refresh stock price to get current market value
+                        holding.stock.refresh()
+                        if holding.stock.price:
+                            holdings_value += holding.stock.price * Decimal(holding.shares)
+                
+                # Calculate Trade P&L percentages
+                trade_cumulative, trade_daily = calculate_trade_pnl_percentages(user, today)
+                
+                # Update or create snapshot for today
+                # update_or_create ensures one snapshot per day - created on first SA run, updated on subsequent runs
+                Snapshot.objects.update_or_create(
+                    user=user,
+                    date=today,
+                    defaults={
+                        'cash_value': cash_value,
+                        'holdings_value': holdings_value,
+                        'trade_cumulative': trade_cumulative,
+                        'trade_daily': trade_daily,
+                    }
+                )
+            except Profile.DoesNotExist:
+                # Skip users without profiles
+                continue
         
         self.stdout.write(
             self.style.SUCCESS('Smart Analysis complete!')

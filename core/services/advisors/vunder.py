@@ -837,8 +837,8 @@ class Vunder(AdvisorBase):
 
             # Pass sell instructions - Balanced approach for value discovery
             sell_instructions = [
-                ("PERCENTAGE_DIMINISHING", 1.30),
-                ("PERCENTAGE_AUGMENTING", 0.90),
+                ("PERCENTAGE_DIMINISHING", 1.30, None),
+                ("PERCENTAGE_AUGMENTING", 0.90, None),
             ]
             
             # Discover each stock that passed all filters

@@ -421,10 +421,10 @@ class Flux(AdvisorBase):
             # 3. NOT_TRENDING: exit if volume drops significantly (no value needed)
             # 4. END_WEEK: if up 5% after 7 days the following friday
             sell_instructions = [
-                ("STOP_PERCENTAGE", Decimal(str(STOP_LOSS_MULTIPLIER))),
-                ("TARGET_PRICE", Decimal(str(resistance))),
-                ("NOT_TRENDING", None),
-                ("END_WEEK", 1.05)
+                ("STOP_PERCENTAGE", Decimal(str(STOP_LOSS_MULTIPLIER)), None),
+                ("TARGET_PRICE", Decimal(str(resistance)), None),
+                ("NOT_TRENDING", None, None),
+                ("END_WEEK", 1.05, None)
             ]
             
             # Weight based on pattern score (higher score = higher weight)

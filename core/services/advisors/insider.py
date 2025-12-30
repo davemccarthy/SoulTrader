@@ -703,10 +703,10 @@ class Insider(AdvisorBase):
 
             # Pass sell instructions to siacovery
             sell_instructions = [
-                ("STOP_PERCENTAGE", 0.95),
-                ("TARGET_PERCENTAGE", 1.50),
-                ('DESCENDING_TREND', -0.20),
-                ('NOT_TRENDING', None)
+                ("PERCENTAGE_DIMINISHING", 1.30, 7),
+                ("PERCENTAGE_AUGMENTING", 0.95, 14),
+                ('DESCENDING_TREND', -0.20, None),
+                ('NOT_TRENDING', None, None)
             ]
             
             # Group purchases by ticker

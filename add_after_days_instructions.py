@@ -110,7 +110,7 @@ def run(argv=None):
             instruction = SellInstruction()
             instruction.discovery = discovery
             instruction.instruction = 'AFTER_DAYS'
-            instruction.value = days
+            instruction.value1 = days
             instruction.save()
             
             if verbose:

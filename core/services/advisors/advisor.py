@@ -335,18 +335,25 @@ class AdvisorBase:
             from core.models import SellInstruction
             from decimal import Decimal
 
-            for instruction_type, instruction_value in sell_instructions:
+            for instruction_type, instruction_value, value2 in sell_instructions:
                 instruction = SellInstruction()
                 instruction.discovery = discovery
                 instruction.instruction = instruction_type
 
-                if instruction_type  in ['STOP_PERCENTAGE', 'TARGET_PERCENTAGE','END_DAY', 'PERCENTAGE_DIMINISHING', 'PERCENTAGE_AUGMENTING']:
-                    instruction.value = Decimal(str(stock.price)) * Decimal(str(instruction_value))
-
+                if instruction_type in ['STOP_PERCENTAGE', 'TARGET_PERCENTAGE', 'END_DAY', 'PERCENTAGE_DIMINISHING', 'PERCENTAGE_AUGMENTING']:
+                    # instruction_value is a percentage multiplier
+                    instruction.value1 = Decimal(str(stock.price)) * Decimal(str(instruction_value)) if instruction_value is not None else None
+                elif instruction_type in ['TARGET_DIMINISHING', 'STOP_AUGMENTING']:
+                    # instruction_value is already a price (not percentage)
+                    instruction.value1 = Decimal(str(instruction_value)) if instruction_value is not None else None
                 elif instruction_type == 'NOT_TRENDING':
-                    instruction.value = None
+                    instruction.value1 = None
                 else:
-                    instruction.value = Decimal(str(instruction_value))
+                    # For all other types, instruction_value is the direct value
+                    instruction.value1 = Decimal(str(instruction_value)) if instruction_value is not None else None
+                
+                # Set value2 (max_days for diminishing/augmenting, None for others)
+                instruction.value2 = Decimal(str(value2)) if value2 is not None else None
 
                 instruction.save()
 
@@ -844,10 +851,10 @@ Thank you
 
         # Pass sell instructions to discovery
         sell_instructions = [
-            ("TARGET_PERCENTAGE", 1.50),
-            ("STOP_PERCENTAGE", 0.98),
-            ('DESCENDING_TREND', -0.20),
-            ('NOT_TRENDING', None)
+            ("PERCENTAGE_DIMINISHING", 1.50, 7),
+            ("PERCENTAGE_AUGMENTING", 0.95, 21),
+            ('DESCENDING_TREND', -0.20, None),
+            ('NOT_TRENDING', None, None)
         ]
 
         # Ask AI for opinion

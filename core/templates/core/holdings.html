@@ -343,21 +343,15 @@ window.detailPanelRenderer = function(data) {
             'TARGET_PERCENTAGE': '🎯',
             'AFTER_DAYS': '📅',
             'DESCENDING_TREND': '📉',
-        };
-
-        const instructionLabels = {
-            'STOP_LOSS': 'STOP LOSS',
-            'STOP_PRICE': 'STOP PRICE',
-            'STOP_PERCENTAGE': 'STOP %',
-            'TARGET_PRICE': 'TARGET PRICE',
-            'TARGET_PERCENTAGE': 'TARGET %',
-            'AFTER_DAYS': 'AFTER DAYS',
-            'DESCENDING_TREND': 'DESCENDING TREND',
+            'TARGET_DIMINISHING': '🎯',
+            'PERCENTAGE_DIMINISHING': '🎯',
+            'STOP_AUGMENTING': '🛑',
+            'PERCENTAGE_AUGMENTING': '🛑',
         };
 
         const entries = sellInstructions.map((inst) => {
             const emoji = instructionEmojis[inst.instruction] || '📌';
-            const label = instructionLabels[inst.instruction] || inst.instruction;
+            const label = inst.description || inst.instruction;
             let valueDisplay = '';
             let extraInfo = '';
 
@@ -386,6 +380,16 @@ window.detailPanelRenderer = function(data) {
                 if (inst.current_trend != null) {
                     const diff = inst.current_trend - inst.value;
                     extraInfo = ` (Current trend: ${(inst.current_trend * 100).toFixed(1)}%, ${diff >= 0 ? '+' : ''}${(diff * 100).toFixed(1)}% from threshold)`;
+                }
+            } else if (['TARGET_DIMINISHING', 'PERCENTAGE_DIMINISHING'].includes(inst.instruction) && inst.value != null) {
+                valueDisplay = formatCurrency(inst.value);
+                if (inst.max_days != null) {
+                    extraInfo = ` (diminishes over ${inst.max_days} days)`;
+                }
+            } else if (['STOP_AUGMENTING', 'PERCENTAGE_AUGMENTING'].includes(inst.instruction) && inst.value != null) {
+                valueDisplay = formatCurrency(inst.value);
+                if (inst.max_days != null) {
+                    extraInfo = ` (augments over ${inst.max_days} days)`;
                 }
             }
 

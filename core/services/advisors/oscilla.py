@@ -410,8 +410,8 @@ class Oscilla(AdvisorBase):
                     
                     # Create sell instructions for stop and target prices
                     sell_instructions = [
-                        ("STOP_PERCENTAGE", 0.9),
-                        ("TARGET_DIMINISHING", Decimal(str(wave_result['target']))),
+                        ("STOP_PERCENTAGE", 0.9, None),
+                        ("TARGET_DIMINISHING", Decimal(str(wave_result['target'])), 7),
                     ]
                     
                     # Create discovery (commented out for testing)

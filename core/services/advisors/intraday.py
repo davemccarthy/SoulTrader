@@ -285,9 +285,9 @@ class Intraday(AdvisorBase):
             take_profit_price = discovery_data['take_profit_price']
             
             sell_instructions = [
-                ("STOP_PRICE", stop_loss_price),  # Actual dollar price
-                ("TARGET_PRICE", take_profit_price),  # Actual dollar price
-                ("END_DAY", 1.0),  # Sell at EOD if P&L >= 0.0% (sell any winner at end of day)
+                ("STOP_PRICE", stop_loss_price, None),  # Actual dollar price
+                ("TARGET_PRICE", take_profit_price, None),  # Actual dollar price
+                ("END_DAY", 1.0, None),  # Sell at EOD if P&L >= 0.0% (sell any winner at end of day)
             ]
             
             # Create discovery

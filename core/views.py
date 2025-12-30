@@ -296,34 +296,45 @@ def holding_detail(request, stock_id):
             
             # Get sell instructions for this discovery
             instructions = SellInstruction.objects.filter(discovery=discovery).order_by('id')
+            instruction_choices = dict(SellInstruction.choices)
             sell_instructions = []
             for instruction in instructions:
                 instruction_data = {
                     'instruction': instruction.instruction,
-                    'value': float(instruction.value) if instruction.value is not None else None,
+                    'description': instruction_choices.get(instruction.instruction, instruction.instruction),
+                    'value': float(instruction.value1) if instruction.value1 is not None else None,
+                    'value2': float(instruction.value2) if instruction.value2 is not None else None,
                 }
                 
                 # Add status/context for each instruction type
-                if instruction.instruction in ['STOP_LOSS', 'STOP_PERCENTAGE', 'STOP_PRICE'] and instruction.value:
-                    instruction_data['status'] = 'active' if current_price <= instruction.value else 'pending'
+                if instruction.instruction in ['STOP_LOSS', 'STOP_PERCENTAGE', 'STOP_PRICE'] and instruction.value1:
+                    instruction_data['status'] = 'active' if current_price <= instruction.value1 else 'pending'
                     instruction_data['current_price'] = float(current_price)
-                elif instruction.instruction in ['TARGET_PRICE', 'TARGET_PERCENTAGE'] and instruction.value:
-                    instruction_data['status'] = 'active' if current_price >= instruction.value else 'pending'
+                elif instruction.instruction in ['TARGET_PRICE', 'TARGET_PERCENTAGE'] and instruction.value1:
+                    instruction_data['status'] = 'active' if current_price >= instruction.value1 else 'pending'
                     instruction_data['current_price'] = float(current_price)
-                elif instruction.instruction == 'AFTER_DAYS' and instruction.value:
+                elif instruction.instruction == 'AFTER_DAYS' and instruction.value1:
                     days_held = (timezone.now() - discovery.created).days
                     instruction_data['days_held'] = days_held
-                    instruction_data['status'] = 'active' if days_held >= instruction.value else 'pending'
-                elif instruction.instruction == 'DESCENDING_TREND' and instruction.value is not None:
+                    instruction_data['status'] = 'active' if days_held >= int(instruction.value1) else 'pending'
+                elif instruction.instruction == 'DESCENDING_TREND' and instruction.value1 is not None:
                     # DESCENDING_TREND value is a threshold (e.g., -0.20 means sell if trend < -0.20)
-                    instruction_data['value'] = float(instruction.value)
+                    instruction_data['value'] = float(instruction.value1)
                     instruction_data['status'] = 'pending'  # Status determined during analysis
 
                     trend = holding.stock.calc_trend()
 
                     if trend is not None:
                         instruction_data['current_trend'] = float(trend)
-                        instruction_data['status'] = 'active' if trend < instruction.value else 'pending'
+                        instruction_data['status'] = 'active' if trend < instruction.value1 else 'pending'
+                elif instruction.instruction in ['TARGET_DIMINISHING', 'PERCENTAGE_DIMINISHING'] and instruction.value1:
+                    # value1 = original target price, value2 = max_days
+                    instruction_data['max_days'] = int(instruction.value2) if instruction.value2 is not None else 14
+                    instruction_data['status'] = 'pending'  # Status determined during analysis
+                elif instruction.instruction in ['STOP_AUGMENTING', 'PERCENTAGE_AUGMENTING'] and instruction.value1:
+                    # value1 = original stop price, value2 = max_days
+                    instruction_data['max_days'] = int(instruction.value2) if instruction.value2 is not None else 28
+                    instruction_data['status'] = 'pending'  # Status determined during analysis
                 
                 sell_instructions.append(instruction_data)
             trade_payload['sell_instructions'] = sell_instructions
@@ -490,28 +501,37 @@ def holding_history(request, stock_id):
             instruction_data = {
                 'instruction': instruction.instruction,
                 'description': instruction_choices.get(instruction.instruction, instruction.instruction),
-                'value': float(instruction.value) if instruction.value is not None else None,
+                'value': float(instruction.value1) if instruction.value1 is not None else None,
+                'value2': float(instruction.value2) if instruction.value2 is not None else None,
             }
             
             # Add status/context for each instruction type
-            if instruction.instruction in ['STOP_PRICE', 'STOP_PERCENTAGE'] and instruction.value:
-                instruction_data['status'] = 'active' if current_price <= instruction.value else 'pending'
+            if instruction.instruction in ['STOP_PRICE', 'STOP_PERCENTAGE'] and instruction.value1:
+                instruction_data['status'] = 'active' if current_price <= instruction.value1 else 'pending'
                 instruction_data['current_price'] = float(current_price)
-            elif instruction.instruction in ['TARGET_PRICE', 'TARGET_PERCENTAGE'] and instruction.value:
-                instruction_data['status'] = 'active' if current_price >= instruction.value else 'pending'
+            elif instruction.instruction in ['TARGET_PRICE', 'TARGET_PERCENTAGE'] and instruction.value1:
+                instruction_data['status'] = 'active' if current_price >= instruction.value1 else 'pending'
                 instruction_data['current_price'] = float(current_price)
-            elif instruction.instruction == 'AFTER_DAYS' and instruction.value:
+            elif instruction.instruction == 'AFTER_DAYS' and instruction.value1:
                 days_held = (timezone.now() - discovery_obj.created).days
                 instruction_data['days_held'] = days_held
-                instruction_data['status'] = 'active' if days_held >= instruction.value else 'pending'
-            elif instruction.instruction == 'DESCENDING_TREND' and instruction.value is not None:
-                instruction_data['value'] = float(instruction.value)
+                instruction_data['status'] = 'active' if days_held >= int(instruction.value1) else 'pending'
+            elif instruction.instruction == 'DESCENDING_TREND' and instruction.value1 is not None:
+                instruction_data['value'] = float(instruction.value1)
                 trend = stock.calc_trend()
                 if trend is not None:
                     instruction_data['current_trend'] = float(trend)
-                    instruction_data['status'] = 'active' if trend < instruction.value else 'pending'
+                    instruction_data['status'] = 'active' if trend < instruction.value1 else 'pending'
                 else:
                     instruction_data['status'] = 'pending'
+            elif instruction.instruction in ['TARGET_DIMINISHING', 'PERCENTAGE_DIMINISHING'] and instruction.value1:
+                # value1 = original target price, value2 = max_days
+                instruction_data['max_days'] = int(instruction.value2) if instruction.value2 is not None else 14
+                instruction_data['status'] = 'pending'  # Status determined during analysis
+            elif instruction.instruction in ['STOP_AUGMENTING', 'PERCENTAGE_AUGMENTING'] and instruction.value1:
+                # value1 = original stop price, value2 = max_days
+                instruction_data['max_days'] = int(instruction.value2) if instruction.value2 is not None else 28
+                instruction_data['status'] = 'pending'  # Status determined during analysis
             
             sell_instructions.append(instruction_data)
 

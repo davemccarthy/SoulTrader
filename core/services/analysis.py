@@ -64,22 +64,23 @@ def analyze_holdings(sa, users, advisors):
 
                     for instruction in instructions:
                         if instruction.instruction in ['STOP_PRICE', 'STOP_PERCENTAGE']:
-                            if holding.stock.price < instruction.value:
-                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} fell to stop-loss of ${instruction.value:.2f}")
+                            if instruction.value1 and holding.stock.price < instruction.value1:
+                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} fell to stop-loss of ${instruction.value1:.2f}")
                                 break
 
                         elif instruction.instruction in ['TARGET_PRICE', 'TARGET_PERCENTAGE']:
-                            if holding.stock.price >= instruction.value:
-                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} reached target price of ${instruction.value:.2f}")
+                            if instruction.value1 and holding.stock.price >= instruction.value1:
+                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} reached target price of ${instruction.value1:.2f}")
                                 break
 
                         elif instruction.instruction in ['TARGET_DIMINISHING', 'PERCENTAGE_DIMINISHING']:
                             # Calculate diminishing target: original_target → buy_price over max_days
-                            max_days = 14  # Constant value
-                            if instruction.value and buy_price:
+                            # value1 = original target price, value2 = max_days
+                            if instruction.value1 and buy_price:
+                                max_days = int(instruction.value2) if instruction.value2 is not None else 14
                                 if days_held <= max_days:
                                     progress = float(days_held) / float(max_days) if max_days > 0 else 1.0
-                                    original_target = float(instruction.value)
+                                    original_target = float(instruction.value1)
                                     current_target = original_target - progress * (original_target - float(buy_price))
                                 else:
                                     current_target = float(buy_price)  # After max_days, target = buy_price (break-even)
@@ -89,15 +90,16 @@ def analyze_holdings(sa, users, advisors):
                                                 f"{holding.stock.symbol} reached diminishing target price of ${current_target:.2f} (day {days_held}/{max_days})")
                                     break
                             else:
-                                logger.warning(f"TARGET_DIMINISHING instruction {instruction.id} missing required fields (value or buy_price)")
+                                logger.warning(f"TARGET_DIMINISHING instruction {instruction.id} missing required fields (value1 or buy_price)")
 
                         elif instruction.instruction in ['STOP_AUGMENTING', 'PERCENTAGE_AUGMENTING']:
                             # Calculate augmenting stop: original_stop → buy_price over max_days
-                            max_days = 28  # Constant value longer to allow stock recover
-                            if instruction.value and buy_price:
+                            # value1 = original stop price, value2 = max_days
+                            if instruction.value1 and buy_price:
+                                max_days = int(instruction.value2) if instruction.value2 is not None else 28
                                 if days_held <= max_days:
                                     progress = float(days_held) / float(max_days) if max_days > 0 else 1.0
-                                    original_stop = float(instruction.value)
+                                    original_stop = float(instruction.value1)
                                     current_stop = original_stop + progress * (float(buy_price) - original_stop)
                                 else:
                                     current_stop = float(buy_price)  # After max_days, stop = buy_price (break-even)
@@ -107,19 +109,19 @@ def analyze_holdings(sa, users, advisors):
                                                 f"{holding.stock.symbol} hit augmenting stop-loss of ${current_stop:.2f} (day {days_held}/{max_days})")
                                     break
                             else:
-                                logger.warning(f"STOP_AUGMENTING instruction {instruction.id} missing required fields (value or buy_price)")
+                                logger.warning(f"STOP_AUGMENTING instruction {instruction.id} missing required fields (value1 or buy_price)")
 
                         elif instruction.instruction == 'AFTER_DAYS':
                             days_held = (timezone.now() - discovery.created).days
-                            if days_held >= instruction.value:
-                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} after holding for {days_held} days (target: {instruction.value} days)")
+                            if instruction.value1 and days_held >= int(instruction.value1):
+                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} after holding for {days_held} days (target: {int(instruction.value1)} days)")
                                 break
 
                         elif instruction.instruction == 'DESCENDING_TREND':
                             trend = holding.stock.calc_trend(hours=2)
 
-                            if trend and trend < instruction.value:
-                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} descending detected of ${instruction.value:.2f}")
+                            if instruction.value1 and trend and trend < instruction.value1:
+                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} descending detected of ${instruction.value1:.2f}")
                                 break
 
                         elif instruction.instruction == 'NOT_TRENDING':
@@ -129,8 +131,8 @@ def analyze_holdings(sa, users, advisors):
                                 break
 
                         elif instruction.instruction == 'END_DAY' and end_day:
-                            if holding.stock.price >= instruction.value:
-                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} end of day sell target: ${instruction.value:.2f}")
+                            if instruction.value1 and holding.stock.price >= instruction.value1:
+                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} end of day sell target: ${instruction.value1:.2f}")
                                 break
 
                         elif instruction.instruction == 'END_WEEK' and end_week:
@@ -138,10 +140,10 @@ def analyze_holdings(sa, users, advisors):
                             if holding.created:
                                 days_held = (timezone.now() - holding.created).days
                                 if days_held >= 7:
-                                    if holding.stock.price >= instruction.value:
+                                    if instruction.value1 and holding.stock.price >= instruction.value1:
                                         execute_sell(
                                             sa, user, profile, holding,
-                                            f"{holding.stock.symbol} end of week sell target: ${instruction.value:.2f} (held {days_held} days)"
+                                            f"{holding.stock.symbol} end of week sell target: ${instruction.value1:.2f} (held {days_held} days)"
                                         )
                                         break
                             # If holding.created is None, skip END_WEEK (edge case - no BUY trade found)

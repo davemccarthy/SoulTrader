@@ -1839,6 +1839,16 @@
                         const diff = inst.current_trend - inst.value;
                         extraInfo = ` (Current trend: ${(inst.current_trend * 100).toFixed(1)}%, ${diff >= 0 ? '+' : ''}${(diff * 100).toFixed(1)}% from threshold)`;
                     }
+                } else if (['TARGET_DIMINISHING', 'PERCENTAGE_DIMINISHING'].includes(inst.instruction) && inst.value != null) {
+                    valueDisplay = formatCurrency(inst.value);
+                    if (inst.max_days != null) {
+                        extraInfo = ` (diminishes over ${inst.max_days} days)`;
+                    }
+                } else if (['STOP_AUGMENTING', 'PERCENTAGE_AUGMENTING'].includes(inst.instruction) && inst.value != null) {
+                    valueDisplay = formatCurrency(inst.value);
+                    if (inst.max_days != null) {
+                        extraInfo = ` (augments over ${inst.max_days} days)`;
+                    }
                 }
 
                 const statusIndicator = inst.status === 'active' ? ' ⚠️ TRIGGERED' : '';

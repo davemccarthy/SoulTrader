@@ -404,7 +404,9 @@ class SellInstruction(models.Model):
 
     discovery = models.ForeignKey(Discovery, on_delete=models.DO_NOTHING)
     instruction = models.CharField(max_length=25, choices=choices)
-    value = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    value = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)  # Keep temporarily, can be removed later
+    value1 = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, help_text='Primary value (price, percentage, days, threshold, etc.)')
+    value2 = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, help_text='Secondary value (e.g., max_days for diminishing/augmenting instructions)')
 
 
 # Recommendation for advisors
