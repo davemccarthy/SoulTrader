@@ -1,13 +1,14 @@
 #!/usr/bin/env python
 """
-Test script for the Vunder advisor's discover() method logic.
+Test script for the Vunder advisor's discover() method logic (SIMPLIFIED VERSION).
 
-This script tests the actual discovery logic used by the Vunder advisor:
-- Stock fetching from Polygon (price $5-$15, average volume)
+This script tests a simplified discovery logic:
+- Stock fetching from Polygon (price $2-$18, average volume)
 - Notional price calculation (DCF, P/E, EV/EBITDA, etc.)
-- Fundamental filtering
-- Recent trend filtering
-- Undervalued stock selection
+- Undervalued ratio filter (actual/notional <= 0.70)
+- Profit margin filter (>= 0% - profitable or break-even only)
+
+All other filters (trends, SMA, volume, volatility) are disabled for testing.
 
 This version mimics the logic without using AdvisorBase to avoid Django dependencies.
 
@@ -28,7 +29,7 @@ import yfinance as yf
 
 # Constants from yahoo.py
 MAX_PRICE = 5.0
-UNDERVALUED_RATIO_THRESHOLD = 0.75  # Actual/notional price ratio threshold (allows up to 25% discount)
+UNDERVALUED_RATIO_THRESHOLD = 0.70  # Actual/notional price ratio threshold (allows up to 30% discount)
 MIN_PROFIT_MARGIN = 0.0
 MAX_YEARLY_LOSS = -50.0
 MIN_MARKET_CAP = 25_000_000
@@ -558,30 +559,14 @@ def calculate_daily_return(symbol):
 
 
 def filter_fundamentals(results):
-    """Filter stocks by fundamental metrics."""
+    """Filter stocks by profit margin only (simplified for testing)."""
     filtered = []
     
     for stock in results:
         profit_margin = stock.get('profit_margin')
-        yearly_change = stock.get('yearly_change_pct', 0) or 0
-        market_cap = stock.get('market_cap', 0) or 0
-        revenue_growth = stock.get('revenue_growth')
         
         # Check profit margin - None means missing data (unprofitable companies often have None)
         if profit_margin is None or profit_margin < MIN_PROFIT_MARGIN:
-            continue
-        
-        # Check yearly loss
-        if yearly_change < MAX_YEARLY_LOSS:
-            continue
-        
-        # Check market cap
-        if market_cap < MIN_MARKET_CAP:
-            continue
-        
-        # Check revenue growth - reject if revenue declining >5% (Phase 1 filter)
-        if revenue_growth is not None and revenue_growth < MIN_REVENUE_GROWTH:
-            logger.debug(f"Filtered out {stock.get('symbol', 'unknown')} - revenue declining: {revenue_growth:.2f}%")
             continue
         
         filtered.append(stock)
@@ -1190,8 +1175,8 @@ def parse_args():
     parser.add_argument(
         "--limit",
         type=int,
-        default=20,
-        help="Limit for active stocks test (default: 20)"
+        default=1000,
+        help="Limit for active stocks test (default: 1000 - weekly process needs more coverage)"
     )
     parser.add_argument(
         "--symbol",
@@ -1334,146 +1319,25 @@ def main():
         print("\n⚠ Pipeline stopped: No undervalued stocks found (ratio <= {:.2f})".format(UNDERVALUED_RATIO_THRESHOLD))
         return
     
-    # STEP 4: Filter by fundamentals (profit margin, yearly change, market cap, revenue growth)
-    print(f"\n\nSTEP 4: Filter by Fundamentals")
+    # STEP 4: Filter by profit margin only (simplified for testing)
+    print(f"\n\nSTEP 4: Filter by Profit Margin")
     print("-" * 60)
-    print(f"Criteria: profit_margin >= {MIN_PROFIT_MARGIN:.0%}, yearly_change >= {MAX_YEARLY_LOSS:.1f}%, market_cap >= ${MIN_MARKET_CAP:,.0f}, revenue_growth >= {MIN_REVENUE_GROWTH:.1f}%")
+    print(f"Criteria: profit_margin >= {MIN_PROFIT_MARGIN:.0%} (profitable or break-even companies only)")
     
-    # Show why stocks are failing
-    failing_reasons = {'profit_margin': 0, 'yearly_change': 0, 'market_cap': 0, 'revenue_growth': 0}
-    for stock in undervalued_filtered:
-        pm = stock.get('profit_margin')
-        yc = stock.get('yearly_change_pct', 0) or 0
-        mc = stock.get('market_cap', 0) or 0
-        rg = stock.get('revenue_growth')
-        
-        if pm is None or pm < MIN_PROFIT_MARGIN:
-            failing_reasons['profit_margin'] += 1
-        if yc < MAX_YEARLY_LOSS:
-            failing_reasons['yearly_change'] += 1
-        if mc < MIN_MARKET_CAP:
-            failing_reasons['market_cap'] += 1
-        if rg is not None and rg < MIN_REVENUE_GROWTH:
-            failing_reasons['revenue_growth'] += 1
-    
-    print(f"\nFailure reasons (stocks can fail multiple criteria):")
-    print(f"  Profit margin < 0%: {failing_reasons['profit_margin']} stocks")
-    print(f"  Yearly loss > 50%: {failing_reasons['yearly_change']} stocks")
-    print(f"  Market cap < $25M: {failing_reasons['market_cap']} stocks")
-    print(f"  Revenue decline > 5%: {failing_reasons['revenue_growth']} stocks (NEW)")
+    # Count how many fail profit margin check
+    profit_margin_failures = sum(1 for stock in undervalued_filtered 
+                                 if stock.get('profit_margin') is None or stock.get('profit_margin') < MIN_PROFIT_MARGIN)
+    print(f"  Stocks failing profit margin check: {profit_margin_failures}")
     
     fundamental_filtered = filter_fundamentals(undervalued_filtered)
     print(f"\n✓ Filtered {len(undervalued_filtered)} stocks down to {len(fundamental_filtered)}")
     
-    if fundamental_filtered:
-        print(f"\nStocks passing fundamental filters ({len(fundamental_filtered)} stocks):")
-        for stock in fundamental_filtered:
-            pm_str = f"{stock['profit_margin']:.2%}" if stock['profit_margin'] is not None else "N/A"
-            print(f"  {stock['symbol']:<6} margin={pm_str:>7}, yearly={stock['yearly_change_pct']:>6.1f}%, "
-                  f"mcap=${stock['market_cap']:>12,.0f}")
-    else:
-        print("\n⚠ Pipeline stopped: No stocks passed fundamental filters")
+    if not fundamental_filtered:
+        print("\n⚠ Pipeline stopped: No stocks passed profit margin filter")
         return
     
-    # STEP 5: Filter by recent trend (enhanced - requires positive momentum)
-    print(f"\n\nSTEP 5: Filter by Recent Trend (5-day) - Enhanced")
-    print("-" * 60)
-    print(f"Criteria: {MIN_5_DAY_TREND:.1f}% <= 5day_trend <= {MAX_5_DAY_TREND:.1f}% (positive momentum, not extended)")
-    
-    trend_filtered = filter_recent_trend(fundamental_filtered)
-    print(f"✓ Filtered {len(fundamental_filtered)} stocks down to {len(trend_filtered)}")
-    
-    if not trend_filtered:
-        print("\n⚠ Pipeline stopped: No stocks passed recent trend filter")
-        return
-    
-    # STEP 5b: Filter by longer-term trend (30-day) - Phase 1 filter
-    print(f"\n\nSTEP 5b: Filter by Longer-Term Trend (30-day)")
-    print("-" * 60)
-    print(f"Criteria: 30day_trend >= {MAX_30_DAY_DECLINE:.1f}% (exclude stocks with sustained declines)")
-    
-    longer_term_filtered = filter_longer_term_trend(trend_filtered)
-    print(f"✓ Filtered {len(trend_filtered)} stocks down to {len(longer_term_filtered)}")
-    
-    if not longer_term_filtered:
-        print("\n⚠ Pipeline stopped: No stocks passed longer-term trend filter")
-        return
-    
-    # STEP 5c: Filter by average low (TEMPORARY - experimental)
-    if MAX_PRICE_VS_SMA50 is not None:
-        print(f"\n\nSTEP 5c: Filter by Average Low (50-day SMA) - TEMPORARY")
-        print("-" * 60)
-        print(f"Criteria: price <= {MAX_PRICE_VS_SMA50:.0%} of 50-day SMA (exclude stocks trading too far above average)")
-        
-        average_low_filtered = filter_average_low(longer_term_filtered)
-        print(f"✓ Filtered {len(longer_term_filtered)} stocks down to {len(average_low_filtered)}")
-        
-        if average_low_filtered:
-            print(f"\nStocks passing average low filter ({len(average_low_filtered)} stocks):")
-            for stock in average_low_filtered:
-                trend_5d = stock.get('recent_trend_pct', 0)
-                trend_30d = stock.get('thirty_day_trend_pct', 0)
-                trend_5d_str = f"{trend_5d:+.2f}%" if trend_5d is not None else "N/A"
-                trend_30d_str = f"{trend_30d:+.2f}%" if trend_30d is not None else "N/A"
-                discount_pct = (1 - stock['discount_ratio']) * 100
-                print(f"  {stock['symbol']:<6} 5d={trend_5d_str:>7}, 30d={trend_30d_str:>7}, discount={discount_pct:>5.1f}%, method={stock['method']}")
-        else:
-            print("\n⚠ Pipeline stopped: No stocks passed average low filter")
-            return
-    else:
-        average_low_filtered = longer_term_filtered
-        print(f"\n⚠ Average low filter disabled (MAX_PRICE_VS_SMA50 = None)")
-    
-    # STEP 5d: Filter by price vs 20-day SMA (hybrid)
-    print(f"\n\nSTEP 5d: Filter by Price vs 20-day SMA (Hybrid)")
-    print("-" * 60)
-    print(f"Criteria: {MIN_PRICE_VS_SMA20:.0%} <= price/SMA20 <= {MAX_PRICE_VS_SMA20:.0%} (slightly below OK, not extended)")
-    
-    sma20_filtered = filter_price_vs_sma20(average_low_filtered)
-    print(f"✓ Filtered {len(average_low_filtered)} stocks down to {len(sma20_filtered)}")
-    
-    if not sma20_filtered:
-        print("\n⚠ Pipeline stopped: No stocks passed 20-day SMA filter")
-        return
-    
-    # STEP 5e: Filter by dollar volume
-    print(f"\n\nSTEP 5e: Filter by Dollar Volume")
-    print("-" * 60)
-    print(f"Criteria: 20-day avg dollar volume >= ${MIN_20_DAY_DOLLAR_VOLUME:,.0f}")
-    
-    dollar_volume_filtered = filter_dollar_volume(sma20_filtered)
-    print(f"✓ Filtered {len(sma20_filtered)} stocks down to {len(dollar_volume_filtered)}")
-    
-    if not dollar_volume_filtered:
-        print("\n⚠ Pipeline stopped: No stocks passed dollar volume filter")
-        return
-    
-    # STEP 5f: Filter by volatility (ATR)
-    print(f"\n\nSTEP 5f: Filter by Volatility (ATR)")
-    print("-" * 60)
-    print(f"Criteria: ATR(20) / Price <= {MAX_ATR_PCT:.0%} (avoid excessive volatility)")
-    
-    volatility_filtered = filter_volatility(dollar_volume_filtered)
-    print(f"✓ Filtered {len(dollar_volume_filtered)} stocks down to {len(volatility_filtered)}")
-    
-    if not volatility_filtered:
-        print("\n⚠ Pipeline stopped: No stocks passed volatility filter")
-        return
-    
-    # STEP 5g: Filter by daily return spikes
-    print(f"\n\nSTEP 5g: Filter by Daily Return Spikes")
-    print("-" * 60)
-    print(f"Criteria: |daily_return| <= {MAX_DAILY_RETURN_PCT:.1f}% (avoid distorted valuations)")
-    
-    spike_filtered = filter_daily_spikes(volatility_filtered)
-    print(f"✓ Filtered {len(volatility_filtered)} stocks down to {len(spike_filtered)}")
-    
-    if not spike_filtered:
-        print("\n⚠ Pipeline stopped: No stocks passed daily spike filter")
-        return
-    
-    # Final result (all remaining stocks are already undervalued from Step 3)
-    final_stocks = spike_filtered
+    # Final result (only notional/actual price filter + profit margin check)
+    final_stocks = fundamental_filtered
     
     if final_stocks:
         print(f"\n✓ FINAL RESULT: {len(final_stocks)} stock(s) would be discovered:")
@@ -1496,16 +1360,8 @@ def main():
     print(f"\nResults:")
     print(f"  Step 1: {len(stocks)} stocks retrieved")
     print(f"  Step 2: {len(sample_results)} stocks with notional prices")
-    print(f"  Step 3: {len(undervalued_filtered) if 'undervalued_filtered' in locals() else 0} stocks passed undervalued ratio (EARLY FILTER)")
-    print(f"  Step 4: {len(fundamental_filtered) if 'fundamental_filtered' in locals() else 0} stocks passed fundamentals")
-    print(f"  Step 5: {len(trend_filtered) if 'trend_filtered' in locals() else 0} stocks passed 5-day trend filter (enhanced)")
-    print(f"  Step 5b: {len(longer_term_filtered) if 'longer_term_filtered' in locals() else 0} stocks passed 30-day trend filter")
-    if MAX_PRICE_VS_SMA50 is not None:
-        print(f"  Step 5c: {len(average_low_filtered) if 'average_low_filtered' in locals() else 0} stocks passed average low filter (TEMPORARY)")
-    print(f"  Step 5d: {len(sma20_filtered) if 'sma20_filtered' in locals() else 0} stocks passed 20-day SMA filter (hybrid)")
-    print(f"  Step 5e: {len(dollar_volume_filtered) if 'dollar_volume_filtered' in locals() else 0} stocks passed dollar volume filter")
-    print(f"  Step 5f: {len(volatility_filtered) if 'volatility_filtered' in locals() else 0} stocks passed volatility filter")
-    print(f"  Step 5g: {len(spike_filtered) if 'spike_filtered' in locals() else 0} stocks passed daily spike filter")
+    print(f"  Step 3: {len(undervalued_filtered) if 'undervalued_filtered' in locals() else 0} stocks passed undervalued ratio (<= {UNDERVALUED_RATIO_THRESHOLD})")
+    print(f"  Step 4: {len(fundamental_filtered) if 'fundamental_filtered' in locals() else 0} stocks passed profit margin check (>= {MIN_PROFIT_MARGIN:.0%})")
     print(f"  Final: {len(final_stocks) if 'final_stocks' in locals() else 0} stocks would be discovered")
 
 

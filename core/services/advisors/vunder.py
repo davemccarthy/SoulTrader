@@ -1,11 +1,13 @@
 """
-Vunder Advisor - The search for undervalued stocks
+Vunder Advisor - The search for undervalued stocks (SIMPLIFIED FOR TESTING)
 
-Based on notional price calculation with comprehensive filtering:
-- Fundamental filters (profit margin, revenue growth, market cap)
-- Enhanced trend filters (5-day positive momentum, 30-day decline protection)
-- Price structure filters (20-day SMA hybrid, volatility, dollar volume)
-- Undervalued selection (discount ratio threshold)
+Based on notional price calculation with minimal filtering:
+- Undervalued ratio filter (actual/notional <= 0.70)
+- Profit margin filter (>= 0% - profitable or break-even only)
+
+All other filters (trends, SMA, volume, volatility) are disabled for testing.
+Uses Polygon API via base class get_filtered_stocks() method.
+Only runs during first hour of market open (9:30-10:30 AM ET).
 """
 import logging
 from decimal import Decimal
@@ -17,33 +19,9 @@ from core.services.advisors.advisor import AdvisorBase, register
 
 logger = logging.getLogger(__name__)
 
-# Discovery settings
-UNDERVALUED_RATIO_THRESHOLD = 0.75  # Discount threshold (actual/notional <= 0.75)
-MIN_PROFIT_MARGIN = 0.0
-MAX_YEARLY_LOSS = -50.0
-MIN_MARKET_CAP = 25_000_000
-
-# Quality filters (Phase 1)
-MIN_REVENUE_GROWTH = -5.0  # Reject if revenue decline >5%
-MAX_30_DAY_DECLINE = -10.0  # Reject if down >10% in last 30 days (stricter)
-
-# Enhanced price structure filters (ChatGPT recommendations - relaxed)
-MIN_PRICE_VS_SMA20 = 0.90  # Price must be >= 90% of 20-day SMA (relaxed from 95%)
-MAX_PRICE_VS_SMA20 = 1.10  # Price must be <= 110% of 20-day SMA (relaxed from 105%)
-MIN_5_DAY_TREND = -2.0     # Allow slightly negative 5-day trend (relaxed from 0.0)
-MAX_5_DAY_TREND = 5.0      # But not > 5% (avoid extended moves)
-
-# Volume filter (enhanced)
-MIN_20_DAY_DOLLAR_VOLUME = 3_000_000  # $3M average dollar volume (20-day)
-
-# Volatility filter (relaxed)
-MAX_ATR_PCT = 0.07  # ATR(20) / Price <= 7% (relaxed from 5%)
-
-# Daily return spike filter
-MAX_DAILY_RETURN_PCT = 8.0  # |today's return| <= 8% (avoid distorted valuations)
-
-# Old average low filter (50-day SMA) - kept for compatibility, disabled by default
-MAX_PRICE_VS_SMA50 = None  # Set to None to disable, or value like 1.10 to enable
+# Discovery settings (SIMPLIFIED FOR TESTING)
+UNDERVALUED_RATIO_THRESHOLD = 0.70  # Discount threshold (actual/notional <= 0.70)
+MIN_PROFIT_MARGIN = 0.0  # Only profitable or break-even companies
 
 
 class Vunder(AdvisorBase):
@@ -422,30 +400,14 @@ class Vunder(AdvisorBase):
     # ============================================================================
 
     def _filter_fundamentals(self, results):
-        """Filter stocks by fundamental metrics."""
+        """Filter stocks by profit margin only (simplified for testing)."""
         filtered = []
         
         for stock in results:
             profit_margin = stock.get('profit_margin')
-            yearly_change = stock.get('yearly_change_pct', 0) or 0
-            market_cap = stock.get('market_cap', 0) or 0
-            revenue_growth = stock.get('revenue_growth')
             
-            # Check profit margin
+            # Check profit margin - None means missing data (unprofitable companies often have None)
             if profit_margin is None or profit_margin < MIN_PROFIT_MARGIN:
-                continue
-            
-            # Check yearly loss
-            if yearly_change < MAX_YEARLY_LOSS:
-                continue
-            
-            # Check market cap
-            if market_cap < MIN_MARKET_CAP:
-                continue
-            
-            # Check revenue growth
-            if revenue_growth is not None and revenue_growth < MIN_REVENUE_GROWTH:
-                logger.debug(f"Filtered out {stock.get('symbol', 'unknown')} - revenue declining: {revenue_growth:.2f}%")
                 continue
             
             filtered.append(stock)
@@ -718,7 +680,8 @@ class Vunder(AdvisorBase):
         
         try:
             # Get stocks from Polygon with price filter ($2-$18) and average volume filter
-            stocks = self._get_active_stocks(limit=200, sort_volume_asc=False, sa=sa)
+            # Using higher limit for weekly process
+            stocks = self._get_active_stocks(limit=1000, sort_volume_asc=False, sa=sa)
             if not stocks:
                 logger.warning("No active stocks retrieved")
                 return
@@ -779,66 +742,17 @@ class Vunder(AdvisorBase):
             
             logger.info(f"Early filter: {len(results)} stocks with notional prices -> {len(undervalued_filtered)} undervalued stocks")
             
-            # STEP 2: Filter by fundamentals
-            fundamental_filtered = self._filter_fundamentals(undervalued_filtered)
-            
-            if not fundamental_filtered:
-                logger.info("No stocks passed fundamental filters")
-                return
-            
-            # STEP 3: Filter for stocks with positive but not extended 5-day momentum (enhanced)
-            trend_filtered = self._filter_recent_trend(fundamental_filtered)
-            
-            if not trend_filtered:
-                logger.info("No stocks passed recent trend filter")
-                return
-            
-            # STEP 4: Filter out stocks with sustained longer-term declines
-            longer_term_filtered = self._filter_longer_term_trend(trend_filtered)
-            
-            if not longer_term_filtered:
-                logger.info("No stocks passed longer-term trend filter")
-                return
-            
-            # STEP 5: Filter for stocks trading near/below average (legacy, disabled by default)
-            average_low_filtered = self._filter_average_low(longer_term_filtered)
-            
-            if not average_low_filtered:
-                logger.info("No stocks passed average low filter")
-                return
-            
-            # STEP 6: Filter by price vs 20-day SMA (hybrid)
-            sma20_filtered = self._filter_price_vs_sma20(average_low_filtered)
-            
-            if not sma20_filtered:
-                logger.info("No stocks passed 20-day SMA filter")
-                return
-            
-            # STEP 7: Filter by dollar volume
-            dollar_volume_filtered = self._filter_dollar_volume(sma20_filtered)
-            
-            if not dollar_volume_filtered:
-                logger.info("No stocks passed dollar volume filter")
-                return
-            
-            # STEP 8: Filter by volatility (ATR)
-            volatility_filtered = self._filter_volatility(dollar_volume_filtered)
-            
-            if not volatility_filtered:
-                logger.info("No stocks passed volatility filter")
-                return
-            
-            # STEP 9: Filter by daily return spikes
-            final_stocks = self._filter_daily_spikes(volatility_filtered)
+            # STEP 2: Filter by profit margin only (simplified for testing)
+            final_stocks = self._filter_fundamentals(undervalued_filtered)
             
             if not final_stocks:
-                logger.info("No stocks passed daily spike filter")
+                logger.info("No stocks passed profit margin filter")
                 return
 
             # Pass sell instructions - Balanced approach for value discovery
             sell_instructions = [
-                ("PERCENTAGE_DIMINISHING", 1.30, None),
-                ("PERCENTAGE_AUGMENTING", 0.90, None),
+                ("PERCENTAGE_DIMINISHING", 1.50, 180),
+                ("PERCENTAGE_AUGMENTING", 0.80, 180),
             ]
             
             # Discover each stock that passed all filters
@@ -859,8 +773,7 @@ class Vunder(AdvisorBase):
                 trend_str = f", Recent trend: {recent_trend:+.1f}%" if recent_trend is not None else ""
                 
                 explanation_parts = [
-                    f"Actual: ${stock['actual_price']:.2f}",
-                    f"Notional: ${stock['notional_price']:.2f}",
+                    f"Under valued: ${stock['notional_price']:.2f} vs ${stock['actual_price']:.2f}",
                     f"Discount: {discount_pct:.1f}%",
                     f"Upside: {upside_pct:.1f}%",
                     f"Method: {stock['method']}{trend_str}",
