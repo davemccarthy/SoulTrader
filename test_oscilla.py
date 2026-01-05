@@ -40,7 +40,7 @@ MIN_RR = 1.8
 # Turn Confirmation Configuration
 TURN_CONFIRMATION_ENABLED = True  # Require turn confirmation (higher close + higher low) before entry
 # Minimum stop buffer (set to 0.0 to disable, or e.g. 0.10 for 10% minimum stop)
-MIN_STOP_BUFFER_PCT = 0.10  # Minimum stop distance from entry (0 = disabled, use calculated stop directly)
+MIN_STOP_BUFFER_PCT = 0.10  # Fixed 10% stop loss (minimum stop distance from entry)
 MAX_TARGET_PCT = 0.50  # Maximum target price as % gain (applies only when TARGET_DIMINISHING_ENABLED=False) - TESTING: Set to 50% to effectively disable target cap and test wave detection
 TARGET_DIMINISHING_MULTIPLIER = 0.75  # When diminishing enabled, cap target at this fraction of calculated target (0.75 = 75%)
 # Diminishing Target / Augmenting Stop Configuration
@@ -157,7 +157,7 @@ def fetch_stocks_for_date(reference_date, min_price=MIN_PRICE, max_price=MAX_PRI
 def get_historical_data_yfinance(ticker, start_date, end_date):
     """
     Get historical data using yfinance (rate-limit friendly).
-    Always replaces the last entry's price with current price from yfinance.
+    Replaces the last entry's price with current price from yfinance only if end_date is today or very recent.
     
     Args:
         ticker: Stock ticker symbol
@@ -190,30 +190,35 @@ def get_historical_data_yfinance(ticker, start_date, end_date):
             "volume": hist['Volume'].values
         })
         
-        # Always replace last entry's price with current price from yfinance
-        # This ensures we use the actual current price for analysis, not just historical closing price
-        try:
-            if len(df) > 0:
-                info = ticker_obj.info
-                current_price = info.get('currentPrice') or info.get('regularMarketPrice')
-                
-                if current_price and current_price > 0:
-                    # Replace the last row's prices with current prices
-                    df.iloc[-1, df.columns.get_loc('close')] = current_price
+        # Only replace last entry's price with current price if end_date is today or yesterday
+        # For historical backtests (past dates) or future dates, use the historical data as-is
+        today = datetime.now().date()
+        end_date_only = end_dt.date()
+        days_diff = (today - end_date_only).days
+        
+        if 0 <= days_diff <= 1:  # Only for today (0) or yesterday (1), not future dates (negative)
+            try:
+                if len(df) > 0:
+                    info = ticker_obj.info
+                    current_price = info.get('currentPrice') or info.get('regularMarketPrice')
                     
-                    # Update high/low if available, otherwise use current_price
-                    current_low = info.get('dayLow') or current_price
-                    current_high = info.get('dayHigh') or current_price
-                    df.iloc[-1, df.columns.get_loc('low')] = current_low
-                    df.iloc[-1, df.columns.get_loc('high')] = current_high
-                    
-                    # Update volume if available
-                    current_volume = info.get('volume')
-                    if current_volume:
-                        df.iloc[-1, df.columns.get_loc('volume')] = current_volume
-        except Exception as e:
-            # If current price fetch fails, continue with historical data only
-            pass
+                    if current_price and current_price > 0:
+                        # Replace the last row's prices with current prices
+                        df.iloc[-1, df.columns.get_loc('close')] = current_price
+                        
+                        # Update high/low if available, otherwise use current_price
+                        current_low = info.get('dayLow') or current_price
+                        current_high = info.get('dayHigh') or current_price
+                        df.iloc[-1, df.columns.get_loc('low')] = current_low
+                        df.iloc[-1, df.columns.get_loc('high')] = current_high
+                        
+                        # Update volume if available
+                        current_volume = info.get('volume')
+                        if current_volume:
+                            df.iloc[-1, df.columns.get_loc('volume')] = current_volume
+            except Exception as e:
+                # If current price fetch fails, continue with historical data only
+                pass
         
         return df.reset_index(drop=True)
     except Exception as e:
@@ -1132,6 +1137,559 @@ def backtest_signal(ticker, entry_date, buy_price, stop_price, target_price, max
         }
 
 
+def simulate_reentry(ticker, upturn_date, re_entry_price, stop_loss_date, max_days=7, max_window_days=20, verbose=False):
+    """
+    Simulate re-entry trade with diminishing TP and constant SL.
+    
+    Args:
+        ticker: Stock ticker symbol
+        upturn_date: Date string (YYYY-MM-DD) when upturn was detected (buy date)
+        re_entry_price: Close price on upturn date (buy price)
+        stop_loss_date: Original stop loss date (for reference)
+        max_days: Maximum days to hold re-entry trade (default: 7)
+        max_window_days: Maximum window after stop loss to observe (default: 20)
+        verbose: If True, show detailed output
+    
+    Returns:
+        dict with re-entry results: {'outcome': 'win'|'loss'|'timeout'|'no_upturn', 
+                                     'days_held': int, 'exit_price': float, 'exit_date': str,
+                                     'return_pct': float, 're_entry_price': float,
+                                     're_entry_tp': float, 're_entry_sl': float}
+    """
+    # Calculate re-entry TP and SL
+    # Use fixed TP: +20% (diminishing over 7 days)
+    re_entry_tp = re_entry_price * 1.20  # +20% target
+    # Use fixed SL: 10% for re-entry trades (separate risk management from original trades)
+    RE_ENTRY_STOP_PCT = 0.10  # Fixed 10% stop loss for re-entry trades
+    re_entry_sl = re_entry_price * (1 - RE_ENTRY_STOP_PCT)  # -10% stop loss
+    
+    # Calculate end date (max_window_days after stop loss, or max_days after upturn, whichever is earlier)
+    stop_dt = datetime.strptime(stop_loss_date, "%Y-%m-%d")
+    upturn_dt = datetime.strptime(upturn_date, "%Y-%m-%d")
+    
+    # End date = min(max_window_days after stop loss, max_days after upturn)
+    end_from_stop = stop_dt + timedelta(days=max_window_days + 5)  # Buffer for weekends
+    end_from_upturn = upturn_dt + timedelta(days=max_days + 5)  # Buffer for weekends
+    end_dt = min(end_from_stop, end_from_upturn)
+    end_date = end_dt.strftime("%Y-%m-%d")
+    
+    try:
+        # Get historical data from upturn date forward
+        df = get_historical_data_yfinance(ticker, upturn_date, end_date)
+        
+        if df.empty or len(df) < 2:
+            return {
+                'outcome': 'no_data',
+                'days_held': 0,
+                'exit_price': re_entry_price,
+                'exit_date': upturn_date,  # Fallback to upturn date
+                'return_pct': 0.0,
+                're_entry_price': re_entry_price,
+                're_entry_tp': re_entry_tp,
+                're_entry_sl': re_entry_sl
+            }
+        
+        # Filter to dates after upturn date (exclusive - we enter at close of upturn day)
+        df['date_dt'] = pd.to_datetime(df['date'])
+        if df['date_dt'].dt.tz is not None:
+            df['date_dt'] = df['date_dt'].dt.tz_localize(None)
+        
+        upturn_dt_ts = pd.Timestamp(upturn_date)
+        if upturn_dt_ts.tz is not None:
+            upturn_dt_ts = upturn_dt_ts.tz_localize(None)
+        
+        df_post_upturn = df[df['date_dt'] > upturn_dt_ts].copy()
+        
+        if df_post_upturn.empty:
+            return {
+                'outcome': 'no_data',
+                'days_held': 0,
+                'exit_price': re_entry_price,
+                'exit_date': upturn_date,  # Fallback to upturn date
+                'return_pct': 0.0,
+                're_entry_price': re_entry_price,
+                're_entry_tp': re_entry_tp,
+                're_entry_sl': re_entry_sl
+            }
+        
+        upturn_date_only = upturn_dt.date()
+        
+        # Simulate day by day
+        prev_close = re_entry_price  # Track previous close
+        for idx in range(len(df_post_upturn)):
+            row = df_post_upturn.iloc[idx]
+            
+            # Get date from the row
+            row_date = row['date_dt']
+            if hasattr(row_date, 'date'):
+                row_date_only = row_date.date()
+            elif hasattr(row_date, 'to_pydatetime'):
+                row_date_only = row_date.to_pydatetime().date()
+            else:
+                row_date_only = pd.Timestamp(row_date).date()
+            
+            days_held = (row_date_only - upturn_date_only).days
+            
+            # Check if we've exceeded max_days
+            if days_held > max_days:
+                # Exit at previous day's close (need to get previous date)
+                exit_price = prev_close
+                days_held = days_held - 1 if days_held > 0 else 0
+                
+                # Calculate exit date (previous trading day)
+                if idx > 0:
+                    prev_row = df_post_upturn.iloc[idx-1]
+                    prev_row_date = prev_row['date_dt']
+                    if hasattr(prev_row_date, 'date'):
+                        exit_date_obj = prev_row_date.date()
+                    elif hasattr(prev_row_date, 'to_pydatetime'):
+                        exit_date_obj = prev_row_date.to_pydatetime().date()
+                    else:
+                        exit_date_obj = pd.Timestamp(prev_row_date).date()
+                    exit_date = exit_date_obj.strftime("%Y-%m-%d")
+                else:
+                    exit_date = upturn_date  # Fallback to upturn date
+                
+                return_pct = ((exit_price - re_entry_price) / re_entry_price) * 100
+                return {
+                    'outcome': 'timeout',
+                    'days_held': days_held,
+                    'exit_price': exit_price,
+                    'exit_date': exit_date,
+                    'return_pct': return_pct,
+                    're_entry_price': re_entry_price,
+                    're_entry_tp': re_entry_tp,
+                    're_entry_sl': re_entry_sl
+                }
+            
+            low = float(row['low'])
+            high = float(row['high'])
+            close = float(row['close'])
+            
+            # Calculate diminishing target
+            progress = days_held / max_days if max_days > 0 else 1.0
+            current_target = re_entry_tp - progress * (re_entry_tp - re_entry_price)
+            
+            # Check stop loss first (more conservative)
+            if low <= re_entry_sl:
+                exit_price = re_entry_sl
+                exit_date = row_date_only.strftime("%Y-%m-%d")
+                return_pct = ((exit_price - re_entry_price) / re_entry_price) * 100
+                return {
+                    'outcome': 'loss',
+                    'days_held': days_held,
+                    'exit_price': exit_price,
+                    'exit_date': exit_date,
+                    'return_pct': return_pct,
+                    're_entry_price': re_entry_price,
+                    're_entry_tp': re_entry_tp,
+                    're_entry_sl': re_entry_sl
+                }
+            
+            # Check target price
+            if high >= current_target:
+                exit_price = current_target
+                exit_date = row_date_only.strftime("%Y-%m-%d")
+                return_pct = ((exit_price - re_entry_price) / re_entry_price) * 100
+                return {
+                    'outcome': 'win',
+                    'days_held': days_held,
+                    'exit_price': exit_price,
+                    'exit_date': exit_date,
+                    'return_pct': return_pct,
+                    're_entry_price': re_entry_price,
+                    're_entry_tp': re_entry_tp,
+                    're_entry_sl': re_entry_sl
+                }
+            
+            # Update previous close for next iteration
+            prev_close = close
+        
+        # If we've gone through all data without hitting stop/target, exit at last close
+        if len(df_post_upturn) > 0:
+            last_close = float(df_post_upturn.iloc[-1]['close'])
+            last_date = df_post_upturn.iloc[-1]['date_dt']
+            if hasattr(last_date, 'date'):
+                last_date_only = last_date.date()
+            elif hasattr(last_date, 'to_pydatetime'):
+                last_date_only = last_date.to_pydatetime().date()
+            else:
+                last_date_only = pd.Timestamp(last_date).date()
+            
+            days_held = (last_date_only - upturn_date_only).days
+            
+            # Still check if we exceeded max_days
+            if days_held > max_days:
+                days_held = max_days
+            
+            exit_date = last_date_only.strftime("%Y-%m-%d")
+            return_pct = ((last_close - re_entry_price) / re_entry_price) * 100
+            return {
+                'outcome': 'timeout',
+                'days_held': days_held,
+                'exit_price': last_close,
+                'exit_date': exit_date,
+                'return_pct': return_pct,
+                're_entry_price': re_entry_price,
+                're_entry_tp': re_entry_tp,
+                're_entry_sl': re_entry_sl
+            }
+        else:
+            return {
+                'outcome': 'no_data',
+                'days_held': 0,
+                'exit_price': re_entry_price,
+                'exit_date': upturn_date,  # Fallback to upturn date
+                'return_pct': 0.0,
+                're_entry_price': re_entry_price,
+                're_entry_tp': re_entry_tp,
+                're_entry_sl': re_entry_sl
+            }
+        
+    except Exception as e:
+        if verbose:
+            print(f"   Error simulating re-entry for {ticker}: {e}")
+        return {
+            'outcome': 'error',
+            'days_held': 0,
+            'exit_price': re_entry_price,
+            'exit_date': upturn_date,  # Fallback to upturn date
+            'return_pct': 0.0,
+            're_entry_price': re_entry_price,
+            're_entry_tp': re_entry_tp,
+            're_entry_sl': re_entry_sl,
+            'error': str(e)
+        }
+
+
+def analyze_watchlist_recovery(watchlist, verbose=False):
+    """
+    Analyze stocks that hit stop loss to see recovery potential over 20 trading days.
+    Now includes re-entry simulation for stocks with upturn detected.
+    
+    Args:
+        watchlist: List of dicts with keys: ticker, stop_loss_date, stop_price, buy_price, entry_date
+        verbose: If True, show detailed output
+    
+    Returns:
+        pandas DataFrame with recovery analysis results including re-entry simulation
+    """
+    if not watchlist:
+        return pd.DataFrame()
+    
+    results = []
+    
+    if verbose:
+        print(f"\n{'='*80}")
+        print(f"WATCHLIST RECOVERY ANALYSIS ({len(watchlist)} stocks)")
+        print(f"{'='*80}")
+    
+    for entry in watchlist:
+        ticker = entry['ticker']
+        stop_loss_date = entry['stop_loss_date']
+        stop_price = entry['stop_price']
+        buy_price = entry['buy_price']
+        entry_date = entry['entry_date']
+        
+        try:
+            # Calculate end date: 20 trading days ≈ 28 calendar days
+            stop_dt = datetime.strptime(stop_loss_date, "%Y-%m-%d")
+            end_dt = stop_dt + timedelta(days=28)  # Buffer for 20 trading days
+            end_date = end_dt.strftime("%Y-%m-%d")
+            
+            # Get historical data from stop loss date to 20 days after
+            df = get_historical_data_yfinance(ticker, stop_loss_date, end_date)
+            
+            if df.empty or len(df) < 2:
+                if verbose:
+                    print(f"   {ticker}: No data available after stop loss date {stop_loss_date}")
+                continue
+            
+            # Filter to only dates after stop loss date (exclusive)
+            # Convert dates to timezone-naive for consistent comparison
+            df['date_dt'] = pd.to_datetime(df['date'])
+            # Remove timezone if present
+            if df['date_dt'].dt.tz is not None:
+                df['date_dt'] = df['date_dt'].dt.tz_localize(None)
+            
+            # Convert stop_loss_date to timezone-naive Timestamp
+            stop_dt_ts = pd.Timestamp(stop_loss_date)
+            if stop_dt_ts.tz is not None:
+                stop_dt_ts = stop_dt_ts.tz_localize(None)
+            
+            df_post_sl = df[df['date_dt'] > stop_dt_ts].copy()
+            
+            if df_post_sl.empty:
+                if verbose:
+                    print(f"   {ticker}: No data after stop loss date {stop_loss_date}")
+                continue
+            
+            # Find the low in the first 5 trading days after stop loss (captures immediate drop)
+            first_5_days = df_post_sl.head(5)
+            if not first_5_days.empty:
+                low_after_sl = first_5_days['low'].min()
+                low_date_dt = first_5_days.loc[first_5_days['low'].idxmin(), 'date_dt']
+                # Convert to date string
+                if hasattr(low_date_dt, 'date'):
+                    low_date_obj = low_date_dt.date()
+                    low_date_str = low_date_obj.strftime("%Y-%m-%d")
+                elif hasattr(low_date_dt, 'to_pydatetime'):
+                    low_date_obj = low_date_dt.to_pydatetime().date()
+                    low_date_str = low_date_obj.strftime("%Y-%m-%d")
+                else:
+                    # Fallback: convert to Timestamp and extract date
+                    low_date_ts = pd.Timestamp(low_date_dt)
+                    if low_date_ts.tz is not None:
+                        low_date_ts = low_date_ts.tz_localize(None)
+                    low_date_obj = low_date_ts.date()
+                    low_date_str = low_date_obj.strftime("%Y-%m-%d")
+                days_to_low = (low_date_obj - stop_dt.date()).days
+            else:
+                low_after_sl = None
+                low_date_str = None
+                days_to_low = None
+            
+            # Find the 20-day high after stop loss
+            df_20_days = df_post_sl.head(20)  # First 20 trading days after stop loss
+            if not df_20_days.empty:
+                high_20_days = df_20_days['high'].max()
+                high_date_dt = df_20_days.loc[df_20_days['high'].idxmax(), 'date_dt']
+                # Convert to date string
+                if hasattr(high_date_dt, 'date'):
+                    high_date_obj = high_date_dt.date()
+                    high_date_str = high_date_obj.strftime("%Y-%m-%d")
+                elif hasattr(high_date_dt, 'to_pydatetime'):
+                    high_date_obj = high_date_dt.to_pydatetime().date()
+                    high_date_str = high_date_obj.strftime("%Y-%m-%d")
+                else:
+                    # Fallback: convert to Timestamp and extract date
+                    high_date_ts = pd.Timestamp(high_date_dt)
+                    if high_date_ts.tz is not None:
+                        high_date_ts = high_date_ts.tz_localize(None)
+                    high_date_obj = high_date_ts.date()
+                    high_date_str = high_date_obj.strftime("%Y-%m-%d")
+                days_to_high = (high_date_obj - stop_dt.date()).days
+            else:
+                high_20_days = None
+                high_date_str = None
+                days_to_high = None
+            
+            # Detect upturn (turn confirmation: higher close AND higher low)
+            # Check within the 20-day period after stop loss
+            upturn_detected = False
+            upturn_day = None
+            upturn_date_str = None
+            
+            if len(df_20_days) >= 2:
+                # We need at least 2 days to compare
+                for idx in range(1, len(df_20_days)):
+                    current_row = df_20_days.iloc[idx]
+                    prev_row = df_20_days.iloc[idx-1]
+                    
+                    current_close = float(current_row['close'])
+                    prev_close = float(prev_row['close'])
+                    current_low = float(current_row['low'])
+                    prev_low = float(prev_row['low'])
+                    
+                    # Turn confirmed: higher close AND higher low (seller exhaustion)
+                    turn_confirmed = (current_close > prev_close) and (current_low > prev_low)
+                    
+                    if turn_confirmed:
+                        upturn_detected = True
+                        upturn_date_dt = current_row['date_dt']
+                        # Convert to date string
+                        if hasattr(upturn_date_dt, 'date'):
+                            upturn_date_obj = upturn_date_dt.date()
+                            upturn_date_str = upturn_date_obj.strftime("%Y-%m-%d")
+                        elif hasattr(upturn_date_dt, 'to_pydatetime'):
+                            upturn_date_obj = upturn_date_dt.to_pydatetime().date()
+                            upturn_date_str = upturn_date_obj.strftime("%Y-%m-%d")
+                        else:
+                            upturn_date_ts = pd.Timestamp(upturn_date_dt)
+                            if upturn_date_ts.tz is not None:
+                                upturn_date_ts = upturn_date_ts.tz_localize(None)
+                            upturn_date_obj = upturn_date_ts.date()
+                            upturn_date_str = upturn_date_obj.strftime("%Y-%m-%d")
+                        
+                        # Calculate days from stop loss (day 1 = first trading day after stop loss)
+                        upturn_day = (upturn_date_obj - stop_dt.date()).days
+                        break  # Only track first upturn
+            
+            # Calculate percentages relative to stop_price
+            if low_after_sl is not None and stop_price > 0:
+                low_pct_from_stop = ((low_after_sl - stop_price) / stop_price) * 100
+            else:
+                low_pct_from_stop = None
+            
+            if high_20_days is not None and stop_price > 0:
+                high_pct_from_stop = ((high_20_days - stop_price) / stop_price) * 100
+            else:
+                high_pct_from_stop = None
+            
+            if low_after_sl is not None and high_20_days is not None and low_after_sl > 0:
+                recovery_pct = ((high_20_days - low_after_sl) / low_after_sl) * 100
+            else:
+                recovery_pct = None
+            
+            # Calculate recovery from stop price
+            if low_after_sl is not None and stop_price > 0:
+                recovery_from_stop_pct = ((high_20_days - stop_price) / stop_price) * 100 if high_20_days is not None else None
+            else:
+                recovery_from_stop_pct = None
+            
+            # Simulate re-entry if upturn was detected
+            re_entry_result = None
+            if upturn_detected and upturn_date_str:
+                # Get the close price on upturn day for re-entry
+                # Find the row where upturn was detected
+                upturn_dt_obj = datetime.strptime(upturn_date_str, "%Y-%m-%d").date()
+                upturn_price_found = False
+                re_entry_price = None
+                
+                for idx in range(1, len(df_20_days)):
+                    current_row = df_20_days.iloc[idx]
+                    current_date_dt = current_row['date_dt']
+                    if hasattr(current_date_dt, 'date'):
+                        current_date_obj = current_date_dt.date()
+                    elif hasattr(current_date_dt, 'to_pydatetime'):
+                        current_date_obj = current_date_dt.to_pydatetime().date()
+                    else:
+                        current_date_obj = pd.Timestamp(current_date_dt).date()
+                    
+                    if current_date_obj == upturn_dt_obj:
+                        re_entry_price = float(current_row['close'])
+                        upturn_price_found = True
+                        break
+                
+                if upturn_price_found and re_entry_price is not None:
+                    # Simulate re-entry trade
+                    re_entry_result = simulate_reentry(
+                        ticker=ticker,
+                        upturn_date=upturn_date_str,
+                        re_entry_price=re_entry_price,
+                        stop_loss_date=stop_loss_date,
+                        max_days=7,
+                        max_window_days=20,
+                        verbose=verbose
+                    )
+            
+            # Build result dict
+            result_dict = {
+                'ticker': ticker,
+                'entry_date': entry_date,
+                'stop_loss_date': stop_loss_date,
+                'buy_price': buy_price,
+                'stop_price': stop_price,
+                'low_after_sl': low_after_sl,
+                'low_date': low_date_str,
+                'days_to_low': days_to_low,
+                'low_pct_from_stop': round(low_pct_from_stop, 2) if low_pct_from_stop is not None else None,
+                'high_20_days': high_20_days,
+                'high_date': high_date_str,
+                'days_to_high': days_to_high,
+                'high_pct_from_stop': round(high_pct_from_stop, 2) if high_pct_from_stop is not None else None,
+                'recovery_pct': round(recovery_pct, 2) if recovery_pct is not None else None,
+                'recovery_from_stop_pct': round(recovery_from_stop_pct, 2) if recovery_from_stop_pct is not None else None,
+                'upturn_day': upturn_day,
+                'upturn_date': upturn_date_str
+            }
+            
+            # Add re-entry results if available
+            if re_entry_result:
+                result_dict.update({
+                    're_entry_price': re_entry_result.get('re_entry_price'),
+                    're_entry_tp': re_entry_result.get('re_entry_tp'),
+                    're_entry_sl': re_entry_result.get('re_entry_sl'),
+                    're_entry_outcome': re_entry_result.get('outcome'),
+                    're_entry_days_held': re_entry_result.get('days_held'),
+                    're_entry_exit_price': re_entry_result.get('exit_price'),
+                    're_entry_exit_date': re_entry_result.get('exit_date'),
+                    're_entry_return_pct': round(re_entry_result.get('return_pct', 0.0), 2),
+                })
+                
+                # Calculate combined P&L: original loss + re-entry gain/loss
+                # Original trade: bought at buy_price, sold at stop_price (loss)
+                original_return_pct = ((stop_price - buy_price) / buy_price) * 100
+                re_entry_return_pct = re_entry_result.get('return_pct', 0.0)
+                
+                # Calculate total buys and sells
+                # Original: buy at buy_price, sell at stop_price (assume $1000 position)
+                POSITION_SIZE = 1000.0
+                original_buy_amount = POSITION_SIZE
+                original_sell_amount = POSITION_SIZE * (stop_price / buy_price)  # Actual sell amount
+                
+                # Re-entry: buy at re_entry_price, sell at exit_price
+                re_entry_buy_amount = POSITION_SIZE
+                re_entry_sell_amount = POSITION_SIZE * (re_entry_result.get('exit_price', re_entry_result.get('re_entry_price')) / re_entry_result.get('re_entry_price', 1.0))
+                
+                total_buys = original_buy_amount + re_entry_buy_amount
+                total_sells = original_sell_amount + re_entry_sell_amount
+                revised_return_pct = ((total_sells - total_buys) / total_buys) * 100
+                
+                result_dict.update({
+                    'original_return_pct': round(original_return_pct, 2),
+                    'total_buys': round(total_buys, 2),
+                    'total_sells': round(total_sells, 2),
+                    'revised_return_pct': round(revised_return_pct, 2)
+                })
+            else:
+                # No re-entry (no upturn detected or upturn but no re-entry data)
+                # Calculate original return only
+                original_return_pct = ((stop_price - buy_price) / buy_price) * 100
+                POSITION_SIZE = 1000.0
+                original_buy_amount = POSITION_SIZE
+                original_sell_amount = POSITION_SIZE * (stop_price / buy_price)
+                
+                result_dict.update({
+                    're_entry_price': None,
+                    're_entry_tp': None,
+                    're_entry_sl': None,
+                    're_entry_outcome': None,
+                    're_entry_days_held': None,
+                    're_entry_exit_price': None,
+                    're_entry_exit_date': None,
+                    're_entry_return_pct': None,
+                    'original_return_pct': round(original_return_pct, 2),
+                    'total_buys': round(original_buy_amount, 2),
+                    'total_sells': round(original_sell_amount, 2),
+                    'revised_return_pct': round(original_return_pct, 2)  # Same as original if no re-entry
+                })
+            
+            results.append(result_dict)
+            
+            if verbose:
+                print(f"\n   {ticker} (SL: {stop_loss_date} @ ${stop_price:.2f}):")
+                if low_after_sl is not None:
+                    print(f"      Low after SL: ${low_after_sl:.2f} on {low_date_str} ({days_to_low} days, {low_pct_from_stop:+.2f}% from stop)")
+                if high_20_days is not None:
+                    print(f"      20-day High: ${high_20_days:.2f} on {high_date_str} ({days_to_high} days, {high_pct_from_stop:+.2f}% from stop)")
+                if upturn_detected:
+                    print(f"      Upturn: Day {upturn_day} on {upturn_date_str}")
+                    if re_entry_result:
+                        print(f"      Re-entry: Buy=${re_entry_result.get('re_entry_price', 0):.2f}, TP=${re_entry_result.get('re_entry_tp', 0):.2f}, SL=${re_entry_result.get('re_entry_sl', 0):.2f}")
+                        print(f"      Re-entry Result: {re_entry_result.get('outcome', 'unknown').upper()} @ ${re_entry_result.get('exit_price', 0):.2f} ({re_entry_result.get('return_pct', 0):+.2f}%) after {re_entry_result.get('days_held', 0)} days")
+                        if 'revised_return_pct' in result_dict and 'total_buys' in result_dict and 'total_sells' in result_dict:
+                            print(f"      Revised Return: {result_dict['revised_return_pct']:+.2f}% (Buys: ${result_dict['total_buys']:.2f}, Sells: ${result_dict['total_sells']:.2f})")
+                            print(f"      Individual Returns: Original {result_dict['original_return_pct']:+.2f}%, Re-entry {result_dict['re_entry_return_pct']:+.2f}%")
+                else:
+                    print(f"      Upturn: None (no re-entry)")
+                if recovery_pct is not None:
+                    print(f"      Recovery: {recovery_pct:+.2f}% (low to high)")
+                if recovery_from_stop_pct is not None:
+                    print(f"      Recovery from stop: {recovery_from_stop_pct:+.2f}%")
+        
+        except Exception as e:
+            if verbose:
+                print(f"   {ticker}: Error analyzing recovery - {e}")
+            continue
+    
+    if not results:
+        return pd.DataFrame()
+    
+    df_results = pd.DataFrame(results)
+    return df_results
+
+
 def track_stock_reentry(tickers, start_date, end_date, verbose=False):
     """
     Track one or more stocks over a date range to see:
@@ -1315,9 +1873,9 @@ def track_stock_reentry(tickers, start_date, end_date, verbose=False):
                     calculated_stop_price = wave_result['stop']
                     target_price = wave_result['target']
                     
-                    # Apply minimum stop buffer (if MIN_STOP_BUFFER_PCT=0, min_stop_price=buy_price so calculated_stop is always used)
-                    min_stop_price = buy_price * (1 - MIN_STOP_BUFFER_PCT)
-                    stop_price = min(calculated_stop_price, min_stop_price)  # Use wider stop (lower price)
+                    # Apply fixed stop buffer: always use MIN_STOP_BUFFER_PCT (10%) regardless of calculated stop
+                    # This ensures consistent risk management - fixed 10% stop loss
+                    stop_price = buy_price * (1 - MIN_STOP_BUFFER_PCT)  # Fixed 10% stop loss
                     
                     # Apply target cap (same as backtest)
                     if not TARGET_DIMINISHING_ENABLED:
@@ -1412,7 +1970,7 @@ def track_stock_reentry(tickers, start_date, end_date, verbose=False):
         return pd.DataFrame()
 
 
-def run_backtest(start_date, end_date=None, num_dates=10, max_stocks=None, verbose=False):
+def run_backtest(start_date, end_date=None, num_dates=10, max_stocks=None, verbose=False, watchlist_enabled=False):
     """
     Run backtesting on historical dates.
     
@@ -1422,9 +1980,10 @@ def run_backtest(start_date, end_date=None, num_dates=10, max_stocks=None, verbo
         num_dates: Number of trading dates to test (default: 10)
         max_stocks: Maximum stocks to analyze per date (for speed)
         verbose: If True, show detailed output
+        watchlist_enabled: If True, track stop-loss trades for recovery analysis
     
     Returns:
-        pandas DataFrame with backtest results
+        tuple: (pandas DataFrame with backtest results, list of watchlist entries)
     """
     start_dt = datetime.strptime(start_date, "%Y-%m-%d")
     
@@ -1448,6 +2007,7 @@ def run_backtest(start_date, end_date=None, num_dates=10, max_stocks=None, verbo
         print(f"   Test dates: {test_dates}\n")
     
     all_results = []
+    watchlist = []  # Track stop-loss trades for recovery analysis
     
     for i, test_date in enumerate(test_dates, 1):
         if verbose:
@@ -1474,9 +2034,9 @@ def run_backtest(start_date, end_date=None, num_dates=10, max_stocks=None, verbo
             calculated_stop_price = row['stop']
             target_price = row['target']
             
-            # Apply minimum stop buffer (if MIN_STOP_BUFFER_PCT=0, min_stop_price=buy_price so calculated_stop is always used)
-            min_stop_price = buy_price * (1 - MIN_STOP_BUFFER_PCT)
-            stop_price = min(calculated_stop_price, min_stop_price)  # Use wider stop (lower price)
+            # Apply fixed stop buffer: always use MIN_STOP_BUFFER_PCT (10%) regardless of calculated stop
+            # This ensures consistent risk management - fixed 10% stop loss
+            stop_price = buy_price * (1 - MIN_STOP_BUFFER_PCT)  # Fixed 10% stop loss
             
             # Apply target cap based on TARGET_DIMINISHING_ENABLED setting
             calculated_target_price = target_price
@@ -1522,6 +2082,22 @@ def run_backtest(start_date, end_date=None, num_dates=10, max_stocks=None, verbo
                 'wave_position': row.get('wave_position', 0)
             })
             
+            # Add to watchlist if stop loss was hit and watchlist is enabled
+            if watchlist_enabled and result['outcome'] == 'loss':
+                entry_dt = datetime.strptime(test_date, "%Y-%m-%d")
+                stop_loss_dt = entry_dt + timedelta(days=result['days_held'])
+                stop_loss_date = stop_loss_dt.strftime("%Y-%m-%d")
+                
+                watchlist.append({
+                    'ticker': ticker,
+                    'entry_date': test_date,
+                    'stop_loss_date': stop_loss_date,
+                    'buy_price': buy_price,
+                    'stop_price': stop_price
+                })
+                if verbose:
+                    print(f"     📋 Added {ticker} to watchlist (SL on {stop_loss_date})")
+            
             all_results.append(result)
             
             if verbose:
@@ -1531,7 +2107,7 @@ def run_backtest(start_date, end_date=None, num_dates=10, max_stocks=None, verbo
     
     if not all_results:
         print("No backtest results generated")
-        return pd.DataFrame()
+        return pd.DataFrame(), watchlist
     
     df_backtest = pd.DataFrame(all_results)
     
@@ -1596,7 +2172,7 @@ def run_backtest(start_date, end_date=None, num_dates=10, max_stocks=None, verbo
         expected_value_dollars = (win_rate/100 * avg_return_profitable_dollars) + (loss_rate/100 * avg_return_losses_dollars)
         print(f"\nExpected Value per Trade: {expected_value_pct:.2f}% (${expected_value_dollars:+.2f})")
     
-    return df_backtest
+    return df_backtest, watchlist
 
 
 def main():
@@ -1677,6 +2253,11 @@ def main():
         type=int,
         default=10,
         help='Number of trading dates to test in backtesting (default: 10, approximately weekly)'
+    )
+    parser.add_argument(
+        '--watchlist',
+        action='store_true',
+        help='Enable watchlist tracking for stop-loss trades (analyzes 20-day recovery potential)'
     )
     parser.add_argument(
         '--track-stocks',
@@ -1765,12 +2346,13 @@ def main():
             print("❌ Error: --backtest-start-date is required when using --backtest")
             sys.exit(1)
         
-        df_backtest = run_backtest(
+        df_backtest, watchlist = run_backtest(
             start_date=args.backtest_start_date,
             end_date=args.backtest_end_date,
             num_dates=args.backtest_num_dates,
             max_stocks=args.max_stocks,
-            verbose=args.verbose
+            verbose=args.verbose,
+            watchlist_enabled=args.watchlist
         )
         
         if not df_backtest.empty:
@@ -1802,6 +2384,245 @@ def main():
             # Progress represents % of target range achieved (0.0 = entry, 1.0 = target hit)
             
             print(df_display.to_string(index=False))
+        
+        # Analyze watchlist if enabled
+        if args.watchlist:
+            if not watchlist:
+                print("\n" + "=" * 80)
+                print("WATCHLIST RECOVERY ANALYSIS")
+                print("=" * 80)
+                print(f"\nNo stop-loss trades found for watchlist analysis.")
+            else:
+                print(f"\n📋 Watchlist: Found {len(watchlist)} stop-loss trades for analysis")
+                df_watchlist = analyze_watchlist_recovery(watchlist, verbose=True)  # Always show verbose for watchlist
+                
+                if not df_watchlist.empty:
+                    print("\n" + "=" * 80)
+                    print("WATCHLIST RECOVERY ANALYSIS")
+                    print("=" * 80)
+                    
+                    # Create watchlist table in format similar to backtest results
+                    # Show original trades that hit stop loss
+                    watchlist_display_data = []
+                    for _, row in df_watchlist.iterrows():
+                        # Calculate days_held for original trade (from entry_date to stop_loss_date)
+                        try:
+                            entry_dt = datetime.strptime(str(row['entry_date']), "%Y-%m-%d")
+                            stop_dt = datetime.strptime(str(row['stop_loss_date']), "%Y-%m-%d")
+                            days_held = (stop_dt - entry_dt).days
+                        except:
+                            days_held = None
+                        
+                        watchlist_display_data.append({
+                            'outcome': 'loss',
+                            'days_held': days_held,
+                            'exit_price': row.get('stop_price'),
+                            'return_pct': row.get('original_return_pct'),
+                            'exit_signal': 'stop_loss',
+                            'progress': 0.0,
+                            'exit_details': None,
+                            'test_date': row.get('entry_date'),
+                            'ticker': row.get('ticker'),
+                            'buy_price': row.get('buy_price'),
+                            'stop_price': row.get('stop_price'),
+                            'target_price': None,  # We don't have this in watchlist
+                            'revised_return_pct': row.get('revised_return_pct'),
+                            'upturn_date': row.get('upturn_date')
+                        })
+                    
+                    df_watchlist_display = pd.DataFrame(watchlist_display_data)
+                    
+                    # Display in format similar to backtest results
+                    watchlist_display_cols = [
+                        'outcome', 'days_held', 'exit_price', 'return_pct', 'exit_signal',
+                        'progress', 'test_date', 'ticker', 'buy_price',
+                        'stop_price', 'revised_return_pct', 'upturn_date'
+                    ]
+                    watchlist_display_cols = [col for col in watchlist_display_cols if col in df_watchlist_display.columns]
+                    print(df_watchlist_display[watchlist_display_cols].to_string(index=False))
+                    
+                    # Create separate re-entry trades table
+                    if 're_entry_outcome' in df_watchlist.columns:
+                        re_entry_trades_data = []
+                        for _, row in df_watchlist.iterrows():
+                            if pd.notna(row.get('re_entry_outcome')):
+                                # Use exit_date from simulation result, or calculate if not available
+                                exit_date = row.get('re_entry_exit_date')
+                                if pd.isna(exit_date) or exit_date is None:
+                                    # Fallback: calculate from upturn_date + days_held
+                                    if pd.notna(row.get('upturn_date')) and pd.notna(row.get('re_entry_days_held')):
+                                        try:
+                                            upturn_dt = datetime.strptime(str(row['upturn_date']), "%Y-%m-%d")
+                                            exit_dt = upturn_dt + timedelta(days=int(row['re_entry_days_held']))
+                                            exit_date = exit_dt.strftime("%Y-%m-%d")
+                                        except:
+                                            exit_date = None
+                                
+                                # Determine exit reason
+                                outcome = str(row.get('re_entry_outcome', 'unknown')).upper()
+                                if outcome == 'WIN':
+                                    exit_reason = 'Target Hit'
+                                elif outcome == 'LOSS':
+                                    exit_reason = 'Stop Loss'
+                                elif outcome == 'TIMEOUT':
+                                    exit_reason = 'Timeout (7 days)'
+                                else:
+                                    exit_reason = outcome
+                                
+                                re_entry_trades_data.append({
+                                    'ticker': row.get('ticker'),
+                                    'buy_in_date': row.get('upturn_date'),
+                                    'buy_price': row.get('re_entry_price'),
+                                    'exit_date': exit_date,
+                                    'exit_price': row.get('re_entry_exit_price'),
+                                    'exit_reason': exit_reason,
+                                    'return_pct': row.get('re_entry_return_pct'),
+                                    'days_held': row.get('re_entry_days_held')
+                                })
+                        
+                        if re_entry_trades_data:
+                            df_re_entry_trades = pd.DataFrame(re_entry_trades_data)
+                            print(f"\n{'='*80}")
+                            print("RE-ENTRY TRADES DETAIL")
+                            print(f"{'='*80}")
+                            re_entry_display_cols = ['ticker', 'buy_in_date', 'buy_price', 'exit_date', 
+                                                    'exit_price', 'exit_reason', 'return_pct', 'days_held']
+                            re_entry_display_cols = [col for col in re_entry_display_cols if col in df_re_entry_trades.columns]
+                            print(df_re_entry_trades[re_entry_display_cols].to_string(index=False))
+                    
+                    # Summary statistics
+                    if 'recovery_pct' in df_watchlist.columns:
+                        valid_recovery = df_watchlist['recovery_pct'].notna()
+                        if valid_recovery.any():
+                            print(f"\n📊 Recovery Statistics:")
+                            print(f"   Average recovery (low to high): {df_watchlist[valid_recovery]['recovery_pct'].mean():.2f}%")
+                            print(f"   Median recovery: {df_watchlist[valid_recovery]['recovery_pct'].median():.2f}%")
+                            print(f"   Max recovery: {df_watchlist[valid_recovery]['recovery_pct'].max():.2f}%")
+                            print(f"   Stocks with positive recovery: {len(df_watchlist[valid_recovery & (df_watchlist['recovery_pct'] > 0)])}/{len(df_watchlist[valid_recovery])}")
+                    
+                    if 'recovery_from_stop_pct' in df_watchlist.columns:
+                        valid_recovery_from_stop = df_watchlist['recovery_from_stop_pct'].notna()
+                        if valid_recovery_from_stop.any():
+                            print(f"\n   Average recovery from stop price: {df_watchlist[valid_recovery_from_stop]['recovery_from_stop_pct'].mean():.2f}%")
+                            print(f"   Stocks that recovered above stop: {len(df_watchlist[valid_recovery_from_stop & (df_watchlist['recovery_from_stop_pct'] > 0)])}/{len(df_watchlist[valid_recovery_from_stop])}")
+                    
+                    # Re-entry statistics
+                    if 're_entry_outcome' in df_watchlist.columns:
+                        re_entry_trades = df_watchlist[df_watchlist['re_entry_outcome'].notna()]
+                        if len(re_entry_trades) > 0:
+                            print(f"\n📊 Re-entry Statistics:")
+                            print(f"   Re-entries executed: {len(re_entry_trades)}")
+                            re_entry_wins = len(re_entry_trades[re_entry_trades['re_entry_outcome'] == 'win'])
+                            re_entry_losses = len(re_entry_trades[re_entry_trades['re_entry_outcome'] == 'loss'])
+                            re_entry_timeouts = len(re_entry_trades[re_entry_trades['re_entry_outcome'] == 'timeout'])
+                            print(f"   Re-entry Wins: {re_entry_wins} ({re_entry_wins/len(re_entry_trades)*100:.1f}%)")
+                            print(f"   Re-entry Losses: {re_entry_losses} ({re_entry_losses/len(re_entry_trades)*100:.1f}%)")
+                            print(f"   Re-entry Timeouts: {re_entry_timeouts} ({re_entry_timeouts/len(re_entry_trades)*100:.1f}%)")
+                            
+                            if 're_entry_return_pct' in re_entry_trades.columns:
+                                valid_re_entry_returns = re_entry_trades['re_entry_return_pct'].notna()
+                                if valid_re_entry_returns.any():
+                                    print(f"   Average re-entry return: {re_entry_trades[valid_re_entry_returns]['re_entry_return_pct'].mean():.2f}%")
+                    
+                    # Revised return statistics (with re-entry)
+                    if 'revised_return_pct' in df_watchlist.columns:
+                        valid_revised = df_watchlist['revised_return_pct'].notna()
+                        if valid_revised.any():
+                            print(f"\n📊 Revised Return Statistics (with re-entry):")
+                            print(f"   Average revised return: {df_watchlist[valid_revised]['revised_return_pct'].mean():.2f}%")
+                            print(f"   Median revised return: {df_watchlist[valid_revised]['revised_return_pct'].median():.2f}%")
+                            print(f"   Stocks with positive revised return: {len(df_watchlist[valid_revised & (df_watchlist['revised_return_pct'] > 0)])}/{len(df_watchlist[valid_revised])}")
+                            
+                            # Compare original vs revised
+                            if 'original_return_pct' in df_watchlist.columns:
+                                valid_original = df_watchlist['original_return_pct'].notna()
+                                if valid_original.any():
+                                    avg_original = df_watchlist[valid_original]['original_return_pct'].mean()
+                                    avg_revised = df_watchlist[valid_revised]['revised_return_pct'].mean()
+                                    improvement = avg_revised - avg_original
+                                    print(f"   Original average return: {avg_original:.2f}%")
+                                    print(f"   Improvement from re-entry: {improvement:+.2f}% ({improvement/abs(avg_original)*100 if avg_original != 0 else 0:+.1f}% relative improvement)")
+                                    
+                                    # Calculate total buys vs sells
+                                    if 'total_buys' in df_watchlist.columns and 'total_sells' in df_watchlist.columns:
+                                        total_buys = df_watchlist[valid_revised]['total_buys'].sum()
+                                        total_sells = df_watchlist[valid_revised]['total_sells'].sum()
+                                        overall_return_pct = ((total_sells - total_buys) / total_buys) * 100
+                                        print(f"\n   💰 Overall P&L (sum of all trades):")
+                                        print(f"      Total Buys: ${total_buys:,.2f}")
+                                        print(f"      Total Sells: ${total_sells:,.2f}")
+                                        print(f"      Net Return: ${total_sells - total_buys:+,.2f}")
+                                        print(f"      Overall Return %: {overall_return_pct:+.2f}%")
+                    
+                    # Calculate revised overall backtest summary (incorporating re-entry results)
+                    if 'revised_return_pct' in df_watchlist.columns and not df_backtest.empty:
+                        print(f"\n{'='*80}")
+                        print("REVISED OVERALL BACKTEST SUMMARY (with re-entry strategy)")
+                        print(f"{'='*80}")
+                        
+                        # Create a mapping of tickers to their revised returns
+                        ticker_to_revised = {}
+                        for _, row in df_watchlist.iterrows():
+                            if pd.notna(row.get('revised_return_pct')):
+                                ticker_to_revised[row['ticker']] = {
+                                    'revised_return_pct': row['revised_return_pct'],
+                                    'original_return_pct': row.get('original_return_pct', 0),
+                                    'total_buys': row.get('total_buys', 2000),
+                                    'total_sells': row.get('total_sells', 0)
+                                }
+                        
+                        # Calculate revised backtest results
+                        POSITION_SIZE = 1000.0
+                        total_original_return = df_backtest['return_dollars'].sum()
+                        total_original_capital = len(df_backtest) * POSITION_SIZE
+                        
+                        # Track which trades were re-entered
+                        reentered_tickers = set(ticker_to_revised.keys())
+                        
+                        # Calculate improvement from re-entry
+                        improvement_dollars = 0.0
+                        for ticker, revised_data in ticker_to_revised.items():
+                            # Find the original trade in backtest
+                            original_trade = df_backtest[df_backtest['ticker'] == ticker]
+                            if not original_trade.empty:
+                                original_return_dollars = original_trade.iloc[0]['return_dollars']
+                                # Revised return % is already calculated on $2000 (original $1000 + re-entry $1000)
+                                # So revised_return_dollars = (revised_return_pct / 100) * $2000
+                                revised_return_dollars = (revised_data['revised_return_pct'] / 100) * POSITION_SIZE * 2
+                                improvement_dollars += (revised_return_dollars - original_return_dollars)
+                        
+                        # Revised total return = original total + improvement from re-entries
+                        revised_total_return = total_original_return + improvement_dollars
+                        # Revised capital = original capital + additional capital for re-entries
+                        revised_total_capital = total_original_capital + (len(ticker_to_revised) * POSITION_SIZE)
+                        revised_avg_return_pct = (revised_total_return / revised_total_capital) * 100
+                        
+                        # Count trades (original trades + re-entries)
+                        total_trades_revised = len(df_backtest) + len(ticker_to_revised)
+                        
+                        print(f"\nOriginal Backtest:")
+                        print(f"   Total Trades: {len(df_backtest)}")
+                        print(f"   Total Capital: ${total_original_capital:,.0f}")
+                        print(f"   Total Return: ${total_original_return:+.2f}")
+                        print(f"   Average Return: {(total_original_return / total_original_capital) * 100:.2f}%")
+                        
+                        print(f"\nWith Re-entry Strategy:")
+                        print(f"   Total Trades: {total_trades_revised} (original {len(df_backtest)} + {len(ticker_to_revised)} re-entries)")
+                        print(f"   Total Capital: ${revised_total_capital:,.0f}")
+                        print(f"   Total Return: ${revised_total_return:+.2f}")
+                        print(f"   Average Return: {revised_avg_return_pct:.2f}%")
+                        print(f"   Improvement: ${improvement_dollars:+.2f} ({improvement_dollars/total_original_capital*100:+.2f}% relative)")
+                        
+                        # Calculate revised returns for re-entered trades
+                        reentered_avg_return = np.mean([v['revised_return_pct'] for v in ticker_to_revised.values()]) if ticker_to_revised else 0
+                        non_reentered_trades = df_backtest[~df_backtest['ticker'].isin(reentered_tickers)]
+                        non_reentered_avg_return = non_reentered_trades['return_pct'].mean() if len(non_reentered_trades) > 0 else 0
+                        
+                        print(f"\n   Average Return (non-reentered trades): {non_reentered_avg_return:.2f}%")
+                        print(f"   Average Return (re-entered trades, revised): {reentered_avg_return:.2f}%")
+                
+                else:
+                    print("\n⚠️  Watchlist analysis returned no results (possible data issues)")
         
         return
     
