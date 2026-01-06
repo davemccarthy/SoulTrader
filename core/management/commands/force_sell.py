@@ -35,7 +35,7 @@ class Command(BaseCommand):
         parser.add_argument(
             '--explanation',
             type=str,
-            default='Force sell: stock was force discovered and gives false results',
+            default='Force sold by user',
             help='Explanation for the force sell trades'
         )
         parser.add_argument(
@@ -53,7 +53,7 @@ class Command(BaseCommand):
         if not symbols:
             raise CommandError('You must provide at least one stock symbol to sell')
 
-        explanation = options.get('explanation', 'Force sell: stock was force discovered and gives false results')
+        explanation = options.get('explanation')
         dry_run = options.get('dry_run', False)
 
         # Create a SmartAnalysis session for tracking

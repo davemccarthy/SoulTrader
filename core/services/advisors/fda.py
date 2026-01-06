@@ -151,9 +151,8 @@ class FDA(AdvisorBase):
                 )
                 continue
 
-            print(f"FDA scores {stock_symbol} {score}")
-
             if score < DISCOVERY_CONFIDENCE_THRESHOLD:
+                logger.warning(f"FDA fails {stock_symbol} on {score} below threshold {DISCOVERY_CONFIDENCE_THRESHOLD}")
                 continue
 
             existing = best_approvals.get(stock_symbol)

@@ -153,6 +153,7 @@ def holdings(request):
             'total_value': total_value,
             'price_class': price_class,
             'website': stock.website,
+            'buy_date': holding.created,
         })
     
     # Build snapshot data for holdings stacked bar chart (last 30 days)

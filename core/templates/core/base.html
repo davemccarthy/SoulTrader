@@ -1312,7 +1312,7 @@
             <div class="portfolio-stat">
                 <div class="portfolio-stat-header">Return</div>
                 <div class="portfolio-stat-value {% if portfolio_widget.return_percent >= 0 %}positive{% else %}negative{% endif %}">
-                    {{ portfolio_widget.return_amount|default:"0"|floatformat:2 }}
+                    ${{ portfolio_widget.return_amount|default:"0"|floatformat:2 }}
                 </div>
             </div>
             <div class="portfolio-stat">

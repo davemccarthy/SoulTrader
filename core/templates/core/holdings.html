@@ -63,6 +63,11 @@
                     </div>
                     <div class="holdings-col holdings-col-company">
                         <span class="holdings-company" title="{{ holding.company }}">{{ holding.company|default:"—"|truncatechars:30 }}</span>
+                        {% if holding.buy_date %}
+                            <span class="holdings-buy-date" style="display: block; font-size: 0.75rem; color: #666; margin-top: 2px;">
+                                Bought {{ holding.buy_date|date:"M d, Y" }}
+                            </span>
+                        {% endif %}
                     </div>
 
                     <div class="holdings-col">
