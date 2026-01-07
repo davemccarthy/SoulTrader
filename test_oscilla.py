@@ -39,8 +39,10 @@ LOOKBACK_DAYS = 40
 MIN_RR = 1.8
 # Turn Confirmation Configuration
 TURN_CONFIRMATION_ENABLED = True  # Require turn confirmation (higher close + higher low) before entry
+# Downturn Exit Configuration (replaces target price exit)
+DOWNTURN_EXIT_ENABLED = True  # Enable downturn detection exit (lower close AND lower low) - replaces target price exit
 # Minimum stop buffer (set to 0.0 to disable, or e.g. 0.10 for 10% minimum stop)
-MIN_STOP_BUFFER_PCT = 0.10  # Fixed 10% stop loss (minimum stop distance from entry)
+MIN_STOP_BUFFER_PCT = 0.075  # Fixed 7.5% stop loss (minimum stop distance from entry)
 MAX_TARGET_PCT = 0.50  # Maximum target price as % gain (applies only when TARGET_DIMINISHING_ENABLED=False) - TESTING: Set to 50% to effectively disable target cap and test wave detection
 TARGET_DIMINISHING_MULTIPLIER = 0.75  # When diminishing enabled, cap target at this fraction of calculated target (0.75 = 75%)
 # Diminishing Target / Augmenting Stop Configuration
@@ -78,7 +80,7 @@ def get_last_trading_day():
     """
     today = datetime.now().date()
     weekday = today.weekday()  # Monday=0, Sunday=6
-    
+    """
     # Only run Tue-Fri (1-4)
     if weekday == 0:  # Monday
         print("⚠️  Skipping discovery on Monday")
@@ -86,7 +88,7 @@ def get_last_trading_day():
     elif weekday >= 5:  # Saturday (5) or Sunday (6)
         print("⚠️  Skipping discovery on weekend")
         return None
-    
+    """
     # Tue-Fri: previous working day is just yesterday
     # (if today is Tue, yesterday is Mon - both weekdays)
     previous_day = today - timedelta(days=1)
@@ -165,7 +167,7 @@ def get_historical_data_yfinance(ticker, start_date, end_date):
         end_date: End date string (YYYY-MM-DD)
     
     Returns:
-        pandas DataFrame with columns: date, close, high, low, volume
+        pandas DataFrame with columns: date, open, close, high, low, volume
     """
     try:
         # yfinance end date is exclusive, so add 1 day
@@ -184,6 +186,7 @@ def get_historical_data_yfinance(ticker, start_date, end_date):
         
         df = pd.DataFrame({
             "date": hist.index,
+            "open": hist['Open'].values,
             "close": hist['Close'].values,
             "high": hist['High'].values,
             "low": hist['Low'].values,
@@ -922,7 +925,8 @@ def detect_wave_exhaustion(
 
 def backtest_signal(ticker, entry_date, buy_price, stop_price, target_price, max_days=40,
                     target_diminishing_enabled=False, stop_augmenting_enabled=False,
-                    wave_exit_enabled=False, entry_wave_state=None, half_period=None):
+                    wave_exit_enabled=False, entry_wave_state=None, half_period=None,
+                    downturn_exit_enabled=False):
     """
     Backtest a single trading signal with target/stop exit logic.
     
@@ -937,9 +941,10 @@ def backtest_signal(ticker, entry_date, buy_price, stop_price, target_price, max
         stop_augmenting_enabled: If True, stop augments from original_stop → buy_price over max_days
         wave_exit_enabled: (DEPRECATED - Plan C) No longer used, kept for compatibility
         entry_wave_state: (DEPRECATED - Plan C) No longer used, kept for compatibility
+        downturn_exit_enabled: If True, use downturn detection (lower close AND lower low) instead of target price exit
     
     Returns:
-        dict with results: {'outcome': 'win'|'loss'|'timeout', 'days_held': int, 
+        dict with results: {'outcome': 'win'|'loss'|'timeout'|'downturn', 'days_held': int, 
                            'exit_price': float, 'return_pct': float, 'progress': float}
     """
     entry_dt = datetime.strptime(entry_date, "%Y-%m-%d")
@@ -959,6 +964,13 @@ def backtest_signal(ticker, entry_date, buy_price, stop_price, target_price, max
         # Track price history for STOP_SLIDE detection
         price_history_since_entry = []
         
+        # Track high prices for enhanced downturn detection (pullback after target)
+        high_history_since_entry = []
+        
+        # Track previous close/low for downturn detection
+        prev_close = None
+        prev_low = None
+        
         for i, row in df.iterrows():
             # Get date from the row (could be datetime or date)
             row_date = row['date']
@@ -973,6 +985,7 @@ def backtest_signal(ticker, entry_date, buy_price, stop_price, target_price, max
             if row_date_only <= entry_date_only:
                 continue
             
+            open_price = row['open']
             low = row['low']
             high = row['high']
             close = row['close']
@@ -982,6 +995,9 @@ def backtest_signal(ticker, entry_date, buy_price, stop_price, target_price, max
             # Update price history for STOP_SLIDE detection
             price_history_since_entry.append(close)
             price_series = pd.Series(price_history_since_entry)
+            
+            # Update high history for enhanced downturn detection
+            high_history_since_entry.append(high)
             
             # Calculate adjusted target and stop based on diminishing/augmenting logic
             if target_diminishing_enabled and days_held <= max_days:
@@ -1000,7 +1016,11 @@ def backtest_signal(ticker, entry_date, buy_price, stop_price, target_price, max
             
             # Check if stop was hit (price went below stop) - check first as more conservative
             if low <= current_stop:
-                exit_price = current_stop
+                # Realistic execution: gap down uses open (unavoidable), traded down uses average of low and stop
+                if open_price < current_stop:
+                    exit_price = open_price  # Gapped down - unavoidable
+                else:
+                    exit_price = (low + current_stop) / 2  # Traded down - average accounts for slippage
                 return_pct = ((exit_price - buy_price) / buy_price) * 100
                 # Calculate progress for reporting
                 target_range = current_target - buy_price
@@ -1059,9 +1079,62 @@ def backtest_signal(ticker, entry_date, buy_price, stop_price, target_price, max
                             'exit_details': {}
                         }
             
-            # Check if target was hit (price went above target)
-            if high >= current_target:
-                exit_price = current_target
+            # -----------------------------
+            # DOWNTURN DETECTION: Exit on lower close AND lower low (opposite of turn confirmation)
+            # Enhanced: Also exit if price pulls back below target after hitting it
+            # Only trigger when stock is in profit
+            # -----------------------------
+            if downturn_exit_enabled and close > buy_price:
+                # Case 1: Price is still >= target, use standard downturn detection
+                if close >= current_target:
+                    if prev_close is not None and prev_low is not None:
+                        # Downturn detected: lower close AND lower low (buyer exhaustion)
+                        downturn_detected = (close < prev_close) and (low < prev_low)
+                        
+                        if downturn_detected:
+                            exit_price = close
+                            return_pct = ((exit_price - buy_price) / buy_price) * 100
+                            # Calculate progress for reporting (use target range if available)
+                            target_range = current_target - buy_price if current_target > buy_price else (exit_price - buy_price)
+                            progress = max(0.0, (exit_price - buy_price) / target_range) if target_range > 0 else 0.0
+                            return {
+                                'outcome': 'downturn',
+                                'days_held': days_held,
+                                'exit_price': exit_price,
+                                'return_pct': return_pct,
+                                'exit_signal': None,
+                                'progress': round(progress, 3),
+                                'exit_details': {}
+                            }
+                
+                # Case 2: Price has pulled back below target after hitting it
+                # Exit to protect gains if we recently hit target
+                elif close < current_target and len(high_history_since_entry) > 0:
+                    # Check recent high over last 5-10 days (use at least 5 days, up to 10)
+                    lookback_days = min(10, max(5, len(high_history_since_entry)))
+                    recent_highs = high_history_since_entry[-lookback_days:]
+                    recent_high = max(recent_highs) if recent_highs else high
+                    
+                    # If recent high exceeded target, exit to protect gains
+                    if recent_high > current_target:
+                        exit_price = close
+                        return_pct = ((exit_price - buy_price) / buy_price) * 100
+                        # Calculate progress for reporting
+                        target_range = current_target - buy_price if current_target > buy_price else (exit_price - buy_price)
+                        progress = max(0.0, (exit_price - buy_price) / target_range) if target_range > 0 else 0.0
+                        return {
+                            'outcome': 'downturn',
+                            'days_held': days_held,
+                            'exit_price': exit_price,
+                            'return_pct': return_pct,
+                            'exit_signal': None,
+                            'progress': round(progress, 3),
+                            'exit_details': {}
+                        }
+            
+            # Check if target was hit (price went above target) - skip if downturn exit is enabled
+            if not downturn_exit_enabled and high >= current_target:
+                exit_price = close
                 return_pct = ((exit_price - buy_price) / buy_price) * 100
                 # Progress = 1.0 when target is hit (100% of target range)
                 target_range = current_target - buy_price
@@ -1075,6 +1148,10 @@ def backtest_signal(ticker, entry_date, buy_price, stop_price, target_price, max
                     'progress': round(progress, 3),
                     'exit_details': {}
                 }
+            
+            # Update previous close/low for next iteration (for downturn detection)
+            prev_close = close
+            prev_low = low
             
             # If we've exceeded max_days, exit at close
             if days_held >= max_days:
@@ -1137,7 +1214,7 @@ def backtest_signal(ticker, entry_date, buy_price, stop_price, target_price, max
         }
 
 
-def simulate_reentry(ticker, upturn_date, re_entry_price, stop_loss_date, max_days=7, max_window_days=20, verbose=False):
+def simulate_reentry(ticker, upturn_date, re_entry_price, stop_loss_date, max_days=14, max_window_days=20, verbose=False):
     """
     Simulate re-entry trade with diminishing TP and constant SL.
     
@@ -1146,7 +1223,7 @@ def simulate_reentry(ticker, upturn_date, re_entry_price, stop_loss_date, max_da
         upturn_date: Date string (YYYY-MM-DD) when upturn was detected (buy date)
         re_entry_price: Close price on upturn date (buy price)
         stop_loss_date: Original stop loss date (for reference)
-        max_days: Maximum days to hold re-entry trade (default: 7)
+        max_days: Maximum days to hold re-entry trade (default: 14)
         max_window_days: Maximum window after stop loss to observe (default: 20)
         verbose: If True, show detailed output
     
@@ -1157,11 +1234,12 @@ def simulate_reentry(ticker, upturn_date, re_entry_price, stop_loss_date, max_da
                                      're_entry_tp': float, 're_entry_sl': float}
     """
     # Calculate re-entry TP and SL
-    # Use fixed TP: +20% (diminishing over 7 days)
+    # Use fixed TP: +20% (diminishing over 14 days)
     re_entry_tp = re_entry_price * 1.20  # +20% target
-    # Use fixed SL: 10% for re-entry trades (separate risk management from original trades)
-    RE_ENTRY_STOP_PCT = 0.10  # Fixed 10% stop loss for re-entry trades
-    re_entry_sl = re_entry_price * (1 - RE_ENTRY_STOP_PCT)  # -10% stop loss
+    # Use augmenting SL: Start at -15%, augment to buy_price (break-even) over 14 days
+    RE_ENTRY_STOP_INITIAL_PCT = 0.15  # Initial -15% stop loss (wider to start)
+    re_entry_sl_initial = re_entry_price * (1 - RE_ENTRY_STOP_INITIAL_PCT)  # -15% initial stop
+    re_entry_sl_final = re_entry_price  # Final stop at buy_price (break-even)
     
     # Calculate end date (max_window_days after stop loss, or max_days after upturn, whichever is earlier)
     stop_dt = datetime.strptime(stop_loss_date, "%Y-%m-%d")
@@ -1186,7 +1264,7 @@ def simulate_reentry(ticker, upturn_date, re_entry_price, stop_loss_date, max_da
                 'return_pct': 0.0,
                 're_entry_price': re_entry_price,
                 're_entry_tp': re_entry_tp,
-                're_entry_sl': re_entry_sl
+                're_entry_sl': re_entry_sl_initial
             }
         
         # Filter to dates after upturn date (exclusive - we enter at close of upturn day)
@@ -1209,7 +1287,7 @@ def simulate_reentry(ticker, upturn_date, re_entry_price, stop_loss_date, max_da
                 'return_pct': 0.0,
                 're_entry_price': re_entry_price,
                 're_entry_tp': re_entry_tp,
-                're_entry_sl': re_entry_sl
+                're_entry_sl': re_entry_sl_initial
             }
         
         upturn_date_only = upturn_dt.date()
@@ -1259,9 +1337,10 @@ def simulate_reentry(ticker, upturn_date, re_entry_price, stop_loss_date, max_da
                     'return_pct': return_pct,
                     're_entry_price': re_entry_price,
                     're_entry_tp': re_entry_tp,
-                    're_entry_sl': re_entry_sl
+                    're_entry_sl': re_entry_sl_initial
                 }
             
+            open_price = float(row['open'])
             low = float(row['low'])
             high = float(row['high'])
             close = float(row['close'])
@@ -1270,9 +1349,19 @@ def simulate_reentry(ticker, upturn_date, re_entry_price, stop_loss_date, max_da
             progress = days_held / max_days if max_days > 0 else 1.0
             current_target = re_entry_tp - progress * (re_entry_tp - re_entry_price)
             
+            # Calculate augmenting stop loss (from -15% to break-even over max_days)
+            if days_held <= max_days:
+                current_stop = re_entry_sl_initial + progress * (re_entry_sl_final - re_entry_sl_initial)
+            else:
+                current_stop = re_entry_sl_final  # After max_days, stop at break-even
+            
             # Check stop loss first (more conservative)
-            if low <= re_entry_sl:
-                exit_price = re_entry_sl
+            if low <= current_stop:
+                # Realistic execution: gap down uses open (unavoidable), traded down uses average of low and stop
+                if open_price < current_stop:
+                    exit_price = open_price  # Gapped down - unavoidable
+                else:
+                    exit_price = (low + current_stop) / 2  # Traded down - average accounts for slippage
                 exit_date = row_date_only.strftime("%Y-%m-%d")
                 return_pct = ((exit_price - re_entry_price) / re_entry_price) * 100
                 return {
@@ -1283,7 +1372,7 @@ def simulate_reentry(ticker, upturn_date, re_entry_price, stop_loss_date, max_da
                     'return_pct': return_pct,
                     're_entry_price': re_entry_price,
                     're_entry_tp': re_entry_tp,
-                    're_entry_sl': re_entry_sl
+                    're_entry_sl': re_entry_sl_initial
                 }
             
             # Check target price
@@ -1299,7 +1388,7 @@ def simulate_reentry(ticker, upturn_date, re_entry_price, stop_loss_date, max_da
                     'return_pct': return_pct,
                     're_entry_price': re_entry_price,
                     're_entry_tp': re_entry_tp,
-                    're_entry_sl': re_entry_sl
+                    're_entry_sl': re_entry_sl_initial
                 }
             
             # Update previous close for next iteration
@@ -1332,7 +1421,7 @@ def simulate_reentry(ticker, upturn_date, re_entry_price, stop_loss_date, max_da
                 'return_pct': return_pct,
                 're_entry_price': re_entry_price,
                 're_entry_tp': re_entry_tp,
-                're_entry_sl': re_entry_sl
+                're_entry_sl': re_entry_sl_initial
             }
         else:
             return {
@@ -1343,7 +1432,7 @@ def simulate_reentry(ticker, upturn_date, re_entry_price, stop_loss_date, max_da
                 'return_pct': 0.0,
                 're_entry_price': re_entry_price,
                 're_entry_tp': re_entry_tp,
-                're_entry_sl': re_entry_sl
+                're_entry_sl': re_entry_sl_initial
             }
         
     except Exception as e:
@@ -1357,7 +1446,7 @@ def simulate_reentry(ticker, upturn_date, re_entry_price, stop_loss_date, max_da
             'return_pct': 0.0,
             're_entry_price': re_entry_price,
             're_entry_tp': re_entry_tp,
-            're_entry_sl': re_entry_sl,
+            're_entry_sl': re_entry_sl_initial,
             'error': str(e)
         }
 
@@ -1368,7 +1457,7 @@ def analyze_watchlist_recovery(watchlist, verbose=False):
     Now includes re-entry simulation for stocks with upturn detected.
     
     Args:
-        watchlist: List of dicts with keys: ticker, stop_loss_date, stop_price, buy_price, entry_date
+        watchlist: List of dicts with keys: ticker, stop_loss_date, stop_price, buy_price, entry_date, exit_price, return_pct
         verbose: If True, show detailed output
     
     Returns:
@@ -1390,6 +1479,9 @@ def analyze_watchlist_recovery(watchlist, verbose=False):
         stop_price = entry['stop_price']
         buy_price = entry['buy_price']
         entry_date = entry['entry_date']
+        # Use actual exit price and return from backtest (may be worse than stop if gap down)
+        actual_exit_price = entry.get('exit_price', stop_price)  # Fallback to stop_price if not provided
+        actual_return_pct = entry.get('return_pct', ((stop_price - buy_price) / buy_price) * 100)  # Fallback if not provided
         
         try:
             # Calculate end date: 20 trading days ≈ 28 calendar days
@@ -1568,7 +1660,7 @@ def analyze_watchlist_recovery(watchlist, verbose=False):
                         upturn_date=upturn_date_str,
                         re_entry_price=re_entry_price,
                         stop_loss_date=stop_loss_date,
-                        max_days=7,
+                        max_days=14,
                         max_window_days=20,
                         verbose=verbose
                     )
@@ -1591,7 +1683,8 @@ def analyze_watchlist_recovery(watchlist, verbose=False):
                 'recovery_pct': round(recovery_pct, 2) if recovery_pct is not None else None,
                 'recovery_from_stop_pct': round(recovery_from_stop_pct, 2) if recovery_from_stop_pct is not None else None,
                 'upturn_day': upturn_day,
-                'upturn_date': upturn_date_str
+                'upturn_date': upturn_date_str,
+                'actual_exit_price': actual_exit_price  # Actual exit price (may be lower than stop if gap down)
             }
             
             # Add re-entry results if available
@@ -1608,15 +1701,15 @@ def analyze_watchlist_recovery(watchlist, verbose=False):
                 })
                 
                 # Calculate combined P&L: original loss + re-entry gain/loss
-                # Original trade: bought at buy_price, sold at stop_price (loss)
-                original_return_pct = ((stop_price - buy_price) / buy_price) * 100
+                # Original trade: bought at buy_price, sold at actual_exit_price (loss, may be worse than stop if gap down)
+                original_return_pct = actual_return_pct  # Use actual return from backtest
                 re_entry_return_pct = re_entry_result.get('return_pct', 0.0)
                 
                 # Calculate total buys and sells
-                # Original: buy at buy_price, sell at stop_price (assume $1000 position)
+                # Original: buy at buy_price, sell at actual_exit_price (assume $1000 position)
                 POSITION_SIZE = 1000.0
                 original_buy_amount = POSITION_SIZE
-                original_sell_amount = POSITION_SIZE * (stop_price / buy_price)  # Actual sell amount
+                original_sell_amount = POSITION_SIZE * (actual_exit_price / buy_price)  # Actual sell amount
                 
                 # Re-entry: buy at re_entry_price, sell at exit_price
                 re_entry_buy_amount = POSITION_SIZE
@@ -1635,10 +1728,10 @@ def analyze_watchlist_recovery(watchlist, verbose=False):
             else:
                 # No re-entry (no upturn detected or upturn but no re-entry data)
                 # Calculate original return only
-                original_return_pct = ((stop_price - buy_price) / buy_price) * 100
+                original_return_pct = actual_return_pct  # Use actual return from backtest
                 POSITION_SIZE = 1000.0
                 original_buy_amount = POSITION_SIZE
-                original_sell_amount = POSITION_SIZE * (stop_price / buy_price)
+                original_sell_amount = POSITION_SIZE * (actual_exit_price / buy_price)  # Use actual exit price
                 
                 result_dict.update({
                     're_entry_price': None,
@@ -1760,7 +1853,8 @@ def track_stock_reentry(tickers, start_date, end_date, verbose=False):
                     stop_augmenting_enabled=STOP_AUGMENTING_ENABLED,
                     wave_exit_enabled=False,
                     entry_wave_state=None,
-                    half_period=pos.get('half_period')
+                    half_period=pos.get('half_period'),
+                    downturn_exit_enabled=DOWNTURN_EXIT_ENABLED
                 )
                 pos['exit_result'] = result
                 
@@ -2068,7 +2162,8 @@ def run_backtest(start_date, end_date=None, num_dates=10, max_stocks=None, verbo
                 stop_augmenting_enabled=STOP_AUGMENTING_ENABLED,
                 wave_exit_enabled=False,  # Disabled - Plan C
                 entry_wave_state=None,
-                half_period=half_period_val
+                half_period=half_period_val,
+                downturn_exit_enabled=DOWNTURN_EXIT_ENABLED
             )
             
             result.update({
@@ -2093,7 +2188,9 @@ def run_backtest(start_date, end_date=None, num_dates=10, max_stocks=None, verbo
                     'entry_date': test_date,
                     'stop_loss_date': stop_loss_date,
                     'buy_price': buy_price,
-                    'stop_price': stop_price
+                    'stop_price': stop_price,
+                    'exit_price': result['exit_price'],  # Actual exit price (may be lower than stop if gap down)
+                    'return_pct': result['return_pct']   # Actual return % (may be worse than stop % if gap down)
                 })
                 if verbose:
                     print(f"     📋 Added {ticker} to watchlist (SL on {stop_loss_date})")
@@ -2101,7 +2198,7 @@ def run_backtest(start_date, end_date=None, num_dates=10, max_stocks=None, verbo
             all_results.append(result)
             
             if verbose:
-                outcome_symbol = "✓" if result['outcome'] == 'win' else "✗" if result['outcome'] == 'loss' else "📉" if result['outcome'] == 'stop_slide' else "⏱"
+                outcome_symbol = "✓" if result['outcome'] == 'win' else "✗" if result['outcome'] == 'loss' else "📉" if result['outcome'] in ['stop_slide', 'downturn'] else "⏱"
                 print(f"     {outcome_symbol} {result['outcome'].upper()}: Exit=${result['exit_price']:.2f} "
                       f"({result['return_pct']:+.2f}%) after {result['days_held']} days")
     
@@ -2126,21 +2223,24 @@ def run_backtest(start_date, end_date=None, num_dates=10, max_stocks=None, verbo
     wins = len(df_backtest[df_backtest['outcome'] == 'win'])
     losses = len(df_backtest[df_backtest['outcome'] == 'loss'])
     stop_slides = len(df_backtest[df_backtest['outcome'] == 'stop_slide'])
+    downturns = len(df_backtest[df_backtest['outcome'] == 'downturn'])
     timeouts = len(df_backtest[df_backtest['outcome'] == 'timeout'])
     
-    profitable_trades = wins + stop_slides
+    profitable_trades = wins + stop_slides + downturns
     win_rate = (profitable_trades / total_trades * 100) if total_trades > 0 else 0
     
     avg_return_pct = df_backtest['return_pct'].mean()
     avg_return_wins_pct = df_backtest[df_backtest['outcome'] == 'win']['return_pct'].mean() if wins > 0 else 0
     avg_return_stop_slides_pct = df_backtest[df_backtest['outcome'] == 'stop_slide']['return_pct'].mean() if stop_slides > 0 else 0
-    avg_return_profitable_pct = df_backtest[df_backtest['outcome'].isin(['win', 'stop_slide'])]['return_pct'].mean() if profitable_trades > 0 else 0
+    avg_return_downturns_pct = df_backtest[df_backtest['outcome'] == 'downturn']['return_pct'].mean() if downturns > 0 else 0
+    avg_return_profitable_pct = df_backtest[df_backtest['outcome'].isin(['win', 'stop_slide', 'downturn'])]['return_pct'].mean() if profitable_trades > 0 else 0
     avg_return_losses_pct = df_backtest[df_backtest['outcome'] == 'loss']['return_pct'].mean() if losses > 0 else 0
     
     avg_return_dollars = df_backtest['return_dollars'].mean()
     avg_return_wins_dollars = df_backtest[df_backtest['outcome'] == 'win']['return_dollars'].mean() if wins > 0 else 0
     avg_return_stop_slides_dollars = df_backtest[df_backtest['outcome'] == 'stop_slide']['return_dollars'].mean() if stop_slides > 0 else 0
-    avg_return_profitable_dollars = df_backtest[df_backtest['outcome'].isin(['win', 'stop_slide'])]['return_dollars'].mean() if profitable_trades > 0 else 0
+    avg_return_downturns_dollars = df_backtest[df_backtest['outcome'] == 'downturn']['return_dollars'].mean() if downturns > 0 else 0
+    avg_return_profitable_dollars = df_backtest[df_backtest['outcome'].isin(['win', 'stop_slide', 'downturn'])]['return_dollars'].mean() if profitable_trades > 0 else 0
     avg_return_losses_dollars = df_backtest[df_backtest['outcome'] == 'loss']['return_dollars'].mean() if losses > 0 else 0
     total_return_dollars = df_backtest['return_dollars'].sum()
     
@@ -2148,7 +2248,10 @@ def run_backtest(start_date, end_date=None, num_dates=10, max_stocks=None, verbo
     
     print(f"\nTotal Trades: {total_trades} (${POSITION_SIZE:,.0f} position per trade)")
     print(f"Profitable Trades: {profitable_trades} ({win_rate:.1f}%)")
-    print(f"  - Wins (target hit): {wins} ({wins/total_trades*100:.1f}%)")
+    if wins > 0:
+        print(f"  - Wins (target hit): {wins} ({wins/total_trades*100:.1f}%)")
+    if downturns > 0:
+        print(f"  - Downturn Exits: {downturns} ({downturns/total_trades*100:.1f}%)")
     if stop_slides > 0:
         print(f"  - STOP_SLIDE Exits: {stop_slides} ({stop_slides/total_trades*100:.1f}%)")
     print(f"Losses: {losses} ({losses/total_trades*100:.1f}%)" if total_trades > 0 else "Losses: 0")
@@ -2158,6 +2261,8 @@ def run_backtest(start_date, end_date=None, num_dates=10, max_stocks=None, verbo
         print(f"Average Return (Profitable): {avg_return_profitable_pct:.2f}% (${avg_return_profitable_dollars:+.2f})")
     if wins > 0:
         print(f"Average Return (Wins): {avg_return_wins_pct:.2f}% (${avg_return_wins_dollars:+.2f})")
+    if downturns > 0:
+        print(f"Average Return (Downturn): {avg_return_downturns_pct:.2f}% (${avg_return_downturns_dollars:+.2f})")
     if stop_slides > 0:
         print(f"Average Return (STOP_SLIDE): {avg_return_stop_slides_pct:.2f}% (${avg_return_stop_slides_dollars:+.2f})")
     if losses > 0:
@@ -2416,7 +2521,7 @@ def main():
                         watchlist_display_data.append({
                             'outcome': 'loss',
                             'days_held': days_held,
-                            'exit_price': row.get('stop_price'),
+                            'exit_price': row.get('actual_exit_price', row.get('stop_price')),  # Use actual exit price if available
                             'return_pct': row.get('original_return_pct'),
                             'exit_signal': 'stop_loss',
                             'progress': 0.0,
