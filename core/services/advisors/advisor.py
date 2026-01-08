@@ -8,6 +8,8 @@ import yfinance as yf
 import google.generativeai as genai
 import pandas as pd
 from datetime import datetime, timedelta
+from django.db.models import F, ExpressionWrapper, DateTimeField, Func
+from django.db.models.functions import Cast
 from core.models import Stock, Discovery, Recommendation, Advisor
 from google.api_core import exceptions
 from django.conf import settings
@@ -371,6 +373,109 @@ class AdvisorBase:
         recommendation.save()
 
         logger.info(f"{self.advisor.name} scores {stock.symbol} a confidences of {confidence:.2f}")
+
+    def watch_sells(self, explanation, days=14):
+        """
+        Query database for sell instructions triggered today and add to watchlist.
+
+        Only watches stocks discovered by this advisor.
+        Filters by instruction types listed in the advisor's 'watch' class attribute.
+        Called after market close (last 30 min) during discovery phase.
+
+        Args:
+            explanation: description
+            days: Number of days to watch (default 14)
+
+        Returns:
+            int: Number of stocks added/updated in watchlist
+        """
+        from core.models import SellInstruction, Discovery
+        from datetime import date
+
+        # Get instruction types to watch from class attribute (e.g., ['STOP_PERCENTAGE'] for Oscilla)
+        watch_types = getattr(self.__class__, 'watch', [])
+        if not watch_types:
+            return 0  # No watch types configured
+
+        # Find sells from today for this advisor's discoveries
+        today = date.today()
+        sells = SellInstruction.objects.filter(
+            discovery__advisor=self.advisor,
+            discovery__created__date=today,  # Sells from discoveries created today
+            instruction__in=watch_types  # Filter by watch instruction types
+        ).select_related('discovery', 'discovery__stock').distinct('discovery__stock')
+
+        # Add each unique stock to watchlist - watch() handles duplicates
+        watched = 0
+        for sell in sells:
+            discovery = sell.discovery
+            self.watch(discovery.stock.symbol, explanation, days=days)
+            watched += 1
+
+        return watched
+
+    def watch(self, symbol, explanation, days=14):
+        """
+        Add a stock to the watchlist for this advisor.
+
+        Args:
+            symbol: Stock symbol (str) - will auto-create Stock if it doesn't exist
+            explanation: Explanation for why this stock is being watched
+            days: Number of days until expiration (defaults to 14)
+
+        Returns:
+            Watchlist object or None if creation fails
+        """
+        from core.models import Watchlist
+
+        # Get or create Stock object (auto-create like discovered() does)
+        try:
+            stock = Stock.objects.get(symbol=symbol)
+        except Stock.DoesNotExist:
+            # Create stock if it doesn't exist
+            stock = Stock.create(symbol, self.advisor)
+            logger.info(f"{self.advisor.name} created stock {stock.symbol} for watchlist")
+
+        # Create watchlist entry
+        watchlist_entry = Watchlist.objects.create(
+            advisor=self.advisor,
+            stock=stock,  # Model uses Stock object
+            price=stock.price,
+            explanation=explanation[:500],  # Truncate to max length
+            days=days
+        )
+
+        logger.info(f"{self.advisor.name} watching {stock.symbol}: {explanation[:100]}")
+        return watchlist_entry
+
+
+    def watchlist(self):
+        """
+        Get list of non-expired pending watchlist entries for this advisor.
+
+        Returns:
+            QuerySet of Watchlist entries that are pending and not expired
+        """
+        from core.models import Watchlist
+        from django.utils import timezone
+        from django.db.models import F, ExpressionWrapper, DateTimeField
+
+        # Get all pending watchlist entries for this advisor
+        # Filter out expired entries: created + days >= now (not expired)
+        # Calculate expiration_date: created + (days as interval)
+        now = timezone.now()
+        
+        # Use database-level date arithmetic (PostgreSQL supports interval arithmetic)
+        # For PostgreSQL: created + (days || ' days')::interval
+        # For Django ORM, we'll use ExpressionWrapper with proper casting
+        return Watchlist.objects.filter(
+            advisor=self.advisor,
+            status='Pending'
+        ).extra(
+            where=["created + (days || ' days')::interval >= %s"],
+            params=[now]
+        ).select_related('stock')
+
 
     def health_check(self, stock, sa):
         """
@@ -802,6 +907,10 @@ Thank you
 
     def news_flash(self, sa, title, url):
 
+        # Check if market is open
+        market_status = self.market_open()
+        is_market_open = market_status is not None and market_status >= 0
+
         # Filter by title: reject articles containing common low-value phrases
         title_lower = title.lower() if title else ""
         filter_phrases = [
@@ -867,11 +976,6 @@ Thank you
         recommendation = results.get("recommendation", "")
         tickers = results.get("tickers", [])
 
-        # tmp
-        #print(url)
-        if explanation:
-            print(explanation)
-
         # Log it
         logger.info(f"{recommendation}: {tickers} | {title}")
 
@@ -879,6 +983,27 @@ Thank you
         if recommendation != "BUY" and recommendation != "STRONG_BUY":
             return
 
+        # If market not open yet
+        if not is_market_open:
+            for ticker in tickers:
+                self.watch(
+                    symbol=ticker,
+                    explanation=f"{model} recommended {recommendation} from reading article. | Article: {title} | {url} | {explanation} ",
+                    days=1
+                )
+                logger.info(f"{self.advisor.name} added {ticker} to watchlist (market closed): {title[:80]}")
+            return
+
+        # Market open - process pending watchlist entries
+        pending_entries = self.watchlist()
+        
+        for entry in pending_entries:
+            self.discovered(sa, entry.stock.symbol, entry.explanation, sell_instructions, 1.0)
+            entry.save()
+
+            logger.info(f"{self.advisor.name} processed pending watchlist entry: {entry.stock.symbol}")
+
+        # Market open - new discoveries
         for ticker in tickers:
             self.discovered(sa, ticker, f"{model} recommended {recommendation} from reading article. | Article: {title} | {url} | {explanation} ",
                 sell_instructions, 1.5 if recommendation == "STRONG_BUY" else 1.0)

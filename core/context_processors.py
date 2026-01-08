@@ -121,6 +121,10 @@ def get_portfolio_widget_data(user):
     # Calculate total shares
     shares_count = holdings.aggregate(total=Sum('shares'))['total'] or 0
     
+    # Refresh stock prices for accurate holdings value calculation
+    for h in holdings:
+        h.stock.refresh()
+    
     # Calculate current holdings value (live market worth)
     holdings_value = sum(Decimal(str(h.shares)) * h.stock.price for h in holdings)
     invested = holdings_value

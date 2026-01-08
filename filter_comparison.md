@@ -63,3 +63,14 @@ The fact that we went from 6 stocks to 2 stocks shows the filters are working, b
 
 
 
+
+
+
+
+
+
+
+
+
+
+

@@ -15,7 +15,7 @@ import logging
 
 import yfinance as yf
 
-from .models import Profile, Holding, Discovery, Trade, Recommendation, SellInstruction, Health, Snapshot
+from .models import Profile, Holding, Discovery, Trade, Recommendation, SellInstruction, Health, Snapshot, Watchlist
 
 
 logger = logging.getLogger(__name__)
@@ -789,3 +789,55 @@ def profile(request):
         'profile': user_profile,
     }
     return render(request, 'core/profile.html', context)
+
+
+@login_required
+def watchlist(request):
+    """Watchlist page - displays stocks being watched by advisors"""
+    watchlist_qs = (
+        Watchlist.objects
+        .select_related('stock', 'advisor', 'stock__advisor')
+        .order_by('-created')
+    )
+    
+    watchlist_data = []
+    for entry in watchlist_qs:
+        stock = entry.stock
+        stock.refresh()  # Get latest price
+        current_price = stock.price or Decimal('0')
+        watch_price = entry.price or current_price
+        
+        # Calculate change from watch price
+        if watch_price and watch_price > 0:
+            change_percent = ((current_price / watch_price) * 100 - 100)
+        else:
+            change_percent = Decimal('0')
+        
+        if change_percent > 0:
+            price_class = 'positive'
+        elif change_percent < 0:
+            price_class = 'negative'
+        else:
+            price_class = 'neutral'
+        
+        watchlist_data.append({
+            'id': entry.id,
+            'symbol': stock.symbol,
+            'company': stock.company,
+            'watch_price': watch_price,
+            'current_price': current_price,
+            'change_percent': change_percent,
+            'price_class': price_class,
+            'status': entry.status,
+            'explanation': entry.explanation,
+            'days': entry.days,
+            'created': entry.created,
+            'advisor': entry.advisor.name if entry.advisor else '',
+            'advisor_logo': _advisor_logo_url(entry.advisor),
+        })
+    
+    context = {
+        'current_page': 'watchlist',
+        'watchlist': watchlist_data,
+    }
+    return render(request, 'core/watchlist.html', context)

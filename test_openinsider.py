@@ -11,7 +11,7 @@ import requests
 from bs4 import BeautifulSoup
 from typing import List, Dict, Optional
 import yfinance as yf
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 BASE_URL = "http://openinsider.com"
 
@@ -326,7 +326,24 @@ def get_current_price(ticker: str) -> Optional[float]:
             return float(hist["Close"].iloc[-1])
         
         return None
-    except Exception as e:
+    except Exception:
+        return None
+
+
+def get_price_on_date(ticker: str, d: date) -> Optional[float]:
+    """
+    Approximate closing price for ticker on calendar date d.
+    Used to approximate the price at time of filing.
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        start = d
+        end = d + timedelta(days=1)
+        hist = stock.history(start=start, end=end, interval="1d")
+        if not hist.empty:
+            return float(hist["Close"].iloc[0])
+        return None
+    except Exception:
         return None
 
 
@@ -383,7 +400,7 @@ def recency_score(days_ago_val: Optional[int], max_days: int = 7) -> float:
     return 1.0 - (days_ago_val / max_days)
 
 
-def check_net_selling(ticker: str, days_lookback: int = 90) -> tuple:
+def check_net_selling(ticker: str, days_lookback: int = 90, verbose: bool = True) -> tuple:
     """
     Check if a ticker has net selling (more sales than purchases) by scraping the ticker page.
     Only looks at recent transactions (within days_lookback days) to avoid counting old historical sales.
@@ -403,7 +420,8 @@ def check_net_selling(ticker: str, days_lookback: int = 90) -> tuple:
         resp = requests.get(url, headers=headers, timeout=15)
         
         if not resp.ok:
-            print(f"  ⚠️  Could not check net selling for {ticker}: HTTP {resp.status_code}")
+            if verbose:
+                print(f"  ⚠️  Could not check net selling for {ticker}: HTTP {resp.status_code}")
             return (False, 0, 0)
         
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -546,7 +564,7 @@ def check_net_selling(ticker: str, days_lookback: int = 90) -> tuple:
             # Fallback to dollar value comparison if share counts aren't available
             has_net_selling = total_sale_value > total_purchase_value
         
-        if has_net_selling:
+        if has_net_selling and verbose:
             if total_purchase_shares > 0 or total_sale_shares > 0:
                 print(f"  ⚠️  {ticker}: Net selling detected - {total_sale_shares:,} shares (${total_sale_value:,.0f}) sold vs {total_purchase_shares:,} shares (${total_purchase_value:,.0f}) bought")
             else:
@@ -555,7 +573,8 @@ def check_net_selling(ticker: str, days_lookback: int = 90) -> tuple:
         return has_net_selling, total_purchase_value, total_sale_value
     
     except Exception as e:
-        print(f"  ⚠️  Error checking net selling for {ticker}: {e}")
+        if verbose:
+            print(f"  ⚠️  Error checking net selling for {ticker}: {e}")
         return False, 0, 0
 
 
@@ -645,7 +664,11 @@ def score_insider_purchase(purchase: Dict, max_qty: float = 1000000, max_value: 
     return min(1.0, max(0.0, composite_score))
 
 
-def discover_stocks_with_insider_purchases(show_prices: bool = True, filter_ticker: Optional[str] = None) -> Dict[str, List[Dict]]:
+def discover_stocks_with_insider_purchases(
+    show_prices: bool = True,
+    filter_ticker: Optional[str] = None,
+    verbose: bool = True,
+) -> Dict[str, List[Dict]]:
     """
     Discover stocks with insider purchases from main page.
     
@@ -656,16 +679,18 @@ def discover_stocks_with_insider_purchases(show_prices: bool = True, filter_tick
     Returns:
         Dictionary mapping ticker to list of purchases
     """
-    print(f"\n{'='*60}")
-    print(f"DISCOVERING stocks with insider purchases")
-    if filter_ticker:
-        print(f"Filtering for: {filter_ticker}")
-    print(f"{'='*60}\n")
+    if verbose:
+        print(f"\n{'='*60}")
+        print(f"DISCOVERING stocks with insider purchases")
+        if filter_ticker:
+            print(f"Filtering for: {filter_ticker}")
+        print(f"{'='*60}\n")
     
     purchases = scrape_openinsider_purchases()
     
     if not purchases:
-        print("❌ No purchases found")
+        if verbose:
+            print("❌ No purchases found")
         return {}
     
     # Group by ticker
@@ -682,7 +707,8 @@ def discover_stocks_with_insider_purchases(show_prices: bool = True, filter_tick
         print(f"❌ No purchases found for filter: {filter_ticker}")
         return {}
     
-    print(f"\n✅ Found {len(by_ticker)} unique stocks with purchases")
+    if verbose:
+        print(f"\n✅ Found {len(by_ticker)} unique stocks with purchases")
     
     # Calculate scores and filter by threshold to find "potential buys"
     potential_buys = {}
@@ -691,9 +717,10 @@ def discover_stocks_with_insider_purchases(show_prices: bool = True, filter_tick
     skipped_net_selling = 0
     for ticker, purchases_list in by_ticker.items():
         # Check for net selling - filter out stocks where insiders are net sellers (matches advisor logic)
-        has_net_selling, total_purchase_val, total_sale_val = check_net_selling(ticker)
+        has_net_selling, total_purchase_val, total_sale_val = check_net_selling(ticker, verbose=verbose)
         if has_net_selling:
-            print(f"  ❌ {ticker}: Skipping due to net selling (${total_sale_val:,.0f} sold vs ${total_purchase_val:,.0f} bought)")
+            if verbose:
+                print(f"  ❌ {ticker}: Skipping due to net selling (${total_sale_val:,.0f} sold vs ${total_purchase_val:,.0f} bought)")
             skipped_net_selling += 1
             continue
         
@@ -714,14 +741,16 @@ def discover_stocks_with_insider_purchases(show_prices: bool = True, filter_tick
                 'total_score': total_score
             }
     
-    print(f"   → {len(potential_buys)} stocks meet discovery threshold (score >= {DISCOVERY_THRESHOLD})")
-    if skipped_net_selling > 0:
-        print(f"   → {skipped_net_selling} stocks skipped due to net selling\n")
-    else:
-        print()
+    if verbose:
+        print(f"   → {len(potential_buys)} stocks meet discovery threshold (score >= {DISCOVERY_THRESHOLD})")
+        if skipped_net_selling > 0:
+            print(f"   → {skipped_net_selling} stocks skipped due to net selling\n")
+        else:
+            print()
     
     if not potential_buys:
-        print("❌ No stocks meet the discovery threshold. All purchases scored too low.")
+        if verbose:
+            print("❌ No stocks meet the discovery threshold. All purchases scored too low.")
         return {}
     
     # Sort by score (best opportunities first)
@@ -733,7 +762,7 @@ def discover_stocks_with_insider_purchases(show_prices: bool = True, filter_tick
     
     # Get current prices if requested
     price_data = {}
-    if show_prices:
+    if show_prices and verbose:
         print("Fetching current prices...")
         for ticker, _ in sorted_tickers:
             current_price = get_current_price(ticker)
@@ -745,41 +774,64 @@ def discover_stocks_with_insider_purchases(show_prices: bool = True, filter_tick
         print()
     
     # Display results (only potential buys)
-    for ticker, data in sorted_tickers:
-        purchases_list = data['purchases']
-        score = data['score']
-        total_value = sum(p.get("value", 0) or 0 for p in purchases_list)
-        avg_purchase_price = sum(p.get("price", 0) for p in purchases_list) / len(purchases_list)
-        
-        print(f"{'='*60}")
-        print(f"{ticker}: Score {score:.2f} | {len(purchases_list)} purchase(s), ${total_value:,.0f} total")
-        print(f"{'='*60}")
-        
-        # Show purchase details
-        for i, p in enumerate(purchases_list, 1):
-            print(f"  Purchase {i}: ${p.get('price', 0):.2f} x {p.get('quantity', 0):,} = ${p.get('value', 0):,.0f}")
-        
-        # Show current price and gains if available
-        if show_prices and ticker in price_data:
-            current_price = price_data[ticker]
-            if current_price:
-                gain_pct = ((current_price - avg_purchase_price) / avg_purchase_price) * 100
-                gain_sign = "📈" if gain_pct > 0 else "📉" if gain_pct < 0 else "➡️"
-                print(f"\n  Avg Purchase Price: ${avg_purchase_price:.2f}")
-                print(f"  Current Price:       ${current_price:.2f}")
-                print(f"  Gain/Loss:           {gain_sign} {gain_pct:+.2f}%")
-                
-                # Calculate total gain if we had bought
-                total_shares = sum(p.get("quantity", 0) for p in purchases_list)
-                total_cost = sum(p.get("value", 0) or 0 for p in purchases_list)
-                current_value = total_shares * current_price
-                total_gain = current_value - total_cost
-                total_gain_pct = (total_gain / total_cost * 100) if total_cost > 0 else 0
-                print(f"  Total Value:         ${current_value:,.2f} (${total_gain:+,.2f}, {total_gain_pct:+.2f}%)")
-            else:
-                print(f"\n  ❌ Current price not available")
-        
-        print()
+    if verbose:
+        for ticker, data in sorted_tickers:
+            purchases_list = data['purchases']
+            score = data['score']
+            total_value = sum(p.get("value", 0) or 0 for p in purchases_list)
+            avg_purchase_price = sum(p.get("price", 0) for p in purchases_list) / len(purchases_list)
+            
+            print(f"{'='*60}")
+            print(f"{ticker}: Score {score:.2f} | {len(purchases_list)} purchase(s), ${total_value:,.0f} total")
+            print(f"{'='*60}")
+            
+            # Show purchase details
+            for i, p in enumerate(purchases_list, 1):
+                print(f"  Purchase {i}: ${p.get('price', 0):.2f} x {p.get('quantity', 0):,} = ${p.get('value', 0):,.0f}")
+            
+            # Show current price and gains if available
+            if show_prices and ticker in price_data:
+                current_price = price_data[ticker]
+                if current_price:
+                    # Determine a filing/trade date to anchor the "filing-day" price
+                    filing_dates = []
+                    for p in purchases_list:
+                        trade_date_str = p.get("trade_date", "")
+                        filing_date_str = p.get("filing_date", "")
+
+                        td = parse_date(trade_date_str) if trade_date_str else None
+                        fd = parse_date(filing_date_str) if filing_date_str else None
+
+                        if fd:
+                            filing_dates.append(fd)
+                        elif td:
+                            filing_dates.append(td)
+
+                    filing_price = None
+                    filing_date_used = None
+                    if filing_dates:
+                        filing_date_used = min(filing_dates)
+                        filing_price = get_price_on_date(ticker, filing_date_used)
+
+                    gain_pct = ((current_price - avg_purchase_price) / avg_purchase_price) * 100
+                    gain_sign = "📈" if gain_pct > 0 else "📉" if gain_pct < 0 else "➡️"
+                    print(f"\n  Avg Purchase Price: ${avg_purchase_price:.2f}")
+                    if filing_price is not None:
+                        print(f"  Filing-day close:   ${filing_price:.2f} ({filing_date_used.isoformat()})")
+                    print(f"  Current Price:       ${current_price:.2f}")
+                    print(f"  Gain/Loss:           {gain_sign} {gain_pct:+.2f}%")
+                    
+                    # Calculate total gain if we had bought
+                    total_shares = sum(p.get("quantity", 0) for p in purchases_list)
+                    total_cost = sum(p.get("value", 0) or 0 for p in purchases_list)
+                    current_value = total_shares * current_price
+                    total_gain = current_value - total_cost
+                    total_gain_pct = (total_gain / total_cost * 100) if total_cost > 0 else 0
+                    print(f"  Total Value:         ${current_value:,.2f} (${total_gain:+,.2f}, {total_gain_pct:+.2f}%)")
+                else:
+                    print(f"\n  ❌ Current price not available")
+            
+            print()
     
     # Return in same format as before for compatibility, but only potential buys
     return {ticker: data['purchases'] for ticker, data in potential_buys.items()}
@@ -821,262 +873,119 @@ if __name__ == "__main__":
     # Check for filter argument (just ticker)
     elif len(sys.argv) > 1:
         filter_ticker = sys.argv[1].upper()
-        discover_stocks_with_insider_purchases(show_prices=True, filter_ticker=filter_ticker)
+        discover_stocks_with_insider_purchases(show_prices=True, filter_ticker=filter_ticker, verbose=True)
     else:
-        # Show all with summary
-        results = discover_stocks_with_insider_purchases(show_prices=True, filter_ticker=None)
-        
-        # Calculate scores for all stocks and display sorted by score
-        print(f"\n{'='*60}")
-        print("STOCKS RANKED BY INSIDER PURCHASE SCORE")
-        print(f"{'='*60}\n")
-        
-        # Calculate scores for all purchases
+        # Default: run discovery quietly and show a concise summary table + picked stock
+        results = discover_stocks_with_insider_purchases(show_prices=False, filter_ticker=None, verbose=False)
+
+        if not results:
+            print("No potential buys found.")
+            sys.exit(0)
+
+        # Flatten purchases to get normalization constants
         all_purchases = []
         for ticker, purchases_list in results.items():
             all_purchases.extend(purchases_list)
-        
-        if all_purchases:
-            # Find max values for normalization
-            max_qty = max((p.get("quantity", 0) or 0 for p in all_purchases), default=1000000)
-            max_value = max((p.get("value", 0) or 0 for p in all_purchases), default=5000000)
-            
-            # Calculate cluster sizes (purchases per ticker)
-            ticker_counts = {}
-            for p in all_purchases:
-                ticker = p.get("ticker")
-                ticker_counts[ticker] = ticker_counts.get(ticker, 0) + 1
-            
-            # Calculate average score per stock
-            stock_scores = {}
-            for ticker, purchases_list in results.items():
-                scores = [score_insider_purchase(p, max_qty, max_value, ticker_counts.get(ticker, 1)) for p in purchases_list]
-                stock_scores[ticker] = sum(scores) / len(scores)  # Average score for the stock
-            
-            # Get current prices and calculate gains for each stock
-            stock_performance = {}
-            print("Fetching current prices for performance validation...")
-            for ticker, purchases_list in results.items():
-                avg_purchase_price = sum(p.get("price", 0) for p in purchases_list) / len(purchases_list)
-                current_price = get_current_price(ticker)
-                if current_price:
-                    gain_pct = ((current_price - avg_purchase_price) / avg_purchase_price) * 100
-                    stock_performance[ticker] = {
-                        'gain_pct': gain_pct,
-                        'buy_price': avg_purchase_price,
-                        'current_price': current_price
-                    }
-            
-            # Sort by score descending
-            sorted_by_score = sorted(stock_scores.items(), key=lambda x: x[1], reverse=True)
-            
-            # Display in format: STK - 0.XX (gain %)
-            print("\nScore | Price Performance")
-            print("-" * 60)
-            for ticker, score in sorted_by_score:
-                perf = stock_performance.get(ticker)
-                if perf:
-                    gain_sign = "📈" if perf['gain_pct'] > 0 else "📉" if perf['gain_pct'] < 0 else "➡️"
-                    print(f"{ticker:6s} - {score:.2f}  {gain_sign} {perf['gain_pct']:+6.2f}%  (${perf['buy_price']:.2f} → ${perf['current_price']:.2f})")
-                else:
-                    print(f"{ticker:6s} - {score:.2f}  (price data unavailable)")
-            print()
-        
-        # Calculate summary stats
-        print(f"\n{'='*60}")
-        print("PERFORMANCE SUMMARY")
-        print(f"{'='*60}\n")
-        
-        gains = []
+
+        if not all_purchases:
+            print("No purchases found after discovery.")
+            sys.exit(0)
+
+        max_qty = max((p.get("quantity", 0) or 0 for p in all_purchases), default=MAX_QTY)
+        max_value = max((p.get("value", 0) or 0 for p in all_purchases), default=MAX_VALUE)
+
+        # Cluster sizes per ticker
+        ticker_counts = {}
+        for p in all_purchases:
+            t = p.get("ticker")
+            ticker_counts[t] = ticker_counts.get(t, 0) + 1
+
+        # Average score per stock and price performance
+        stock_scores: Dict[str, float] = {}
+        stock_perf: Dict[str, Dict] = {}
+
         for ticker, purchases_list in results.items():
-            avg_price = sum(p.get("price", 0) for p in purchases_list) / len(purchases_list)
+            scores = [
+                score_insider_purchase(
+                    p,
+                    max_qty,
+                    max_value,
+                    ticker_counts.get(ticker, 1),
+                )
+                for p in purchases_list
+            ]
+            avg_score = sum(scores) / len(scores) if scores else 0.0
+            stock_scores[ticker] = avg_score
+
+            avg_purchase_price = sum(p.get("price", 0) for p in purchases_list) / len(purchases_list)
+
+            # Filing-day price (earliest trade/filing date)
+            filing_dates = []
+            for p in purchases_list:
+                trade_date_str = p.get("trade_date", "")
+                filing_date_str = p.get("filing_date", "")
+
+                td = parse_date(trade_date_str) if trade_date_str else None
+                fd = parse_date(filing_date_str) if filing_date_str else None
+
+                if fd:
+                    filing_dates.append(fd)
+                elif td:
+                    filing_dates.append(td)
+
+            filing_price = None
+            filing_date_used = None
+            if filing_dates:
+                filing_date_used = min(filing_dates)
+                filing_price = get_price_on_date(ticker, filing_date_used)
+
             current_price = get_current_price(ticker)
-            if current_price:
-                gain_pct = ((current_price - avg_price) / avg_price) * 100
-                gains.append((ticker, gain_pct, avg_price, current_price))
-        
-        if gains:
-            gains.sort(key=lambda x: x[1], reverse=True)
-            
-            top_performers = gains[:5]
-            worst_performers = gains[-5:]
-            
-            print("📈 TOP PERFORMERS:")
-            for ticker, gain_pct, buy_price, current_price in top_performers:
-                print(f"  {ticker:6s} {gain_pct:+7.2f}%  (${buy_price:.2f} → ${current_price:.2f})")
-            
-            print("\n📉 WORST PERFORMERS:")
-            for ticker, gain_pct, buy_price, current_price in worst_performers:
-                print(f"  {ticker:6s} {gain_pct:+7.2f}%  (${buy_price:.2f} → ${current_price:.2f})")
-            
-            avg_gain = sum(g[1] for g in gains) / len(gains)
-            winners = sum(1 for g in gains if g[1] > 0)
-            print(f"\n📊 STATS:")
-            print(f"  Average Gain: {avg_gain:+.2f}%")
-            print(f"  Winners: {winners}/{len(gains)} ({winners/len(gains)*100:.1f}%)")
-            
-            # Show all CEO purchases across all stocks
-            all_ceo_purchases = []
-            for ticker, purchases_list in results.items():
-                for p in purchases_list:
-                    if "CEO" in str(p.get("title", "")).upper():
-                        all_ceo_purchases.append((ticker, p))
-            
-            if all_ceo_purchases:
-                print(f"\n👔 ALL CEO PURCHASES (across all stocks):")
-                for ticker, p in all_ceo_purchases:
-                    price = p.get("price", 0) or 0
-                    qty = p.get("quantity", 0) or 0
-                    value = p.get("value", 0) or 0
-                    if value == 0 and qty > 0:
-                        value = price * qty
-                    print(f"  {ticker}: ${price:.2f} x {qty:,} = ${value:,.0f} ({p.get('insider_name', 'Unknown')})")
-            
-            # Analyze differences between top and worst performers
-            print(f"\n{'='*60}")
-            print("COMPARATIVE ANALYSIS: TOP vs WORST PERFORMERS")
-            print(f"{'='*60}\n")
-            
-            # Get purchase data for top and worst
-            top_tickers = [g[0] for g in top_performers]
-            worst_tickers = [g[0] for g in worst_performers]
-            
-            top_purchases = []
-            worst_purchases = []
-            
-            for ticker, purchases_list in results.items():
-                if ticker in top_tickers:
-                    top_purchases.extend(purchases_list)
-                elif ticker in worst_tickers:
-                    worst_purchases.extend(purchases_list)
-            
-            # Compare metrics
-            def analyze_purchases(purchases, label):
-                if not purchases:
-                    return {}
-                
-                # Calculate date metrics
-                trade_dates = []
-                filing_dates = []
-                days_ago_list = []
-                recency_scores = []
-                
-                for p in purchases:
-                    trade_date_str = p.get("trade_date", "")
-                    filing_date_str = p.get("filing_date", "")
-                    
-                    trade_date_obj = parse_date(trade_date_str)
-                    filing_date_obj = parse_date(filing_date_str)
-                    
-                    if trade_date_obj:
-                        trade_dates.append(trade_date_obj)
-                        days = days_ago(trade_date_obj)
-                        if days is not None:
-                            days_ago_list.append(days)
-                            recency_scores.append(recency_score(days))
-                    elif filing_date_obj:
-                        filing_dates.append(filing_date_obj)
-                        days = days_ago(filing_date_obj)
-                        if days is not None:
-                            days_ago_list.append(days)
-                            recency_scores.append(recency_score(days))
-                
-                avg_days_ago = sum(days_ago_list) / len(days_ago_list) if days_ago_list else None
-                avg_recency = sum(recency_scores) / len(recency_scores) if recency_scores else None
-                
-                metrics = {
-                    "count": len(purchases),
-                    "avg_price": sum(p.get("price", 0) or 0 for p in purchases) / len(purchases),
-                    "total_qty": sum(p.get("quantity", 0) or 0 for p in purchases),
-                    "avg_qty": sum(p.get("quantity", 0) or 0 for p in purchases) / len(purchases),
-                    "total_value": sum(p.get("value", 0) or 0 for p in purchases),
-                    "avg_value": sum(p.get("value", 0) or 0 for p in purchases) / len(purchases),
-                    "penny_stocks": sum(1 for p in purchases if p.get("is_penny_stock", False)),
-                    "has_ceo": sum(1 for p in purchases if "CEO" in str(p.get("title", ""))),
-                    "has_cfo": sum(1 for p in purchases if "CFO" in str(p.get("title", ""))),
-                    "has_director": sum(1 for p in purchases if "Director" in str(p.get("title", ""))),
-                    "has_officer": sum(1 for p in purchases if "Officer" in str(p.get("title", ""))),
-                    "avg_days_ago": avg_days_ago,
-                    "avg_recency_score": avg_recency,
-                    "with_trade_date": len(trade_dates),
-                    "with_filing_date": len(filing_dates),
-                }
-                
-                print(f"{label}:")
-                print(f"  Purchase Count: {metrics['count']}")
-                print(f"  Avg Price: ${metrics['avg_price']:.2f}")
-                print(f"  Total Quantity: {metrics['total_qty']:,} shares")
-                print(f"  Avg Quantity per Purchase: {metrics['avg_qty']:,.0f} shares")
-                print(f"  Total Value: ${metrics['total_value']:,.0f}")
-                print(f"  Avg Value per Purchase: ${metrics['avg_value']:,.0f}")
-                print(f"  Penny Stocks: {metrics['penny_stocks']}/{metrics['count']} ({metrics['penny_stocks']/metrics['count']*100:.1f}%)")
-                if metrics['avg_days_ago'] is not None:
-                    print(f"  Avg Days Ago: {metrics['avg_days_ago']:.1f} days")
-                    print(f"  Avg Recency Score: {metrics['avg_recency_score']:.3f} (1.0 = very recent, 0.0 = old, 7-day window)")
-                print(f"  With Trade Date: {metrics['with_trade_date']}/{metrics['count']}")
-                print(f"  With Filing Date: {metrics['with_filing_date']}/{metrics['count']}")
-                print(f"  CEO Purchases: {metrics['has_ceo']}/{metrics['count']}")
-                if metrics['has_ceo'] > 0:
-                    ceo_tickers = [p.get("ticker") for p in purchases if "CEO" in str(p.get("title", "")).upper()]
-                    print(f"    CEO Tickers: {', '.join(set(ceo_tickers))}")
-                print(f"  CFO Purchases: {metrics['has_cfo']}/{metrics['count']}")
-                print(f"  Director Purchases: {metrics['has_director']}/{metrics['count']}")
-                print(f"  Officer Purchases: {metrics['has_officer']}/{metrics['count']}")
-                print()
-                
-                return metrics
-            
-            top_metrics = analyze_purchases(top_purchases, "📈 TOP PERFORMERS")
-            worst_metrics = analyze_purchases(worst_purchases, "📉 WORST PERFORMERS")
-            
-            # Show differences
-            if top_metrics and worst_metrics:
-                print("🔍 KEY DIFFERENCES:")
-                print(f"  Price: Top avg ${top_metrics['avg_price']:.2f} vs Worst avg ${worst_metrics['avg_price']:.2f}")
-                print(f"  Quantity: Top avg {top_metrics['avg_qty']:,.0f} vs Worst avg {worst_metrics['avg_qty']:,.0f} ({top_metrics['avg_qty']/worst_metrics['avg_qty']:.2f}x)")
-                print(f"  Value: Top avg ${top_metrics['avg_value']:,.0f} vs Worst avg ${worst_metrics['avg_value']:,.0f} ({top_metrics['avg_value']/worst_metrics['avg_value']:.2f}x)")
-                print(f"  Penny Stocks: Top {top_metrics['penny_stocks']/top_metrics['count']*100:.1f}% vs Worst {worst_metrics['penny_stocks']/worst_metrics['count']*100:.1f}%")
-                if top_metrics['avg_days_ago'] and worst_metrics['avg_days_ago']:
-                    print(f"  Recency: Top avg {top_metrics['avg_days_ago']:.1f} days ago (score: {top_metrics['avg_recency_score']:.3f}) vs Worst avg {worst_metrics['avg_days_ago']:.1f} days ago (score: {worst_metrics['avg_recency_score']:.3f})")
-                    print(f"    → Top performers are {worst_metrics['avg_days_ago']/top_metrics['avg_days_ago']:.2f}x more recent!")
-                print(f"  CEO Involvement: Top {top_metrics['has_ceo']}/{top_metrics['count']} vs Worst {worst_metrics['has_ceo']}/{worst_metrics['count']}")
-                
-                # Explain trade date vs filing date
-                print(f"\n📅 DATE EXPLANATION:")
-                print(f"  Trade Date: When the insider actually bought the stock (more accurate)")
-                print(f"  Filing Date: When the SEC filing was submitted (can be delayed)")
-                print(f"  → Trade date is preferred for recency scoring")
-                
-                # Show scoring example
-                print(f"\n{'='*60}")
-                print("SCORING FACTORS FOR INSIDER PURCHASES")
-                print(f"{'='*60}\n")
-                print("Composite Score = Weighted combination of:")
-                print("  • Quantity Score (30%): Larger purchases = higher conviction")
-                print("  • Value Score (30%): Larger dollar amounts = higher conviction")
-                print("  • Recency Score (25%): More recent = better (7-day window, prefer trade_date)")
-                print("  • Price Score (15%): Lower price = better (penny stocks < $5)")
-                print("  • Title Bonus: +0.1 for CEO, +0.05 for CFO")
-                print("  • Cluster Bonus: +0.05 per additional insider (max +0.15)")
-                print()
-                
-                # Calculate and show scores for top/worst
-                if top_purchases and worst_purchases:
-                    # Find max values for normalization
-                    all_purchases = top_purchases + worst_purchases
-                    max_qty = max((p.get("quantity", 0) or 0 for p in all_purchases), default=1000000)
-                    max_value = max((p.get("value", 0) or 0 for p in all_purchases), default=5000000)
-                    
-                    # Calculate cluster sizes for each purchase (count purchases per ticker)
-                    ticker_counts = {}
-                    for p in all_purchases:
-                        ticker = p.get("ticker")
-                        ticker_counts[ticker] = ticker_counts.get(ticker, 0) + 1
-                    
-                    top_scores = [score_insider_purchase(p, max_qty, max_value, ticker_counts.get(p.get("ticker"), 1)) for p in top_purchases]
-                    worst_scores = [score_insider_purchase(p, max_qty, max_value, ticker_counts.get(p.get("ticker"), 1)) for p in worst_purchases]
-                    
-                    print(f"📊 SCORING RESULTS:")
-                    print(f"  Top Performers Avg Score: {sum(top_scores)/len(top_scores):.3f}")
-                    print(f"  Worst Performers Avg Score: {sum(worst_scores)/len(worst_scores):.3f}")
-                    print(f"  → Top performers score {sum(top_scores)/len(top_scores) / (sum(worst_scores)/len(worst_scores)):.2f}x higher!")
+
+            gain_pct = None
+            gain_sign = ""
+            if current_price and avg_purchase_price:
+                gain_pct = ((current_price - avg_purchase_price) / avg_purchase_price) * 100
+                gain_sign = "📈" if gain_pct > 0 else "📉" if gain_pct < 0 else "➡️"
+
+            stock_perf[ticker] = {
+                "avg_price": avg_purchase_price,
+                "current_price": current_price,
+                "gain_pct": gain_pct,
+                "gain_sign": gain_sign,
+                "filing_price": filing_price,
+                "filing_date": filing_date_used,
+            }
+
+        # Sort by score (best first)
+        sorted_by_score = sorted(stock_scores.items(), key=lambda x: x[1], reverse=True)
+
+        if not sorted_by_score:
+            print("\nNo scored stocks available.")
+            sys.exit(0)
+
+        print(f"\n{'='*60}")
+        print("INSIDER CANDIDATES SUMMARY (ranked by score)")
+        print(f"{'='*60}\n")
+
+        # Print all candidates in a compact summary, marking the top pick
+        for idx, (ticker, score) in enumerate(sorted_by_score, start=1):
+            perf = stock_perf.get(ticker) or {}
+            avg_price = perf.get("avg_price")
+            current_price = perf.get("current_price")
+            gain_pct = perf.get("gain_pct")
+            gain_sign = perf.get("gain_sign", "")
+            filing_price = perf.get("filing_price")
+            filing_date_used = perf.get("filing_date")
+
+            prefix = "*" if idx == 1 else " "
+            line = f"{prefix} {ticker:6s} - {score:.2f}"
+            if gain_pct is not None:
+                line += f"  {gain_sign} {gain_pct:+6.2f}%"
+            if avg_price and current_price:
+                line += f"  (${avg_price:.2f} → ${current_price:.2f})"
+            print(line)
+
+            if filing_price is not None and filing_date_used is not None:
+                print(f"   Filing-day close: ${filing_price:.2f} ({filing_date_used.isoformat()})")
+
+        print("\n* Top-ranked candidate by insider purchase score\n")

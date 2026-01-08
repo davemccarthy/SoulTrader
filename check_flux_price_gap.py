@@ -96,3 +96,14 @@ else:
         print(f'   This is actually beneficial - getting better prices than expected.')
 
 
+
+
+
+
+
+
+
+
+
+
+

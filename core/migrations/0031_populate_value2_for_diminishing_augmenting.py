@@ -50,3 +50,25 @@ class Migration(migrations.Migration):
         migrations.RunPython(populate_value2_for_diminishing_augmenting, reverse_populate_value2_for_diminishing_augmenting),
     ]
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

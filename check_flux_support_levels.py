@@ -10,18 +10,22 @@ django.setup()
 
 import re
 from django.utils import timezone
-from datetime import timedelta
+from datetime import timedelta, datetime
 from core.models import Discovery, Advisor, Trade
 
 flux_advisor = Advisor.objects.get(name='Flux')
-cutoff = timezone.now() - timedelta(days=30)
+
+# First half of December 2025: Dec 1-15
+start_date = timezone.make_aware(datetime(2025, 12, 1))
+end_date = timezone.make_aware(datetime(2025, 12, 16))
 
 discoveries = Discovery.objects.filter(
     advisor=flux_advisor,
-    created__gte=cutoff
+    created__gte=start_date,
+    created__lt=end_date
 ).select_related('stock', 'sa').order_by('-created')
 
-print(f'Analyzing {discoveries.count()} recent Flux discoveries\n')
+print(f'Analyzing {discoveries.count()} Flux discoveries from {start_date.date()} to {end_date.date()}\n')
 print('=' * 120)
 print(f"{'Symbol':<8} {'Price':<8} {'Support':<10} {'Resistance':<12} {'Position%':<10} {'Upside%':<10} {'EOD Change%':<12}")
 print('-' * 120)
@@ -72,5 +76,10 @@ for discovery in discoveries[:30]:
 print('-' * 120)
 print('\nNote: Position% should be < 20% for "near support" buys')
 print('      Higher Position% = further from support = worse entry price')
+
+
+
+
+
 
 

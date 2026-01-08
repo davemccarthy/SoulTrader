@@ -42,9 +42,10 @@ REL_VOLUME_MAX = 1.3
 LOOKBACK_DAYS = 40  # Days of history needed for wavelet analysis (64 trading days minimum)
 MIN_RR = 1.8  # Minimum reward:risk ratio
 TURN_CONFIRMATION_ENABLED = True  # Require turn confirmation (higher close + higher low) before entry
-MIN_STOP_BUFFER_PCT = 0.10  # Minimum stop distance from entry (0 = disabled, use calculated stop directly)
+# MIN_STOP_BUFFER_PCT = 0.10  # Minimum stop distance from entry (0 = disabled, use calculated stop directly)
 MAX_WAVE_POSITION = -999  # Maximum (most negative) wave_position to accept (filters strong downtrends) - DISABLED
 MIN_CONSISTENCY = 0.0  # Minimum consistency score (filters inconsistent wave patterns) - DISABLED
+MAX_STOCKS = 500  # Maximum number of stocks to process (for testing/comparison with test script, None = unlimited)
 
 
 def get_historical_data_yfinance(ticker, start_date, end_date):
@@ -229,7 +230,7 @@ def wavelet_trade_engine(price_series, min_rr=MIN_RR, low_series=None, turn_conf
     
     # Use calculated stop for candidate filtering (min stop buffer applied later in backtesting/trading)
     stop = calculated_stop
-    target = buy + 0.85 * (avg_peak - buy)
+    target = buy + 1.0 * (avg_peak - buy)  # Aim for full avg_peak (diminishing target provides protection)
     risk = buy - stop
     reward = target - buy
     rr = reward / risk if risk > 0 else float('nan')
@@ -267,6 +268,8 @@ class Oscilla(AdvisorBase):
     
     Uses wavelet analysis to detect cyclical patterns and identify optimal entry points.
     """
+    # Instructions to watch stock
+    watch = ['STOP_PERCENTAGE']
 
     def discover(self, sa):
         """
@@ -281,9 +284,34 @@ class Oscilla(AdvisorBase):
 
         # Check if within first hour of market open
         market_status = self.market_open()
+
+        # Check pending watchlist entries during open hours
+        if market_status is not None and market_status >= 0:
+            for entry in self.watchlist():
+                stock = entry.stock
+
+                if not stock.upturned():
+                    continue
+
+                # Create sell instructions for stop and target prices
+                sell_instructions = [
+                    ("STOP_PERCENTAGE", 0.9, None),
+                    ("TARGET_DIMINISHING", 1.25, 7),
+                ]
+
+                # Create discovery
+                self.discovered(
+                    sa=sa, symbol=stock.ticker, explanation=entry.explanation,
+                    sell_instructions=sell_instructions, weight=1.0)
+
+        # Only discovery 1st hour of market open
         if market_status is None or market_status < 0 or market_status >= 60:
             logger.info(f"Oscilla discovery skipped: outside first hour window (market_status={market_status})")
             return
+
+        # End of market day - monitor sells
+        if market_status > 330:
+            self.watch_sells(explanation="Sold at stop loss - monitoring for upturn", days=7)
 
         try:
             # Get filtered stocks from Polygon (uses cached list)
@@ -297,6 +325,11 @@ class Oscilla(AdvisorBase):
             if df_stocks.empty:
                 logger.info("Oscilla: No stocks found from Polygon")
                 return
+            
+            # Limit to MAX_STOCKS if set (for testing/comparison)
+            if MAX_STOCKS and len(df_stocks) > MAX_STOCKS:
+                df_stocks = df_stocks.head(MAX_STOCKS)
+                logger.info(f"Oscilla: Limited to {MAX_STOCKS} stocks for analysis")
             
             logger.info(f"Oscilla: Analyzing {len(df_stocks)} stocks with wavelet analysis...")
             
@@ -414,7 +447,7 @@ class Oscilla(AdvisorBase):
                         ("TARGET_DIMINISHING", Decimal(str(wave_result['target'])), 7),
                     ]
                     
-                    # Create discovery (commented out for testing)
+                    # Create discovery
                     self.discovered(
                         sa=sa,
                         symbol=ticker,

@@ -44,7 +44,7 @@ DOWNTURN_EXIT_ENABLED = True  # Enable downturn detection exit (lower close AND 
 # Minimum stop buffer (set to 0.0 to disable, or e.g. 0.10 for 10% minimum stop)
 MIN_STOP_BUFFER_PCT = 0.075  # Fixed 7.5% stop loss (minimum stop distance from entry)
 MAX_TARGET_PCT = 0.50  # Maximum target price as % gain (applies only when TARGET_DIMINISHING_ENABLED=False) - TESTING: Set to 50% to effectively disable target cap and test wave detection
-TARGET_DIMINISHING_MULTIPLIER = 0.75  # When diminishing enabled, cap target at this fraction of calculated target (0.75 = 75%)
+TARGET_DIMINISHING_MULTIPLIER = 1.0  # When diminishing enabled, cap target at this fraction of calculated target (1.0 = no cap, use full target)
 # Diminishing Target / Augmenting Stop Configuration
 TARGET_DIMINISHING_ENABLED = True   # Enable diminishing target over time (target → buy_price over max_days)
 STOP_AUGMENTING_ENABLED = False     # Enable trailing stop over time (stop → buy_price over max_days)
@@ -235,7 +235,7 @@ def get_historical_data_yfinance(ticker, start_date, end_date):
 def build_candidates(reference_date=None, min_price=MIN_PRICE, max_price=MAX_PRICE,
                     min_avg_volume=MIN_AVG_VOLUME, rel_volume_min=REL_VOLUME_MIN, 
                     rel_volume_max=REL_VOLUME_MAX, lookback_days=LOOKBACK_DAYS, 
-                    max_stocks=None, verbose=False):
+                    max_stocks=None, verbose=False, candidate_symbols=None):
     """
     Build candidate stocks that meet volume and price criteria.
     Uses Polygon for initial stock discovery (1 API call), yfinance for historical data.
@@ -248,6 +248,7 @@ def build_candidates(reference_date=None, min_price=MIN_PRICE, max_price=MAX_PRI
         rel_volume_max: Maximum relative volume (vs average)
         lookback_days: Number of days to look back for analysis
         verbose: If True, print progress messages
+        candidate_symbols: Optional list of stock symbols to test instead of fetching from Polygon
     
     Returns:
         pandas DataFrame with candidate stocks
@@ -269,18 +270,61 @@ def build_candidates(reference_date=None, min_price=MIN_PRICE, max_price=MAX_PRI
     
     if verbose:
         print(f"📊 Building candidates for {reference_date}...")
-        print(f"   Fetching stocks using Polygon...")
     
-    # Get stocks using Polygon's get_grouped_daily_aggs (1 API call)
-    df_daily = fetch_stocks_for_date(reference_date, min_price, max_price, MIN_VOLUME)
-    
-    if df_daily.empty:
+    # If candidate_symbols provided, use those instead of fetching from Polygon
+    if candidate_symbols:
         if verbose:
-            print(f"⚠️  No data found for {reference_date} (likely weekend/holiday)")
-        return pd.DataFrame()
-    
-    if verbose:
-        print(f"   Found {len(df_daily)} stocks in ${min_price:.2f}-${max_price:.2f} price range")
+            print(f"   Using provided candidates: {', '.join(candidate_symbols)}")
+            print(f"   Fetching data for each candidate...")
+        
+        rows = []
+        for ticker in candidate_symbols:
+            ticker_upper = ticker.upper()
+            try:
+                df_hist = get_historical_data_yfinance(ticker_upper, start_date, reference_date)
+                if df_hist.empty:
+                    if verbose:
+                        print(f"   {ticker_upper}: ✗ No historical data found")
+                    continue
+                
+                # Get the latest price and volume
+                df_hist = df_hist.sort_values("date")
+                latest_row = df_hist.iloc[-1]
+                
+                rows.append({
+                    "ticker": ticker_upper,
+                    "price": float(latest_row["close"]),
+                    "today_volume": int(latest_row["volume"])
+                })
+            except Exception as e:
+                if verbose:
+                    print(f"   {ticker_upper}: ✗ Error fetching data: {e}")
+                continue
+        
+        df_daily = pd.DataFrame(rows)
+        
+        if df_daily.empty:
+            if verbose:
+                print(f"⚠️  No valid data found for any of the provided candidates")
+            return pd.DataFrame()
+        
+        if verbose:
+            print(f"   Found {len(df_daily)} valid candidates")
+    else:
+        # Original logic: fetch from Polygon
+        if verbose:
+            print(f"   Fetching stocks using Polygon...")
+        
+        # Get stocks using Polygon's get_grouped_daily_aggs (1 API call)
+        df_daily = fetch_stocks_for_date(reference_date, min_price, max_price, MIN_VOLUME)
+        
+        if df_daily.empty:
+            if verbose:
+                print(f"⚠️  No data found for {reference_date} (likely weekend/holiday)")
+            return pd.DataFrame()
+        
+        if verbose:
+            print(f"   Found {len(df_daily)} stocks in ${min_price:.2f}-${max_price:.2f} price range")
     
     # Limit to max_stocks if specified (for testing/rate limit management)
     if max_stocks and len(df_daily) > max_stocks:
@@ -480,7 +524,7 @@ def wavelet_trade_engine(price_series, min_rr=MIN_RR, low_series=None, turn_conf
     # Use calculated stop for candidate filtering (min stop buffer applied later in backtesting/trading)
     stop = calculated_stop
     
-    target = buy + 0.85 * (avg_peak - buy)
+    target = buy + 1.0 * (avg_peak - buy)  # Aim for full avg_peak (diminishing target provides protection)
     risk = buy - stop
     reward = target - buy
     rr = reward / risk if risk > 0 else float('nan')
@@ -514,7 +558,8 @@ def wavelet_trade_engine(price_series, min_rr=MIN_RR, low_series=None, turn_conf
 
 def generate_trading_candidates(reference_date=None, min_price=MIN_PRICE, max_price=MAX_PRICE,
                                 min_avg_volume=MIN_AVG_VOLUME, min_rr=MIN_RR,
-                                lookback_days=LOOKBACK_DAYS, limit=None, max_stocks=None, verbose=False):
+                                lookback_days=LOOKBACK_DAYS, limit=None, max_stocks=None, verbose=False,
+                                candidate_symbols=None):
     """
     Generate trading candidates by analyzing candidates with wavelet trade engine.
     
@@ -527,6 +572,7 @@ def generate_trading_candidates(reference_date=None, min_price=MIN_PRICE, max_pr
         lookback_days: Days of history to analyze
         limit: Maximum number of candidates to process (None = all)
         verbose: If True, show detailed output
+        candidate_symbols: Optional list of stock symbols to test instead of fetching from Polygon
     
     Returns:
         pandas DataFrame with trading candidates that passed all filters
@@ -539,7 +585,8 @@ def generate_trading_candidates(reference_date=None, min_price=MIN_PRICE, max_pr
     
     candidates_df = build_candidates(
         reference_date, min_price, max_price, min_avg_volume,
-        REL_VOLUME_MIN, REL_VOLUME_MAX, lookback_days, max_stocks, verbose
+        REL_VOLUME_MIN, REL_VOLUME_MAX, lookback_days, max_stocks, verbose,
+        candidate_symbols=candidate_symbols
     )
     
     if candidates_df.empty:
@@ -2064,7 +2111,7 @@ def track_stock_reentry(tickers, start_date, end_date, verbose=False):
         return pd.DataFrame()
 
 
-def run_backtest(start_date, end_date=None, num_dates=10, max_stocks=None, verbose=False, watchlist_enabled=False):
+def run_backtest(start_date, end_date=None, num_dates=10, max_stocks=None, verbose=False, watchlist_enabled=False, candidate_symbols=None):
     """
     Run backtesting on historical dates.
     
@@ -2075,6 +2122,7 @@ def run_backtest(start_date, end_date=None, num_dates=10, max_stocks=None, verbo
         max_stocks: Maximum stocks to analyze per date (for speed)
         verbose: If True, show detailed output
         watchlist_enabled: If True, track stop-loss trades for recovery analysis
+        candidate_symbols: Optional list of stock symbols to test instead of fetching from Polygon
     
     Returns:
         tuple: (pandas DataFrame with backtest results, list of watchlist entries)
@@ -2113,7 +2161,8 @@ def run_backtest(start_date, end_date=None, num_dates=10, max_stocks=None, verbo
         candidates_df = generate_trading_candidates(
             reference_date=test_date,
             max_stocks=max_stocks,
-            verbose=verbose
+            verbose=verbose,
+            candidate_symbols=candidate_symbols
         )
         
         if candidates_df.empty:
@@ -2380,6 +2429,12 @@ def main():
         type=str,
         help='End date for tracking (YYYY-MM-DD)'
     )
+    parser.add_argument(
+        '--candidates',
+        type=str,
+        nargs='+',
+        help='Test specific stock symbol(s) instead of fetching from Polygon (e.g., --candidates AAPL TSLA MSFT). Requires --date or --backtest-start-date.'
+    )
     
     args = parser.parse_args()
     
@@ -2457,7 +2512,8 @@ def main():
             num_dates=args.backtest_num_dates,
             max_stocks=args.max_stocks,
             verbose=args.verbose,
-            watchlist_enabled=args.watchlist
+            watchlist_enabled=args.watchlist,
+            candidate_symbols=args.candidates
         )
         
         if not df_backtest.empty:
@@ -2745,6 +2801,16 @@ def main():
         except ValueError:
             print(f"❌ Invalid date format: {reference_date}. Use YYYY-MM-DD")
             sys.exit(1)
+    elif args.candidates:
+        # If --candidates is provided without --date, require --backtest-start-date for backtest mode
+        if args.backtest:
+            if not args.backtest_start_date:
+                print("❌ Error: --candidates requires --date (for regular mode) or --backtest-start-date (for backtest mode)")
+                sys.exit(1)
+            reference_date = args.backtest_start_date
+        else:
+            print("❌ Error: --candidates requires --date to be specified")
+            sys.exit(1)
     else:
         reference_date = get_last_trading_day()
         if reference_date is None:
@@ -2777,7 +2843,8 @@ def main():
         lookback_days=args.lookback_days,
         limit=args.limit,
         max_stocks=args.max_stocks,
-        verbose=args.verbose
+        verbose=args.verbose,
+        candidate_symbols=args.candidates
     )
     
     # Display results

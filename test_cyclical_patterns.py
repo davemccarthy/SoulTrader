@@ -398,12 +398,17 @@ def analyze_cyclical_pattern(symbol, lookback_days=180, window=20, end_date=None
         else:
             position_pct = 0.5
         
-        if position_pct < buy_threshold:
+        # FIX: Negative position_pct means price is BELOW support (bearish, not bullish)
+        # Only trigger BUY if position_pct >= 0 (price >= support) AND near support
+        if position_pct >= 0 and position_pct < buy_threshold:
             position = 'near_support'
             signal = 'BUY'
         elif position_pct > 0.8:
             position = 'near_resistance'
             signal = 'SELL'
+        elif position_pct < 0:
+            position = 'below_support'
+            signal = 'HOLD'  # Don't buy when below support
         else:
             position = 'middle'
             signal = 'HOLD'

@@ -1,0 +1,11 @@
+# SoulTrader Project Rules
+
+## Virtual Environment
+When executing Python commands in the sandbox, always activate the virtual environment at:
+`~/Development/scratch/python/tutorial-env/`
+
+Use: `source ~/Development/scratch/python/tutorial-env/bin/activate` before running Python commands.
+
+## Code Creation
+Even in agent mode, don't create code if the user only asks a question. Only create or modify code when explicitly requested to do so.
+

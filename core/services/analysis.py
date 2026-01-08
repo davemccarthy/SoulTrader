@@ -12,6 +12,22 @@ from core.services.execution import execute_buy, execute_sell
 
 logger = logging.getLogger(__name__)
 
+
+def analyse_target(discovery, holding, target):
+    stock = holding.stock
+    current = holding.stock.price
+
+    # Case 1: Price >= target and downturn detected
+    if current >= target and stock.downturned():
+        return True
+
+    # Case 2: Price < target but previously peaked at/above target (protect gains)
+    if current < target and stock.peaked(discovery.created, target):
+        return True
+
+    return False
+
+
 def analyze_holdings(sa, users, advisors):
     logger.info(f"Analyzing holdings for SA session {sa.id}")
 
@@ -69,7 +85,7 @@ def analyze_holdings(sa, users, advisors):
                                 break
 
                         elif instruction.instruction in ['TARGET_PRICE', 'TARGET_PERCENTAGE']:
-                            if instruction.value1 and holding.stock.price >= instruction.value1:
+                            if analyse_target(discovery, holding, instruction.value1):
                                 execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} reached target price of ${instruction.value1:.2f}")
                                 break
 
@@ -84,10 +100,10 @@ def analyze_holdings(sa, users, advisors):
                                     current_target = original_target - progress * (original_target - float(buy_price))
                                 else:
                                     current_target = float(buy_price)  # After max_days, target = buy_price (break-even)
-                                
-                                if holding.stock.price >= Decimal(str(current_target)):
-                                    execute_sell(sa, user, profile, holding, 
-                                                f"{holding.stock.symbol} reached diminishing target price of ${current_target:.2f} (day {days_held}/{max_days})")
+
+                                # Use analyse_target helper to check downturn + peak logic
+                                if analyse_target(discovery, holding, Decimal(str(current_target))):
+                                    execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} downturn detected at diminishing target ${current_target:.2f} (day {days_held}/{max_days})")
                                     break
                             else:
                                 logger.warning(f"TARGET_DIMINISHING instruction {instruction.id} missing required fields (value1 or buy_price)")

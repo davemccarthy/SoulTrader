@@ -318,6 +318,125 @@ class Stock(models.Model):
             logger.warning(f"Could not check trending status for {self.symbol}: {e}")
             return None
 
+    def downturned(self):
+        """
+        Check if stock is showing downturn signals (lower close AND lower low vs previous day).
+
+        Returns:
+            bool: True if downturn detected (lower close AND lower low), False if not, None if can't determine
+        """
+        import yfinance as yf
+
+        logger = logging.getLogger(__name__)
+
+        try:
+            ticker = yf.Ticker(self.symbol)
+            hist = ticker.history(period="5d", interval="1d")
+
+            if hist.empty or len(hist) < 2:
+                return False
+
+            # Get previous day's close and low (second to last row)
+            prev_close = float(hist['Close'].iloc[-2])
+            prev_low = float(hist['Low'].iloc[-2])
+
+            # Get current day's close and low (last row)
+            today_close = float(hist['Close'].iloc[-1])
+            today_low = float(hist['Low'].iloc[-1])
+
+            # Downturn: lower close AND lower low (buyer exhaustion)
+            return (today_close < prev_close) and (today_low < prev_low)
+
+        except Exception as e:
+            logger.warning(f"Error checking downturn for {self.symbol}: {e}")
+            return False
+
+    def upturned(self):
+        """
+        Check if stock is showing upturn signals (higher close AND higher low vs previous day).
+
+        Returns:
+            bool: True if upturn detected (higher close AND higher low), False if not, None if can't determine
+        """
+        import yfinance as yf
+
+        logger = logging.getLogger(__name__)
+
+        try:
+            ticker = yf.Ticker(self.symbol)
+            hist = ticker.history(period="5d", interval="1d")
+
+            if hist.empty or len(hist) < 2:
+                return False
+
+            # Get previous day's close and low (second to last row)
+            prev_close = float(hist['Close'].iloc[-2])
+            prev_low = float(hist['Low'].iloc[-2])
+
+            # Get current day's close and low (last row)
+            today_close = float(hist['Close'].iloc[-1])
+            today_low = float(hist['Low'].iloc[-1])
+
+            # Upturn: higher close AND higher low (buyer momentum)
+            return (today_close > prev_close) and (today_low > prev_low)
+
+        except Exception as e:
+            logger.warning(f"Error checking upturn for {self.symbol}: {e}")
+            return False
+
+    def peaked(self, since_date, target_price):
+        """
+        Check if stock reached a target price on or after a given date.
+
+        Args:
+            since_date: datetime or date object - check from this date onwards
+            target_price: Decimal or float - price to check if stock reached
+
+        Returns:
+            bool: True if stock's high reached target_price on or after since_date, False otherwise, None if can't determine
+        """
+        import yfinance as yf
+        from datetime import datetime, timedelta
+
+        logger = logging.getLogger(__name__)
+
+        try:
+            # Convert since_date to datetime if it's a date
+            if isinstance(since_date, datetime):
+                start_date = since_date.date()
+            else:
+                start_date = since_date
+
+            # Get enough history to cover since_date (add buffer for weekends/holidays)
+            days_back = (datetime.now().date() - start_date).days + 5
+            period = f"{days_back}d" if days_back > 1 else "5d"
+
+            ticker = yf.Ticker(self.symbol)
+            hist = ticker.history(period=period, interval="1d")
+
+            if hist.empty:
+                return None
+
+            # Convert target_price to float for comparison
+            target = float(target_price)
+
+            # Filter to dates on or after since_date
+            hist_dates = hist.index.date if hasattr(hist.index[0], 'date') else [d.date() for d in hist.index]
+
+            # Get highs for dates >= since_date
+            for i, date in enumerate(hist_dates):
+                if date >= start_date:
+                    high = float(hist['High'].iloc[i])
+                    if high >= target:
+                        return True
+
+            return False
+
+        except Exception as e:
+            logger.warning(f"Error checking peak for {self.symbol} (since {since_date}, target ${target_price}): {e}")
+            return None
+
+
     def refresh(self):
 
         logger = logging.getLogger(__name__)
@@ -348,6 +467,29 @@ class Holding(models.Model):
     consensus = models.DecimalField(max_digits=4, decimal_places=2, default=5.0)
     volatile = models.BooleanField(default=False)  # Your flag!
     created = models.DateTimeField(auto_now_add=True, null=True, blank=True)  # When holding was first created (backfilled from first BUY trade)
+
+
+class Watchlist(models.Model):
+    STATUS_CHOICES = [
+        ('Pending', 'Pending'),
+        ('Executed', 'Executed'),
+    ]
+
+    created = models.DateTimeField(auto_now_add=True)
+    advisor = models.ForeignKey(Advisor, on_delete=models.DO_NOTHING)
+    stock = models.ForeignKey(Stock, on_delete=models.DO_NOTHING)
+    price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)  # NEW
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='Pending')
+    explanation = models.CharField(max_length=500)
+    days = models.IntegerField()
+
+    def save(self, *args, **kwargs):
+        # If this is an existing record (has pk) and status is 'Pending', set to 'Executed'
+        # This ensures that when a watchlist entry is updated/saved, it's marked as executed
+        if self.pk is not None and self.status == 'Pending':
+            self.status = 'Executed'
+        super().save(*args, **kwargs)
+
 
 # Stock health check
 class Health(models.Model):

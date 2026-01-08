@@ -40,3 +40,25 @@ class Migration(migrations.Migration):
         migrations.RunPython(populate_value1_from_value, reverse_populate_value1_from_value),
     ]
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

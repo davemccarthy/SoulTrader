@@ -45,3 +45,14 @@ if pre_sessions.exists() and post_sessions.exists():
     print(f'  python manage.py analyse_discovery --start-sa {post_sessions.first().id} --end-sa {post_sessions.last().id}')
 
 
+
+
+
+
+
+
+
+
+
+
+

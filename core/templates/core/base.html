@@ -1227,6 +1227,7 @@
                 {% if user.is_authenticated %}
                     <a href="{% url 'core:holdings' %}" {% if current_page == 'holdings' %}class="active"{% endif %}>Holdings</a>
                     <a href="{% url 'core:trades' %}" {% if current_page == 'trades' %}class="active"{% endif %}>Trades</a>
+                    <a href="{% url 'core:watchlist' %}" {% if current_page == 'watchlist' %}class="active"{% endif %}>Watchlist</a>
                     <a href="{% url 'core:profile' %}" {% if current_page == 'profile' %}class="active"{% endif %}>Profile</a>
                 {% else %}
                     {% if current_page != 'home' %}

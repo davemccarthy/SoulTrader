@@ -4,6 +4,7 @@ Quick P&L snapshot for advisor discoveries.
 
 Filters Discovery rows by SmartAnalysis id range or trailing days and
 computes price performance from discovery date to a reference date (default: now).
+Can also evaluate performance at X days after discovery using --days-after.
 """
 
 import argparse
@@ -46,11 +47,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--end-sa", type=int, help="Last SmartAnalysis id (inclusive).")
     parser.add_argument("--advisor", help="Filter discoveries by advisor name (case insensitive).")
     parser.add_argument("--as-of", type=_parse_as_of, help="Reference timestamp for current price (default: now).")
+    parser.add_argument("--days-after", type=int, help="Evaluate price at X days after discovery (filters to discoveries at least X days old).")
     parser.add_argument("--limit", type=int, default=0, help="Maximum number of discoveries to evaluate (after dedupe).")
     parser.add_argument(
         "--details",
         action="store_true",
-        help="Show per-discovery rows. By default only per-advisor aggregates are displayed.",
+        help="Show per-discovery rows. By default only per-advisor aggregates are displayed. Details are automatically shown when --advisor is specified.",
     )
     parser.add_argument(
         "--verbose", action="store_true", help="Print extra information such as skipped symbols and data gaps."
@@ -63,6 +65,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
     if args.end_sa is not None and args.start_sa is None:
         parser.error("--end-sa requires --start-sa.")
+
+    if args.days_after is not None and args.days_after < 0:
+        parser.error("--days-after must be a non-negative integer.")
 
     return args
 
@@ -89,6 +94,11 @@ def _build_discovery_queryset(args: argparse.Namespace, advisor: Optional[Adviso
         qs = qs.filter(sa_id__gte=args.start_sa)
         if args.end_sa is not None:
             qs = qs.filter(sa_id__lte=args.end_sa)
+
+    # Filter to discoveries that are at least X days old if --days-after is specified
+    if args.days_after is not None:
+        cutoff = timezone.now() - timedelta(days=args.days_after)
+        qs = qs.filter(created__lte=cutoff)
 
     if advisor:
         qs = qs.filter(advisor=advisor)
@@ -296,7 +306,16 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         symbol = discovery.stock.symbol
         discovery_dt = _discovery_timestamp(discovery)
         entry_price = fetcher.price_from(symbol, discovery_dt)
-        current_price = fetcher.latest_price(symbol, as_of)
+        
+        # If --days-after is specified, evaluate price at X days after discovery
+        if args.days_after is not None:
+            reference_dt = discovery_dt + timedelta(days=args.days_after)
+            current_price = fetcher.price_from(symbol, reference_dt)
+            days_since = args.days_after
+        else:
+            reference_dt = as_of
+            current_price = fetcher.latest_price(symbol, as_of)
+            days_since = (as_of - discovery_dt).days
 
         if args.verbose and (entry_price is None or current_price is None):
             print(f"[warn] Missing price data for {symbol} (entry={entry_price} current={current_price}).")
@@ -316,11 +335,16 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
                 "current_price": current_price,
                 "abs_change": abs_change,
                 "pct_change": pct_change,
+                "days_since": days_since,
+                "reference_dt": reference_dt,
             }
         )
 
     print(f"Evaluated {len(rows)} unique discoveries (from {len(discoveries)} raw rows).")
-    print(f"As of: {as_of.isoformat(timespec='seconds')}")
+    if args.days_after is not None:
+        print(f"Evaluating price at {args.days_after} days after discovery")
+    else:
+        print(f"As of: {as_of.isoformat(timespec='seconds')}")
     if advisor:
         print(f"Advisor filter: {advisor.name}")
 
@@ -349,8 +373,10 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
             f"{advisor_summary['total_pct']:+10.2f}"
         )
 
-    if args.details:
-        header = f"{'Symbol':<8} {'Advisor':<20} {'Discovered':<20} {'Entry':>10} {'Current':>10} {'Δ$':>10} {'Δ%':>8}"
+    # Show details if --details flag is set, or if --advisor is specified
+    show_details = args.details or (advisor is not None)
+    if show_details:
+        header = f"{'Symbol':<8} {'Advisor':<20} {'Discovered':<20} {'Days':>6} {'Entry':>10} {'Current':>10} {'Δ$':>10} {'Δ%':>8}"
         print("\nDetails:")
         print(header)
         print("-" * len(header))
@@ -360,17 +386,23 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
             abs_str = f"{row['abs_change']:+.2f}" if row["abs_change"] is not None else "n/a"
             pct_str = f"{row['pct_change']:+.2f}" if row["pct_change"] is not None else "n/a"
             created_str = row["created"].astimezone(dt_timezone.utc).strftime("%Y-%m-%d %H:%M")
+            days_str = f"{row['days_since']}" if row.get("days_since") is not None else "n/a"
             print(
                 f"{row['symbol']:<8} {row['advisor']:<20} {created_str:<20} "
-                f"{entry_str:>10} {current_str:>10} {abs_str:>10} {pct_str:>8}"
+                f"{days_str:>6} {entry_str:>10} {current_str:>10} {abs_str:>10} {pct_str:>8}"
             )
 
     summary = _summarise(rows)
     print("\nSummary:")
     evaluated = summary["count"] - summary.get("missing", 0)
     print(f"- Evaluated: {int(summary['count'])} discoveries ({int(summary.get('missing', 0))} missing price data).")
+    if args.days_after is not None:
+        print(f"- All discoveries are at least {args.days_after} days old.")
     print(f"- Positive: {int(summary.get('gainers', 0))}, Negative: {int(summary.get('losers', 0))}, Flat: {int(summary.get('flat', 0))}.")
-    print(f"- Average change: {summary['avg_change']:+.2f}% over evaluated samples ({int(evaluated)} with complete data).")
+    if args.days_after is not None:
+        print(f"- Average change at {args.days_after} days: {summary['avg_change']:+.2f}% over evaluated samples ({int(evaluated)} with complete data).")
+    else:
+        print(f"- Average change: {summary['avg_change']:+.2f}% over evaluated samples ({int(evaluated)} with complete data).")
     print(
         f"- Net return: {summary['net_change']:+.2f} ({summary['total_pct']:+.2f}%) "
         f"on {summary['total_entry']:.2f} cumulative entry cost."
