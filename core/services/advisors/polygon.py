@@ -37,6 +37,9 @@ class Polygon(AdvisorBase):
                 id__lt=sa.id
             ).order_by('-id').first()
 
+            # Process articles already read
+            self.news_watch(sa)
+
             # Set bounds: prev SA started -> current SA started
             sa_end_utc = timezone.make_aware(sa.started) if timezone.is_naive(sa.started) else sa.started
             if prev_sa:

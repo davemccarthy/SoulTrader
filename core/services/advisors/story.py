@@ -26,6 +26,9 @@ class Story(AdvisorBase):
             else:
                 # Fallback: last 24 hours if no previous SA
                 start_time = end_time - timedelta(hours=24)
+
+            # Process articles already read
+            self.news_watch(sa)
             
             # Fetch StockStory articles within the time window
             articles = self._fetch_stockstory_articles(start_time, end_time)

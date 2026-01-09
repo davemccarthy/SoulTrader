@@ -374,7 +374,7 @@ class AdvisorBase:
 
         logger.info(f"{self.advisor.name} scores {stock.symbol} a confidences of {confidence:.2f}")
 
-    def watch_sells(self, explanation, days=14):
+    def watch_sells(self, instructions, explanation, days=14):
         """
         Query database for sell instructions triggered today and add to watchlist.
 
@@ -383,6 +383,7 @@ class AdvisorBase:
         Called after market close (last 30 min) during discovery phase.
 
         Args:
+            instructions: Sell instruction types
             explanation: description
             days: Number of days to watch (default 14)
 
@@ -392,17 +393,12 @@ class AdvisorBase:
         from core.models import SellInstruction, Discovery
         from datetime import date
 
-        # Get instruction types to watch from class attribute (e.g., ['STOP_PERCENTAGE'] for Oscilla)
-        watch_types = getattr(self.__class__, 'watch', [])
-        if not watch_types:
-            return 0  # No watch types configured
-
         # Find sells from today for this advisor's discoveries
         today = date.today()
         sells = SellInstruction.objects.filter(
             discovery__advisor=self.advisor,
             discovery__created__date=today,  # Sells from discoveries created today
-            instruction__in=watch_types  # Filter by watch instruction types
+            instruction__in=instructions  # Filter by watch instruction types
         ).select_related('discovery', 'discovery__stock').distinct('discovery__stock')
 
         # Add each unique stock to watchlist - watch() handles duplicates
@@ -436,16 +432,19 @@ class AdvisorBase:
             stock = Stock.create(symbol, self.advisor)
             logger.info(f"{self.advisor.name} created stock {stock.symbol} for watchlist")
 
+        # Refresh stock price to ensure we capture current price at watchlist entry time
+        stock.refresh()
+
         # Create watchlist entry
         watchlist_entry = Watchlist.objects.create(
             advisor=self.advisor,
             stock=stock,  # Model uses Stock object
-            price=stock.price,
+            price=stock.price,  # Current price at time of adding to watchlist
             explanation=explanation[:500],  # Truncate to max length
             days=days
         )
 
-        logger.info(f"{self.advisor.name} watching {stock.symbol}: {explanation[:100]}")
+        logger.info(f"{self.advisor.name} added {stock.symbol} to watchlist at ${stock.price:.2f}: {explanation[:100]}")
         return watchlist_entry
 
 
@@ -983,7 +982,7 @@ Thank you
         if recommendation != "BUY" and recommendation != "STRONG_BUY":
             return
 
-        # If market not open yet
+        # If market not open yet, add to watchlist (will be processed when market opens via news_watch())
         if not is_market_open:
             for ticker in tickers:
                 self.watch(
@@ -991,23 +990,37 @@ Thank you
                     explanation=f"{model} recommended {recommendation} from reading article. | Article: {title} | {url} | {explanation} ",
                     days=1
                 )
-                logger.info(f"{self.advisor.name} added {ticker} to watchlist (market closed): {title[:80]}")
+                logger.info(f"{self.advisor.name} added {ticker} to watchlist (market closed, {recommendation}): {title[:80]}")
             return
+
+        # Market open - new discoveries (process immediately)
+        for ticker in tickers:
+            self.discovered(sa, ticker, f"{model} recommended {recommendation} from reading article. | Article: {title} | {url} | {explanation} ",
+                sell_instructions, 1.5 if recommendation == "STRONG_BUY" else 1.0)
+
+
+    def news_watch(self, sa):
+        # Check if market is open
+        market_status = self.market_open()
+        if market_status is None or market_status < 0:
+            return
+
+        # Pass sell instructions to discovery
+        sell_instructions = [
+            ("PERCENTAGE_DIMINISHING", 1.50, 7),
+            ("PERCENTAGE_AUGMENTING", 0.95, 21),
+            ('DESCENDING_TREND', -0.20, None),
+            ('NOT_TRENDING', None, None)
+        ]
 
         # Market open - process pending watchlist entries
         pending_entries = self.watchlist()
-        
+
         for entry in pending_entries:
             self.discovered(sa, entry.stock.symbol, entry.explanation, sell_instructions, 1.0)
             entry.save()
 
             logger.info(f"{self.advisor.name} processed pending watchlist entry: {entry.stock.symbol}")
-
-        # Market open - new discoveries
-        for ticker in tickers:
-            self.discovered(sa, ticker, f"{model} recommended {recommendation} from reading article. | Article: {title} | {url} | {explanation} ",
-                sell_instructions, 1.5 if recommendation == "STRONG_BUY" else 1.0)
-
 
     def _extract_json(self, text):
         """Extract JSON from Gemini response, handling markdown code blocks."""

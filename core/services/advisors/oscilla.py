@@ -268,8 +268,6 @@ class Oscilla(AdvisorBase):
     
     Uses wavelet analysis to detect cyclical patterns and identify optimal entry points.
     """
-    # Instructions to watch stock
-    watch = ['STOP_PERCENTAGE']
 
     def discover(self, sa):
         """
@@ -301,7 +299,7 @@ class Oscilla(AdvisorBase):
 
                 # Create discovery
                 self.discovered(
-                    sa=sa, symbol=stock.ticker, explanation=entry.explanation,
+                    sa=sa, symbol=stock.symbol, explanation=entry.explanation,
                     sell_instructions=sell_instructions, weight=1.0)
 
         # Only discovery 1st hour of market open
@@ -311,7 +309,7 @@ class Oscilla(AdvisorBase):
 
         # End of market day - monitor sells
         if market_status > 330:
-            self.watch_sells(explanation="Sold at stop loss - monitoring for upturn", days=7)
+            self.watch_sells( ['STOP_PERCENTAGE'], explanation="Sold at stop loss - monitoring for upturn", days=7)
 
         try:
             # Get filtered stocks from Polygon (uses cached list)
@@ -446,23 +444,18 @@ class Oscilla(AdvisorBase):
                         ("STOP_PERCENTAGE", 0.9, None),
                         ("TARGET_DIMINISHING", Decimal(str(wave_result['target'])), 7),
                     ]
-                    
+
+                    logger.info(f"Submitting {ticker} - R:R={wave_result['reward_risk']:.2f}, stop=${wave_result['stop']:.2f}, target=${wave_result['target']:.2f}")
+
                     # Create discovery
-                    self.discovered(
-                        sa=sa,
-                        symbol=ticker,
-                        explanation=explanation,
-                        sell_instructions=sell_instructions,
-                        weight=1.0
-                    )
-                    discoveries += 1
-                    logger.info(f"Oscilla: Discovered {ticker} - R:R={wave_result['reward_risk']:.2f}, stop=${wave_result['stop']:.2f}, target=${wave_result['target']:.2f}")
-                    
+                    if self.discovered(sa=sa, symbol=ticker, explanation=explanation, sell_instructions=sell_instructions, weight=1.0) is not None:
+                        discoveries += 1
+
                 except Exception as e:
                     logger.debug(f"Oscilla: Error analyzing {ticker}: {e}", exc_info=True)
                     continue
             
-            logger.info(f"Oscilla: Discovery complete - found {discoveries} candidates")
+            logger.info(f"Oscilla: Discovery complete - {discoveries} candidates")
             
         except Exception as e:
             logger.error(f"Oscilla: Error in discovery: {e}", exc_info=True)

@@ -123,7 +123,8 @@ def get_portfolio_widget_data(user):
     
     # Refresh stock prices for accurate holdings value calculation
     for h in holdings:
-        h.stock.refresh()
+        pass
+        #h.stock.refresh()
     
     # Calculate current holdings value (live market worth)
     holdings_value = sum(Decimal(str(h.shares)) * h.stock.price for h in holdings)
