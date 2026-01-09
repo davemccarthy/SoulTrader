@@ -79,8 +79,12 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.WARNING(f'Stock {symbol} not found in database'))
                 continue
 
-            # Find all holdings for this stock
-            holdings = Holding.objects.filter(stock=stock, shares__gt=0).select_related('user', 'stock')
+            # Find all holdings for this stock (only for active users)
+            holdings = Holding.objects.filter(
+                stock=stock, 
+                shares__gt=0,
+                user__is_active=True
+            ).select_related('user', 'stock')
             
             if not holdings.exists():
                 self.stdout.write(f'No holdings found for {symbol}')
