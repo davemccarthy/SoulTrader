@@ -85,7 +85,8 @@ def analyze_holdings(sa, users, advisors):
                                 break
 
                         elif instruction.instruction in ['TARGET_PRICE', 'TARGET_PERCENTAGE']:
-                            if analyse_target(discovery, holding, instruction.value1):
+                            # Targets should only trigger sells at a profit, not at a loss (that's what stop losses are for)
+                            if holding.stock.price >= buy_price and analyse_target(discovery, holding, instruction.value1):
                                 execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} reached target price of ${instruction.value1:.2f}")
                                 break
 
@@ -101,8 +102,8 @@ def analyze_holdings(sa, users, advisors):
                                 else:
                                     current_target = float(buy_price)  # After max_days, target = buy_price (break-even)
 
-                                # Use analyse_target helper to check downturn + peak logic
-                                if analyse_target(discovery, holding, Decimal(str(current_target))):
+                                # Targets should only trigger sells at a profit, not at a loss (that's what stop losses are for)
+                                if holding.stock.price >= buy_price and analyse_target(discovery, holding, Decimal(str(current_target))):
                                     execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} downturn detected at diminishing target ${current_target:.2f} (day {days_held}/{max_days})")
                                     break
                             else:

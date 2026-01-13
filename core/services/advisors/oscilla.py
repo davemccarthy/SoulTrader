@@ -463,3 +463,4 @@ class Oscilla(AdvisorBase):
 
 register(name="Oscilla", python_class="Oscilla")
 
+
