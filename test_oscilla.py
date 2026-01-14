@@ -602,6 +602,7 @@ def generate_trading_candidates(reference_date=None, min_price=MIN_PRICE, max_pr
         print(f"\n🔍 Analyzing {len(candidates_df)} candidates with wavelet trade engine...")
     
     results = []
+    failed_stocks = []  # Collect failed stocks with wave positions
     
     ref_dt = datetime.strptime(reference_date, "%Y-%m-%d")
     # For wavelet analysis, we need at least 64 trading days
@@ -639,6 +640,17 @@ def generate_trading_candidates(reference_date=None, min_price=MIN_PRICE, max_pr
             
             if not wave_result.get("accepted", False):
                 reason = wave_result.get("reason", "Unknown")
+                
+                # Collect failed stock info (always, not just for verbose)
+                failed_info = {
+                    "ticker": ticker,
+                    "reason": reason,
+                    "wave_position": wave_result.get("wave_position"),
+                    "consistency": wave_result.get("consistency"),
+                    "rr": wave_result.get("rr")
+                }
+                failed_stocks.append(failed_info)
+                
                 if show_full_diagnostic:
                     print(f"   {ticker}: ✗ Rejected - {reason}")
                     if wave_result.get("log"):
@@ -675,6 +687,49 @@ def generate_trading_candidates(reference_date=None, min_price=MIN_PRICE, max_pr
             if verbose:
                 print(f"   Error analyzing {ticker}: {e}")
             continue
+    
+    # Print summary of failed stocks with wave positions
+    if failed_stocks:
+        print(f"\n{'='*80}")
+        print(f"FAILED FILTER TEST SUMMARY ({len(failed_stocks)} stocks)")
+        print(f"{'='*80}")
+        print(f"{'Ticker':<10} {'Reason':<30} {'Wave Pos':<12} {'Consistency':<12} {'R:R':<8}")
+        print("-" * 80)
+        
+        # Sort by wave_position if available (to see distribution)
+        failed_with_wp = [f for f in failed_stocks if f.get("wave_position") is not None]
+        failed_without_wp = [f for f in failed_stocks if f.get("wave_position") is None]
+        
+        # Sort failed_with_wp by wave_position
+        failed_with_wp.sort(key=lambda x: x.get("wave_position", 0))
+        
+        # Print stocks with wave positions
+        for stock in failed_with_wp:
+            wp = stock.get("wave_position")
+            wp_str = f"{wp:.3f}" if wp is not None else "N/A"
+            consistency = stock.get("consistency")
+            consistency_str = f"{consistency:.3f}" if consistency is not None else "N/A"
+            rr = stock.get("rr")
+            rr_str = f"{rr:.2f}" if rr is not None else "N/A"
+            reason = stock.get("reason", "Unknown")[:28]  # Truncate long reasons
+            print(f"{stock['ticker']:<10} {reason:<30} {wp_str:<12} {consistency_str:<12} {rr_str:<8}")
+        
+        # Print stocks without wave positions
+        for stock in failed_without_wp:
+            reason = stock.get("reason", "Unknown")[:28]
+            print(f"{stock['ticker']:<10} {reason:<30} {'N/A':<12} {'N/A':<12} {'N/A':<8}")
+        
+        # Print statistics
+        if failed_with_wp:
+            wave_positions = [f.get("wave_position") for f in failed_with_wp if f.get("wave_position") is not None]
+            if wave_positions:
+                print(f"\nWave Position Statistics (for {len(wave_positions)} stocks with wave positions):")
+                print(f"  Min: {min(wave_positions):.3f}")
+                print(f"  Max: {max(wave_positions):.3f}")
+                print(f"  Mean: {np.mean(wave_positions):.3f}")
+                print(f"  Median: {np.median(wave_positions):.3f}")
+        
+        print(f"\n{'='*80}\n")
     
     if not results:
         print("No trading candidates passed wavelet analysis")
