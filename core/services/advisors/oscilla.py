@@ -45,7 +45,7 @@ TURN_CONFIRMATION_ENABLED = True  # Require turn confirmation (higher close + hi
 # MIN_STOP_BUFFER_PCT = 0.10  # Minimum stop distance from entry (0 = disabled, use calculated stop directly)
 MAX_WAVE_POSITION = -999  # Maximum (most negative) wave_position to accept (filters strong downtrends) - DISABLED
 MIN_CONSISTENCY = 0.0  # Minimum consistency score (filters inconsistent wave patterns) - DISABLED
-MAX_STOCKS = 500  # Maximum number of stocks to process (for testing/comparison with test script, None = unlimited)
+MAX_STOCKS = 1000  # Maximum number of stocks to process (for testing/comparison with test script, None = unlimited)
 
 
 def get_historical_data_yfinance(ticker, start_date, end_date):
@@ -187,9 +187,7 @@ def wavelet_trade_engine(price_series, min_rr=MIN_RR, low_series=None, turn_conf
     wave_position = (current_price - avg_trough) / wave_range
     log.append(f"Wave position: {wave_position:.3f} (0=trough, 1=peak)")
     
-    if wave_position > 0.35:
-        log.append(f"Rejected: wave_position={wave_position:.2f} (too high, want near trough)")
-        return {"accepted": False, "reason": "Bad wave phase", "wave_position": wave_position, "log": log}
+    # Note: Internal wave_position filtering removed - filtering happens in discover() with range (-50.0 to 0.0)
     
     # Filter: Reject extreme negative wave positions (strong downtrends)
     # Can be disabled by setting MAX_WAVE_POSITION to a very negative value (e.g., -999)
@@ -279,45 +277,33 @@ class Oscilla(AdvisorBase):
         Args:
             sa: SmartAnalysis session
         """
+        return
 
         # Check if within first hour of market open
         market_status = self.market_open()
-
-        # Check pending watchlist entries during open hours
-        if market_status is not None and market_status >= 0:
-            for entry in self.watchlist():
-                stock = entry.stock
-
-                if not stock.upturned():
-                    continue
-
-                # Create sell instructions for stop and target prices
-                sell_instructions = [
-                    ("STOP_PERCENTAGE", 0.9, None),
-                    ("TARGET_DIMINISHING", 1.25, 7),
-                ]
-
-                # Create discovery
-                self.discovered(
-                    sa=sa, symbol=stock.symbol, explanation=entry.explanation,
-                    sell_instructions=sell_instructions, weight=1.0)
 
         # Only discovery 1st hour of market open
         if market_status is None or market_status < 0 or market_status >= 60:
             logger.info(f"Oscilla discovery skipped: outside first hour window (market_status={market_status})")
             return
 
-        # End of market day - monitor sells
-        if market_status > 330:
-            self.watch_sells( ['STOP_PERCENTAGE'], explanation="Sold at stop loss - monitoring for upturn", days=7)
-
         try:
-            # Get filtered stocks from Polygon (uses cached list)
+            # Get reference date (last trading day) - calculate FIRST
+            last_trading_date = AdvisorBase.get_last_trading_day()
+            
+            if not last_trading_date:
+                logger.warning("Oscilla: No valid trading date available")
+                return
+            
+            logger.info(f"Oscilla: Using reference date: {last_trading_date}")
+            
+            # Get filtered stocks from Polygon (pass test_date explicitly)
             df_stocks = AdvisorBase.get_filtered_stocks(
                 sa=sa,
                 min_price=MIN_PRICE,
                 max_price=MAX_PRICE,
-                min_volume=MIN_VOLUME
+                min_volume=MIN_VOLUME,
+                test_date=last_trading_date  # Pass explicitly to ensure consistency
             )
             
             if df_stocks.empty:
@@ -331,95 +317,61 @@ class Oscilla(AdvisorBase):
             
             logger.info(f"Oscilla: Analyzing {len(df_stocks)} stocks with wavelet analysis...")
             
-            # Get reference date (last trading day)
-            last_trading_date = AdvisorBase.get_last_trading_day()
-            
-            if not last_trading_date:
-                logger.warning("Oscilla: No valid trading date available")
-                return
-            
-            logger.info(f"Oscilla: Using reference date: {last_trading_date}")
-            
-            # Calculate dates for volume filtering (same as build_candidates)
-            ref_dt = datetime.strptime(last_trading_date, "%Y-%m-%d")
-            volume_check_start_date = (ref_dt - timedelta(days=LOOKBACK_DAYS * 2)).strftime("%Y-%m-%d")
-            
             # For wavelet analysis, we need at least 64 trading days
             # Account for weekends/holidays: ~5 trading days per 7 calendar days
             # So 64 trading days ≈ 64 * 7/5 ≈ 90 calendar days, add buffer for safety
+            ref_dt = datetime.strptime(last_trading_date, "%Y-%m-%d")
             min_calendar_days = int(64 * 7 / 5) + 30  # ~120 calendar days for 64 trading days
             wavelet_lookback_days = max(min_calendar_days, LOOKBACK_DAYS * 2)
             wavelet_start_date = (ref_dt - timedelta(days=wavelet_lookback_days)).strftime("%Y-%m-%d")
             
-            # Filter stocks by volume consistency (same as build_candidates)
-            logger.info(f"Oscilla: Filtering {len(df_stocks)} stocks by volume consistency...")
-            candidates = []
+            # Now run wavelet analysis directly on stocks from Polygon (matching test_crazy.py)
+            discoveries = 0
+            filtered_no_data = 0
+            filtered_insufficient_data = 0
+            filtered_rel_volume = 0
+            filtered_wavelet_rejected = 0
+            filtered_wave_position = 0
+            filtered_not_us = 0
+            filtered_not_profitable = 0
+            filtered_error = 0
             
             for i, (_, row) in enumerate(df_stocks.iterrows(), 1):
                 ticker = row["ticker"]
-                today_volume = row["today_volume"]
-                last_close = row["price"]
                 
                 if i % 50 == 0:
-                    logger.info(f"Oscilla: Volume filtering {i}/{len(df_stocks)} stocks...")
-                
-                try:
-                    # Get historical data for volume check
-                    df_hist = get_historical_data_yfinance(ticker, volume_check_start_date, last_trading_date)
-                    if df_hist.empty or len(df_hist) < LOOKBACK_DAYS:
-                        continue
-                    
-                    # Calculate average volume over lookback period
-                    df_hist = df_hist.sort_values("date").tail(LOOKBACK_DAYS)
-                    avg_volume = df_hist["volume"].mean()
-                    
-                    # Filter by minimum average volume
-                    if avg_volume < MIN_AVG_VOLUME:
-                        continue
-                    
-                    # Calculate relative volume
-                    rel_volume = today_volume / avg_volume if avg_volume > 0 else 0
-                    
-                    # Filter by relative volume range
-                    if not (REL_VOLUME_MIN <= rel_volume <= REL_VOLUME_MAX):
-                        continue
-                    
-                    candidates.append({
-                        "ticker": ticker,
-                        "price": last_close,
-                        "avg_volume": int(avg_volume),
-                        "today_volume": int(today_volume),
-                        "rel_volume": round(rel_volume, 2)
-                    })
-                    
-                except Exception as e:
-                    logger.debug(f"Oscilla: Error in volume filtering for {ticker}: {e}", exc_info=True)
-                    continue
-            
-            df_candidates = pd.DataFrame(candidates)
-            if df_candidates.empty:
-                logger.info("Oscilla: No candidates passed volume filtering")
-                return
-            
-            logger.info(f"Oscilla: {len(df_candidates)} stocks passed volume filtering, now running wavelet analysis...")
-            
-            # Now run wavelet analysis on the filtered candidates
-            discoveries = 0
-            for i, (_, row) in enumerate(df_candidates.iterrows(), 1):
-                ticker = row["ticker"]
-                
-                if i % 50 == 0:
-                    logger.info(f"Oscilla: Wavelet analysis {i}/{len(df_candidates)} stocks...")
+                    logger.info(f"Oscilla: Wavelet analysis {i}/{len(df_stocks)} stocks...")
                 
                 try:
                     # Get historical data for wavelet analysis
                     df_price = get_historical_data_yfinance(ticker, wavelet_start_date, last_trading_date)
                     if df_price.empty:
+                        filtered_no_data += 1
                         continue
                     
                     # Check if we have enough data points (need at least 64)
                     if len(df_price) < 64:
+                        filtered_insufficient_data += 1
                         continue
+                    
+                    # Volume filtering: check relative volume (middle-of-the-road stocks)
+                    # MIN_AVG_VOLUME check removed (too restrictive) - only using relative volume range
+                    if 'volume' in df_price.columns and len(df_price) >= LOOKBACK_DAYS:
+                        # Calculate average volume over lookback period
+                        df_price_sorted = df_price.sort_values("date").tail(LOOKBACK_DAYS)
+                        avg_volume = df_price_sorted["volume"].mean()
+                        
+                        # Get today's volume from Polygon data
+                        today_volume = row.get("today_volume", 0)
+                        if today_volume > 0 and avg_volume > 0:
+                            # Calculate relative volume (today vs average)
+                            rel_volume = today_volume / avg_volume
+                            
+                            # Filter: only accept stocks with relative volume in range [REL_VOLUME_MIN, REL_VOLUME_MAX]
+                            # This finds "middle-of-the-road" stocks with stable volume patterns
+                            if rel_volume < REL_VOLUME_MIN or rel_volume > REL_VOLUME_MAX:
+                                filtered_rel_volume += 1
+                                continue
                     
                     # Run wavelet analysis
                     wave_result = wavelet_trade_engine(
@@ -429,6 +381,47 @@ class Oscilla(AdvisorBase):
                     )
                     
                     if not wave_result.get("accepted", False):
+                        filtered_wavelet_rejected += 1
+                        continue
+                    
+                    # Apply additional filters after wavelet passes
+                    wave_position = wave_result.get("wave_position", 0)
+                    
+                    # Filter wave_position: only accept between -50.0 and 0.0
+                    if wave_position < -50.0 or wave_position > 0.0:
+                        filtered_wave_position += 1
+                        continue
+                    
+                    # Verify US exchange and profitability
+                    try:
+                        ticker_obj = yf.Ticker(ticker)
+                        info = ticker_obj.info
+                        
+                        # Verify US exchange (NMS, NYQ, NAS, NYS)
+                        exchange = info.get('exchange')
+                        us_exchanges = ['NMS', 'NYQ', 'NAS', 'NYS']
+                        if exchange not in us_exchanges:
+                            filtered_not_us += 1
+                            continue
+                        
+                        # Check profitability (at least one metric must be >= 0)
+                        trailing_eps = info.get('trailingEps')
+                        net_income = info.get('netIncomeToCommon') or info.get('netIncome')
+                        profit_margin = info.get('profitMargins')
+                        
+                        is_profitable = (
+                            (trailing_eps is not None and trailing_eps >= 0) or
+                            (net_income is not None and net_income >= 0) or
+                            (profit_margin is not None and profit_margin >= 0)
+                        )
+                        
+                        if not is_profitable:
+                            filtered_not_profitable += 1
+                            continue
+                            
+                    except Exception as e:
+                        filtered_error += 1
+                        logger.debug(f"Oscilla: Error checking exchange/profitability for {ticker}: {e}")
                         continue
                     
                     # Create discovery with sell instructions
@@ -439,23 +432,35 @@ class Oscilla(AdvisorBase):
                         f"wave_pos={wave_result['wave_position']:.3f}"
                     )
                     
-                    # Create sell instructions for stop and target prices
+                    # Create sell instructions: PROFIT_TARGET, PERCENTAGE_REBUY, and PROFIT_FLAT
+                    # PROFIT_TARGET: val1=ratio (e.g., 0.10 for 10% profit on average spend)
+                    # PERCENTAGE_REBUY: val1=drop %, val2=rebuy % (10% loss, rebuy 10% of cost basis)
+                    # PROFIT_FLAT: val1=range threshold %, val2=evaluation days
                     sell_instructions = [
-                        ("STOP_PERCENTAGE", 0.9, None),
-                        ("TARGET_DIMINISHING", Decimal(str(wave_result['target'])), 7),
+                        ("PROFIT_TARGET", Decimal('0.10'), None),  # 10% profit on average spend
+                        ("PERCENTAGE_REBUY", Decimal('0.10'), Decimal('0.10')),  # 10% loss, rebuy 10%
+                        ("PROFIT_FLAT", Decimal('0.02'), Decimal('3')),  # Sell if price range within 2% over 3 days
+                        ("PROFIT_FLAT", Decimal('0.05'), Decimal('20')),  # Sell if price range within 5% over 20 days
                     ]
 
-                    logger.info(f"Submitting {ticker} - R:R={wave_result['reward_risk']:.2f}, stop=${wave_result['stop']:.2f}, target=${wave_result['target']:.2f}")
+                    logger.info(f"Submitting {ticker} - R:R={wave_result['reward_risk']:.2f}, stop=${wave_result['stop']:.2f}, target=${wave_result['target']:.2f}, wave_pos={wave_position:.3f}")
 
                     # Create discovery
                     if self.discovered(sa=sa, symbol=ticker, explanation=explanation, sell_instructions=sell_instructions, weight=1.0) is not None:
                         discoveries += 1
 
                 except Exception as e:
+                    filtered_error += 1
                     logger.debug(f"Oscilla: Error analyzing {ticker}: {e}", exc_info=True)
                     continue
             
-            logger.info(f"Oscilla: Discovery complete - {discoveries} candidates")
+            logger.info(
+                f"Oscilla: Discovery complete - {discoveries} candidates. "
+                f"Filtered: no_data={filtered_no_data}, insufficient_data={filtered_insufficient_data}, "
+                f"rel_volume={filtered_rel_volume}, wavelet_rejected={filtered_wavelet_rejected}, "
+                f"wave_position={filtered_wave_position}, not_us={filtered_not_us}, "
+                f"not_profitable={filtered_not_profitable}, errors={filtered_error}"
+            )
             
         except Exception as e:
             logger.error(f"Oscilla: Error in discovery: {e}", exc_info=True)

@@ -16,6 +16,7 @@ import sys
 import os
 import yfinance as yf
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 import argparse
@@ -51,7 +52,10 @@ try:
         wavelet_trade_engine,
         MIN_RR as OSCILLA_MIN_RR,
         LOOKBACK_DAYS as OSCILLA_LOOKBACK_DAYS,
-        TURN_CONFIRMATION_ENABLED as OSCILLA_TURN_CONFIRMATION
+        TURN_CONFIRMATION_ENABLED as OSCILLA_TURN_CONFIRMATION,
+        MIN_AVG_VOLUME as OSCILLA_MIN_AVG_VOLUME,
+        REL_VOLUME_MIN as OSCILLA_REL_VOLUME_MIN,
+        REL_VOLUME_MAX as OSCILLA_REL_VOLUME_MAX
     )
     HAS_OSCILLA = True
 except ImportError as e:
@@ -262,6 +266,7 @@ def find_middle_of_road_stocks(date, count=10, price_min=10.0, price_max=100.0, 
     
     # Test each stock with wavelet analysis
     passed_stocks = []
+    failed_stocks = []  # Collect failed stocks with wave positions
     tested_count = 0
     
     for i, (_, row) in enumerate(df.iterrows(), 1):
@@ -281,6 +286,32 @@ def find_middle_of_road_stocks(date, count=10, price_min=10.0, price_max=100.0, 
             if len(df_price) < 64:
                 continue
             
+            # Volume filtering: check average volume and relative volume (middle-of-the-road stocks)
+            if 'volume' in df_price.columns and len(df_price) >= OSCILLA_LOOKBACK_DAYS:
+                # Calculate average volume over lookback period
+                df_price_sorted = df_price.sort_values("date").tail(OSCILLA_LOOKBACK_DAYS)
+                avg_volume = df_price_sorted["volume"].mean()
+                
+                # Check minimum average volume
+                if avg_volume < OSCILLA_MIN_AVG_VOLUME:
+                    print(f"      {ticker}: ✗ Avg volume {avg_volume:,.0f} < MIN_AVG_VOLUME {OSCILLA_MIN_AVG_VOLUME:,}")
+                    continue
+                
+                # Get today's volume from Polygon data
+                today_volume = row.get("today_volume", 0)
+                if today_volume > 0 and avg_volume > 0:
+                    # Calculate relative volume (today vs average)
+                    rel_volume = today_volume / avg_volume
+                    
+                    # Filter: only accept stocks with relative volume in range [REL_VOLUME_MIN, REL_VOLUME_MAX]
+                    # This finds "middle-of-the-road" stocks with stable volume patterns
+                    if rel_volume < OSCILLA_REL_VOLUME_MIN:
+                        print(f"      {ticker}: ✗ Rel volume {rel_volume:.2f} < MIN {OSCILLA_REL_VOLUME_MIN:.1f} (avg={avg_volume:,.0f}, today={today_volume:,.0f})")
+                        continue
+                    elif rel_volume > OSCILLA_REL_VOLUME_MAX:
+                        print(f"      {ticker}: ✗ Rel volume {rel_volume:.2f} > MAX {OSCILLA_REL_VOLUME_MAX:.1f} (avg={avg_volume:,.0f}, today={today_volume:,.0f})")
+                        continue
+            
             # Convert to pandas Series for wavelet_trade_engine
             price_series = pd.Series(df_price["close"].values, index=range(len(df_price)))
             low_series = pd.Series(df_price["low"].values, index=range(len(df_price)))
@@ -293,12 +324,31 @@ def find_middle_of_road_stocks(date, count=10, price_min=10.0, price_max=100.0, 
                 turn_confirmation_enabled=OSCILLA_TURN_CONFIRMATION
             )
             
+            # Collect failed stock info (always, for summary)
+            if not wave_result.get("accepted", False):
+                failed_info = {
+                    "ticker": ticker,
+                    "reason": wave_result.get("reason", "Unknown"),
+                    "wave_position": wave_result.get("wave_position"),
+                    "consistency": wave_result.get("consistency"),
+                    "rr": wave_result.get("rr")
+                }
+                failed_stocks.append(failed_info)
+            
             # If stock passes wavelet test, check additional filters
             if wave_result.get("accepted", False):
-                # Filter wave_position: only accept between -0.2 and 0.5 (allows slightly below trough and up to halfway to peak)
+                # Filter wave_position: only accept between -50.0 and 0.0
                 wave_position = wave_result.get("wave_position", 0)
-                if wave_position < -0.2 or wave_position > 0.5:
-                    # Skip stocks outside the acceptable range (-0.2 = slightly below trough, 0.5 = halfway to peak)
+                if wave_position < -50.0 or wave_position > 0.0:
+                    # Track this as a filter rejection too
+                    failed_info = {
+                        "ticker": ticker,
+                        "reason": f"Wave position out of range ({wave_position:.3f})",
+                        "wave_position": wave_position,
+                        "consistency": wave_result.get("consistency"),
+                        "rr": wave_result.get("reward_risk")
+                    }
+                    failed_stocks.append(failed_info)
                     continue
                 
                 try:
@@ -319,6 +369,14 @@ def find_middle_of_road_stocks(date, count=10, price_min=10.0, price_max=100.0, 
                     
                     # Skip unprofitable companies
                     if not is_profitable:
+                        failed_info = {
+                            "ticker": ticker,
+                            "reason": "Not profitable",
+                            "wave_position": wave_position,
+                            "consistency": wave_result.get("consistency"),
+                            "rr": wave_result.get("reward_risk")
+                        }
+                        failed_stocks.append(failed_info)
                         continue
                         
                 except Exception as e:
@@ -342,6 +400,49 @@ def find_middle_of_road_stocks(date, count=10, price_min=10.0, price_max=100.0, 
             if i <= 5:
                 print(f"      ⚠️  {ticker}: Error in wavelet test - {str(e)[:80]}")
             continue
+    
+    # Print summary of failed stocks with wave positions
+    if failed_stocks:
+        print(f"\n{'='*80}")
+        print(f"FAILED FILTER TEST SUMMARY ({len(failed_stocks)} stocks)")
+        print(f"{'='*80}")
+        print(f"{'Ticker':<10} {'Reason':<30} {'Wave Pos':<12} {'Consistency':<12} {'R:R':<8}")
+        print("-" * 80)
+        
+        # Sort by wave_position if available (to see distribution)
+        failed_with_wp = [f for f in failed_stocks if f.get("wave_position") is not None]
+        failed_without_wp = [f for f in failed_stocks if f.get("wave_position") is None]
+        
+        # Sort failed_with_wp by wave_position
+        failed_with_wp.sort(key=lambda x: x.get("wave_position", 0))
+        
+        # Print stocks with wave positions
+        for stock in failed_with_wp:
+            wp = stock.get("wave_position")
+            wp_str = f"{wp:.3f}" if wp is not None else "N/A"
+            consistency = stock.get("consistency")
+            consistency_str = f"{consistency:.3f}" if consistency is not None else "N/A"
+            rr = stock.get("rr")
+            rr_str = f"{rr:.2f}" if rr is not None else "N/A"
+            reason = stock.get("reason", "Unknown")[:28]  # Truncate long reasons
+            print(f"{stock['ticker']:<10} {reason:<30} {wp_str:<12} {consistency_str:<12} {rr_str:<8}")
+        
+        # Print stocks without wave positions
+        for stock in failed_without_wp:
+            reason = stock.get("reason", "Unknown")[:28]
+            print(f"{stock['ticker']:<10} {reason:<30} {'N/A':<12} {'N/A':<12} {'N/A':<8}")
+        
+        # Print statistics
+        if failed_with_wp:
+            wave_positions = [f.get("wave_position") for f in failed_with_wp if f.get("wave_position") is not None]
+            if wave_positions:
+                print(f"\nWave Position Statistics (for {len(wave_positions)} stocks with wave positions):")
+                print(f"  Min: {min(wave_positions):.3f}")
+                print(f"  Max: {max(wave_positions):.3f}")
+                print(f"  Mean: {np.mean(wave_positions):.3f}")
+                print(f"  Median: {np.median(wave_positions):.3f}")
+        
+        print(f"\n{'='*80}\n")
     
     if not passed_stocks:
         print(f"    ❌ No stocks passed wavelet test (tested {tested_count} stocks)")

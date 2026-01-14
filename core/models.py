@@ -53,7 +53,7 @@ class Profile(models.Model):
         },
         "EXPERIMENTAL": {
             "min_health": 15.0,
-            "advisors": ['Oscilla', 'Vunder'],
+            "advisors": ['Oscilla', 'Vunder','FDA'],
             "weight": 1.0,
             "stocks": 40
         },
@@ -63,6 +63,20 @@ class Profile(models.Model):
     risk = models.CharField(max_length=20, choices=[(key, key.replace('_', ' ').title()) for key in RISK.keys()], default='MODERATE')
     investment = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('100000.00'))
     cash = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('100000.00'))
+
+    def average_spend(self):
+        """
+        Calculate average spend (base allowance) per stock based on risk settings.
+        
+        Currently uses investment / number_of_stocks, but can be extended to use
+        wealth or other metrics for higher risk profiles in the future.
+        
+        Returns:
+            Decimal: Average spend per stock
+        """
+        risk_settings = self.RISK.get(self.risk, self.RISK['MODERATE'])
+        num_stocks = Decimal(str(risk_settings['stocks']))
+        return self.investment / num_stocks
 
 
 # External advisor services (pairs with python class)
@@ -436,6 +450,15 @@ class Stock(models.Model):
             logger.warning(f"Error checking peak for {self.symbol} (since {since_date}, target ${target_price}): {e}")
             return None
 
+    def latest_health(self):
+        """
+        Get the most recent health check for this stock.
+
+        Returns:
+            Health object or None if no health check exists
+        """
+        return Health.objects.filter(stock=self).order_by('-created').first()
+
 
     def refresh(self):
 
@@ -542,6 +565,9 @@ class SellInstruction(models.Model):
         ("STOP_AUGMENTING", "Stop Loss (Augmenting)"),
         ("PERCENTAGE_DIMINISHING", "Target Price (Percentage diminishing)"),
         ("PERCENTAGE_AUGMENTING", "Stop Loss (Percentage augmenting)"),
+        ("PROFIT_TARGET", "Target Profit (Fixed Dollar Amount"),
+        ("PERCENTAGE_REBUY", "Stop Loss with Rebuy on Drop"),
+        ("PROFIT_FLAG", "Price has flatlined"),
     ]
 
     discovery = models.ForeignKey(Discovery, on_delete=models.DO_NOTHING)

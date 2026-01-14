@@ -1849,6 +1849,15 @@
                     if (inst.max_days != null) {
                         extraInfo = ` (augments over ${inst.max_days} days)`;
                     }
+                } else if (inst.instruction === 'PROFIT_TARGET' && inst.value != null) {
+                    // value1 is a ratio (e.g., 0.10 = 10% profit on average spend)
+                    valueDisplay = `${(inst.value * 100).toFixed(0)}% profit on average spend`;
+                } else if (inst.instruction === 'PERCENTAGE_REBUY' && inst.value != null && inst.value2 != null) {
+                    // value1 = drop percentage, value2 = rebuy percentage of cost basis
+                    valueDisplay = `Rebuy ${(inst.value2 * 100).toFixed(0)}% of cost basis if price drops ${(inst.value * 100).toFixed(0)}%`;
+                } else if (inst.instruction === 'PROFIT_FLAT' && inst.value != null && inst.value2 != null) {
+                    // value1 = percentage threshold for price range, value2 = evaluation period in days
+                    valueDisplay = `Sell if price range within ${(inst.value * 100).toFixed(0)}% over ${inst.value2} days (when in profit)`;
                 }
 
                 const statusIndicator = inst.status === 'active' ? ' ⚠️ TRIGGERED' : '';

@@ -16,12 +16,17 @@ logger = logging.getLogger(__name__)
 def analyse_target(discovery, holding, target):
     stock = holding.stock
     current = holding.stock.price
+    buy_price = holding.average_price if holding.average_price else discovery.price
 
-    # Case 1: Price >= target and downturn detected
+    # Case 1: Targets should only trigger sells at a profit, not at a loss
+    if current < buy_price:
+        return False
+
+    # Case 2: Price >= target and downturn detected
     if current >= target and stock.downturned():
         return True
 
-    # Case 2: Price < target but previously peaked at/above target (protect gains)
+    # Case 3: Price < target but previously peaked at/above target (protect gains)
     if current < target and stock.peaked(discovery.created, target):
         return True
 
@@ -85,8 +90,7 @@ def analyze_holdings(sa, users, advisors):
                                 break
 
                         elif instruction.instruction in ['TARGET_PRICE', 'TARGET_PERCENTAGE']:
-                            # Targets should only trigger sells at a profit, not at a loss (that's what stop losses are for)
-                            if holding.stock.price >= buy_price and analyse_target(discovery, holding, instruction.value1):
+                            if analyse_target(discovery, holding, instruction.value1):
                                 execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} reached target price of ${instruction.value1:.2f}")
                                 break
 
@@ -102,12 +106,27 @@ def analyze_holdings(sa, users, advisors):
                                 else:
                                     current_target = float(buy_price)  # After max_days, target = buy_price (break-even)
 
-                                # Targets should only trigger sells at a profit, not at a loss (that's what stop losses are for)
-                                if holding.stock.price >= buy_price and analyse_target(discovery, holding, Decimal(str(current_target))):
+                                if analyse_target(discovery, holding, Decimal(str(current_target))):
                                     execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} downturn detected at diminishing target ${current_target:.2f} (day {days_held}/{max_days})")
                                     break
                             else:
                                 logger.warning(f"TARGET_DIMINISHING instruction {instruction.id} missing required fields (value1 or buy_price)")
+
+                        elif instruction.instruction == 'PROFIT_TARGET':
+                            # Calculate target profit based on average spend and ratio
+                            # value1 = ratio (e.g., 0.10 for 10% profit)
+                            if instruction.value1 and holding.shares > 0:
+                                ratio = Decimal(str(instruction.value1))
+                                base_allowance = profile.average_spend()
+                                target_value = base_allowance * (Decimal('1.0') + ratio)
+                                target_price = target_value / Decimal(str(holding.shares))
+                                
+                                if analyse_target(discovery, holding, target_price):
+                                    execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} reached profit target (target price: ${target_price:.2f})")
+                                    break
+                            else:
+                                logger.warning(f"PROFIT_TARGET instruction {instruction.id} missing required fields (value1 or shares)")
+
 
                         elif instruction.instruction in ['STOP_AUGMENTING', 'PERCENTAGE_AUGMENTING']:
                             # Calculate augmenting stop: original_stop → buy_price over max_days
@@ -127,6 +146,77 @@ def analyze_holdings(sa, users, advisors):
                                     break
                             else:
                                 logger.warning(f"STOP_AUGMENTING instruction {instruction.id} missing required fields (value1 or buy_price)")
+
+                        elif instruction.instruction == 'PERCENTAGE_REBUY':
+                            # Rebuy on price drop (alternative to stop-loss)
+                            # value1 = drop percentage (e.g., 0.10 for 10% drop)
+                            # value2 = rebuy percentage of cost basis (e.g., 0.10 for 10% of cost basis)
+                            if instruction.value1 and instruction.value2 and holding.shares > 0:
+                                drop_pct = Decimal(str(instruction.value1))
+                                rebuy_pct = Decimal(str(instruction.value2))
+                                cost_basis = Decimal(str(holding.average_price)) * Decimal(str(holding.shares))
+                                drop_threshold_price = Decimal(str(buy_price)) * (Decimal('1.0') - drop_pct)
+                                
+                                # Check if price has dropped by value1% from average_price
+                                if holding.stock.price <= drop_threshold_price:
+                                    rebuy_amount = cost_basis * rebuy_pct
+
+                                    health1 = holding.stock.latest_health()
+                                    health2 = advisors[0].health_check(holding.stock,sa)
+
+                                    if health1 is None or health2 is None:
+                                        logger.warning(f"PERCENTAGE_REBUY missing health")
+                                        continue
+
+                                    if health2.score < health1.score:
+                                        logger.warning(f"PERCENTAGE_REBUY failed health")
+                                        continue
+
+                                    execute_buy(sa, user, holding.stock, rebuy_amount, f"Rebuying {rebuy_pct*100:.0f}% after drop")
+                            else:
+                                logger.warning(f"PERCENTAGE_REBUY instruction {instruction.id} missing required fields (value1, value2, or shares)")
+
+                        elif instruction.instruction == 'PROFIT_FLAT':
+                            # Sell if price is flat (low volatility) and in profit
+                            # value1 = X (percentage threshold for price range, e.g., 0.05 for 5%)
+                            # value2 = Y (evaluation period in days, e.g., 30)
+                            if instruction.value1 and instruction.value2:
+                                range_threshold_pct = Decimal(str(instruction.value1))
+                                evaluation_days = int(instruction.value2)
+                                current_price = holding.stock.price
+                                
+                                # Only check if in profit
+                                if current_price >= buy_price:
+                                    try:
+                                        import yfinance as yf
+                                        ticker = yf.Ticker(holding.stock.symbol)
+                                        # Get enough days (add buffer for weekends/holidays)
+                                        period_days = evaluation_days + 10
+                                        hist = ticker.history(period=f"{period_days}d", interval="1d")
+                                        
+                                        if not hist.empty and len(hist) >= evaluation_days:
+                                            # Get last Y days of close prices
+                                            prices = hist['Close'].tail(evaluation_days).values
+                                            
+                                            max_price = Decimal(str(float(prices.max())))
+                                            min_price = Decimal(str(float(prices.min())))
+                                            avg_price = Decimal(str(float(prices.mean())))
+                                            
+                                            # Calculate price range
+                                            price_range = max_price - min_price
+                                            
+                                            # Check if range is within X% of average (flat)
+                                            if avg_price > 0:
+                                                range_threshold = avg_price * range_threshold_pct
+                                                
+                                                if price_range <= range_threshold:
+                                                    execute_sell(sa, user, profile, holding,f"Flat near {range_threshold_pct}% over {evaluation_days} days")
+                                                    break
+                                    except Exception as e:
+                                        logger.warning(f"Error checking PROFIT_FLAT for {holding.stock.symbol}: {e}")
+                                        continue
+                            else:
+                                logger.warning(f"PROFIT_FLAT instruction {instruction.id} missing required fields (value1 or value2)")
 
                         elif instruction.instruction == 'AFTER_DAYS':
                             days_held = (timezone.now() - discovery.created).days
@@ -226,16 +316,13 @@ def analyze_discovery(sa, users, advisors):
             continue
 
         # 3. Base allowance calculation (to be enhanced with different risk methods)
-        base_allowance = profile.investment / Decimal(str(risk_settings["stocks"]))
+        base_allowance = profile.average_spend()
         risk_weight = Decimal(str(risk_settings["weight"]))
 
         # 4. Iterate through unique discoveries and calculate allowance per discovery
         for discovery in unique_discoveries:
             # Get most recent health check for this stock
-            from core.models import Health
-            health_check = Health.objects.filter(
-                stock=discovery.stock
-            ).order_by('-created').first()
+            health_check = discovery.stock.latest_health()
 
             # Skip stocks without health check or with score below threshold
             if not health_check:
