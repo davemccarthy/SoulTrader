@@ -330,8 +330,23 @@ def holding_detail(request, stock_id):
                         instruction_data['status'] = 'active' if trend < instruction.value1 else 'pending'
                 elif instruction.instruction in ['TARGET_DIMINISHING', 'PERCENTAGE_DIMINISHING'] and instruction.value1:
                     # value1 = original target price, value2 = max_days
-                    instruction_data['max_days'] = int(instruction.value2) if instruction.value2 is not None else 14
-                    instruction_data['status'] = 'pending'  # Status determined during analysis
+                    max_days = int(instruction.value2) if instruction.value2 is not None else 14
+                    instruction_data['max_days'] = max_days
+                    # Calculate current diminished target
+                    days_held = (timezone.now() - discovery.created).days if discovery.created else 0
+                    buy_price = float(avg_price) if avg_price else float(discovery.price) if discovery.price else None
+                    original_target = float(instruction.value1)
+                    if buy_price is not None:
+                        if days_held <= max_days:
+                            progress = float(days_held) / float(max_days) if max_days > 0 else 1.0
+                            current_target = original_target - progress * (original_target - buy_price)
+                        else:
+                            current_target = buy_price  # After max_days, target = buy_price (break-even)
+                        instruction_data['current_target'] = current_target
+                        instruction_data['days_held'] = days_held
+                        instruction_data['status'] = 'active' if current_price >= current_target else 'pending'
+                    else:
+                        instruction_data['status'] = 'pending'  # Status determined during analysis
                 elif instruction.instruction in ['STOP_AUGMENTING', 'PERCENTAGE_AUGMENTING'] and instruction.value1:
                     # value1 = original stop price, value2 = max_days
                     instruction_data['max_days'] = int(instruction.value2) if instruction.value2 is not None else 28
@@ -412,10 +427,10 @@ def holding_history(request, stock_id):
     current_price = stock.price or Decimal('0')
     worth = current_price * shares
 
-    # Recent price history for chart (e.g., last 30 days, daily closes)
+    # Recent price history for chart (e.g., last 60 days, daily closes)
     price_history = []
     try:
-        hist = yf.Ticker(stock.symbol).history(period="1mo", interval="1d")
+        hist = yf.Ticker(stock.symbol).history(period="2mo", interval="1d")
         if not hist.empty and "Close" in hist.columns:
             for ts, row in hist.iterrows():
                 close = row.get("Close")
@@ -527,8 +542,23 @@ def holding_history(request, stock_id):
                     instruction_data['status'] = 'pending'
             elif instruction.instruction in ['TARGET_DIMINISHING', 'PERCENTAGE_DIMINISHING'] and instruction.value1:
                 # value1 = original target price, value2 = max_days
-                instruction_data['max_days'] = int(instruction.value2) if instruction.value2 is not None else 14
-                instruction_data['status'] = 'pending'  # Status determined during analysis
+                max_days = int(instruction.value2) if instruction.value2 is not None else 14
+                instruction_data['max_days'] = max_days
+                # Calculate current diminished target
+                days_held = (timezone.now() - discovery_obj.created).days if discovery_obj.created else 0
+                buy_price = float(avg_price) if avg_price else float(discovery_obj.price) if discovery_obj.price else None
+                original_target = float(instruction.value1)
+                if buy_price is not None:
+                    if days_held <= max_days:
+                        progress = float(days_held) / float(max_days) if max_days > 0 else 1.0
+                        current_target = original_target - progress * (original_target - buy_price)
+                    else:
+                        current_target = buy_price  # After max_days, target = buy_price (break-even)
+                    instruction_data['current_target'] = current_target
+                    instruction_data['days_held'] = days_held
+                    instruction_data['status'] = 'active' if current_price >= current_target else 'pending'
+                else:
+                    instruction_data['status'] = 'pending'  # Status determined during analysis
             elif instruction.instruction in ['STOP_AUGMENTING', 'PERCENTAGE_AUGMENTING'] and instruction.value1:
                 # value1 = original stop price, value2 = max_days
                 instruction_data['max_days'] = int(instruction.value2) if instruction.value2 is not None else 28
@@ -594,10 +624,20 @@ def holding_history(request, stock_id):
         if pl_amount is not None:
             pl_class = 'positive' if pl_amount >= 0 else 'negative'
         
+        # Calculate current price class for colorization
+        current_price_class = 'neutral'
+        if current_price and trade.price:
+            if current_price > trade.price:
+                current_price_class = 'positive'
+            elif current_price < trade.price:
+                current_price_class = 'negative'
+        
         trade_data = {
             'id': trade.id,
             'action': trade.action,
             'price': float(trade.price) if trade.price is not None else None,
+            'current_price': float(current_price) if current_price else None,
+            'current_price_class': current_price_class,
             'shares': trade.shares,
             'cost': float(trade.cost) if trade.cost is not None else None,
             'pl_amount': pl_amount,
@@ -789,4 +829,3 @@ def profile(request):
         'profile': user_profile,
     }
     return render(request, 'core/profile.html', context)
-

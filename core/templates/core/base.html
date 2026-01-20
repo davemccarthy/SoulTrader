@@ -966,7 +966,7 @@
 
         .holdings-grid-trades {
             display: grid;
-            grid-template-columns: 1fr 1fr 1fr 1fr 1fr 2fr;
+            grid-template-columns: 1fr 1fr 1fr 1fr 1fr 1fr 2fr;
             gap: 1rem;
             padding: 0.75rem 0;
             border-bottom: 1px solid #e2e8f0;
@@ -978,7 +978,7 @@
 
         .holdings-grid-trades-header {
             display: grid;
-            grid-template-columns: 1fr 1fr 1fr 1fr 1fr 2fr;
+            grid-template-columns: 1fr 1fr 1fr 1fr 1fr 1fr 2fr;
             gap: 1rem;
             padding: 0.75rem 0;
             border-bottom: 2px solid #e2e8f0;
@@ -1761,6 +1761,9 @@
                 const created = formatDateTime(trade.created);
                 const actionClass = action.toLowerCase();
 
+                const currentPrice = trade.current_price != null ? formatCurrency(trade.current_price) : '—';
+                const currentPriceClass = trade.current_price_class || 'neutral';
+
                 return `
                     <div class="holdings-row holdings-grid-trades" data-trade-id="${trade.id}">
                         <div class="holdings-col">
@@ -1768,6 +1771,9 @@
                         </div>
                         <div class="holdings-col">
                             <span class="holdings-price">${price}</span>
+                        </div>
+                        <div class="holdings-col">
+                            <span class="holdings-price ${currentPriceClass}">${currentPrice}</span>
                         </div>
                         <div class="holdings-col">
                             <span>${shares}</span>
@@ -1791,6 +1797,7 @@
                         <div class="holdings-grid-trades-header">
                             <div class="holdings-col">Action</div>
                             <div class="holdings-col">Price</div>
+                            <div class="holdings-col">Current</div>
                             <div class="holdings-col">Shares</div>
                             <div class="holdings-col">P&L</div>
                             <div class="holdings-col">P&L %</div>

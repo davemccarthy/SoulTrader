@@ -35,7 +35,7 @@ class Profile(models.Model):
     RISK = {
         "CONSERVATIVE": {
             "min_health": 50.0,  # Only top ~20% of your scores
-            "advisors": ['Story', 'FDA', 'Insider'],
+            "advisors": ['Story', 'FDA', 'Insider','Vunder'],
             "weight": 1.0,
             "stocks": 50
         },
@@ -53,7 +53,7 @@ class Profile(models.Model):
         },
         "EXPERIMENTAL": {
             "min_health": 15.0,
-            "advisors": ['Oscilla', 'Vunder','FDA'],
+            "advisors": ['Oscilla', 'Vunder','FDA','Insider'],
             "weight": 1.0,
             "stocks": 40
         },
@@ -566,8 +566,8 @@ class SellInstruction(models.Model):
         ("PERCENTAGE_DIMINISHING", "Target Price (Percentage diminishing)"),
         ("PERCENTAGE_AUGMENTING", "Stop Loss (Percentage augmenting)"),
         ("PROFIT_TARGET", "Target Profit (Fixed Dollar Amount"),
-        ("PERCENTAGE_REBUY", "Stop Loss with Rebuy on Drop"),
-        ("PROFIT_FLAG", "Price has flatlined"),
+        ("PERCENTAGE_REBUY", "Loss - will gamble a Rebuy"),
+        ("PROFIT_FLAT", "Price flatlined"),
     ]
 
     discovery = models.ForeignKey(Discovery, on_delete=models.DO_NOTHING)

@@ -277,8 +277,6 @@ class Oscilla(AdvisorBase):
         Args:
             sa: SmartAnalysis session
         """
-        return
-
         # Check if within first hour of market open
         market_status = self.market_open()
 

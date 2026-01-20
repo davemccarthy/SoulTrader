@@ -704,7 +704,7 @@ class Insider(AdvisorBase):
             # Pass sell instructions to siacovery
             sell_instructions = [
                 ("PERCENTAGE_DIMINISHING", 1.30, 7),
-                ("PERCENTAGE_AUGMENTING", 0.95, 14),
+                ("PERCENTAGE_AUGMENTING", 0.90, 14),
                 ('DESCENDING_TREND', -0.20, None),
                 ('NOT_TRENDING', None, None)
             ]

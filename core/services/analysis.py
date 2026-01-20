@@ -30,6 +30,10 @@ def analyse_target(discovery, holding, target):
     if current < target and stock.peaked(discovery.created, target):
         return True
 
+    # Log to show case 2 working
+    if current > target:
+        logger.info(f"PROFIT_TARGET reached but no downturn deteted")
+
     return False
 
 
@@ -185,6 +189,10 @@ def analyze_holdings(sa, users, advisors):
                                 evaluation_days = int(instruction.value2)
                                 current_price = holding.stock.price
                                 
+                                # Only check if stock has been held for at least the evaluation period
+                                if days_held < evaluation_days:
+                                    continue  # Skip check - not enough time has passed
+                                
                                 # Only check if in profit
                                 if current_price >= buy_price:
                                     try:
@@ -210,8 +218,8 @@ def analyze_holdings(sa, users, advisors):
                                                 range_threshold = avg_price * range_threshold_pct
                                                 
                                                 if price_range <= range_threshold:
-                                                    execute_sell(sa, user, profile, holding,f"Flat near {range_threshold_pct}% over {evaluation_days} days")
-                                                    break
+                                                    execute_sell(sa, user, profile, holding, f"Flat near {range_threshold_pct*100:.0f}% over {evaluation_days} days")
+                                                    continue
                                     except Exception as e:
                                         logger.warning(f"Error checking PROFIT_FLAT for {holding.stock.symbol}: {e}")
                                         continue
