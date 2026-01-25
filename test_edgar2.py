@@ -476,54 +476,12 @@ def analyze_single_filing(filing, detailed: bool = False) -> Optional[Dict]:
             "red_flags": red_flags,
             "valuation": valuation,
             "insider_activity": insider_activity,
+            "_delta_breakdown": delta_breakdown,  # Store for reprinting after EPS
+            "_prev_metrics": prev_metrics,  # Store for reprinting after EPS
         }
 
-        # EPS scoring (Alpha Vantage only) for 10-K/10-Q
-        if ticker and report_period and filing.form in ("10-K", "10-Q"):
-            if detailed:
-                print(f"  [EPS] Fetching Alpha Vantage earnings for {ticker}...")
-            earnings_data = get_earnings_actuals_alphavantage(ticker, detailed=detailed)
-            if earnings_data:
-                earnings_record = find_matching_earnings(
-                    earnings_data,
-                    report_period,
-                    filing.form,
-                    detailed=detailed,
-                )
-                if earnings_record:
-                    filing_eps = None
-                    if ratios and ratios.get("eps"):
-                        filing_eps = ratios.get("eps")
-
-                    result["eps_reported"] = earnings_record.get("reportedEPS") or filing_eps
-                    result["eps_estimated"] = earnings_record.get("estimatedEPS")
-                    result["eps_surprise_pct"] = earnings_record.get("surprisePercentage")
-
-                    if detailed:
-                        print(
-                            f"  [EPS] reported={result['eps_reported']} "
-                            f"estimated={result['eps_estimated']} "
-                            f"surprise%={result['eps_surprise_pct']}"
-                        )
-
-                    if is_pending_earnings(earnings_record) and not filing_eps:
-                        if detailed:
-                            print(f"  ⚠️  {ticker}: Earnings data pending")
-                        eps_adjustment = 0.0
-                    else:
-                        eps_adjustment = calculate_eps_score_adjustment(
-                            earnings_record,
-                            filing_eps=filing_eps,
-                            detailed=detailed,
-                        )
-
-                    result["eps_adjustment"] = eps_adjustment
-                    result["combined_score"] = result.get("combined_score", 0) + eps_adjustment
-                    result["score"] = result.get("score", 0) + eps_adjustment
-                elif detailed:
-                    print(f"  ⚠️  {ticker}: No matching earnings record found")
-            elif detailed:
-                print(f"  ⚠️  {ticker}: Could not fetch Alpha Vantage earnings data")
+        # EPS scoring is NOT done here - it's applied after filtering in batch mode
+        # or after analysis in single-file mode to avoid unnecessary API calls
         
         # For 8-Ks, add event-specific analysis (mergers, acquisitions, earnings)
         if is_8k:
@@ -585,6 +543,24 @@ def humanize_number(value: Optional[float]) -> str:
         return f"${value/1_000:.2f}K"
     else:
         return f"${value:.2f}"
+
+
+def market_cap_category(market_cap: Optional[float]) -> str:
+    """Convert market cap to mnemonic category."""
+    if market_cap is None:
+        return "N/A"
+    if market_cap >= 200_000_000_000:
+        return "Mega"
+    elif market_cap >= 10_000_000_000:
+        return "Large"
+    elif market_cap >= 2_000_000_000:
+        return "Mid"
+    elif market_cap >= 300_000_000:
+        return "Small"
+    elif market_cap >= 50_000_000:
+        return "Micro"
+    else:
+        return "Nano"
 
 
 def print_detailed_analysis(result: Dict, delta_breakdown: Optional[Dict], prev_metrics: Dict):
@@ -804,6 +780,60 @@ def analyze_filing_by_accession(accession_number: str):
             if not result:
                 print("\n⚠️  Analysis failed")
                 return
+            
+            # EPS scoring (Alpha Vantage only) for 10-K/10-Q - applied after analysis in single-file mode
+            ticker = result.get("ticker")
+            metrics = result.get("metrics", {})
+            report_period = metrics.get("_period_end")
+            if ticker and report_period and filing.form in ("10-K", "10-Q"):
+                print(f"  [EPS] Fetching Alpha Vantage earnings for {ticker}...")
+                earnings_data = get_earnings_actuals_alphavantage(ticker, detailed=True)
+                if earnings_data:
+                    earnings_record = find_matching_earnings(
+                        earnings_data,
+                        report_period,
+                        filing.form,
+                        detailed=True,
+                    )
+                    if earnings_record:
+                        filing_eps = None
+                        ratios = result.get("ratios", {})
+                        if ratios and ratios.get("eps"):
+                            filing_eps = ratios.get("eps")
+
+                        result["eps_reported"] = earnings_record.get("reportedEPS") or filing_eps
+                        result["eps_estimated"] = earnings_record.get("estimatedEPS")
+                        result["eps_surprise_pct"] = earnings_record.get("surprisePercentage")
+
+                        print(
+                            f"  [EPS] reported={result['eps_reported']} "
+                            f"estimated={result['eps_estimated']} "
+                            f"surprise%={result['eps_surprise_pct']}"
+                        )
+
+                        if is_pending_earnings(earnings_record) and not filing_eps:
+                            print(f"  ⚠️  {ticker}: Earnings data pending")
+                            eps_adjustment = 0.0
+                        else:
+                            eps_adjustment = calculate_eps_score_adjustment(
+                                earnings_record,
+                                filing_eps=filing_eps,
+                                detailed=True,
+                            )
+
+                        result["eps_adjustment"] = eps_adjustment
+                        result["combined_score"] = result.get("combined_score", 0) + eps_adjustment
+                        result["score"] = result.get("score", 0) + eps_adjustment
+                    else:
+                        print(f"  ⚠️  {ticker}: No matching earnings record found")
+            
+            # Re-print detailed analysis with updated score after EPS adjustment
+            delta_breakdown = result.get("_delta_breakdown")
+            prev_metrics = result.get("_prev_metrics", {})
+            print("\n" + "=" * 80)
+            print("DETAILED ANALYSIS (with EPS adjustment)")
+            print("=" * 80)
+            print_detailed_analysis(result, delta_breakdown, prev_metrics)
         else:
             print(f"\n⚠️  Could not find filing {accession_number}")
             print(f"   Make sure the accession number is correct")
@@ -1058,9 +1088,56 @@ def analyze_edgar_filings(date_str: Optional[str] = None, verbose: bool = True) 
             # Store 8-K references for later use
             result["associated_8k_accessions"] = [f.accession_number for f in associated_8ks]
 
-        # EPS scoring is handled inside analyze_single_filing()
+        # EPS scoring (Alpha Vantage only) for 10-K/10-Q - ONLY after passing filters
+        ticker = result.get("ticker")
+        metrics = result.get("metrics", {})
+        report_period = metrics.get("_period_end")
+        if ticker and report_period and filing.form in ("10-K", "10-Q"):
+            if verbose:
+                print(f"  [EPS] Fetching Alpha Vantage earnings for {ticker}...")
+            earnings_data = get_earnings_actuals_alphavantage(ticker, detailed=verbose)
+            if earnings_data:
+                earnings_record = find_matching_earnings(
+                    earnings_data,
+                    report_period,
+                    filing.form,
+                    detailed=verbose,
+                )
+                if earnings_record:
+                    filing_eps = None
+                    ratios = result.get("ratios", {})
+                    if ratios and ratios.get("eps"):
+                        filing_eps = ratios.get("eps")
 
-        # Check if above buy threshold
+                    result["eps_reported"] = earnings_record.get("reportedEPS") or filing_eps
+                    result["eps_estimated"] = earnings_record.get("estimatedEPS")
+                    result["eps_surprise_pct"] = earnings_record.get("surprisePercentage")
+
+                    if verbose:
+                        print(
+                            f"  [EPS] reported={result['eps_reported']} "
+                            f"estimated={result['eps_estimated']} "
+                            f"surprise%={result['eps_surprise_pct']}"
+                        )
+
+                    if is_pending_earnings(earnings_record) and not filing_eps:
+                        if verbose:
+                            print(f"  ⚠️  {ticker}: Earnings data pending")
+                        eps_adjustment = 0.0
+                    else:
+                        eps_adjustment = calculate_eps_score_adjustment(
+                            earnings_record,
+                            filing_eps=filing_eps,
+                            detailed=verbose,
+                        )
+
+                    result["eps_adjustment"] = eps_adjustment
+                    result["combined_score"] = result.get("combined_score", 0) + eps_adjustment
+                    result["score"] = result.get("score", 0) + eps_adjustment
+                elif verbose:
+                    print(f"  ⚠️  {ticker}: No matching earnings record found")
+
+        # Check if above buy threshold (after EPS adjustment)
         final_score = result.get("score", combined_score)
         if final_score >= BUY_THRESHOLD:
             stats["above_threshold"] += 1
@@ -3080,6 +3157,7 @@ def calculate_delta_score(current_metrics: Dict, current_ratios: Dict, prev_metr
         print(f"  Calculating {comparison_type} delta score...")
     
     score = 0.0
+    revenue_decline_penalty = 0.0  # Track revenue decline penalty for margin expansion offset
     
     # Revenue growth (magnitude-aware)
     curr_rev = current_metrics.get("revenue")
@@ -3115,19 +3193,23 @@ def calculate_delta_score(current_metrics: Dict, current_ratios: Dict, prev_metr
         elif curr_rev < prev_rev:
             # Revenue decline - penalize based on magnitude
             if pct_change <= -20:
-                score -= 0.30  # Severe decline (-20%+)
+                revenue_decline_penalty = 0.30  # Severe decline (-20%+)
+                score -= revenue_decline_penalty
                 if debug:
                     print(f"    -0.30 - Revenue Decline ({pct_change:+.1f}%) - Severe")
             elif pct_change <= -10:
-                score -= 0.20  # Significant decline (-10% to -20%)
+                revenue_decline_penalty = 0.20  # Significant decline (-10% to -20%)
+                score -= revenue_decline_penalty
                 if debug:
                     print(f"    -0.20 - Revenue Decline ({pct_change:+.1f}%) - Significant")
             elif pct_change <= -5:
-                score -= 0.15  # Moderate decline (-5% to -10%)
+                revenue_decline_penalty = 0.15  # Moderate decline (-5% to -10%)
+                score -= revenue_decline_penalty
                 if debug:
                     print(f"    -0.15 - Revenue Decline ({pct_change:+.1f}%) - Moderate")
             else:
-                score -= 0.10  # Small decline (0% to -5%)
+                revenue_decline_penalty = 0.10  # Small decline (0% to -5%)
+                score -= revenue_decline_penalty
                 if debug:
                     print(f"    -0.10 - Revenue Decline ({pct_change:+.1f}%) - Small")
     
@@ -3165,6 +3247,9 @@ def calculate_delta_score(current_metrics: Dict, current_ratios: Dict, prev_metr
     # Get net income for profitability check (define before using)
     curr_ni = current_metrics.get("net_income")
     prev_ni = prev_metrics.get("net_income")
+    
+    # Track net margin change for revenue decline offset
+    net_margin_change = None
     
     # Margin expansion (using operating margin if available, otherwise net margin) - magnitude-aware
     # Note: Margin expansion without revenue growth may indicate cost-cutting rather than sustainable growth
@@ -3231,6 +3316,7 @@ def calculate_delta_score(current_metrics: Dict, current_ratios: Dict, prev_metr
         prev_margin = (prev_ni / prev_rev) * 100
         if curr_margin > prev_margin:
             margin_change = curr_margin - prev_margin
+            net_margin_change = margin_change  # Track for revenue decline offset
             # Check if revenue declined while margins expanded (potential red flag)
             revenue_declined = curr_rev < prev_rev
             if revenue_declined:
@@ -3281,6 +3367,31 @@ def calculate_delta_score(current_metrics: Dict, current_ratios: Dict, prev_metr
                     score += 0.10  # Small expansion (0-0.5%)
                     if debug:
                         print(f"    +0.10 - Net Margin Expansion ({margin_change:+.1f}%) - Small")
+    
+    # Margin expansion offset: Reduce revenue decline penalty when net margin expands significantly
+    # This aligns with market behavior where margin expansion offsets revenue decline for pricing-power companies
+    # Calculate net margin change if not already calculated (needed for offset even when operating margin is available)
+    if net_margin_change is None and curr_ni is not None and curr_rev and prev_ni is not None and prev_rev and curr_rev > 0 and prev_rev > 0:
+        curr_net_margin = (curr_ni / curr_rev) * 100
+        prev_net_margin = (prev_ni / prev_rev) * 100
+        if curr_net_margin > prev_net_margin:
+            net_margin_change = curr_net_margin - prev_net_margin
+    
+    if revenue_decline_penalty > 0 and net_margin_change is not None and net_margin_change >= 1.5:
+        if net_margin_change >= 2.0:
+            # Strong margin expansion (≥2.0%) - reduce revenue penalty by 60%
+            offset_multiplier = 0.4
+            offset_amount = revenue_decline_penalty * (1 - offset_multiplier)
+            score += offset_amount
+            if debug:
+                print(f"    +{offset_amount:.2f} - Revenue Decline Offset (net margin +{net_margin_change:.1f}% ≥2.0%, penalty reduced by 60%)")
+        elif net_margin_change >= 1.5:
+            # Moderate margin expansion (≥1.5% but <2.0%) - reduce revenue penalty by 50%
+            offset_multiplier = 0.5
+            offset_amount = revenue_decline_penalty * (1 - offset_multiplier)
+            score += offset_amount
+            if debug:
+                print(f"    +{offset_amount:.2f} - Revenue Decline Offset (net margin +{net_margin_change:.1f}% ≥1.5%, penalty reduced by 50%)")
     
     # Cash flow improvement (magnitude-aware)
     curr_ocf = current_metrics.get("operating_cash_flow")
@@ -3538,8 +3649,7 @@ def get_earnings_actuals_alphavantage(ticker: str, detailed: bool = False) -> Op
     """
     api_key = get_next_alphavantage_key()
     if not api_key:
-        if detailed:
-            print("  ⚠️  No Alpha Vantage API keys configured")
+        print(f"  ⚠️  {ticker}: No Alpha Vantage API keys configured")
         return None
 
     base_url = "https://www.alphavantage.co/query"
@@ -3552,22 +3662,19 @@ def get_earnings_actuals_alphavantage(ticker: str, detailed: bool = False) -> Op
         data = response.json()
 
         if "Error Message" in data:
-            if detailed:
-                print(f"  ⚠️  Alpha Vantage API Error: {data['Error Message']}")
+            print(f"  ⚠️  {ticker}: Alpha Vantage API Error: {data['Error Message']}")
             return None
         if "Note" in data:
-            if detailed:
-                print(f"  ⚠️  Alpha Vantage API Note: {data['Note']} (rate limit?)")
+            print(f"  ⚠️  {ticker}: Alpha Vantage API Note: {data['Note']} (rate limit?)")
             return None
         if "Information" in data:
-            if detailed:
-                print(f"  ℹ️  Alpha Vantage API Information: {data['Information']}")
+            # Information messages (like rate limit warnings) should always be shown
+            print(f"  ℹ️  {ticker}: Alpha Vantage API Information: {data['Information']}")
             return None
 
         return data
     except Exception as e:
-        if detailed:
-            print(f"  ⚠️  Error fetching Alpha Vantage earnings: {e}")
+        print(f"  ⚠️  {ticker}: Error fetching Alpha Vantage earnings: {e}")
         return None
 
 
@@ -4510,60 +4617,6 @@ if __name__ == "__main__":
         # Format and print results
         threshold = 0.55
         
-        # Show top 10 BEFORE final threshold filter
-        if results:
-            print("\n" + "=" * 80)
-            print("TOP 10 BEFORE THRESHOLD FILTER (≥0.55)")
-            print("=" * 80)
-            top_10_all = results[:10]
-            
-            # Column headers
-            header = f"{'#':<3} {'Score':<6} {'Company':<35} {'Form':<6} {'Delta':<8} {'EPS':<7} {'Start $':<8} {'Now %':<8} {'Ref':<20} {'✅'}"
-            print(header)
-            print("-" * 100)
-            
-            for i, result in enumerate(top_10_all, 1):
-                ticker_str = f" ({result['ticker']})" if result['ticker'] else ""
-                company_name = f"{result['company']}{ticker_str}"
-                if len(company_name) > 34:
-                    company_name = company_name[:31] + "..."
-                
-                score_rounded = round(result['score'], 2)
-                threshold_marker = "✅" if score_rounded >= threshold else " "
-                if result.get('has_associated_8k'):
-                    threshold_marker += " 📋"
-                
-                delta_score = result['delta_score']
-                delta_label = result.get('delta_label', 'N/A')
-                delta_str = f"{delta_score:.2f}({delta_label[:1]})"
-
-                eps_pct = result.get('eps_surprise_pct')
-                eps_str = "N/A"
-                if eps_pct not in (None, "", "None"):
-                    try:
-                        eps_val = float(eps_pct)
-                        eps_str = f"{eps_val:+.1f}%"
-                    except (ValueError, TypeError):
-                        eps_str = "N/A"
-                
-                # Get price data
-                pm = result.get('price_momentum') or {}
-                valuation = result.get('valuation') or {}
-                current_price = valuation.get('current_price') if valuation else None
-                filing_price = pm.get('filing_price') if pm else None
-                
-                start_price_str = f"${filing_price:.2f}" if filing_price and filing_price > 0 else "N/A"
-                
-                price_now = None
-                if current_price and filing_price and filing_price > 0:
-                    price_now = ((current_price - filing_price) / filing_price) * 100
-                price_now_str = f"{price_now:+.1f}%" if price_now is not None else "N/A"
-                
-                filing_ref = result.get('filing_ref', 'N/A')
-                form_str = result['form']
-                
-                print(f"{i:<3} {score_rounded:<6.2f} {company_name:<35} {form_str:<6} {delta_str:<8} {eps_str:<7} {start_price_str:<8} {price_now_str:<8} {filing_ref:<20} {threshold_marker}")
-        
         above_threshold = [r for r in results if r['score'] >= threshold]
         
         print("\n" + "=" * 80)
@@ -4581,9 +4634,9 @@ if __name__ == "__main__":
             print("=" * 120)
             
             # Column headers (Ref column width is flexible)
-            header = f"{'#':<3} {'Score':<6} {'Company':<35} {'Form':<6} {'Delta':<8} {'EPS':<7} {'Start $':<8} {'1d %':<7} {'7d %':<7} {'30d %':<8} {'60d %':<8} {'Now %':<8} {'Ref':<20} {'✅'}"
+            header = f"{'#':<3} {'Score':<6} {'Company':<35} {'Form':<6} {'Delta':<8} {'EPS':<7} {'Start $':<8} {'1d %':<7} {'7d %':<7} {'30d %':<8} {'60d %':<8} {'Now %':<8} {'Cap':<10} {'Ref':<20} {'✅'}"
             print(header)
-            print("-" * 130)
+            print("-" * 140)
             
             for i, result in enumerate(top_results, 1):
                 ticker_str = f" ({result['ticker']})" if result['ticker'] else ""
@@ -4630,16 +4683,20 @@ if __name__ == "__main__":
                     price_now = ((current_price - filing_price) / filing_price) * 100
                 price_now_str = f"{price_now:+.1f}%" if price_now is not None else "N/A"
                 
+                # Format market cap as mnemonic
+                market_cap = valuation.get('market_cap') if valuation else None
+                market_cap_str = market_cap_category(market_cap)
+                
                 filing_ref = result.get('filing_ref', 'N/A')
                 form_str = result['form']
                 
                 # Print main row - use first 20 chars of ref for alignment, but we'll print full ref
                 ref_display = filing_ref[:20] if len(filing_ref) > 20 else filing_ref
-                row = f"{i:<3} {score_rounded:<6.2f} {company_name:<35} {form_str:<6} {delta_str:<8} {eps_str:<7} {start_price_str:<8} {price_1d:<7} {price_7d:<7} {price_30d:<8} {price_60d:<8} {price_now_str:<8} {ref_display:<20} {threshold_marker}"
+                row = f"{i:<3} {score_rounded:<6.2f} {company_name:<35} {form_str:<6} {delta_str:<8} {eps_str:<7} {start_price_str:<8} {price_1d:<7} {price_7d:<7} {price_30d:<8} {price_60d:<8} {price_now_str:<8} {market_cap_str:<10} {ref_display:<20} {threshold_marker}"
                 print(row)
                 
                 # If reference is longer than 20 chars, print full reference on continuation line (indented to align with Ref column)
                 if len(filing_ref) > 20:
                     # Calculate position where Ref column starts (sum of previous column widths)
-                    ref_col_start = 3 + 6 + 35 + 6 + 8 + 8 + 7 + 7 + 8 + 8 + 8 + 1  # All columns + 1 space (updated for 1d column)
+                    ref_col_start = 3 + 6 + 35 + 6 + 8 + 7 + 8 + 7 + 7 + 8 + 8 + 8 + 10 + 1  # All columns + 1 space (includes Cap column)
                     print(f"{'':>{ref_col_start}} {filing_ref}")

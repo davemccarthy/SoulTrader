@@ -30,10 +30,6 @@ def analyse_target(discovery, holding, target):
     if current < target and stock.peaked(discovery.created, target):
         return True
 
-    # Log to show case 2 working
-    if current > target:
-        logger.info(f"PROFIT_TARGET reached but no downturn deteted")
-
     return False
 
 

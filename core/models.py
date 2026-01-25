@@ -35,7 +35,7 @@ class Profile(models.Model):
     RISK = {
         "CONSERVATIVE": {
             "min_health": 50.0,  # Only top ~20% of your scores
-            "advisors": ['Story', 'FDA', 'Insider','Vunder'],
+            "advisors": ['Story', 'FDA', 'Insider'],
             "weight": 1.0,
             "stocks": 50
         },
