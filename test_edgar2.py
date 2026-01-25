@@ -9,17 +9,17 @@ TODO - Enhancements to Better Align with Market Reactions:
 1. EPS BEAT VS. CONSENSUS ESTIMATES
    - Track EPS vs. consensus estimates (e.g., $0.19 vs. $0.12 expected = 58% beat)
    - Add bonus points for significant EPS beats (>20%, >50%)
-   - Source: Market Data API (marketdata.app)
-     * Endpoint: GET /v1/stocks/earnings/{symbol}/
-     * Provides: estimatedEPS (consensus), reportedEPS (actual), surpriseEPS, surpriseEPSpct
-     * Can query by date to match filing periods
-     * ⚠️  LIMITATION: Earnings endpoint returns 402 Payment Required - requires paid plan
-     * Free tier (100 API credits/day) may not include earnings data
-     * Documentation: https://www.postman.com/marketdataapp/market-data/documentation/t8jjlx8/market-data-api-v1
-   - Alternative: Use LLM (Gemini) to query consensus estimates as fallback (see item #14)
-   - Example: TFIN beat by 58% but our system didn't capture this forward-looking signal
+   - Source: Alpha Vantage EARNINGS endpoint
+     * Provides: reportedEPS, estimatedEPS, surprisePercentage
+     * 3 API keys available, 25 calls/day each = 75 calls/day total
+     * Use test_alphavantage_earnings_actuals.py for standalone testing
+   - Scoring model:
+     * Beat/Miss flag: +0.10 for beat, -0.10 for miss, 0 for inline
+     * Magnitude bonus: 0 to +0.10 based on surprise % (100%+ beat = +0.10)
+     * Total EPS adjustment range: -0.10 to +0.20
+   - Handle pending data: If reportedEPS=0 and reportedDate=today, fall back to 8-K Exhibit 99.1 parsing
+   - Example: PRGS beat by 15% ($1.51 vs $1.31) but our system didn't capture this → would add +0.12
    - Example: LGCY reported $0.09 EPS, missed consensus $0.11 expected, causing -17.5% price drop
-   - Compare actuals to expectations, not just historical growth
 
 2. EXPENSE REDUCTION / COST DISCIPLINE
    - Increase weighting for margin expansion when revenue is stable (not declining)
@@ -159,10 +159,13 @@ from decimal import Decimal
 import pandas as pd
 import requests
 import yfinance as yf
-from edgar import get_filings, Company, Filing, find, set_identity
+from edgar import get_filings, get_latest_filings, Company, Filing, find, set_identity
 
 # Configuration
 INVESTMENT_FORMS = ["10-K", "10-Q"]
+ABSOLUTE_SCORE_FILTER = 0.20  # Drop filings with absolute score below this (Phase 1: lenient)
+COMBINED_SCORE_FILTER = 0.30  # Drop filings with combined score below this (Phase 1: lenient)
+BUY_THRESHOLD = 0.55  # Minimum score to consider as buy signal
 _EDGAR_EMAIL = os.environ.get("EDGAR_USER_AGENT_EMAIL", "soultrader@example.com")
 set_identity(f"SoulTrader {_EDGAR_EMAIL}")
 
@@ -173,9 +176,15 @@ SEC_HEADERS = {
     "User-Agent": f"SoulTrader {_EDGAR_EMAIL}"
 }
 
-# Market Data API configuration (for consensus EPS estimates)
-MARKETDATA_API_TOKEN = os.environ.get("MARKETDATA_API_TOKEN")
-MARKETDATA_API_BASE = "https://api.marketdata.app/v1"
+# Alpha Vantage API configuration (for consensus EPS estimates)
+# Note: 3 keys available, 25 calls/day each = 75 calls/day total
+ALPHAVANTAGE_API_KEYS = [
+    os.environ.get("ALPHAVANTAGE_API_KEY"),
+    os.environ.get("ALPHAVANTAGE_API_KEY_2"),
+    os.environ.get("ALPHAVANTAGE_API_KEY_3"),
+]
+# Filter out None values
+ALPHAVANTAGE_API_KEYS = [k for k in ALPHAVANTAGE_API_KEYS if k]
 
 # Create a session for persistent connections (SEC requires rate limiting)
 _session = requests.Session()
@@ -193,7 +202,7 @@ _CIK_TO_TICKER_CACHE = {}
 _VALUATION_CACHE = {}
 
 
-def analyze_single_filing(filing, detailed: bool = False, use_marketdata: bool = False) -> Optional[Dict]:
+def analyze_single_filing(filing, detailed: bool = False) -> Optional[Dict]:
     """
     Analyze a single filing from edgartools.
     Uses SEC Company Facts API for metrics (same data source as old script).
@@ -209,11 +218,10 @@ def analyze_single_filing(filing, detailed: bool = False, use_marketdata: bool =
         cik = str(filing.cik).zfill(10)
         ticker = None
         
-        # Handle 8-K filings differently (event-driven, not period-based financials)
-        if filing.form == "8-K":
-            if detailed:
-                print(f"  ⚠️  8-K filing detected - using event-based analysis (not financial metrics)")
-            return analyze_8k_filing(filing, detailed=detailed)
+        # Handle 8-K filings: Extract financial metrics like 10-K/10-Q, then add 8-K specific analysis
+        is_8k = (filing.form == "8-K")
+        if is_8k and detailed:
+            print(f"  ℹ️  8-K filing detected - extracting financial metrics + event analysis")
         
         # Fetch company facts from SEC Company Facts API (aggregated, company-wide data)
         if detailed:
@@ -270,16 +278,22 @@ def analyze_single_filing(filing, detailed: bool = False, use_marketdata: bool =
             use_xbrl_fallback = True
         
         # Get filing's report period (period end date)
+        # For 8-Ks, don't use report period - they're event-driven, use most recent data
         report_period = None
-        if hasattr(filing, 'period_of_report'):
-            report_period = filing.period_of_report
-        elif hasattr(filing, 'report_date'):
-            report_period = filing.report_date
+        if filing.form != "8-K":
+            if hasattr(filing, 'period_of_report'):
+                report_period = filing.period_of_report
+            elif hasattr(filing, 'report_date'):
+                report_period = filing.report_date
         
-        if detailed and report_period:
-            print(f"  Filing report period: {report_period}")
+        if detailed:
+            if report_period:
+                print(f"  Filing report period: {report_period}")
+            elif filing.form == "8-K":
+                print(f"  ℹ️  8-K filing: Using most recent available financial data (no specific report period)")
         
         # Extract financial metrics using Company Facts API, filtered by actual report period
+        # For 8-Ks, use most recent quarterly data (treat like 10-Q)
         # Or fall back to XBRL extraction if Company Facts not available
         if use_xbrl_fallback:
             # Try to get XBRL from filing
@@ -298,8 +312,10 @@ def analyze_single_filing(filing, detailed: bool = False, use_marketdata: bool =
                     print(f"  ⚠️  Error extracting from XBRL: {e}")
                 return None
         else:
+            # For 8-Ks, treat as quarterly (10-Q) to get most recent quarterly data
+            filing_type_for_extraction = "10-Q" if filing.form == "8-K" else filing.form
             metrics = extract_financial_metrics_from_company_facts(
-                facts_data, filing.form, report_period=report_period, detailed=detailed
+                facts_data, filing_type_for_extraction, report_period=report_period, detailed=detailed
             )
         
         if not metrics or (not metrics.get("revenue") and not metrics.get("net_income")):
@@ -408,42 +424,12 @@ def analyze_single_filing(filing, detailed: bool = False, use_marketdata: bool =
         if not ticker and detailed:
             print("  ⚠️  Valuation metrics unavailable (no ticker)")
         
-        # Get consensus EPS from Market Data API (only if use_marketdata=True to conserve API calls)
-        consensus_data = None
-        if use_marketdata and ticker and report_period:
-            if detailed:
-                print(f"  Fetching consensus EPS from Market Data API for {ticker}...")
-            consensus_data = get_consensus_eps_marketdata(ticker, report_period, filing.form, debug=detailed)
-            if detailed and consensus_data:
-                est_eps = consensus_data.get('estimated_eps')
-                rep_eps = consensus_data.get('reported_eps')
-                surprise_pct = consensus_data.get('surprise_eps_pct')
-                if est_eps is not None:
-                    print(f"  ✓ Consensus EPS: ${est_eps:.2f}")
-                    if rep_eps is not None:
-                        print(f"  ✓ Reported EPS: ${rep_eps:.2f}")
-                        if surprise_pct is not None:
-                            print(f"  ✓ Surprise: {surprise_pct:+.1f}%")
-            elif detailed:
-                print(f"  ⚠️  No consensus EPS data available")
-                print(f"      (Market Data API earnings endpoint may require paid plan)")
-        
         # Calculate scores
         absolute_score = calculate_investment_score(
             metrics, ratios, red_flags, filing.form, valuation, debug=detailed
         )
-        # Calculate delta score - for 10-Q, prioritize YoY comparison
-        if filing.form == "10-Q" and yoy_metrics and any(yoy_metrics.values()):
-            # For 10-Q, use YoY comparison (weighted 70%) and sequential (weighted 30%)
-            yoy_delta, _ = calculate_delta_score(metrics, ratios, yoy_metrics, filing_type=filing.form, debug=detailed)
-            seq_delta, _ = calculate_delta_score(metrics, ratios, prev_metrics, filing_type=filing.form, debug=False)
-            delta_score = (yoy_delta * 0.70) + (seq_delta * 0.30)
-            delta_breakdown = None
-            if detailed:
-                print(f"  Delta Score: YoY={yoy_delta:.2f} (70%), Sequential={seq_delta:.2f} (30%), Combined={delta_score:.2f}")
-        else:
-            # For 10-K or if YoY not available, use sequential only
-            delta_score, delta_breakdown = calculate_delta_score(metrics, ratios, prev_metrics, filing_type=filing.form, debug=detailed)
+        # Calculate delta score - use sequential comparison (like test_edgar.py)
+        delta_score, delta_breakdown = calculate_delta_score(metrics, ratios, prev_metrics, filing_type=filing.form, debug=detailed)
         delta_label = classify_filing_delta(delta_score)
         
         # Get price momentum
@@ -490,9 +476,89 @@ def analyze_single_filing(filing, detailed: bool = False, use_marketdata: bool =
             "red_flags": red_flags,
             "valuation": valuation,
             "insider_activity": insider_activity,
-            "consensus_data": consensus_data,
         }
+
+        # EPS scoring (Alpha Vantage only) for 10-K/10-Q
+        if ticker and report_period and filing.form in ("10-K", "10-Q"):
+            if detailed:
+                print(f"  [EPS] Fetching Alpha Vantage earnings for {ticker}...")
+            earnings_data = get_earnings_actuals_alphavantage(ticker, detailed=detailed)
+            if earnings_data:
+                earnings_record = find_matching_earnings(
+                    earnings_data,
+                    report_period,
+                    filing.form,
+                    detailed=detailed,
+                )
+                if earnings_record:
+                    filing_eps = None
+                    if ratios and ratios.get("eps"):
+                        filing_eps = ratios.get("eps")
+
+                    result["eps_reported"] = earnings_record.get("reportedEPS") or filing_eps
+                    result["eps_estimated"] = earnings_record.get("estimatedEPS")
+                    result["eps_surprise_pct"] = earnings_record.get("surprisePercentage")
+
+                    if detailed:
+                        print(
+                            f"  [EPS] reported={result['eps_reported']} "
+                            f"estimated={result['eps_estimated']} "
+                            f"surprise%={result['eps_surprise_pct']}"
+                        )
+
+                    if is_pending_earnings(earnings_record) and not filing_eps:
+                        if detailed:
+                            print(f"  ⚠️  {ticker}: Earnings data pending")
+                        eps_adjustment = 0.0
+                    else:
+                        eps_adjustment = calculate_eps_score_adjustment(
+                            earnings_record,
+                            filing_eps=filing_eps,
+                            detailed=detailed,
+                        )
+
+                    result["eps_adjustment"] = eps_adjustment
+                    result["combined_score"] = result.get("combined_score", 0) + eps_adjustment
+                    result["score"] = result.get("score", 0) + eps_adjustment
+                elif detailed:
+                    print(f"  ⚠️  {ticker}: No matching earnings record found")
+            elif detailed:
+                print(f"  ⚠️  {ticker}: Could not fetch Alpha Vantage earnings data")
         
+        # For 8-Ks, add event-specific analysis (mergers, acquisitions, earnings)
+        if is_8k:
+            # Parse 8-K items and add to result
+            items_info = parse_8k_items(filing, detailed=detailed)
+            items_found = items_info.get("items_found", {})
+            
+            # Determine primary item type
+            primary_item = None
+            if "2.02" in items_found:
+                primary_item = "2.02"  # Earnings announcement
+            elif "1.01" in items_found:
+                primary_item = "1.01"  # Acquisition/merger
+            elif "8.01" in items_found:
+                primary_item = "8.01"  # Other events
+            elif items_found:
+                primary_item = list(items_found.keys())[0]
+            
+            result["8k_items"] = items_found
+            result["8k_primary_item"] = primary_item
+            
+            # Extract earnings data if Item 2.02
+            if primary_item == "2.02":
+                exhibit_99_1_content = get_8k_exhibit_99_1(filing, detailed=detailed)
+                content = items_info.get("content", "")
+                
+                earnings_data = {}
+                if exhibit_99_1_content:
+                    earnings_data = extract_earnings_from_item_202(exhibit_99_1_content, detailed=detailed, search_full_content=True)
+                elif content:
+                    earnings_data = extract_earnings_from_item_202(content, detailed=detailed)
+                
+                result["8k_earnings_data"] = earnings_data if earnings_data else None
+        
+        # =====================================================================
         # Print detailed breakdown if requested
         if detailed:
             print_detailed_analysis(result, delta_breakdown, prev_metrics)
@@ -690,27 +756,8 @@ def print_detailed_analysis(result: Dict, delta_breakdown: Optional[Dict], prev_
     if ratios.get('eps') is not None:
         print(f"  Earnings Per Share (EPS): ${ratios['eps']:.2f}")
     
-    # Show consensus EPS comparison if available
-    consensus_data = result.get('consensus_data')
-    if consensus_data:
-        est_eps = consensus_data.get('estimated_eps')
-        rep_eps = consensus_data.get('reported_eps')
-        surprise_pct = consensus_data.get('surprise_eps_pct')
-        if est_eps is not None:
-            actual_eps = ratios.get('eps')
-            print(f"\nEPS CONSENSUS COMPARISON:")
-            print(f"  Actual EPS (from filing): ${actual_eps:.2f}" if actual_eps else "  Actual EPS: N/A")
-            print(f"  Consensus Estimate: ${est_eps:.2f}")
-            if rep_eps is not None:
-                print(f"  Reported EPS (Market Data): ${rep_eps:.2f}")
-            if surprise_pct is not None:
-                beat_miss = "Beat" if surprise_pct > 0 else "Miss"
-                print(f"  Surprise: {surprise_pct:+.1f}% ({beat_miss})")
-            elif actual_eps and est_eps:
-                # Calculate our own beat/miss
-                surprise = ((actual_eps - est_eps) / est_eps) * 100 if est_eps > 0 else 0
-                beat_miss = "Beat" if surprise > 0 else "Miss"
-                print(f"  Beat/Miss: {surprise:+.1f}% ({beat_miss})")
+    # TODO: Add Alpha Vantage EPS consensus comparison here
+    # Will show: Actual EPS vs Estimated EPS, Surprise %, Beat/Miss
     
     if valuation:
         print(f"\nVALUATION:")
@@ -753,8 +800,7 @@ def analyze_filing_by_accession(accession_number: str):
             print(f"✓ Found filing: {filing.company} - {filing.form} on {filing.filing_date}")
             
             # Analyze the filing with detailed output
-            # Use Market Data API only in --analyze mode to conserve API calls (100/day limit)
-            result = analyze_single_filing(filing, detailed=True, use_marketdata=True)
+            result = analyze_single_filing(filing, detailed=True)
             if not result:
                 print("\n⚠️  Analysis failed")
                 return
@@ -767,59 +813,340 @@ def analyze_filing_by_accession(accession_number: str):
         return
 
 
-def analyze_edgar_filings(date_str: str) -> List[Dict]:
+def analyze_edgar_filings(date_str: Optional[str] = None, verbose: bool = True) -> List[Dict]:
     """
-    Main entry point: Analyze EDGAR filings for a specific date.
+    Main entry point: Analyze EDGAR filings for a specific date or latest filings.
+    
+    Phase 1 Implementation:
+    - Fetch 10-Ks, 10-Qs, and 8-Ks separately
+    - Group by company (CIK) to associate 8-Ks with 10-K/10-Q filings
+    - Apply filtering at each stage (absolute score, combined score)
+    - Report standalone 8-K count (skip processing for Phase 1)
     
     Args:
-        date_str: Date in YYYY-MM-DD format
+        date_str: Date in YYYY-MM-DD format (optional). If None, uses get_latest_filings()
+        verbose: If True, print detailed progress
         
     Returns:
         List of result dictionaries with scores and metrics
+    
+    NOTE FOR ADVISOR IMPLEMENTATION:
+    - SEC daily index files can have delays (filings submitted at 4:09 PM may not appear
+      in edgartools until later, even if checked at 5:00 PM same day)
+    - For same-day runs, consider:
+      * Using SEC "current" feed as fallback: 
+        https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=10-Q&output=atom
+      * Adding retry logic with delay (e.g., check again after 30-60 min if no results)
+      * Fetching directly from SEC API instead of relying solely on edgartools cache
+    - Historical runs (past dates) should be fine with daily index
     """
     
-    # Normalize date (handle weekends)
-    filing_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-    # Move to previous weekday if weekend
-    while filing_date.weekday() >= 5:
-        filing_date -= timedelta(days=1)
+    use_latest = date_str is None
     
-    date_str_normalized = filing_date.strftime("%Y-%m-%d")
+    if use_latest:
+        print(f"\nAnalyzing LATEST EDGAR filings (not yet in published index)...")
+    else:
+        # Normalize date (handle weekends)
+        filing_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        while filing_date.weekday() >= 5:
+            filing_date -= timedelta(days=1)
+        
+        date_str_normalized = filing_date.strftime("%Y-%m-%d")
+        print(f"\nAnalyzing EDGAR filings for {date_str_normalized}...")
     
-    print(f"\nAnalyzing EDGAR filings for {date_str_normalized}...")
-    
-    # Get filings using edgartools
+    # =========================================================================
+    # STEP 1: Fetch all filing types separately
+    # =========================================================================
     try:
-        filings = get_filings(filing_date=date_str_normalized, form=INVESTMENT_FORMS, amendments=False)
-        print(f"Found {len(filings)} investment form filings")
-        print(f"Processing filings...")
+        if use_latest:
+            # Use get_latest_filings() for same-day filings not yet in index
+            # Filter by form after fetching
+            if verbose:
+                print("  Fetching latest filings (not yet in published index)...")
+            all_latest = get_latest_filings()
+            
+            # Debug output - check what we got
+            if verbose:
+                print(f"  DEBUG: Type of all_latest: {type(all_latest)}")
+                try:
+                    count = len(all_latest)
+                    print(f"  DEBUG: Total latest filings fetched: {count}")
+                except Exception as e:
+                    print(f"  DEBUG: Error getting length: {e}")
+                    count = 0
+                
+                if count > 0:
+                    # Show what forms we got - iterate and convert to list at same time
+                    forms_found = {}
+                    sample_count = 0
+                    all_latest_list = []  # Convert to list while iterating
+                    try:
+                        for f in all_latest:
+                            try:
+                                # Verify it's a proper Filing object
+                                if not hasattr(f, 'form'):
+                                    if verbose:
+                                        print(f"  DEBUG: Skipping non-filing object: {type(f)}")
+                                    continue
+                                all_latest_list.append(f)  # Add to list
+                                form = getattr(f, 'form', 'UNKNOWN')
+                                forms_found[form] = forms_found.get(form, 0) + 1
+                                if sample_count < 5:
+                                    company = getattr(f, 'company', 'N/A')
+                                    filing_date = getattr(f, 'filing_date', 'N/A')
+                                    print(f"  DEBUG: Sample {sample_count+1}: {form} - {company} - {filing_date}")
+                                    sample_count += 1
+                            except Exception as e:
+                                if verbose:
+                                    print(f"  DEBUG: Error accessing filing: {e}, type: {type(f)}")
+                        print(f"  DEBUG: Forms found in latest filings: {dict(sorted(forms_found.items(), key=lambda x: x[1], reverse=True))}")
+                        # Use the converted list
+                        all_latest = all_latest_list
+                    except Exception as e:
+                        print(f"  DEBUG: Error iterating over latest filings: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        all_latest_list = []
+                        all_latest = []
+                else:
+                    print(f"  DEBUG: No latest filings returned by get_latest_filings()")
+            
+            # Filter filings - use the converted list
+            # all_latest should now be a list from the debug section above
+            if not isinstance(all_latest, list):
+                # Fallback: convert to list if not already
+                try:
+                    all_latest = list(all_latest)
+                except Exception as e:
+                    if verbose:
+                        print(f"  DEBUG: Error converting all_latest to list: {e}")
+                    all_latest = []
+            
+            filings_10k_10q = []
+            filings_8k = []
+            try:
+                for f in all_latest:
+                    try:
+                        form = getattr(f, 'form', None)
+                        if form in INVESTMENT_FORMS:
+                            filings_10k_10q.append(f)
+                        elif form == "8-K":
+                            filings_8k.append(f)
+                    except Exception as e:
+                        if verbose:
+                            print(f"  DEBUG: Error processing filing in filter: {e}, type: {type(f)}")
+                        continue
+            except Exception as e:
+                if verbose:
+                    print(f"  DEBUG: Error filtering latest filings: {e}")
+                    import traceback
+                    traceback.print_exc()
+        else:
+            # Fetch 10-Ks and 10-Qs
+            filings_10k_10q = get_filings(filing_date=date_str_normalized, form=INVESTMENT_FORMS, amendments=False)
+            # Fetch 8-Ks
+            filings_8k = get_filings(filing_date=date_str_normalized, form="8-K", amendments=False)
+        
+        # Count filings - handle both list and Filings object
+        try:
+            if isinstance(filings_10k_10q, list):
+                count_10k = sum(1 for f in filings_10k_10q if getattr(f, 'form', None) == "10-K")
+                count_10q = sum(1 for f in filings_10k_10q if getattr(f, 'form', None) == "10-Q")
+            else:
+                # It's a Filings object - iterate directly
+                count_10k = sum(1 for f in filings_10k_10q if getattr(f, 'form', None) == "10-K")
+                count_10q = sum(1 for f in filings_10k_10q if getattr(f, 'form', None) == "10-Q")
+            
+            if isinstance(filings_8k, list):
+                count_8k = len(filings_8k)
+            else:
+                count_8k = sum(1 for _ in filings_8k)
+        except Exception as e:
+            if verbose:
+                print(f"  DEBUG: Error counting filings: {e}")
+                import traceback
+                traceback.print_exc()
+            count_10k = 0
+            count_10q = 0
+            count_8k = 0
+        
+        if use_latest:
+            print(f"\nFound: {count_10k} 10-Ks, {count_10q} 10-Qs, {count_8k} 8-Ks (latest filings)")
+        else:
+            print(f"\nFound: {count_10k} 10-Ks, {count_10q} 10-Qs, {count_8k} 8-Ks")
+        
     except Exception as e:
         print(f"Error fetching filings: {e}")
+        if verbose:
+            import traceback
+            traceback.print_exc()
         return []
     
-    results = []
-    filings_processed = 0
-    filings_with_xbrl = 0
-    filings_with_metrics = 0
+    # =========================================================================
+    # STEP 2: Build CIK-to-8K mapping for association
+    # =========================================================================
+    # Map CIK -> list of 8-K filings for that company
+    cik_to_8k = {}
+    for filing in filings_8k:
+        try:
+            cik = str(getattr(filing, 'cik', '')).zfill(10)
+            if cik and cik != '0000000000':  # Skip invalid CIKs
+                if cik not in cik_to_8k:
+                    cik_to_8k[cik] = []
+                cik_to_8k[cik].append(filing)
+        except Exception as e:
+            if verbose:
+                print(f"  DEBUG: Error processing 8-K filing CIK: {e}")
+                print(f"  DEBUG: Filing type: {type(filing)}, Filing: {filing}")
+            continue
     
-    # Process each filing
-    for filing in filings:
-        filings_processed += 1
-        xbrl = filing.xbrl()
-        if xbrl:
-            filings_with_xbrl += 1
+    # =========================================================================
+    # STEP 3: Process 10-Ks and 10-Qs with associated 8-Ks
+    # =========================================================================
+    results = []
+    stats = {
+        "total_10k_10q": 0,
+        "associated_8k": 0,
+        "passed_absolute_filter": 0,
+        "passed_combined_filter": 0,
+        "above_threshold": 0,
+        "standalone_8k": 0,
+        "standalone_8k_processed": 0,
+        "standalone_8k_passed_filter": 0,
+    }
+    
+    print(f"\nProcessing 10-Ks and 10-Qs...")
+    
+    associated_8k_ciks = set()  # Track which 8-Ks we've associated
+    
+    for filing in filings_10k_10q:
+        stats["total_10k_10q"] += 1
+        cik = str(filing.cik).zfill(10)
+        
+        # Check for associated 8-K (same company, same day)
+        associated_8ks = cik_to_8k.get(cik, [])
+        has_associated_8k = len(associated_8ks) > 0
+        if has_associated_8k:
+            stats["associated_8k"] += 1
+            associated_8k_ciks.add(cik)
+        
+        # Analyze the 10-K/10-Q
+        result = analyze_single_filing(filing, detailed=False)
+        if not result:
+            continue
+        
+        # Get scores for filtering
+        absolute_score = result.get("absolute_score", 0)
+        combined_score = result.get("score", 0)  # This is the combined score
+        
+        # FILTER 1: Absolute score
+        if absolute_score < ABSOLUTE_SCORE_FILTER:
+            if verbose:
+                company = result.get("company", "Unknown")[:30]
+                # Don't print every filtered company, too noisy
+            continue
+        stats["passed_absolute_filter"] += 1
+        
+        # FILTER 2: Combined score (after delta)
+        if combined_score < COMBINED_SCORE_FILTER:
+            continue
+        stats["passed_combined_filter"] += 1
+        
+        # Mark if has associated 8-K (for EPS enhancement)
+        result["has_associated_8k"] = has_associated_8k
+        if has_associated_8k:
+            # Store 8-K references for later use
+            result["associated_8k_accessions"] = [f.accession_number for f in associated_8ks]
+
+        # EPS scoring is handled inside analyze_single_filing()
+
+        # Check if above buy threshold
+        final_score = result.get("score", combined_score)
+        if final_score >= BUY_THRESHOLD:
+            stats["above_threshold"] += 1
+        
+        results.append(result)
+    
+    # =========================================================================
+    # STEP 4: Process standalone 8-Ks (not associated with 10-K/10-Q)
+    # PARKED: Skipping standalone 8-Ks due to period matching issues
+    # =========================================================================
+    print(f"\nProcessing standalone 8-Ks...")
+    standalone_8k_list = []
+    for cik, filings in cik_to_8k.items():
+        if cik not in associated_8k_ciks:
+            standalone_8k_list.extend(filings)
+    stats["standalone_8k"] = len(standalone_8k_list)
+    
+    # PARKED: Skip standalone 8-Ks until period matching is fixed
+    if standalone_8k_list:
+        if verbose:
+            print(f"  ⚠️  Skipping {len(standalone_8k_list)} standalone 8-Ks (parked - period matching issues)")
+        standalone_8k_list = []  # Clear the list to skip processing
+    
+    for filing in standalone_8k_list:
+        stats["standalone_8k_processed"] += 1
+        
+        # EARLY FILTERING: Check ticker and Item 2.02 before full analysis
+        cik = str(filing.cik).zfill(10)
+        ticker = cik_to_ticker(cik)  # Uses cache
+        
+        # Skip if no ticker (can't get valuation/EPS data)
+        if not ticker:
+            if verbose:
+                company = getattr(filing, 'company', 'Unknown')
+                print(f"  DEBUG: Skipping {company} (CIK {cik}) - no ticker found")
+            continue
+        
+        # Quick check for Item 2.02 (earnings announcement) - skip if not found
+        # Note: We still process other items (1.01, 8.01) but prioritize Item 2.02
+        # For now, we'll process all 8-Ks but this can be made stricter if needed
+        # has_item_202 = quick_check_8k_item_202(filing)
+        # if not has_item_202:
+        #     continue
         
         result = analyze_single_filing(filing, detailed=False)
-        if result:
-            metrics = result.get("metrics", {})
-            if metrics and (metrics.get("revenue") or metrics.get("net_income")):
-                filings_with_metrics += 1
-            results.append(result)
+        if not result:
+            continue
+        
+        # Get scores for filtering
+        absolute_score = result.get("absolute_score", 0)
+        combined_score = result.get("score", 0)
+        
+        # Apply same filters as 10-K/10-Q
+        if absolute_score < ABSOLUTE_SCORE_FILTER:
+            if verbose:
+                print(f"  DEBUG {ticker} [8-K]: Filtered out by absolute score ({absolute_score:.2f} < {ABSOLUTE_SCORE_FILTER})")
+            continue
+        if combined_score < COMBINED_SCORE_FILTER:
+            if verbose:
+                print(f"  DEBUG {ticker} [8-K]: Filtered out by combined score ({combined_score:.2f} < {COMBINED_SCORE_FILTER})")
+            continue
+        
+        stats["standalone_8k_passed_filter"] += 1
+        
+        # Check if above buy threshold
+        final_score = result.get("score", combined_score)
+        if final_score >= BUY_THRESHOLD:
+            stats["above_threshold"] += 1
+        
+        results.append(result)
     
-    # Debug output
-    print(f"\nProcessed: {filings_processed} filings, {filings_with_xbrl} with XBRL, {filings_with_metrics} with extracted metrics")
+    # =========================================================================
+    # STEP 5: Print summary
+    # =========================================================================
+    print(f"\nProcessing Summary:")
+    print(f"  10-K/10-Q filings processed: {stats['total_10k_10q']}")
+    print(f"  - With associated 8-K: {stats['associated_8k']}")
+    print(f"  - Passed absolute filter (≥{ABSOLUTE_SCORE_FILTER}): {stats['passed_absolute_filter']}")
+    print(f"  - Passed combined filter (≥{COMBINED_SCORE_FILTER}): {stats['passed_combined_filter']}")
+    print(f"\n  Standalone 8-Ks processed: {stats['standalone_8k_processed']}")
+    print(f"  - Passed filters: {stats['standalone_8k_passed_filter']}")
+    print(f"\n  Total above buy threshold (≥{BUY_THRESHOLD}): {stats['above_threshold']}")
     
-    # Sort by score
+    # =========================================================================
+    # STEP 6: Sort and deduplicate
+    # =========================================================================
     results.sort(key=lambda x: x["score"], reverse=True)
     
     # Deduplicate by ticker
@@ -1355,6 +1682,13 @@ def extract_financial_metrics_from_company_facts(facts_data: Dict, filing_type: 
                                 print(f"  DEBUG: ⚠️  WARNING: Report period mismatch! Expected {report_period}, got {latest.get('end')}")
                         break
     
+    # CRITICAL FIX FOR 8-Ks: If report_period was None (8-K), use the period_end from revenue for all subsequent metrics
+    # This ensures all metrics come from the same period (prevents period mixing bug)
+    if report_period is None and metrics.get("_period_end"):
+        report_period = metrics["_period_end"]
+        if detailed:
+            print(f"  DEBUG: ⚠️  8-K filing - anchoring all metrics to period {report_period} (from revenue) to prevent period mixing")
+    
     # For financial institutions, if no revenue found, try using OperatingIncomeLoss as revenue
     # (For banks, operating income often represents total income/revenue)
     if metrics["revenue"] is None and "OperatingIncomeLoss" in us_gaap:
@@ -1380,6 +1714,12 @@ def extract_financial_metrics_from_company_facts(facts_data: Dict, filing_type: 
                     metrics["_revenue_concept_used"] = "OperatingIncomeLoss"  # Track which concept was used
                     if detailed:
                         print(f"  DEBUG: ✓ Using OperatingIncomeLoss as revenue: ${latest.get('val')/1e6:.2f}M for period ending {latest.get('end')}")
+                    
+                    # CRITICAL FIX FOR 8-Ks: If report_period was None, use this period_end for all subsequent metrics
+                    if report_period is None and metrics.get("_period_end"):
+                        report_period = metrics["_period_end"]
+                        if detailed:
+                            print(f"  DEBUG: ⚠️  8-K filing - anchoring all metrics to period {report_period} (from OperatingIncomeLoss) to prevent period mixing")
     
     # Extract gross profit (period-specific)
     if "GrossProfit" in us_gaap:
@@ -2981,6 +3321,24 @@ def calculate_delta_score(current_metrics: Dict, current_ratios: Dict, prev_metr
                 score += 0.10  # Minimal improvement (0-5%)
                 if debug:
                     print(f"    +0.10 - Cash Flow Improvement ({ocf_change_pct:+.1f}%) - Minimal")
+        elif curr_ocf < prev_ocf:
+            ocf_change_pct = ((curr_ocf - prev_ocf) / abs(prev_ocf) * 100) if prev_ocf != 0 else 0
+            if ocf_change_pct <= -50:
+                score -= 0.15  # Severe decline (-50%+) - reduced weight
+                if debug:
+                    print(f"    -0.15 - Cash Flow Decline ({ocf_change_pct:+.1f}%) - Severe")
+            elif ocf_change_pct <= -25:
+                score -= 0.10  # Significant decline (-25% to -50%) - reduced weight
+                if debug:
+                    print(f"    -0.10 - Cash Flow Decline ({ocf_change_pct:+.1f}%) - Significant")
+            elif ocf_change_pct <= -10:
+                score -= 0.08  # Moderate decline (-10% to -25%) - reduced weight
+                if debug:
+                    print(f"    -0.08 - Cash Flow Decline ({ocf_change_pct:+.1f}%) - Moderate")
+            else:
+                score -= 0.05  # Small decline (0% to -10%) - reduced weight
+                if debug:
+                    print(f"    -0.05 - Cash Flow Decline ({ocf_change_pct:+.1f}%) - Small")
     
     # Profitability (magnitude-aware)
     if curr_ni is not None and prev_ni is not None:
@@ -3120,232 +3478,212 @@ def get_valuation_metrics(ticker: str, metrics: Dict) -> Optional[Dict]:
         return None
 
 
-def get_consensus_eps_marketdata(ticker: str, report_period_end: str, filing_type: str, debug: bool = False) -> Optional[Dict]:
-    """
-    Get consensus EPS estimate from Market Data API.
-    Only use with --analyze to conserve API calls (100/day limit).
+# Alpha Vantage API key rotation
+_alphavantage_key_index = 0
+_alphavantage_call_count = {}  # Track calls per key per day
+
+
+def get_next_alphavantage_key():
+    """Get next Alpha Vantage API key with rotation."""
+    global _alphavantage_key_index
     
-    Args:
-        ticker: Stock ticker symbol
-        report_period_end: Report period end date (YYYY-MM-DD)
-        filing_type: Filing type (10-K, 10-Q)
-        debug: Print debug information
-    
-    Returns:
-        Dictionary with consensus EPS data, or None
-    """
-    if not ticker or not MARKETDATA_API_TOKEN:
-        if debug:
-            print(f"    DEBUG: Missing ticker or API token")
+    if not ALPHAVANTAGE_API_KEYS:
         return None
     
+    # Simple round-robin rotation
+    key = ALPHAVANTAGE_API_KEYS[_alphavantage_key_index]
+    _alphavantage_key_index = (_alphavantage_key_index + 1) % len(ALPHAVANTAGE_API_KEYS)
+    
+    return key
+
+
+def is_pending_earnings(earnings: Dict) -> bool:
+    """
+    Check if Alpha Vantage earnings data appears to be pending.
+    """
+    from datetime import date
+
+    reported_eps = earnings.get("reportedEPS")
+    reported_date_str = earnings.get("reportedDate")
+    estimated_eps = earnings.get("estimatedEPS")
+
+    eps_is_missing = (
+        reported_eps is None or
+        reported_eps == "" or
+        reported_eps == "None" or
+        (isinstance(reported_eps, str) and reported_eps.strip() == "0") or
+        (isinstance(reported_eps, (int, float)) and reported_eps == 0)
+    )
+    if not eps_is_missing:
+        return False
+
+    has_estimate = estimated_eps and estimated_eps not in ("None", "0", "")
+    if not has_estimate:
+        return False
+
+    if reported_date_str:
+        try:
+            reported_date = datetime.strptime(reported_date_str, "%Y-%m-%d").date()
+            if (date.today() - reported_date).days <= 7:
+                return True
+        except Exception:
+            pass
+
+    return False
+
+
+def get_earnings_actuals_alphavantage(ticker: str, detailed: bool = False) -> Optional[Dict]:
+    """
+    Get earnings actuals vs estimates from Alpha Vantage EARNINGS endpoint.
+    """
+    api_key = get_next_alphavantage_key()
+    if not api_key:
+        if detailed:
+            print("  ⚠️  No Alpha Vantage API keys configured")
+        return None
+
+    base_url = "https://www.alphavantage.co/query"
+    params = {"function": "EARNINGS", "symbol": ticker.upper(), "apikey": api_key}
+
     try:
-        # Parse report period to determine fiscal quarter/year
-        try:
-            period_date = datetime.strptime(report_period_end, "%Y-%m-%d").date()
-            fiscal_year = period_date.year
-            fiscal_quarter = (period_date.month - 1) // 3 + 1  # Q1=1, Q2=2, Q3=3, Q4=4
-            if debug:
-                print(f"    DEBUG: Looking for FY{fiscal_year} Q{fiscal_quarter} (period end: {report_period_end})")
-        except (ValueError, TypeError) as e:
-            if debug:
-                print(f"    DEBUG: Error parsing report period: {e}")
+        time.sleep(1.0)
+        response = _session.get(base_url, params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+
+        if "Error Message" in data:
+            if detailed:
+                print(f"  ⚠️  Alpha Vantage API Error: {data['Error Message']}")
             return None
-        
-        # Market Data API endpoint
-        url = f"{MARKETDATA_API_BASE}/stocks/earnings/{ticker}/"
-        params = {
-            "format": "json"
-        }
-        
-        # Try different authentication methods
-        # Based on API docs and common patterns, try multiple approaches
-        auth_methods = [
-            # Method 1: Token as query parameter (most common)
-            {"params": {"token": MARKETDATA_API_TOKEN, "format": "json"}, "headers": {}},
-            # Method 2: X-CSRFToken header (what user tried in curl)
-            {"params": {"format": "json"}, "headers": {"X-CSRFToken": MARKETDATA_API_TOKEN}},
-            # Method 3: Authorization Bearer header
-            {"params": {"format": "json"}, "headers": {"Authorization": f"Bearer {MARKETDATA_API_TOKEN}"}},
-            # Method 4: Authorization Token header
-            {"params": {"format": "json"}, "headers": {"Authorization": f"Token {MARKETDATA_API_TOKEN}"}},
-            # Method 5: X-API-Key header
-            {"params": {"format": "json"}, "headers": {"X-API-Key": MARKETDATA_API_TOKEN}},
-        ]
-        
-        response = None
-        auth_success = False
-        
-        for i, auth_method in enumerate(auth_methods, 1):
-            if debug:
-                method_desc = f"query param" if "token" in auth_method["params"] else f"{list(auth_method['headers'].keys())[0]} header"
-                print(f"    DEBUG: Trying authentication method {i}: {method_desc}")
-            
-            time.sleep(0.2)  # Rate limiting
-            try:
-                response = _session.get(url, params=auth_method["params"], headers=auth_method["headers"], timeout=30)
-                
-                # Check if authentication succeeded
-                if response.status_code == 200:
-                    try:
-                        data = response.json()
-                        if data.get("s") == "ok":
-                            auth_success = True
-                            if debug:
-                                print(f"    DEBUG: ✓ Authentication successful with method {i}")
-                            break
-                        elif data.get("s") == "error" and "token" in data.get("errmsg", "").lower():
-                            # Token error, try next method
-                            if debug:
-                                print(f"    DEBUG: ✗ Token error: {data.get('errmsg')}")
-                            continue
-                    except:
-                        # If we can't parse JSON but got 200, might be success
-                        if debug:
-                            print(f"    DEBUG: ⚠️  Got 200 but couldn't parse response, trying next method...")
-                        continue
-                elif response.status_code == 401:
-                    if debug:
-                        print(f"    DEBUG: ✗ 401 Unauthorized, trying next method...")
-                    continue
-                elif response.status_code == 402:
-                    # Payment required - stop trying other methods
-                    if debug:
-                        print(f"    DEBUG: ⚠️  API returned 402 Payment Required")
-                        print(f"    DEBUG: Earnings data endpoint requires paid plan (not available in free tier)")
-                    return None
-                else:
-                    # Other error, might be valid response
-                    if debug:
-                        print(f"    DEBUG: Got status {response.status_code}, checking response...")
-                    try:
-                        data = response.json()
-                        if data.get("s") == "ok":
-                            auth_success = True
-                            break
-                    except:
-                        pass
-            except requests.RequestException as e:
-                if debug:
-                    print(f"    DEBUG: Request exception: {e}")
-                continue
-        
-        if not auth_success or response is None:
-            if debug:
-                print(f"    DEBUG: ✗ All authentication methods failed")
+        if "Note" in data:
+            if detailed:
+                print(f"  ⚠️  Alpha Vantage API Note: {data['Note']} (rate limit?)")
             return None
-        
-        # Parse the response
-        try:
-            data = response.json()
-        except Exception as e:
-            if debug:
-                print(f"    DEBUG: Error parsing JSON response: {e}")
+        if "Information" in data:
+            if detailed:
+                print(f"  ℹ️  Alpha Vantage API Information: {data['Information']}")
             return None
-        
-        if debug:
-            print(f"    DEBUG: API response status: {data.get('s')}")
-            print(f"    DEBUG: Response keys: {list(data.keys())[:10]}")  # Show first 10 keys
-        
-        if data.get("s") != "ok":
-            if debug:
-                print(f"    DEBUG: API returned non-ok status: {data.get('s')}")
-                if data.get("message"):
-                    print(f"    DEBUG: API message: {data.get('message')}")
-            return None
-        
-        # Find matching earnings data for the fiscal period
-        # Try different possible field names
-        fiscal_years = data.get("fiscalYear", []) or data.get("fiscal_year", []) or data.get("fiscalYearEnd", [])
-        fiscal_quarters = data.get("fiscalQuarter", []) or data.get("fiscal_quarter", []) or data.get("quarter", [])
-        estimated_eps = data.get("estimatedEPS", []) or data.get("estimated_eps", []) or data.get("consensusEPS", [])
-        reported_eps = data.get("reportedEPS", []) or data.get("reported_eps", []) or data.get("actualEPS", [])
-        surprise_eps = data.get("surpriseEPS", []) or data.get("surprise_eps", [])
-        surprise_eps_pct = data.get("surpriseEPSpct", []) or data.get("surprise_eps_pct", []) or data.get("surpriseEPSPercent", [])
-        report_dates = data.get("reportDate", []) or data.get("report_date", []) or data.get("date", [])
-        
-        if debug:
-            print(f"    DEBUG: Found {len(fiscal_years)} earnings records")
-            if fiscal_years:
-                print(f"    DEBUG: Sample fiscal years: {fiscal_years[:5]}")
-                print(f"    DEBUG: Sample fiscal quarters: {fiscal_quarters[:5] if fiscal_quarters else 'N/A'}")
-        
-        # If no data arrays, check if it's a single record format
-        if not fiscal_years and isinstance(data, dict):
-            # Might be a single record or different structure
-            if "fiscalYear" in data or "fiscal_year" in data:
-                # Single record format
-                fy = data.get("fiscalYear") or data.get("fiscal_year")
-                fq = data.get("fiscalQuarter") or data.get("fiscal_quarter")
-                if fy == fiscal_year and (not fq or fq == fiscal_quarter):
-                    result = {
-                        "fiscal_year": fy,
-                        "fiscal_quarter": fq,
-                        "estimated_eps": data.get("estimatedEPS") or data.get("estimated_eps") or data.get("consensusEPS"),
-                        "reported_eps": data.get("reportedEPS") or data.get("reported_eps") or data.get("actualEPS"),
-                        "surprise_eps": data.get("surpriseEPS") or data.get("surprise_eps"),
-                        "surprise_eps_pct": data.get("surpriseEPSpct") or data.get("surprise_eps_pct") or data.get("surpriseEPSPercent"),
-                        "report_date": data.get("reportDate") or data.get("report_date") or data.get("date"),
-                    }
-                    if debug:
-                        print(f"    DEBUG: Found single record match")
-                    return result
-        
-        # Find entry matching our fiscal period
-        if fiscal_years and fiscal_quarters:
-            for i, (fy, fq) in enumerate(zip(fiscal_years, fiscal_quarters)):
-                if debug and i < 3:
-                    print(f"    DEBUG: Checking record {i}: FY{fy} Q{fq}")
-                if fy == fiscal_year and fq == fiscal_quarter:
-                    # Found matching period
-                    result = {
-                        "fiscal_year": fy,
-                        "fiscal_quarter": fq,
-                        "estimated_eps": estimated_eps[i] if i < len(estimated_eps) else None,
-                        "reported_eps": reported_eps[i] if i < len(reported_eps) else None,
-                        "surprise_eps": surprise_eps[i] if i < len(surprise_eps) else None,
-                        "surprise_eps_pct": surprise_eps_pct[i] if i < len(surprise_eps_pct) else None,
-                        "report_date": report_dates[i] if i < len(report_dates) else None,
-                    }
-                    if debug:
-                        print(f"    DEBUG: ✓ Found match at index {i}")
-                    return result
-        
-        # If no exact match, try to find closest period (within same fiscal year)
-        if fiscal_years and fiscal_quarters:
-            for i, (fy, fq) in enumerate(zip(fiscal_years, fiscal_quarters)):
-                if fy == fiscal_year:
-                    # Same fiscal year, use closest quarter
-                    result = {
-                        "fiscal_year": fy,
-                        "fiscal_quarter": fq,
-                        "estimated_eps": estimated_eps[i] if i < len(estimated_eps) else None,
-                        "reported_eps": reported_eps[i] if i < len(reported_eps) else None,
-                        "surprise_eps": surprise_eps[i] if i < len(surprise_eps) else None,
-                        "surprise_eps_pct": surprise_eps_pct[i] if i < len(surprise_eps_pct) else None,
-                        "report_date": report_dates[i] if i < len(report_dates) else None,
-                    }
-                    if debug:
-                        print(f"    DEBUG: ⚠️  Using closest match: FY{fy} Q{fq} (requested Q{fiscal_quarter})")
-                    return result
-        
-        if debug:
-            print(f"    DEBUG: ✗ No matching fiscal period found")
-            if fiscal_years:
-                print(f"    DEBUG: Available fiscal years: {set(fiscal_years)}")
-        
-        return None
-        
-    except requests.RequestException as e:
-        if debug:
-            print(f"    DEBUG: Request error: {e}")
-        return None
+
+        return data
     except Exception as e:
-        if debug:
-            print(f"    DEBUG: Unexpected error: {e}")
-            import traceback
-            traceback.print_exc()
+        if detailed:
+            print(f"  ⚠️  Error fetching Alpha Vantage earnings: {e}")
         return None
+
+
+def find_matching_earnings(
+    earnings_data: Dict,
+    report_period_end: str,
+    filing_type: str,
+    detailed: bool = False,
+) -> Optional[Dict]:
+    """
+    Find earnings record matching the filing's fiscal period.
+    """
+    if not earnings_data or "quarterlyEarnings" not in earnings_data:
+        return None
+
+    quarterly = earnings_data["quarterlyEarnings"]
+    try:
+        period_str = (
+            report_period_end.strftime("%Y-%m-%d")
+            if hasattr(report_period_end, "strftime")
+            else str(report_period_end)
+        )
+        period_date = datetime.strptime(period_str, "%Y-%m-%d").date()
+        fiscal_year = period_date.year
+        fiscal_month = period_date.month
+        fiscal_quarter = (fiscal_month - 1) // 3 + 1
+    except (ValueError, TypeError) as e:
+        if detailed:
+            print(f"  ⚠️  Error parsing report period: {e}")
+        return None
+
+    for earnings in quarterly:
+        date_str = earnings.get("fiscalDateEnding")
+        if not date_str:
+            continue
+        try:
+            date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+            est_year = date_obj.year
+            est_quarter = (date_obj.month - 1) // 3 + 1
+            if est_year == fiscal_year and est_quarter == fiscal_quarter:
+                if detailed:
+                    print(f"  ✓ Found matching earnings: FY{fiscal_year} Q{fiscal_quarter}")
+                return earnings
+        except Exception:
+            continue
+
+    if detailed:
+        print(f"  ⚠️  No matching earnings found for FY{fiscal_year} Q{fiscal_quarter}")
+    return None
+
+
+def calculate_eps_score_adjustment(
+    earnings_record: Dict,
+    filing_eps: Optional[float] = None,
+    detailed: bool = False,
+) -> float:
+    """
+    Calculate EPS score adjustment based on beat/miss.
+    """
+    if not earnings_record:
+        return 0.0
+
+    if is_pending_earnings(earnings_record) and not filing_eps:
+        if detailed:
+            print("  ⚠️  Earnings data appears pending (reportedEPS=0, recent date)")
+        return 0.0
+
+    reported_eps_str = earnings_record.get("reportedEPS")
+    estimated_eps_str = earnings_record.get("estimatedEPS")
+    surprise_pct_str = earnings_record.get("surprisePercentage")
+
+    try:
+        if reported_eps_str and reported_eps_str != "None":
+            reported_eps = float(reported_eps_str)
+        elif filing_eps:
+            reported_eps = filing_eps
+            if detailed:
+                print(f"  ℹ️  Using filing EPS (${filing_eps:.2f}) as Alpha Vantage reportedEPS is None")
+        else:
+            reported_eps = None
+
+        estimated_eps = float(estimated_eps_str) if estimated_eps_str and estimated_eps_str != "None" else None
+        surprise_pct = float(surprise_pct_str) if surprise_pct_str and surprise_pct_str != "None" else None
+    except (ValueError, TypeError):
+        return 0.0
+
+    if reported_eps is None or estimated_eps is None:
+        return 0.0
+
+    if estimated_eps == 0:
+        return 0.0
+
+    beat_pct = ((reported_eps - estimated_eps) / abs(estimated_eps)) * 100
+    if surprise_pct is not None:
+        beat_pct = surprise_pct
+
+    if beat_pct > 1.0:
+        flag_adjustment = 0.10
+        beat_miss = "Beat"
+    elif beat_pct < -1.0:
+        flag_adjustment = -0.10
+        beat_miss = "Miss"
+    else:
+        flag_adjustment = 0.0
+        beat_miss = "Inline"
+
+    magnitude_bonus = 0.0
+    if beat_pct > 0:
+        magnitude_bonus = min(0.10, beat_pct / 1000.0)
+
+    total_adjustment = flag_adjustment + magnitude_bonus
+    if detailed:
+        print(f"  EPS: ${reported_eps:.2f} vs ${estimated_eps:.2f} est = {beat_pct:+.1f}% ({beat_miss})")
+        print(f"  EPS Score Adjustment: {flag_adjustment:+.2f} (flag) + {magnitude_bonus:+.2f} (magnitude) = {total_adjustment:+.2f}")
+
+    return total_adjustment
 
 
 def get_8k_exhibit_99_1(filing, detailed: bool = False) -> Optional[str]:
@@ -3444,6 +3782,36 @@ def get_8k_exhibit_99_1(filing, detailed: bool = False) -> Optional[str]:
             import traceback
             traceback.print_exc()
         return None
+
+
+def quick_check_8k_item_202(filing) -> bool:
+    """
+    Quick check if 8-K filing has Item 2.02 (earnings announcement) without full parsing.
+    This is used for early filtering to skip non-earnings 8-Ks.
+    
+    Args:
+        filing: edgartools Filing object (8-K form)
+        
+    Returns:
+        True if Item 2.02 is found, False otherwise
+    """
+    try:
+        # Try to get a small sample of the filing text
+        if hasattr(filing, 'text_url') and filing.text_url:
+            try:
+                time.sleep(0.05)  # Rate limiting
+                response = _session.get(filing.text_url, timeout=10)
+                if response.status_code == 200:
+                    # Only read first 5000 chars for quick check
+                    content_sample = response.text[:5000].upper()
+                    # Check for Item 2.02 markers
+                    if "ITEM 2.02" in content_sample or "RESULTS OF OPERATIONS AND FINANCIAL CONDITION" in content_sample:
+                        return True
+            except:
+                pass
+        return False
+    except:
+        return False
 
 
 def parse_8k_items(filing, detailed: bool = False) -> Dict:
@@ -4109,11 +4477,12 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="EDGAR filing analysis using edgartools")
-    parser.add_argument("--date", type=str, help="Date in YYYY-MM-DD format")
+    parser.add_argument("--date", type=str, help="Date in YYYY-MM-DD format (optional - if not provided, uses get_latest_filings())")
     parser.add_argument("--analyze", type=str, help="Analyze specific filing by accession number (e.g., --analyze 0001660280-25-000128)")
     parser.add_argument("--limit", type=int, help="Limit number of results")
     parser.add_argument("--backtest", action="store_true", help="Enable backtesting mode")
     parser.add_argument("--sort-by-7d", action="store_true", help="Sort results by 7-day price change instead of score")
+    parser.add_argument("--discover", action="store_true", help="Create discoveries for stocks above threshold (requires --date)")
     
     args = parser.parse_args()
     
@@ -4121,9 +4490,7 @@ if __name__ == "__main__":
         # Single filing analysis mode
         analyze_filing_by_accession(args.analyze)
     else:
-        if not args.date:
-            parser.error("--date is required unless using --analyze")
-        
+        # date is optional - if not provided, uses get_latest_filings()
         results = analyze_edgar_filings(args.date)
         
         # Sort results
@@ -4142,6 +4509,61 @@ if __name__ == "__main__":
         
         # Format and print results
         threshold = 0.55
+        
+        # Show top 10 BEFORE final threshold filter
+        if results:
+            print("\n" + "=" * 80)
+            print("TOP 10 BEFORE THRESHOLD FILTER (≥0.55)")
+            print("=" * 80)
+            top_10_all = results[:10]
+            
+            # Column headers
+            header = f"{'#':<3} {'Score':<6} {'Company':<35} {'Form':<6} {'Delta':<8} {'EPS':<7} {'Start $':<8} {'Now %':<8} {'Ref':<20} {'✅'}"
+            print(header)
+            print("-" * 100)
+            
+            for i, result in enumerate(top_10_all, 1):
+                ticker_str = f" ({result['ticker']})" if result['ticker'] else ""
+                company_name = f"{result['company']}{ticker_str}"
+                if len(company_name) > 34:
+                    company_name = company_name[:31] + "..."
+                
+                score_rounded = round(result['score'], 2)
+                threshold_marker = "✅" if score_rounded >= threshold else " "
+                if result.get('has_associated_8k'):
+                    threshold_marker += " 📋"
+                
+                delta_score = result['delta_score']
+                delta_label = result.get('delta_label', 'N/A')
+                delta_str = f"{delta_score:.2f}({delta_label[:1]})"
+
+                eps_pct = result.get('eps_surprise_pct')
+                eps_str = "N/A"
+                if eps_pct not in (None, "", "None"):
+                    try:
+                        eps_val = float(eps_pct)
+                        eps_str = f"{eps_val:+.1f}%"
+                    except (ValueError, TypeError):
+                        eps_str = "N/A"
+                
+                # Get price data
+                pm = result.get('price_momentum') or {}
+                valuation = result.get('valuation') or {}
+                current_price = valuation.get('current_price') if valuation else None
+                filing_price = pm.get('filing_price') if pm else None
+                
+                start_price_str = f"${filing_price:.2f}" if filing_price and filing_price > 0 else "N/A"
+                
+                price_now = None
+                if current_price and filing_price and filing_price > 0:
+                    price_now = ((current_price - filing_price) / filing_price) * 100
+                price_now_str = f"{price_now:+.1f}%" if price_now is not None else "N/A"
+                
+                filing_ref = result.get('filing_ref', 'N/A')
+                form_str = result['form']
+                
+                print(f"{i:<3} {score_rounded:<6.2f} {company_name:<35} {form_str:<6} {delta_str:<8} {eps_str:<7} {start_price_str:<8} {price_now_str:<8} {filing_ref:<20} {threshold_marker}")
+        
         above_threshold = [r for r in results if r['score'] >= threshold]
         
         print("\n" + "=" * 80)
@@ -4159,7 +4581,7 @@ if __name__ == "__main__":
             print("=" * 120)
             
             # Column headers (Ref column width is flexible)
-            header = f"{'#':<3} {'Score':<6} {'Company':<35} {'Form':<6} {'Delta':<8} {'Start $':<8} {'1d %':<7} {'7d %':<7} {'30d %':<8} {'60d %':<8} {'Now %':<8} {'Ref':<20} {'✅'}"
+            header = f"{'#':<3} {'Score':<6} {'Company':<35} {'Form':<6} {'Delta':<8} {'EPS':<7} {'Start $':<8} {'1d %':<7} {'7d %':<7} {'30d %':<8} {'60d %':<8} {'Now %':<8} {'Ref':<20} {'✅'}"
             print(header)
             print("-" * 130)
             
@@ -4171,9 +4593,21 @@ if __name__ == "__main__":
                 
                 score_rounded = round(result['score'], 2)
                 threshold_marker = "✅" if score_rounded >= threshold else " "
+                # Add 8-K indicator if has associated 8-K
+                if result.get('has_associated_8k'):
+                    threshold_marker += " 📋"  # 8-K indicator
                 delta_score = result['delta_score']
                 delta_label = result.get('delta_label', 'N/A')
                 delta_str = f"{delta_score:.2f}({delta_label[:1]})"
+
+                eps_pct = result.get('eps_surprise_pct')
+                eps_str = "N/A"
+                if eps_pct not in (None, "", "None"):
+                    try:
+                        eps_val = float(eps_pct)
+                        eps_str = f"{eps_val:+.1f}%"
+                    except (ValueError, TypeError):
+                        eps_str = "N/A"
                 
                 # Get price data
                 pm = result.get('price_momentum') or {}
@@ -4201,7 +4635,7 @@ if __name__ == "__main__":
                 
                 # Print main row - use first 20 chars of ref for alignment, but we'll print full ref
                 ref_display = filing_ref[:20] if len(filing_ref) > 20 else filing_ref
-                row = f"{i:<3} {score_rounded:<6.2f} {company_name:<35} {form_str:<6} {delta_str:<8} {start_price_str:<8} {price_1d:<7} {price_7d:<7} {price_30d:<8} {price_60d:<8} {price_now_str:<8} {ref_display:<20} {threshold_marker}"
+                row = f"{i:<3} {score_rounded:<6.2f} {company_name:<35} {form_str:<6} {delta_str:<8} {eps_str:<7} {start_price_str:<8} {price_1d:<7} {price_7d:<7} {price_30d:<8} {price_60d:<8} {price_now_str:<8} {ref_display:<20} {threshold_marker}"
                 print(row)
                 
                 # If reference is longer than 20 chars, print full reference on continuation line (indented to align with Ref column)
