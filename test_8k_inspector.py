@@ -1,9 +1,13 @@
+import re
+
 from edgar import set_identity, get_filings, get_latest_filings, find, Company
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional, Dict
 from pathlib import Path
 from dotenv import load_dotenv
 import argparse
+import yfinance as yf
+import time
 
 
 # Load .env file if it exists (same as Django settings)
@@ -96,13 +100,14 @@ EARNINGS_KEYWORDS = [
 
 REG_FD_KEYWORDS = [
     "furnished pursuant to regulation fd",
-    "regulation fd",
+    "Item 3.01", # Delisting
+    "Item 1.03", # Bankruptcy
 ]
 
 # -----------------------------
 # FILTER2: red/green flags for risk and quality scoring
 # -----------------------------
-# Red flags: severe penalties (bankruptcy, going concern, restatement)
+# Red flags: severe penalties (bankruptcy, going concern, restatement, Item 4.02)
 RED_FLAGS_SEVERE = {
     "chapter 11": -10,
     "bankruptcy filing": -10,
@@ -110,23 +115,54 @@ RED_FLAGS_SEVERE = {
     "substantial doubt": -8,
     "ability to continue as a going concern": -8,
     "going concern": -8,
+    "item 4.02": -8,
+    "non-reliance on financial statements": -8,
     "restatement of previously issued financial statements": -7,
     "should no longer be relied upon": -7,
 }
 
 # Red flags: moderate penalties (management changes, material weakness, etc.)
 RED_FLAGS_MODERATE = {
-    # Management changes (check for CEO/CFO + resignation/termination/departure)
-    "resignation": -2,  # Will catch CEO/CFO resignations in context
-    "termination": -2,
+    # Management changes
+    "resignation": -2,
+    "ceo termination": -2,
+    "cfo termination": -2,
+    "termination of employment": -2,
     "departure": -2,
     "material weakness": -2,
     "internal control deficiency": -2,
     "sec investigation": -2,
     "sec inquiry": -2,
     "class action": -1,
-    "litigation": -1,
-    "restructuring": -3,  # non-bankruptcy restructuring
+    "material litigation": -2,
+    "significant litigation": -2,
+    # Weak / cautious guidance (JILL-type)
+    "weak guidance": -2,
+    "cautious outlook": -2,
+    "cautious guidance": -2,
+    "cautious stance": -2,
+    "projected decline": -2,
+    "expects decline": -2,
+    "lower outlook": -2,
+    "lowered expectations": -2,
+    "decline in sales": -1,
+    "anticipated softness": -2,
+    "tempered outlook": -2,
+    "mid-single-digit decline": -2,
+    "single-digit decline": -1,
+    "macroeconomic headwinds": -1,
+    "promotional environment": -1,
+    # Retail / outlook: in 8-K Outlook section often signals slower sales expectation
+    "disciplined inventory management": -1,
+    # Broader risk / defensive language
+    "challenging macroeconomic environment": -2,
+    "strategic alternatives": -2,
+    "restructuring charges": -2,
+    "liquidity constraints": -2,
+    "breach of loan covenants": -2,
+    "softer start": -2,
+    "down approximately": -1,
+    "net sales to be down": -1
 }
 
 # Green flags: high-quality signals (specific, hard to fake)
@@ -142,9 +178,39 @@ GREEN_FLAGS = {
     "buyback program": +2,
     "above expectations": +2,
     "exceeded estimates": +2,
-    "record revenue": +1,
+    "record revenue": +2,
     "record ebitda": +1,
     "record earnings": +1,
+    # ASYS-type: beat + return to profit + AI/cash narrative
+    "stronger than expected results": +2,
+    "higher than expected revenue": +2,
+    "return to profitability": +2,
+    "driven by ai": +1,
+    "eliminated debt": +1,
+    "positive operating cash flow": +1,
+    "strong operating leverage": +1,
+    # XZO-type: growth / margin / cash (balanced, not ASYS-specific)
+    "meaningful margin expansion": +2,
+    "revenue growth": +1,
+    "revenue increase": +1,
+    "exceptional revenue growth": +3,
+    "robust cash generation": +1,
+    "improved operating leverage": +1,
+    "scalability and cost efficiency": +1,
+    "successfully launched": +1,
+    "growing demand ": +1,
+    "adjusted ebitda profitability": +1,
+    "backlog grew": +1,
+    # RILY-type: in-line results / compliance / debt improvement
+    "in line with previous estimate": +1,
+    "in line with filed estimates": +1,
+    "listing compliance": +1,
+    "compliance deadline": +1,
+    "debt reduction": +1,
+    "reduction of total debt": +1,
+    "filed prior to": +1,
+    "strongest year": +2,
+    "strongest quater": +2
 }
 
 def compute_filter1_pass(filing, verbose: bool = False) -> int:
@@ -182,21 +248,27 @@ def compute_filter1_pass(filing, verbose: bool = False) -> int:
         return 0
 
     # Exhibit 99
+    has_exhibit_99 = False
+
     for ex in filing.exhibits:
         ex_str = str(ex).lower()
 
-        if "99." in ex_str:  # or "99.1" if you want to be stricter
-            exhibit_99_text = ex.text()
-            length = len(exhibit_99_text)
+        if "99." in ex_str:
+            has_exhibit_99 = True
+            break
 
-            digit_count = sum(ch.isdigit() for ch in exhibit_99_text)
-            digit_ratio = digit_count / length if length > 0 else 0.0
+    # No Exhibit 99.x
+    if not has_exhibit_99:
+        vprint(verbose, "FILTER1: no exhibit 99.x → fail")
+        return 0
 
-            if length < 5000 or digit_ratio < 0.02:
-                vprint(verbose, "FILTER1: exhibit_99 not creditable → fail")
-                return 0
-
+    # Examine filing text
     filing_text = filing.text().lower()
+
+    # Need item 9.0x
+    if "item 9.0" not in filing_text:
+        vprint(verbose, "FILTER1: item 9.0.x → fail")
+        return 0
 
     # Bad words
     for kw in REG_FD_KEYWORDS:
@@ -208,6 +280,7 @@ def compute_filter1_pass(filing, verbose: bool = False) -> int:
     has_earnings_keyword = False
     for kw in EARNINGS_KEYWORDS:
         if kw in filing_text:
+            vprint(verbose, f"FILTER1: Found earnings key phrase: '{kw}'")
             has_earnings_keyword = True
             break
 
@@ -216,6 +289,7 @@ def compute_filter1_pass(filing, verbose: bool = False) -> int:
         return 0
 
     # Return score
+    vprint(verbose, "FILTER1: pass")
     return 1
 
 
@@ -236,17 +310,17 @@ def compute_filter2_pass(filing, verbose: bool = False) -> int:
     """
     score = 0
     
-    # Retrieve exhibit 99 text (duplicate logic from FILTER1)
-    exhibit_99_text = None
+    # Retrieve ALL 99.x exhibit text (so we include 99.1 Outlook and 99.2 etc.)
+    exhibit_99_parts = []
     if hasattr(filing, "exhibits") and filing.exhibits:
         for ex in filing.exhibits:
             ex_str = str(ex).lower()
             if "99." in ex_str:
                 try:
-                    exhibit_99_text = ex.text()
-                    break
+                    exhibit_99_parts.append(ex.text())
                 except Exception:
-                    exhibit_99_text = None
+                    pass
+    exhibit_99_text = " ".join(exhibit_99_parts) if exhibit_99_parts else None
     
     # Get filing text
     filing_text = ""
@@ -277,7 +351,173 @@ def compute_filter2_pass(filing, verbose: bool = False) -> int:
             vprint(verbose, f"FILTER2: green flag '{keyword}' → +{bonus}")
             score += bonus
 
+    vprint(verbose, f"FILTER2: score {score}")
     return score
+
+
+# ----------------
+# FILTER3: generic sanity checks (valuation / size / momentum)
+# -----------------------------
+def compute_filter3_pass(filing, verbose: bool = False) -> int:
+    """
+    Planned checks (stub for now; always passes):
+    - Over-valued: e.g. P/E or other valuation above threshold
+    - Nano / micro cap: exclude very small market cap (illiquid, high spread)
+    - Price already moved too much: e.g. big run-up before 8-K (don't chase)
+    - Notional vs actual share price
+
+    Returns: score neutral
+    """
+
+    # Stub: no checks implemented yet
+    vprint(verbose, f"FILTER3: (stub)")
+    return 0
+
+# ----------------
+# FILTER4: preliminary delta check (minimal: verify financial data exists + revenue current/prior)
+# -----------------------------
+FILTER4_FINANCIAL_TERMS = (
+    "revenue",
+    "net sales",
+    "eps",
+    "earnings per share",
+    "net income",
+    "operating income",
+)
+
+_FILTER4_NUMBER_RE = re.compile(
+    r"[\d,]+\.?\d*\s*(million|billion)?",
+    re.IGNORECASE,
+)
+
+# Revenue: number with optional $ and million/billion (for parsing magnitude)
+_FILTER4_REVENUE_NUM_RE = re.compile(
+    r"\$?\s*([\d,]+\.?\d*)\s*(million|billion)?",
+    re.IGNORECASE,
+)
+
+# Prior-year / comparison phrases (for finding prior period number)
+_FILTER4_PRIOR_PHRASES = (
+    "compared to",
+    "prior year",
+    "prior quarter",
+    "versus",
+    "last year",
+    "year ago",
+    "compared with",
+)
+
+# Last extraction result for downstream (revenue current/prior/direction)
+FILTER4_LAST_RESULT: Optional[dict] = None
+
+
+def _filter4_parse_number(match) -> Optional[float]:
+    """Convert regex match (digits + optional million/billion) to float magnitude."""
+    if not match:
+        return None
+    s = match.group(1).replace(",", "")
+    try:
+        val = float(s)
+    except ValueError:
+        return None
+    unit = (match.group(2) or "").lower()
+    if unit == "billion":
+        val *= 1e9
+    elif unit == "million":
+        val *= 1e6
+    return val
+
+
+def _filter4_find_revenue_current(text: str) -> Optional[float]:
+    """Find first revenue-like number after 'revenue' or 'net sales'."""
+    text_lower = text.lower()
+    for trigger in ("revenue", "net sales", "total revenue"):
+        idx = text_lower.find(trigger)
+        if idx == -1:
+            continue
+        # Search in next ~250 chars for a number
+        segment = text[idx : idx + 250]
+        m = _FILTER4_REVENUE_NUM_RE.search(segment)
+        if m:
+            return _filter4_parse_number(m)
+    return None
+
+
+def _filter4_find_revenue_prior(text: str) -> Optional[float]:
+    """Find a prior-period number near comparison phrases."""
+    text_lower = text.lower()
+    for phrase in _FILTER4_PRIOR_PHRASES:
+        idx = text_lower.find(phrase)
+        if idx == -1:
+            continue
+        # Search in window around phrase (±150 chars) for a number
+        start = max(0, idx - 80)
+        end = min(len(text), idx + 150)
+        segment = text[start:end]
+        m = _FILTER4_REVENUE_NUM_RE.search(segment)
+        if m:
+            return _filter4_parse_number(m)
+    return None
+
+
+def compute_filter4_pass(filing, verbose: bool = False) -> int:
+    """
+    FILTER4: preliminary delta check.
+    Verifies 99.x exhibit has financial data; extracts revenue current/prior and direction (UP/DOWN/FLAT).
+    Result stored in FILTER4_LAST_RESULT for downstream. Returns 1 if financial data present, 0 otherwise.
+    """
+    global FILTER4_LAST_RESULT
+    FILTER4_LAST_RESULT = None
+
+    exhibit_99_parts = []
+    if hasattr(filing, "exhibits") and filing.exhibits:
+        for ex in filing.exhibits:
+            ex_str = str(ex).lower()
+            if "99." in ex_str:
+                try:
+                    exhibit_99_parts.append(ex.text())
+                except Exception:
+                    pass
+    text = " ".join(exhibit_99_parts) if exhibit_99_parts else ""
+    if not text:
+        vprint(verbose, "FILTER4: no 99.x exhibit text → fail")
+        return 0
+
+    text_lower = text.lower()
+    has_term = any(term in text_lower for term in FILTER4_FINANCIAL_TERMS)
+    has_number = bool(_FILTER4_NUMBER_RE.search(text))
+
+    if not (has_term and has_number):
+        vprint(verbose, "FILTER4: no financial metrics / numbers in 99.x → fail")
+        return 0
+
+    # Step 1 & 2: extract revenue current and prior; compute direction
+    revenue_current = _filter4_find_revenue_current(text)
+    revenue_prior = _filter4_find_revenue_prior(text)
+
+    direction = None
+    if revenue_current is not None and revenue_prior is not None and revenue_prior != 0:
+        if revenue_current > revenue_prior:
+            direction = "UP"
+        elif revenue_current < revenue_prior:
+            direction = "DOWN"
+        else:
+            direction = "FLAT"
+
+    result = {
+        "has_financials": True,
+        "revenue": {
+            "current": revenue_current,
+            "prior": revenue_prior,
+            "direction": direction,
+        },
+    }
+    FILTER4_LAST_RESULT = result
+
+    vprint(verbose, "FILTER4: financial data present → pass")
+    vprint(verbose, f"FILTER4: revenue current={revenue_current}, prior={revenue_prior}, direction={direction}")
+
+    return 1
 
 
 # -----------------------------
@@ -299,7 +539,7 @@ def analyze_8k(filing, verbose: bool = False) -> (str, int):
     )
 
     # Resolve ticker via filing or CIK mapping
-    cik = getattr(filing, "cik", None)
+    cik = str(getattr(filing, "cik", None))
     ticker = getattr(filing, "ticker", None)
 
     if not ticker:
@@ -311,7 +551,7 @@ def analyze_8k(filing, verbose: bool = False) -> (str, int):
     print(
         f"Inpecting: ticker={ticker or 'N/A'}, "
         f"CIK={cik}, "
-        f"accession={accession}",
+        f"accession={accession}"
     )
 
     # First filter (basics)
@@ -321,14 +561,25 @@ def analyze_8k(filing, verbose: bool = False) -> (str, int):
     if score < 1:
         return None
 
+    # Fourth filter (delta): verify financial data exists in 99.x (order 1 → 4 → 2 → 3)
+    if compute_filter4_pass(filing, verbose) < 1:
+        return None
+
     # Second filter (red/green flags)
     score += compute_filter2_pass(filing, verbose)
 
-    if score < 2:
-        return None
+    if score < 1:
+        pass
+        #return None
+
+    # Third filter (stock health)
+    score += compute_filter3_pass(filing, verbose)
+
+    # SEC filing link
+    vprint(verbose,f"SEC: https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude")
 
     # TODO: more filters
-    return ticker, accession, score
+    return ticker, cik, accession, score
 
 
 # -----------------------------
@@ -349,10 +600,94 @@ def get_8ks_for_date(target_date: date):
 # 5️⃣ Track how stock price reacted (if any)
 # -----------------------------
 def track_candidates(start_date: date, candidates):
-    # A look into past's future
+    """
+    Track stock price reactions to 8-K filings.
+    Shows filing date price, 1d %, and 7d % changes.
+    """
+    if not candidates:
+        print("No candidates to track.")
+        return
+    
+    print(f"\n{'=' * 100}")
+    print(f"Price Reaction Analysis (Filing Date: {start_date})")
+    print(f"{'=' * 100}")
+    
+    # Table header
+    header = f"{'Symbol':<8} {'CIK':<8} {'Accession':<22} {'Score':<7} {'Filing $':<10} {'1d %':<8} {'7d %':<8}"
+    print(header)
+    print("-" * 100)
+    
+    results = []
+    
     for candidate in candidates:
-        ticker, accession, score = candidate  # Unpack
-        print(f"{ticker}, {accession}, {score}")
+        ticker, cik, accession, score = candidate  # Unpack
+        
+        if not ticker:
+            # Skip if no ticker
+            row = f"{'N/A':<8} {cik[:8]:<8}  {accession[:22]:<22} {score:<7} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
+            print(row)
+            continue
+        
+        try:
+            # Fetch historical prices
+            # Get data from 5 days before filing to 10 days after (buffer for weekends/holidays)
+            start_lookup = start_date - timedelta(days=5)
+            end_lookup = start_date + timedelta(days=10)
+            
+            # Rate limiting
+            time.sleep(0.05)
+            
+            stock = yf.Ticker(ticker)
+            hist = stock.history(start=start_lookup, end=end_lookup)
+            
+            if hist.empty:
+                # No price data available
+                row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {score:<7} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
+                print(row)
+                continue
+            
+            # Get filing date price (or nearest trading day before filing)
+            filing_prices = hist[hist.index.date <= start_date]
+            if filing_prices.empty:
+                filing_price = None
+            else:
+                filing_price = filing_prices.iloc[-1]["Close"]
+            
+            # Get 1d price (next trading day after filing)
+            after_1d_date = start_date + timedelta(days=1)
+            after_1d_prices = hist[hist.index.date >= after_1d_date]
+            after_1d_price = after_1d_prices.iloc[0]["Close"] if not after_1d_prices.empty else None
+            
+            # Get 7d price (7 calendar days after filing, find next trading day)
+            after_7d_date = start_date + timedelta(days=7)
+            after_7d_prices = hist[hist.index.date >= after_7d_date]
+            after_7d_price = after_7d_prices.iloc[0]["Close"] if not after_7d_prices.empty else None
+            
+            # Calculate percentage changes
+            filing_price_str = f"${filing_price:.2f}" if filing_price else "N/A"
+            
+            if filing_price and after_1d_price:
+                change_1d = ((after_1d_price - filing_price) / filing_price) * 100
+                change_1d_str = f"{change_1d:+.1f}%"
+            else:
+                change_1d_str = "N/A"
+            
+            if filing_price and after_7d_price:
+                change_7d = ((after_7d_price - filing_price) / filing_price) * 100
+                change_7d_str = f"{change_7d:+.1f}%"
+            else:
+                change_7d_str = "N/A"
+            
+            # Print row
+            row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {score:<7} {filing_price_str:<10} {change_1d_str:<8} {change_7d_str:<8}"
+            print(row)
+            
+        except Exception as e:
+            # Error fetching price data
+            row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {score:<7} {'Error':<10} {'N/A':<8} {'N/A':<8}"
+            print(row)
+    
+    print(f"{'=' * 100}\n")
 
 # -----------------------------
 # 6️⃣ CLI helpers
