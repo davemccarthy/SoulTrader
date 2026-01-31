@@ -1,4 +1,5 @@
 import re
+from collections import Counter
 
 from edgar import set_identity, get_filings, get_latest_filings, find, Company
 from datetime import date, timedelta
@@ -213,7 +214,7 @@ GREEN_FLAGS = {
     "strongest quater": +2
 }
 
-def compute_filter1_pass(filing, verbose: bool = False) -> int:
+def compute_filter1_pass(filing, verbose: bool = False) -> bool:
     """
     FILTER1: very early, very cheap triage.
 
@@ -232,7 +233,7 @@ def compute_filter1_pass(filing, verbose: bool = False) -> int:
     form = getattr(filing, "form", None)
     if form != "8-K":
         vprint(verbose, "FILTER1: form not 8-K")
-        return 0
+        return False
 
     # Resolve ticker
     ticker = getattr(filing, "ticker", None)
@@ -240,12 +241,12 @@ def compute_filter1_pass(filing, verbose: bool = False) -> int:
         ticker = cik_to_ticker(getattr(filing, "cik", ""))
     if not ticker:
         vprint(verbose, "FILTER1: no tradable ticker → fail")
-        return 0
+        return False
 
     # No exhibits
     if not (hasattr(filing, "exhibits") and filing.exhibits):
         vprint(verbose, "FILTER1: no exhibits → fail")
-        return 0
+        return False
 
     # Exhibit 99
     has_exhibit_99 = False
@@ -260,7 +261,7 @@ def compute_filter1_pass(filing, verbose: bool = False) -> int:
     # No Exhibit 99.x
     if not has_exhibit_99:
         vprint(verbose, "FILTER1: no exhibit 99.x → fail")
-        return 0
+        return False
 
     # Examine filing text
     filing_text = filing.text().lower()
@@ -268,13 +269,13 @@ def compute_filter1_pass(filing, verbose: bool = False) -> int:
     # Need item 9.0x
     if "item 9.0" not in filing_text:
         vprint(verbose, "FILTER1: item 9.0.x → fail")
-        return 0
+        return False
 
     # Bad words
     for kw in REG_FD_KEYWORDS:
         if kw in filing_text:
             vprint(verbose, f"FILTER1: Reg keyword {kw} in main text → fail")
-            return 0
+            return False
 
     # Good words
     has_earnings_keyword = False
@@ -289,14 +290,14 @@ def compute_filter1_pass(filing, verbose: bool = False) -> int:
         return 0
 
     # Return score
-    vprint(verbose, "FILTER1: pass")
-    return 1
+    vprint(verbose, "FILTER1: (pass)")
+    return True
 
 
 # -----------------------------
 # FILTER2: red/green flags scoring
 # -----------------------------
-def compute_filter2_pass(filing, verbose: bool = False) -> int:
+def compute_filter2_pass(filing, verbose: bool = False) -> bool:
     """
     FILTER2: red/green flags for risk and quality adjustment.
     
@@ -351,124 +352,172 @@ def compute_filter2_pass(filing, verbose: bool = False) -> int:
             vprint(verbose, f"FILTER2: green flag '{keyword}' → +{bonus}")
             score += bonus
 
-    vprint(verbose, f"FILTER2: score {score}")
-    return score
+    vprint(verbose, f"FILTER2: {'(pass)' if score >= 0 else 'fail'} {score}")
+    return score >= 0
 
 
 # ----------------
-# FILTER3: generic sanity checks (valuation / size / momentum)
+# FILTER3: generic sanity checks (valuation / cap / price band)
 # -----------------------------
-def compute_filter3_pass(filing, verbose: bool = False) -> int:
+FILTER3_PE_MAX = 100  # Overvalued definitive: fail if trailing P/E > this
+FILTER3_MIN_CAP = 300e6  # Exclude nano/micro: fail if market_cap < 300M
+FILTER3_PRICE_MIN = 5.0
+FILTER3_PRICE_MAX = 1000.0
+
+
+def compute_filter3_pass(filing, verbose: bool = False) -> bool:
     """
-    Planned checks (stub for now; always passes):
-    - Over-valued: e.g. P/E or other valuation above threshold
-    - Nano / micro cap: exclude very small market cap (illiquid, high spread)
-    - Price already moved too much: e.g. big run-up before 8-K (don't chase)
-    - Notional vs actual share price
-
-    Returns: score neutral
+    FILTER3: valuation, cap, and price band.
+    - P/E: fail if trailing P/E > FILTER3_PE_MAX (overvalued definitive).
+    - Cap: fail if market_cap < FILTER3_MIN_CAP (nano/micro).
+    - Price: fail if price < FILTER3_PRICE_MIN or > FILTER3_PRICE_MAX.
+    Returns True if pass, False if fail. If no ticker or yfinance data missing, passes (no block).
     """
+    ticker = getattr(filing, "ticker", None)
+    if not ticker:
+        ticker = cik_to_ticker(getattr(filing, "cik", ""))
 
-    # Stub: no checks implemented yet
-    vprint(verbose, f"FILTER3: (stub)")
-    return 0
-
-# ----------------
-# FILTER4: preliminary delta check (minimal: verify financial data exists + revenue current/prior)
-# -----------------------------
-FILTER4_FINANCIAL_TERMS = (
-    "revenue",
-    "net sales",
-    "eps",
-    "earnings per share",
-    "net income",
-    "operating income",
-)
-
-_FILTER4_NUMBER_RE = re.compile(
-    r"[\d,]+\.?\d*\s*(million|billion)?",
-    re.IGNORECASE,
-)
-
-# Revenue: number with optional $ and million/billion (for parsing magnitude)
-_FILTER4_REVENUE_NUM_RE = re.compile(
-    r"\$?\s*([\d,]+\.?\d*)\s*(million|billion)?",
-    re.IGNORECASE,
-)
-
-# Prior-year / comparison phrases (for finding prior period number)
-_FILTER4_PRIOR_PHRASES = (
-    "compared to",
-    "prior year",
-    "prior quarter",
-    "versus",
-    "last year",
-    "year ago",
-    "compared with",
-)
-
-# Last extraction result for downstream (revenue current/prior/direction)
-FILTER4_LAST_RESULT: Optional[dict] = None
-
-
-def _filter4_parse_number(match) -> Optional[float]:
-    """Convert regex match (digits + optional million/billion) to float magnitude."""
-    if not match:
-        return None
-    s = match.group(1).replace(",", "")
     try:
-        val = float(s)
-    except ValueError:
-        return None
-    unit = (match.group(2) or "").lower()
-    if unit == "billion":
-        val *= 1e9
-    elif unit == "million":
-        val *= 1e6
-    return val
+        time.sleep(0.05)  # Rate limit yfinance
+        stock = yf.Ticker(ticker)
+        info = stock.info or {}
+    except Exception as e:
+        vprint(verbose, f"FILTER3: yfinance error → pass (skip checks): {e}")
+        return True
+
+    # P/E: overvalued definitive
+    pe = info.get("trailingPE") or info.get("forwardPE")
+    if pe is not None and isinstance(pe, (int, float)):
+        if pe > FILTER3_PE_MAX:
+            vprint(verbose, f"FILTER3: fail P/E {pe:.1f} > {FILTER3_PE_MAX} (overvalued)")
+            return False
+
+    # Cap: exclude nano/micro
+    cap = info.get("marketCap")
+    if cap is not None and isinstance(cap, (int, float)):
+        if cap < FILTER3_MIN_CAP:
+            vprint(verbose, f"FILTER3: fail market_cap {cap/1e6:.1f}M < {FILTER3_MIN_CAP/1e6:.0f}M (nano/micro)")
+            return False
+
+    # Price band: $5–$500
+    price = info.get("regularMarketPrice") or info.get("currentPrice") or info.get("previousClose")
+    if price is not None and isinstance(price, (int, float)):
+        if price < FILTER3_PRICE_MIN:
+            vprint(verbose, f"FILTER3: fail price ${price:.2f} < ${FILTER3_PRICE_MIN} (below band)")
+            return False
+        if price > FILTER3_PRICE_MAX:
+            vprint(verbose, f"FILTER3: fail price ${price:.2f} > ${FILTER3_PRICE_MAX} (above band)")
+            return False
+
+    vprint(verbose, "FILTER3: (pass) (P/E, cap, price band ok)")
+    return True
+
+# ----------------
+# FILTER4: Earnings release filter (structure + evidence, no brittle parsing)
+# -----------------------------
+EARNINGS_CONTEXT = [
+    "earnings",
+    "financial results",
+    "results of operations",
+    "quarter ended",
+    "fiscal quarter",
+]
+
+EPS_KEYWORDS = [
+    "earnings per share",
+    "eps",
+    "diluted",
+]
+
+REVENUE_KEYWORDS = [
+    "revenue",
+    "revenues",
+    "net sales",
+    "total revenue",
+]
+
+TABLE_HINTS = [
+    "gaap",
+    "non-gaap",
+    "q/q",
+    "y/y",
+    "%",
+]
+
+EPS_NUMBER_PATTERN = re.compile(
+    r"(earnings per share|eps|diluted).{0,60}?(-?\d+\.\d+)",
+    re.IGNORECASE,
+)
 
 
-def _filter4_find_revenue_current(text: str) -> Optional[float]:
-    """Find first revenue-like number after 'revenue' or 'net sales'."""
-    text_lower = text.lower()
-    for trigger in ("revenue", "net sales", "total revenue"):
-        idx = text_lower.find(trigger)
-        if idx == -1:
-            continue
-        # Search in next ~250 chars for a number
-        segment = text[idx : idx + 250]
-        m = _FILTER4_REVENUE_NUM_RE.search(segment)
-        if m:
-            return _filter4_parse_number(m)
-    return None
+def _filter4_normalize(text: str) -> str:
+    return re.sub(r"\s+", " ", text.lower())
 
 
-def _filter4_find_revenue_prior(text: str) -> Optional[float]:
-    """Find a prior-period number near comparison phrases."""
-    text_lower = text.lower()
-    for phrase in _FILTER4_PRIOR_PHRASES:
-        idx = text_lower.find(phrase)
-        if idx == -1:
-            continue
-        # Search in window around phrase (±150 chars) for a number
-        start = max(0, idx - 80)
-        end = min(len(text), idx + 150)
-        segment = text[start:end]
-        m = _FILTER4_REVENUE_NUM_RE.search(segment)
-        if m:
-            return _filter4_parse_number(m)
-    return None
+def _filter4_has_earnings_context(text: str) -> bool:
+    return any(k in text for k in EARNINGS_CONTEXT)
 
 
-def compute_filter4_pass(filing, verbose: bool = False) -> int:
+def _filter4_has_eps_evidence(text: str) -> bool:
+    return bool(EPS_NUMBER_PATTERN.search(text))
+
+
+def _filter4_numeric_density(text: str) -> int:
+    return len(re.findall(r"-?\$?\d+(?:,\d{3})*(?:\.\d+)?", text))
+
+
+def _filter4_has_table_structure(text: str) -> bool:
+    hits = sum(1 for k in TABLE_HINTS if k in text)
+    return hits >= 2
+
+
+def _filter4_has_comparables(text: str) -> bool:
+    words = re.findall(r"(revenue|earnings per share|eps|net income)", text, re.IGNORECASE)
+    counts = Counter(w.lower() for w in words)
+    return any(v >= 2 for v in counts.values())
+
+
+def earnings_release_filter(raw_text: str) -> dict:
     """
-    FILTER4: preliminary delta check.
-    Verifies 99.x exhibit has financial data; extracts revenue current/prior and direction (UP/DOWN/FLAT).
-    Result stored in FILTER4_LAST_RESULT for downstream. Returns 1 if financial data present, 0 otherwise.
+    Given raw EX-99.1 text, decide: is this very likely a real earnings release with numeric comparables?
+    Returns dict with pass, reason, checks (and score when pass).
     """
-    global FILTER4_LAST_RESULT
-    FILTER4_LAST_RESULT = None
+    text = _filter4_normalize(raw_text)
 
+    checks = {
+        "earnings_context": _filter4_has_earnings_context(text),
+        "eps_evidence": _filter4_has_eps_evidence(text),
+        "numeric_density": _filter4_numeric_density(text),
+        "table_structure": _filter4_has_table_structure(text),
+        "comparables": _filter4_has_comparables(text),
+    }
+
+    if not checks["earnings_context"]:
+        return {"pass": False, "reason": "no earnings context", "checks": checks}
+
+    if not checks["eps_evidence"]:
+        return {"pass": False, "reason": "no EPS evidence", "checks": checks}
+
+    if checks["numeric_density"] < 15:
+        return {"pass": False, "reason": "low numeric density", "checks": checks}
+
+    score = sum([
+        checks["table_structure"],
+        checks["comparables"],
+    ])
+    return {
+        "pass": score >= 1,
+        "score": score,
+        "reason": "ok" if score >= 1 else "soft fail",
+        "checks": checks,
+    }
+
+
+def compute_filter4_pass(filing, verbose: bool = False) -> bool:
+    """
+    FILTER4: earnings release filter (structure + evidence).
+    Gets 99.x exhibit text, runs earnings_release_filter; returns 1 if pass, 0 otherwise.
+    """
     exhibit_99_parts = []
     if hasattr(filing, "exhibits") and filing.exhibits:
         for ex in filing.exhibits:
@@ -481,43 +530,20 @@ def compute_filter4_pass(filing, verbose: bool = False) -> int:
     text = " ".join(exhibit_99_parts) if exhibit_99_parts else ""
     if not text:
         vprint(verbose, "FILTER4: no 99.x exhibit text → fail")
-        return 0
+        return False
 
-    text_lower = text.lower()
-    has_term = any(term in text_lower for term in FILTER4_FINANCIAL_TERMS)
-    has_number = bool(_FILTER4_NUMBER_RE.search(text))
+    result = earnings_release_filter(text)
+    if not result["pass"]:
+        vprint(verbose, f"FILTER4: {result['reason']} → fail")
+        if verbose and result.get("checks"):
+            vprint(verbose, f"FILTER4: checks={result['checks']}")
+        return False
 
-    if not (has_term and has_number):
-        vprint(verbose, "FILTER4: no financial metrics / numbers in 99.x → fail")
-        return 0
+    vprint(verbose, "FILTER4: earnings release filter → pass")
+    if verbose and result.get("checks"):
+        vprint(verbose, f"FILTER4: (pass) checks={result['checks']}")
 
-    # Step 1 & 2: extract revenue current and prior; compute direction
-    revenue_current = _filter4_find_revenue_current(text)
-    revenue_prior = _filter4_find_revenue_prior(text)
-
-    direction = None
-    if revenue_current is not None and revenue_prior is not None and revenue_prior != 0:
-        if revenue_current > revenue_prior:
-            direction = "UP"
-        elif revenue_current < revenue_prior:
-            direction = "DOWN"
-        else:
-            direction = "FLAT"
-
-    result = {
-        "has_financials": True,
-        "revenue": {
-            "current": revenue_current,
-            "prior": revenue_prior,
-            "direction": direction,
-        },
-    }
-    FILTER4_LAST_RESULT = result
-
-    vprint(verbose, "FILTER4: financial data present → pass")
-    vprint(verbose, f"FILTER4: revenue current={revenue_current}, prior={revenue_prior}, direction={direction}")
-
-    return 1
+    return True
 
 
 # -----------------------------
@@ -555,31 +581,26 @@ def analyze_8k(filing, verbose: bool = False) -> (str, int):
     )
 
     # First filter (basics)
-    score += compute_filter1_pass(filing, verbose)
-
-    # TODO: table of filter scores
-    if score < 1:
-        return None
-
-    # Fourth filter (delta): verify financial data exists in 99.x (order 1 → 4 → 2 → 3)
-    if compute_filter4_pass(filing, verbose) < 1:
+    if not compute_filter1_pass(filing, verbose):
         return None
 
     # Second filter (red/green flags)
-    score += compute_filter2_pass(filing, verbose)
+    if not compute_filter2_pass(filing, verbose):
+        return None
 
-    if score < 1:
-        pass
-        #return None
+    # Fourth filter (delta): verify financial data exists in 99.x (order 1 → 4 → 2 → 3)
+    if not compute_filter4_pass(filing, verbose):
+        return None
 
     # Third filter (stock health)
-    score += compute_filter3_pass(filing, verbose)
+    if not compute_filter3_pass(filing, verbose):
+        return None
 
     # SEC filing link
     vprint(verbose,f"SEC: https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude")
 
     # TODO: more filters
-    return ticker, cik, accession, score
+    return ticker, cik, accession
 
 
 # -----------------------------
@@ -613,18 +634,18 @@ def track_candidates(start_date: date, candidates):
     print(f"{'=' * 100}")
     
     # Table header
-    header = f"{'Symbol':<8} {'CIK':<8} {'Accession':<22} {'Score':<7} {'Filing $':<10} {'1d %':<8} {'7d %':<8}"
+    header = f"{'Symbol':<8} {'CIK':<8} {'Accession':<22} {'Filing $':<10} {'1d %':<8} {'7d %':<8}"
     print(header)
     print("-" * 100)
     
     results = []
     
     for candidate in candidates:
-        ticker, cik, accession, score = candidate  # Unpack
+        ticker, cik, accession = candidate  # Unpack
         
         if not ticker:
             # Skip if no ticker
-            row = f"{'N/A':<8} {cik[:8]:<8}  {accession[:22]:<22} {score:<7} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
+            row = f"{'N/A':<8} {cik[:8]:<8}  {accession[:22]:<22} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
             print(row)
             continue
         
@@ -642,7 +663,7 @@ def track_candidates(start_date: date, candidates):
             
             if hist.empty:
                 # No price data available
-                row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {score:<7} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
+                row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
                 print(row)
                 continue
             
@@ -679,12 +700,12 @@ def track_candidates(start_date: date, candidates):
                 change_7d_str = "N/A"
             
             # Print row
-            row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {score:<7} {filing_price_str:<10} {change_1d_str:<8} {change_7d_str:<8}"
+            row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {filing_price_str:<10} {change_1d_str:<8} {change_7d_str:<8}"
             print(row)
             
         except Exception as e:
             # Error fetching price data
-            row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {score:<7} {'Error':<10} {'N/A':<8} {'N/A':<8}"
+            row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {'Error':<10} {'N/A':<8} {'N/A':<8}"
             print(row)
     
     print(f"{'=' * 100}\n")
