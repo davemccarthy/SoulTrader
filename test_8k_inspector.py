@@ -539,25 +539,175 @@ def compute_filter4_pass(filing, verbose: bool = False) -> bool:
             vprint(verbose, f"FILTER4: checks={result['checks']}")
         return False
 
-    vprint(verbose, "FILTER4: earnings release filter → pass")
     if verbose and result.get("checks"):
         vprint(verbose, f"FILTER4: (pass) checks={result['checks']}")
 
     return True
 
 
+# ----------------
+# FILTER5: Non-LLM delta parser (2/3: past, guidance, EPS)
+# -----------------------------
+def _filter5_parse_number(raw_val: str, scale: Optional[str] = None) -> float:
+    """Convert string like '3,025' with optional million/billion into float magnitude."""
+    num = float((raw_val or "0").replace(",", ""))
+    if scale:
+        scale = scale.lower()
+        if scale == "billion":
+            num *= 1e9
+        elif scale == "million":
+            num *= 1e6
+    return num
+
+
+def _filter5_extract_metrics(text: str) -> dict:
+    """
+    Extract revenue, net income, EPS, guidance/backlog with optional % change.
+    Returns dict of lists: revenue, net_income, eps, guidance.
+    """
+    number_pattern = r"\$?([\d,]+(?:\.\d+)?)\s*(million|billion)?"
+    metric_patterns = {
+        "revenue": re.compile(
+            rf"(revenue|revenues).*?{number_pattern}.*?(?:up|increase|down|decrease)?\s*(?:of\s*)?(\d+)?\s*%?",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        "net_income": re.compile(
+            rf"(net\s+income).*?{number_pattern}.*?(?:up|increase|down|decrease)?\s*(?:of\s*)?(\d+)?\s*%?",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        "eps": re.compile(
+            rf"(eps|earnings\s+per\s+share|diluted).*?{number_pattern}.*?(?:up|increase|down|decrease)?\s*(?:of\s*)?(\d+)?\s*%?",
+            re.IGNORECASE | re.DOTALL,
+        ),
+    }
+    metrics = {"revenue": [], "net_income": [], "eps": [], "guidance": []}
+
+    for key, pat in metric_patterns.items():
+        for m in pat.finditer(text):
+            g = m.groups()
+            raw_val = g[1] if len(g) > 1 else None
+            scale = g[2] if len(g) > 2 else None
+            pct_change = g[3] if len(g) > 3 and g[3] else None
+            if raw_val is None:
+                continue
+            try:
+                val = _filter5_parse_number(raw_val, scale)
+            except (ValueError, TypeError):
+                continue
+            pct = float(pct_change) if pct_change else None
+            metrics[key].append({"value": val, "pct_change": pct})
+
+    guidance_pat = re.compile(
+        rf"(guidance|backlog|remaining\s+performance\s+obligations).*?{number_pattern}",
+        re.IGNORECASE | re.DOTALL,
+    )
+    for m in guidance_pat.finditer(text):
+        g = m.groups()
+        raw_val = g[1] if len(g) > 1 else None
+        scale = g[2] if len(g) > 2 else None
+        if raw_val is None:
+            continue
+        try:
+            val = _filter5_parse_number(raw_val, scale)
+        except (ValueError, TypeError):
+            continue
+        metrics["guidance"].append({"value": val})
+
+    return metrics
+
+
+def _filter5_compute_parts(text: str, metrics: dict, verbose: bool) -> dict:
+    """
+    Return numeric parts for FILTER5 score. Each part in {-1, 0, +1}.
+    REVENUE = past performance (rev/NI/EPS): +1 good, 0 neutral, -1 bad.
+    GUIDANCE = +1 present, 0 absent.
+    EXPECTATION = tone: +1 SURPASS, 0 NEUTRAL, -1 SHORTFALL.
+    """
+    rev_up = any((m.get("pct_change") or 0) > 0 for m in metrics.get("revenue", []))
+    ni_up = any((m.get("pct_change") or 0) > 0 for m in metrics.get("net_income", []))
+    rev_down = any((m.get("pct_change") or 0) < 0 for m in metrics.get("revenue", []))
+    ni_down = any((m.get("pct_change") or 0) < 0 for m in metrics.get("net_income", []))
+    has_eps = len(metrics.get("eps", [])) > 0
+    eps_down = any((m.get("pct_change") or 0) < 0 for m in metrics.get("eps", [])) if has_eps else False
+
+    # Past performance: -1 if EPS down or rev/NI down; +1 if rev up and NI up and EPS not down; else 0
+    if (has_eps and eps_down) or rev_down or ni_down:
+        revenue = -1
+    elif rev_up and ni_up and not eps_down:
+        revenue = 1
+    else:
+        revenue = 0
+
+    # Guidance: +1 if present, 0 if absent
+    guidance = 1 if len(metrics.get("guidance", [])) > 0 else 0
+
+    # Expectation (tone): +1 SURPASS, -1 SHORTFALL, 0 NEUTRAL
+    negative = ["slightly", "shift", "timing", "unchanged", "factored", "remains"]
+    positive = ["ahead of expectations", "accelerat", "raised", "better than"]
+    neg_hits = sum(p in text for p in negative)
+    pos_hits = sum(p in text for p in positive)
+    if pos_hits > neg_hits:
+        expectation = 1
+    elif neg_hits > pos_hits:
+        expectation = -1
+    else:
+        expectation = 0
+
+    return {"REVENUE": revenue, "GUIDANCE": guidance, "EXPECTATION": expectation}
+
+
+FILTER5_PASS_THRESHOLD = 1  # Pass if total score >= this (internal only; no score returned)
+
+
+def compute_filter5_pass(filing, verbose: bool = False) -> bool:
+    """
+    FILTER5: non-LLM delta parser (2/3 ducks).
+    Gets 99.x text, extracts metrics, computes REVENUE/GUIDANCE/EXPECTATION parts (-1/0/+1).
+    Returns True if score >= FILTER5_PASS_THRESHOLD (pass), False otherwise. No score exposed.
+    """
+    exhibit_99_parts = []
+    if hasattr(filing, "exhibits") and filing.exhibits:
+        for ex in filing.exhibits:
+            ex_str = str(ex).lower()
+            if "99." in ex_str:
+                try:
+                    exhibit_99_parts.append(ex.text())
+                except Exception:
+                    pass
+    text = " ".join(exhibit_99_parts) if exhibit_99_parts else ""
+    if not text:
+        vprint(verbose, "FILTER5: no 99.x exhibit text → pass (skip)")
+        return True
+
+    metrics = _filter5_extract_metrics(text)
+
+    total_extracted = sum(len(metrics.get(k, [])) for k in ("revenue", "net_income", "eps", "guidance"))
+    if total_extracted == 0:
+        vprint(verbose, "FILTER5: no metrics parsed → pass (skip)")
+        print("FILTER5: no metrics parsed → pass (skip)")
+        return True
+
+    parts = _filter5_compute_parts(text.lower(), metrics, verbose)
+    score = parts["REVENUE"] + parts["GUIDANCE"] + parts["EXPECTATION"]
+    passed = score >= FILTER5_PASS_THRESHOLD
+
+    if passed:
+        vprint(verbose, f"FILTER5: (pass) {parts}")
+    else:
+        vprint(verbose, f"FILTER5: (fail) {parts}")
+    return passed
+
+
 # -----------------------------
 # 4️⃣ Core 8-K inspection entry point
 # -----------------------------
-def analyze_8k(filing, verbose: bool = False) -> (str, int):
+def analyze_8k(filing, verbose: bool = False):
     """
     Basic 8-K inspection.
 
-    First pass: no regex, no LLM – just identify the filing,
-    run FILTER1, and (for now) print a minimal inspection line
-    for those that pass.
+    Run FILTER1–5. If all pass, return (ticker, cik, accession).
+    Otherwise return None.
     """
-    score = 0
 
     # Handle both accession_no and accession_number attributes
     accession = getattr(filing, "accession_no", None) or getattr(
@@ -594,6 +744,10 @@ def analyze_8k(filing, verbose: bool = False) -> (str, int):
 
     # Third filter (stock health)
     if not compute_filter3_pass(filing, verbose):
+        return None
+
+    # Fifth filter (non-LLM parser) → pass only, no score
+    if not compute_filter5_pass(filing, verbose):
         return None
 
     # SEC filing link
@@ -641,7 +795,7 @@ def track_candidates(start_date: date, candidates):
     results = []
     
     for candidate in candidates:
-        ticker, cik, accession = candidate  # Unpack
+        ticker, cik, accession = candidate  # Unpack (ticker, cik, accession)
         
         if not ticker:
             # Skip if no ticker
@@ -724,7 +878,7 @@ def run_for_date(date_str: str):
     print(f"Collecting 8-K filings for date: {target_date}")
 
     filings = list(get_8ks_for_date(target_date) or [])
-    candidates: list[tuple[str, str, int]] = []
+    candidates: list[tuple[str, str, str]] = []  # (ticker, cik, accession)
 
     if not filings:
         print("No 8-K filings found for that date.")
