@@ -53,9 +53,9 @@ class Profile(models.Model):
         },
         "EXPERIMENTAL": {
             "min_health": 15.0,
-            "advisors": ['Oscilla', 'Vunder','FDA','Insider'],
-            "weight": 1.0,
-            "stocks": 40
+            "advisors": ['User'],
+            "weight": 1.25,
+            "stocks": 20
         },
     }
 
@@ -332,34 +332,81 @@ class Stock(models.Model):
             logger.warning(f"Could not check trending status for {self.symbol}: {e}")
             return None
 
-    def downturned(self):
+    def downturned(self, since_date, pullback_pct=5.0):
         """
-        Check if stock is showing downturn signals (lower close AND lower low vs previous day).
+        True if current price is down pullback_pct from the peak since since_date.
+        Used for take-profit: sell when price has given back X% from the high since purchase.
+        Intraday for current day (today's high from 1h bars), daily for history.
+
+        Args:
+            since_date: datetime or date - start of window (e.g. discovery.created).
+            pullback_pct: float - downturn threshold, e.g. 5.0 = 5% down from peak.
 
         Returns:
-            bool: True if downturn detected (lower close AND lower low), False if not, None if can't determine
+            bool: True if current price <= peak * (1 - pullback_pct/100), False otherwise.
         """
         import yfinance as yf
+        from datetime import datetime
+        import pytz
 
         logger = logging.getLogger(__name__)
 
         try:
-            ticker = yf.Ticker(self.symbol)
-            hist = ticker.history(period="5d", interval="1d")
+            et = pytz.timezone("US/Eastern")
+            today_et = datetime.now(et).date()
+            start_date = since_date.date() if isinstance(since_date, datetime) else since_date
 
-            if hist.empty or len(hist) < 2:
+            ticker = yf.Ticker(self.symbol)
+
+            # Daily: peak from daily bars (since_date up to and including yesterday)
+            days_back = (today_et - start_date).days + 5
+            period = f"{days_back}d" if days_back > 1 else "5d"
+            hist_daily = ticker.history(period=period, interval="1d")
+            peak_daily = None
+            if not hist_daily.empty and "High" in hist_daily.columns:
+                # Filter to start_date <= date < today_et (historical only; today from intraday)
+                hist_daily = hist_daily[hist_daily.index.date >= start_date]
+                hist_daily = hist_daily[hist_daily.index.date < today_et]
+                if not hist_daily.empty:
+                    peak_daily = float(hist_daily["High"].max())
+
+            # Intraday: today's high so far (1h bars)
+            today_high = None
+            hist_intraday = ticker.history(period="5d", interval="1h")
+            if not hist_intraday.empty and "High" in hist_intraday.columns:
+                # Filter to rows where date (in ET) is today
+                today_mask = []
+                for ts in hist_intraday.index:
+                    if getattr(ts, "tzinfo", None):
+                        d = ts.astimezone(et).date()
+                    else:
+                        d = ts.date() if hasattr(ts, "date") else ts
+                    today_mask.append(d == today_et)
+                if any(today_mask):
+                    hist_today = hist_intraday[today_mask]
+                    today_high = float(hist_today["High"].max())
+
+            peak = None
+            if peak_daily is not None and today_high is not None:
+                peak = max(peak_daily, today_high)
+            elif peak_daily is not None:
+                peak = peak_daily
+            elif today_high is not None:
+                peak = today_high
+
+            if peak is None or peak <= 0:
                 return False
 
-            # Get previous day's close and low (second to last row)
-            prev_close = float(hist['Close'].iloc[-2])
-            prev_low = float(hist['Low'].iloc[-2])
+            current = (
+                float(self.price)
+                if self.price is not None and self.price > 0
+                else (float(hist_daily["Close"].iloc[-1]) if not hist_daily.empty else None)
+            )
+            if current is None:
+                return False
 
-            # Get current day's close and low (last row)
-            today_close = float(hist['Close'].iloc[-1])
-            today_low = float(hist['Low'].iloc[-1])
-
-            # Downturn: lower close AND lower low (buyer exhaustion)
-            return (today_close < prev_close) and (today_low < prev_low)
+            threshold = peak * (1 - pullback_pct / 100)
+            return current <= threshold
 
         except Exception as e:
             logger.warning(f"Error checking downturn for {self.symbol}: {e}")

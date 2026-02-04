@@ -45,7 +45,7 @@ def execute_sell(sa, user, profile, holding, explanation):
 
     profile.save()
 
-def execute_buy(sa, user, stock, allowance, explanation=""):
+def execute_buy(sa, user, stock, allowance, explanation="", force = False):
 
     # Check for existing stock
     profile = Profile.objects.get(user=user)
@@ -75,11 +75,13 @@ def execute_buy(sa, user, stock, allowance, explanation=""):
         return
 
     # No buy if have shares (surrender allowance for subsequent purchases)
-    if shares - holding.shares <= 0:
+    if shares - holding.shares <= 0 and not force:
         logger.info(f"{user.username} already has {holding.shares} {stock.symbol} shares")
         return
 
-    shares -= holding.shares
+    if not force:
+        shares -= holding.shares
+
     cost = shares * stock.price
 
     if profile.cash < cost:

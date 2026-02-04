@@ -22,8 +22,8 @@ def analyse_target(discovery, holding, target):
     if current < buy_price:
         return False
 
-    # Case 2: Price >= target and downturn detected
-    if current >= target and stock.downturned():
+    # Case 2: Price >= target and downturn detected (down pullback_pct from peak since purchase; intraday today, daily history)
+    if current >= target and stock.downturned(discovery.created, pullback_pct=5.0):
         return True
 
     # Case 3: Price < target but previously peaked at/above target (protect gains)
@@ -172,7 +172,8 @@ def analyze_holdings(sa, users, advisors):
                                         logger.warning(f"PERCENTAGE_REBUY failed health")
                                         continue
 
-                                    execute_buy(sa, user, holding.stock, rebuy_amount, f"Rebuying {rebuy_pct*100:.0f}% after drop")
+                                    # Force a REBUY
+                                    execute_buy(sa, user, holding.stock, rebuy_amount, f"Rebuying {rebuy_pct*100:.0f}% after drop", True)
                             else:
                                 logger.warning(f"PERCENTAGE_REBUY instruction {instruction.id} missing required fields (value1, value2, or shares)")
 
