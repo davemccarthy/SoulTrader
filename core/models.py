@@ -412,6 +412,63 @@ class Stock(models.Model):
             logger.warning(f"Error checking downturn for {self.symbol}: {e}")
             return False
 
+    def peak_since(self, since_date):
+        """
+        Get the peak (max high) price since a given date.
+        Uses daily bars plus intraday today's high to match downturned() logic.
+
+        Returns:
+            float or None: Peak price since since_date, or None if unavailable.
+        """
+        import yfinance as yf
+        from datetime import datetime
+        import pytz
+
+        try:
+            et = pytz.timezone("US/Eastern")
+            today_et = datetime.now(et).date()
+            start_date = since_date.date() if isinstance(since_date, datetime) else since_date
+
+            ticker = yf.Ticker(self.symbol)
+
+            # Daily: peak from daily bars
+            days_back = (today_et - start_date).days + 5
+            period = f"{days_back}d" if days_back > 1 else "5d"
+            hist_daily = ticker.history(period=period, interval="1d")
+            peak_daily = None
+            if not hist_daily.empty and "High" in hist_daily.columns:
+                hist_daily = hist_daily[hist_daily.index.date >= start_date]
+                hist_daily = hist_daily[hist_daily.index.date < today_et]
+                if not hist_daily.empty:
+                    peak_daily = float(hist_daily["High"].max())
+
+            # Intraday: today's high so far
+            today_high = None
+            hist_intraday = ticker.history(period="5d", interval="1h")
+            if not hist_intraday.empty and "High" in hist_intraday.columns:
+                today_mask = []
+                for ts in hist_intraday.index:
+                    if getattr(ts, "tzinfo", None):
+                        d = ts.astimezone(et).date()
+                    else:
+                        d = ts.date() if hasattr(ts, "date") else ts
+                    today_mask.append(d == today_et)
+                if any(today_mask):
+                    hist_today = hist_intraday[today_mask]
+                    today_high = float(hist_today["High"].max())
+
+            if peak_daily is not None and today_high is not None:
+                return max(peak_daily, today_high)
+            if peak_daily is not None:
+                return peak_daily
+            if today_high is not None:
+                return today_high
+            return None
+
+        except Exception as e:
+            logger.warning(f"Error getting peak for {self.symbol}: {e}")
+            return None
+
     def upturned(self):
         """
         Check if stock is showing upturn signals (higher close AND higher low vs previous day).
@@ -615,6 +672,7 @@ class SellInstruction(models.Model):
         ("PROFIT_TARGET", "Target Profit (Fixed Dollar Amount"),
         ("PERCENTAGE_REBUY", "Loss - will gamble a Rebuy"),
         ("PROFIT_FLAT", "Price flatlined"),
+        ("PEAKED", "Sell when down X% from peak since purchase"),
     ]
 
     discovery = models.ForeignKey(Discovery, on_delete=models.DO_NOTHING)

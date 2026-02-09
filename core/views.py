@@ -156,22 +156,40 @@ def holdings(request):
             'buy_date': holding.created,
         })
     
-    # Build snapshot data for holdings stacked bar chart (last 30 days)
+    # Build snapshot data for holdings stacked bar chart (last 120 days)
+    # Aggregate by week when > 14 points to avoid bunched bars
     today = timezone.now().date()
-    start_date = today - datetime.timedelta(days=30)
+    start_date = today - datetime.timedelta(days=120)
     snapshots_qs = (
         Snapshot.objects
         .filter(user=request.user, date__gte=start_date)
         .order_by('date')
     )
+    snapshots_list = list(snapshots_qs)
 
     holdings_chart_data = []
-    for snap in snapshots_qs:
-        holdings_chart_data.append({
-            'date': snap.date.isoformat(),
-            'cash': float(snap.cash_value or Decimal('0')),
-            'holdings': float(snap.holdings_value or Decimal('0')),
-        })
+    if len(snapshots_list) > 14:
+        # Group by week (Monday as week start), use last snapshot of each week
+        by_week = defaultdict(list)
+        for snap in snapshots_list:
+            week_monday = snap.date - datetime.timedelta(days=snap.date.weekday())
+            by_week[week_monday].append(snap)
+        for week_monday in sorted(by_week.keys()):
+            snaps_in_week = by_week[week_monday]
+            last_snap = max(snaps_in_week, key=lambda s: s.date)
+            holdings_chart_data.append({
+                'date': last_snap.date.isoformat(),
+                'label': f"{last_snap.date.strftime('%b')} {last_snap.date.day}",
+                'cash': float(last_snap.cash_value or Decimal('0')),
+                'holdings': float(last_snap.holdings_value or Decimal('0')),
+            })
+    else:
+        for snap in snapshots_list:
+            holdings_chart_data.append({
+                'date': snap.date.isoformat(),
+                'cash': float(snap.cash_value or Decimal('0')),
+                'holdings': float(snap.holdings_value or Decimal('0')),
+            })
 
     context = {
         'current_page': 'holdings',
@@ -351,6 +369,16 @@ def holding_detail(request, stock_id):
                     # value1 = original stop price, value2 = max_days
                     instruction_data['max_days'] = int(instruction.value2) if instruction.value2 is not None else 28
                     instruction_data['status'] = 'pending'  # Status determined during analysis
+                elif instruction.instruction == 'PEAKED' and instruction.value1 and discovery and discovery.created:
+                    # value1 = percentage threshold (e.g., 5.0 = sell when down 5% from peak since purchase)
+                    pullback_pct = float(instruction.value1)
+                    instruction_data['status'] = 'active' if holding.stock.downturned(discovery.created, pullback_pct=pullback_pct) else 'pending'
+                    instruction_data['current_price'] = float(current_price)
+                    peak_price = holding.stock.peak_since(discovery.created)
+                    if peak_price and peak_price > 0:
+                        cp = float(current_price)
+                        instruction_data['peak_price'] = peak_price
+                        instruction_data['pct_from_peak'] = ((cp - peak_price) / peak_price) * 100
                 
                 sell_instructions.append(instruction_data)
             trade_payload['sell_instructions'] = sell_instructions
@@ -563,6 +591,16 @@ def holding_history(request, stock_id):
                 # value1 = original stop price, value2 = max_days
                 instruction_data['max_days'] = int(instruction.value2) if instruction.value2 is not None else 28
                 instruction_data['status'] = 'pending'  # Status determined during analysis
+            elif instruction.instruction == 'PEAKED' and instruction.value1 and discovery_obj and discovery_obj.created:
+                # value1 = percentage threshold (e.g., 5.0 = sell when down 5% from peak since purchase)
+                pullback_pct = float(instruction.value1)
+                instruction_data['status'] = 'active' if stock.downturned(discovery_obj.created, pullback_pct=pullback_pct) else 'pending'
+                instruction_data['current_price'] = float(current_price)
+                peak_price = stock.peak_since(discovery_obj.created)
+                if peak_price and peak_price > 0:
+                    cp = float(current_price)
+                    instruction_data['peak_price'] = peak_price
+                    instruction_data['pct_from_peak'] = ((cp - peak_price) / peak_price) * 100
             
             sell_instructions.append(instruction_data)
 
