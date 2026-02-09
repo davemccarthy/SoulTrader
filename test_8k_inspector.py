@@ -973,6 +973,7 @@ def run_for_date(date_str: str):
     print(f"Collecting 8-K filings for date: {target_date}")
 
     filings = list(get_8ks_for_date(target_date) or [])
+    # TODO: Filter by market times (exclude filings accepted during market hours).
     candidates: list[tuple[str, str, str, Optional[Dict]]] = []  # (ticker, cik, accession, eps)
 
     if not filings:
@@ -1049,11 +1050,18 @@ def run_latest():
         return
 
     print(f"Found {len(filings_8k)} latest 8-K filings. Running FILTER1 + basic inspection...")
+    candidates: list[tuple[str, str, str, Optional[Dict]]] = []
     for filing in filings_8k:
         try:
-            analyze_8k(filing)
+            candidate = analyze_8k(filing)
+            if candidate is not None:
+                candidates.append(candidate)
         except Exception as e:
             print(f"  ⚠️  Error inspecting latest filing: {e}")
+
+    if candidates:
+        print(f"Passed {len(candidates)} candidates...")
+        track_candidates(date.today(), candidates)
 
 
 # -----------------------------

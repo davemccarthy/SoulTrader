@@ -5,6 +5,11 @@ Reads EX-99.1 text from ex99_1_dump.txt (written by test_8k_inspector.py --analy
 Calls Gemini directly (google.generativeai), no pydantic AI. Same pattern as advisor ask_gemini.
 """
 
+# TODO (real advisor): Sector/industry filter. Real advisor has stock object with sector/industry (e.g. yfinance).
+# Add separate 1-line LLM prompt: given sector + industry, return SECTOR_REGIME_SCORE in {-1, 0, +1}
+# (headwind / neutral / tailwind). Then either: hard gate (if -1 require total score >= 80) or
+# soft adjust (FINAL_SCORE = DUCK_SCORE + SECTOR_REGIME_SCORE * 10). Do not infer sector from EX-99.1.
+
 import json
 import os
 import re
