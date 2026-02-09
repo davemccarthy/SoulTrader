@@ -1,14 +1,16 @@
+import os
 import re
+import time
 from collections import Counter
+from pathlib import Path
 
+import requests
+import yfinance as yf
+from dotenv import load_dotenv
 from edgar import set_identity, get_filings, get_latest_filings, find, Company
 from datetime import date, timedelta
 from typing import Optional, Dict
-from pathlib import Path
-from dotenv import load_dotenv
 import argparse
-import yfinance as yf
-import time
 
 
 # Load .env file if it exists (same as Django settings)
@@ -697,6 +699,31 @@ def compute_filter5_pass(filing, verbose: bool = False) -> bool:
         vprint(verbose, f"FILTER5: (fail) {parts}")
     return passed
 
+# ----------------
+# FILTER6: retrieve EPS beat (Alpha Vantage, quarter where reportedDate == filing date)
+# -----------------------------
+def compute_filter6_value(filing, verbose: bool = False) -> Optional[Dict]:
+    """
+    Fetch EPS for the filing's date (reportedDate match). Returns Alpha Vantage record or None.
+    In production (edgar advisor) no EPS could eliminate; in test script we let through.
+    """
+    ticker = getattr(filing, "ticker", None) or cik_to_ticker(str(getattr(filing, "cik", "")))
+    if not ticker:
+        return None
+    fd = getattr(filing, "filing_date", None)
+    if fd is None:
+        return None
+    if isinstance(fd, str):
+        try:
+            report_date = date.fromisoformat(fd[:10])
+        except ValueError:
+            return None
+    else:
+        report_date = getattr(fd, "date", lambda: fd)() if hasattr(fd, "date") else fd
+    record = get_eps_for_report_date(ticker, report_date)
+    if verbose and record:
+        vprint(verbose, f"FILTER6: {ticker} EPS surprise={record.get('surprisePercentage')}%")
+    return record
 
 # -----------------------------
 # 4️⃣ Core 8-K inspection entry point
@@ -705,7 +732,8 @@ def analyze_8k(filing, verbose: bool = False):
     """
     Basic 8-K inspection.
 
-    Run FILTER1–5. If all pass, return (ticker, cik, accession).
+    Run FILTER1–5 and FILTER6 (EPS). If all pass, return (ticker, cik, accession, eps).
+    eps is the Alpha Vantage record for reportedDate == filing date, or None.
     Otherwise return None.
     """
 
@@ -750,11 +778,14 @@ def analyze_8k(filing, verbose: bool = False):
     if not compute_filter5_pass(filing, verbose):
         return None
 
+    # Sixth filter (EPS beats): fetch once, attach to candidate; production may eliminate if None
+    eps = compute_filter6_value(filing, verbose)
+
     # SEC filing link
     vprint(verbose,f"SEC: https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude")
 
-    # TODO: more filters
-    return ticker, cik, accession
+    # TODO: more filters (e.g. filter7 LLM)
+    return ticker, cik, accession, eps
 
 
 # -----------------------------
@@ -771,6 +802,36 @@ def get_8ks_for_date(target_date: date):
     filings = get_filings(form="8-K", filing_date=date_str)
     return filings
 
+
+def get_eps_for_report_date(ticker: str, report_date: date) -> Optional[Dict]:
+    """
+    Fetch Alpha Vantage EARNINGS for ticker and return the quarter whose
+    reportedDate matches report_date (backtest date). Enables clean backtest:
+    EPS shown is the one that was reported on that date.
+    Returns None if no match or unavailable. (One-day-off reportedDate can be handled later.)
+    """
+    api_key = os.environ.get("ALPHAVANTAGE_API_KEY")
+    if not api_key:
+        return None
+    url = "https://www.alphavantage.co/query"
+    params = {"function": "EARNINGS", "symbol": ticker.upper(), "apikey": api_key}
+    try:
+        time.sleep(0.25)  # Rate limiting
+        resp = requests.get(url, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        if "Error Message" in data or "Note" in data or "Information" in data:
+            return None
+        quarterly = data.get("quarterlyEarnings") or []
+        target = report_date.isoformat()
+        for record in quarterly:
+            if record.get("reportedDate") == target:
+                return record
+        return None
+    except Exception:
+        return None
+
+
 # -----------------------------
 # 5️⃣ Track how stock price reacted (if any)
 # -----------------------------
@@ -783,25 +844,35 @@ def track_candidates(start_date: date, candidates):
         print("No candidates to track.")
         return
     
-    print(f"\n{'=' * 100}")
+    print(f"\n{'=' * 110}")
     print(f"Price Reaction Analysis (Filing Date: {start_date})")
-    print(f"{'=' * 100}")
+    print(f"{'=' * 110}")
     
-    # Table header
-    header = f"{'Symbol':<8} {'CIK':<8} {'Accession':<22} {'Filing $':<10} {'1d %':<8} {'7d %':<8}"
+    # Table header (EPS after Accession, before Filing $)
+    header = f"{'Symbol':<8} {'CIK':<8} {'Accession':<22} {'EPS':<10} {'Filing $':<10} {'1d %':<8} {'7d %':<8}"
     print(header)
-    print("-" * 100)
+    print("-" * 110)
     
     results = []
     
     for candidate in candidates:
-        ticker, cik, accession = candidate  # Unpack (ticker, cik, accession)
-        
+        ticker, cik, accession, eps_record = candidate  # (ticker, cik, accession, eps)
+
         if not ticker:
             # Skip if no ticker
-            row = f"{'N/A':<8} {cik[:8]:<8}  {accession[:22]:<22} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
+            row = f"{'N/A':<8} {cik[:8]:<8} {accession[:22]:<22} {'N/A':<10} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
             print(row)
             continue
+
+        # EPS from analyze_8k (no second fetch)
+        if eps_record and eps_record.get("surprisePercentage") not in (None, "", "None"):
+            try:
+                pct = float(eps_record["surprisePercentage"])
+                eps_str = f"{pct:+.1f}%"
+            except (TypeError, ValueError):
+                eps_str = "N/A"
+        else:
+            eps_str = "N/A"
         
         try:
             # Fetch historical prices
@@ -817,7 +888,7 @@ def track_candidates(start_date: date, candidates):
             
             if hist.empty:
                 # No price data available
-                row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
+                row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {eps_str:<10} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
                 print(row)
                 continue
             
@@ -853,20 +924,44 @@ def track_candidates(start_date: date, candidates):
             else:
                 change_7d_str = "N/A"
             
-            # Print row
-            row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {filing_price_str:<10} {change_1d_str:<8} {change_7d_str:<8}"
+            # Print row (EPS after Accession, before Filing $)
+            row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {eps_str:<10} {filing_price_str:<10} {change_1d_str:<8} {change_7d_str:<8}"
             print(row)
             
         except Exception as e:
             # Error fetching price data
-            row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {'Error':<10} {'N/A':<8} {'N/A':<8}"
+            row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {eps_str:<10} {'Error':<10} {'N/A':<8} {'N/A':<8}"
             print(row)
     
-    print(f"{'=' * 100}\n")
+    print(f"{'=' * 110}\n")
 
 # -----------------------------
 # 6️⃣ CLI helpers
 # -----------------------------
+EX99_1_DUMP_PATH = BASE_DIR / "ex99_1_dump.txt"
+
+
+def dump_ex99_1(filing) -> None:
+    """
+    Extract EX-99.1 exhibit text and write to ex99_1_dump.txt.
+    Only used for --analyse (single accession); lets LLM/test script read the same content.
+    """
+    text = ""
+    if hasattr(filing, "exhibits") and filing.exhibits:
+        for ex in filing.exhibits:
+            ex_str = str(ex).lower()
+            # Match exhibit 99.1 (word boundary to avoid 99.10, 99.11, etc.)
+            if re.search(r"99\.1\b", ex_str):
+                try:
+                    text = ex.text()
+                    break
+                except Exception:
+                    pass
+    path = EX99_1_DUMP_PATH
+    path.write_text(text or "", encoding="utf-8")
+    print(f"Wrote EX-99.1 text to {path} ({len(text)} chars)")
+
+
 def run_for_date(date_str: str):
     """CLI handler for --date: inspect all 8-Ks on a given day."""
     try:
@@ -878,7 +973,7 @@ def run_for_date(date_str: str):
     print(f"Collecting 8-K filings for date: {target_date}")
 
     filings = list(get_8ks_for_date(target_date) or [])
-    candidates: list[tuple[str, str, str]] = []  # (ticker, cik, accession)
+    candidates: list[tuple[str, str, str, Optional[Dict]]] = []  # (ticker, cik, accession, eps)
 
     if not filings:
         print("No 8-K filings found for that date.")
@@ -923,6 +1018,8 @@ def run_for_accession(accession_number: str):
             f"⚠️  Warning: Filing form is {getattr(filing, 'form', None)}, not 8-K. "
             "Inspecting anyway..."
         )
+
+    dump_ex99_1(filing)
 
     try:
         analyze_8k(filing, True)
