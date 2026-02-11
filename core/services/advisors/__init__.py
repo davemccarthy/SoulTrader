@@ -10,16 +10,18 @@ import core.services.advisors.intraday as intraday
 import core.services.advisors.flux as flux
 import core.services.advisors.vunder as vunder
 import core.services.advisors.oscilla as oscilla
+import core.services.advisors.edgar as edgar
 
 # Create advisors namespace
 advisors = type('Advisors', (), {
     'user': user,
     'polygon': polygon,
-    'stockstory' : stockstory,
+    'stockstory': stockstory,
     'insider': insider,
     'fda': fda,
     'intraday': intraday,
     'flux': flux,
     'vunder': vunder,
     'oscilla': oscilla,
+    'edgar': edgar,
 })()

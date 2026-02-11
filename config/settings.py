@@ -183,6 +183,21 @@ LOGGING = {
         'handlers': ['console', 'file'],
         'level': 'INFO',
     },
+    'loggers': {
+        # Top-level Edgar package
+        'edgar': {'level': 'WARNING', 'propagate': True},
+
+        # Edgar’s HTTP / client stack
+        'edgar.http': {'level': 'WARNING', 'propagate': True},
+        'edgar.client': {'level': 'WARNING', 'propagate': True},
+
+        # Underlying HTTP clients
+        'httpx': {'level': 'WARNING', 'propagate': True},
+        'httpcore': {'level': 'WARNING', 'propagate': True},
+
+        # Throttle/cache layer used by edgar
+        'httpxthrottlecache': {'level': 'WARNING', 'propagate': True},
+    },
 }
 
 # Login/Logout URLs

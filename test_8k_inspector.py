@@ -644,16 +644,22 @@ def _filter5_compute_parts(text: str, metrics: dict, verbose: bool) -> dict:
     guidance = 1 if len(metrics.get("guidance", [])) > 0 else 0
 
     # Expectation (tone): +1 SURPASS, -1 SHORTFALL, 0 NEUTRAL
-    negative = ["slightly", "shift", "timing", "unchanged", "factored", "remains"]
-    positive = ["ahead of expectations", "accelerat", "raised", "better than"]
+    negative = [
+        "slightly", "shift", "timing", "unchanged", "factored", "remains",
+        "declined", "decline", "fell", "fall", "contraction", "roll-down", "roll down",
+        "weaker", "weakness", "negative growth", "down approximately", "down from",
+    ]
+    positive = [
+        "ahead of expectations", "accelerat", "raised", "better than",
+        "outpaced", "above expectations", "improved", "improvement"
+    ]
     neg_hits = sum(p in text for p in negative)
     pos_hits = sum(p in text for p in positive)
-    if pos_hits > neg_hits:
-        expectation = 1
-    elif neg_hits > pos_hits:
-        expectation = -1
-    else:
-        expectation = 0
+
+    expectation = pos_hits - neg_hits
+
+    print(f"POS: {pos_hits}")
+    print(f"NEG: {neg_hits}")
 
     return {"REVENUE": revenue, "GUIDANCE": guidance, "EXPECTATION": expectation}
 
