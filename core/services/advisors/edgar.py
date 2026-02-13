@@ -368,8 +368,12 @@ def compute_filter4_pass(filing, verbose: bool = False) -> bool:
         vprint(verbose, f"FILTER4: (pass) checks={result['checks']}")
     return True
 
-import pysentiment2 as ps
+try:
+    import pysentiment2 as ps
+except ImportError:
+    ps = None
 
+# FILTER5: LM guidance sentiment (same as test_8k_inspector.py)
 GUIDANCE_KEYWORDS = [
     "guidance", "outlook", "financial outlook", "forecast", "projected", "projection",
     "expects", "expect", "we expect", "anticipate", "target", "targets", "goal", "goals",
@@ -383,35 +387,33 @@ BOILERPLATE_PHRASES = [
     "cannot be estimated at this time without unreasonable efforts",
 ]
 
-def split_sentences(text: str) -> list[str]:
+
+def _filter5_split_sentences(text: str) -> list:
     text = re.sub(r"\s+", " ", text)
     parts = re.split(r"(?<=[\.\?\!])\s+", text)
     return [p.strip() for p in parts if p.strip()]
 
 
-def extract_guidance_sentences(text: str) -> list[str]:
-    sentences = split_sentences(text)
+def _filter5_extract_guidance_sentences(text: str) -> list:
+    sentences = _filter5_split_sentences(text)
     lower_kw = [k.lower() for k in GUIDANCE_KEYWORDS]
     return [s for s in sentences if any(k in s.lower() for k in lower_kw)]
 
 
-def is_boilerplate(sentence: str) -> bool:
+def _filter5_is_boilerplate(sentence: str) -> bool:
     lower = sentence.lower()
     return any(phrase in lower for phrase in BOILERPLATE_PHRASES)
 
 
-def compute_lm_guidance(text: str):
+def _filter5_compute_lm_guidance(text: str):
     """
-    Run LM on guidance sentences in text. Return aggregate + pass/fail.
-    Returns None if pysentiment2 is missing, text is empty, or no guidance sentences
-    after boilerplate filter. Otherwise returns dict with:
-      passed: bool (False only when total_neg > total_pos)
-      n_sentences, total_pos, total_neg, avg_polarity, net_polarity
+    Run LM on guidance sentences. Returns None if ps missing / no guidance after boilerplate.
+    Else dict with passed, n_sentences, total_pos, total_neg, avg_polarity, net_polarity.
     """
     if ps is None or not (text or "").strip():
         return None
-    guidance = extract_guidance_sentences(text)
-    candidates = [s for s in guidance if not is_boilerplate(s)]
+    guidance = _filter5_extract_guidance_sentences(text)
+    candidates = [s for s in guidance if not _filter5_is_boilerplate(s)]
     if not candidates:
         return None
     try:
@@ -441,6 +443,10 @@ def compute_lm_guidance(text: str):
 
 
 def compute_filter5_pass(filing, verbose: bool = False) -> bool:
+    """
+    FILTER5: LM guidance sentiment (same logic as edgar.py).
+    Pass when neg does not beat pos; skip (pass) when no text / no guidance / ps unavailable.
+    """
     exhibit_99_parts = []
     if hasattr(filing, "exhibits") and filing.exhibits:
         for ex in filing.exhibits:
@@ -451,31 +457,24 @@ def compute_filter5_pass(filing, verbose: bool = False) -> bool:
                     pass
     text = " ".join(exhibit_99_parts) if exhibit_99_parts else ""
     if not text:
-        vprint(verbose, "FILTER5: no 99.x exhibit text → fail")
+        vprint(verbose, "FILTER5: (fail) no 99.x exhibit text")
         return False
 
-    guidance_sents = extract_guidance_sentences(text)
+    guidance_sents = _filter5_extract_guidance_sentences(text)
     if not guidance_sents:
-        print("No guidance sentences found by keyword scan.")
+        vprint(verbose, "FILTER5: (fail) no guidance sentences")
         return False
 
-    non_boilerplate = [s for s in guidance_sents if not is_boilerplate(s)]
-    print(f"Guidance sentences: {len(guidance_sents)} total, {len(non_boilerplate)} after dropping boilerplate")
+    non_boilerplate = [s for s in guidance_sents if not _filter5_is_boilerplate(s)]
+    vprint(verbose, f"FILTER5: guidance {len(guidance_sents)} total, {len(non_boilerplate)} after boilerplate")
 
-    result = compute_lm_guidance(text)
+    result = _filter5_compute_lm_guidance(text)
     if result is None:
-        print("No guidance sentences left after boilerplate filter, or pysentiment2 not available.")
+        vprint(verbose, "FILTER5: (pass) no guidance after boilerplate or pysentiment2 unavailable")
         return False
 
-    print("\n--- Aggregate (guidance sentiment) ---")
-    print(f"  n_sentences   = {result['n_sentences']}")
-    print(f"  total_pos    = {result['total_pos']}")
-    print(f"  total_neg    = {result['total_neg']}")
-    print(f"  avg_polarity = {result['avg_polarity']:+.3f}")
-    print(f"  net_polarity = {result['net_polarity']:+.3f}  ( (Pos-Neg)/(Pos+Neg) )")
-    print(f"\n  FILTER5_LM →  {'PASS' if result['passed'] else 'FAIL'} (suggested)")
-
-    return True
+    vprint(verbose, f"FILTER5: ({'pass' if result['passed'] else 'fail'}) n_sentences={result['n_sentences']} total_pos={result['total_pos']} total_neg={result['total_neg']} net_polarity={result['net_polarity']:+.3f}")
+    return result["passed"]
 
 
 def get_eps_for_report_date(ticker: str, report_date: date) -> Optional[Dict]:
@@ -577,7 +576,7 @@ class Edgar(AdvisorBase):
     """Advisor for 8-K earnings filings. Entry points and filters TBD."""
 
     def discover(self, sa):
-
+        return
         """
         Discovery entry point for the ED-8 advisor.
 
@@ -616,7 +615,7 @@ class Edgar(AdvisorBase):
         for candidate in candidates:
             ticker, cik, accession, eps_beat = candidate  # (ticker, cik, accession, eps)
 
-            row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {eps_beat:<10}"
+            row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} +{eps_beat:<10}"
             print(row)
 
         return

@@ -12,6 +12,11 @@ from datetime import date, timedelta
 from typing import Optional, Dict
 import argparse
 
+try:
+    import pysentiment2 as ps
+except ImportError:
+    ps = None
+
 
 # Load .env file if it exists (same as Django settings)
 BASE_DIR = Path(__file__).resolve().parent
@@ -366,6 +371,13 @@ FILTER3_MIN_CAP = 300e6  # Exclude nano/micro: fail if market_cap < 300M
 FILTER3_PRICE_MIN = 5.0
 FILTER3_PRICE_MAX = 1000.0
 
+# Sector beware (vprint WARNING only; matches yfinance sector/industry wording)
+FILTER3_UNDERPERFORM_SECTORS = ("consumer cyclical", "real estate", "utilities")  # 🔴 Underperform
+FILTER3_WATCH_SECTOR_INDUSTRY = (  # 🟡 Neutral/cautious or Watch
+    ("technology", "software"),   # Tech (software): AI disruption, capex concerns
+    ("financial services", "insurance"),
+)
+
 
 def compute_filter3_pass(filing, verbose: bool = False) -> bool:
     """
@@ -410,6 +422,69 @@ def compute_filter3_pass(filing, verbose: bool = False) -> bool:
         if price > FILTER3_PRICE_MAX:
             vprint(verbose, f"FILTER3: fail price ${price:.2f} > ${FILTER3_PRICE_MAX} (above band)")
             return False
+
+    # Warnings (vprint only): 90%+ of 52-week high, 90%+ of 2-week lead-up high
+    fifty_two_high = info.get("fiftyTwoWeekHigh")
+    if (
+        verbose
+        and price is not None
+        and fifty_two_high is not None
+        and isinstance(fifty_two_high, (int, float))
+        and fifty_two_high > 0
+    ):
+        pct_52 = 100.0 * price / fifty_two_high
+        if pct_52 >= 90.0:
+            vprint(
+                verbose,
+                f"********** WARNING: Price at {pct_52:.1f}% of 52-week high "
+                f"(price ${price:.2f}, 52w high ${fifty_two_high:.2f}) **********",
+            )
+
+    fd = getattr(filing, "filing_date", None)
+    if verbose and price is not None and fd is not None:
+        try:
+            if isinstance(fd, date):
+                filing_date = fd
+            elif isinstance(fd, str):
+                filing_date = date.fromisoformat(fd[:10])
+            elif hasattr(fd, "date") and callable(getattr(fd, "date")):
+                filing_date = fd.date()
+            else:
+                filing_date = date.fromisoformat(str(fd)[:10])
+            start = filing_date - timedelta(days=14)
+            end = filing_date + timedelta(days=2)
+            hist = stock.history(start=start, end=end, auto_adjust=True)
+            if hist is not None and not hist.empty:
+                two_week_high = float(hist["High"].max())
+                last_close = float(hist["Close"].iloc[-1])
+                if two_week_high > 0 and last_close >= 0.90 * two_week_high:
+                    pct_2w = 100.0 * last_close / two_week_high
+                    vprint(
+                        verbose,
+                        f"********** WARNING: Filing price at {pct_2w:.1f}% of 2-week high "
+                        f"(filing close ${last_close:.2f}, 2w high ${two_week_high:.2f}) **********",
+                    )
+        except Exception as e:
+            vprint(verbose, f"FILTER3: (skip 2-week high check: {e})")
+
+    # Warnings (vprint only): sector/industry in beware lists
+    if verbose:
+        sector = (info.get("sector") or "").strip().lower()
+        industry = (info.get("industry") or "").strip().lower()
+        if sector and sector in FILTER3_UNDERPERFORM_SECTORS:
+            vprint(
+                verbose,
+                f"********** WARNING: Sector in underperform list "
+                f"(sector={info.get('sector') or 'N/A'}, industry={info.get('industry') or 'N/A'}) **********",
+            )
+        for watch_sector, watch_industry in FILTER3_WATCH_SECTOR_INDUSTRY:
+            if sector and industry and watch_sector in sector and watch_industry in industry:
+                vprint(
+                    verbose,
+                    f"********** WARNING: Sector/industry in watch list "
+                    f"(sector={info.get('sector') or 'N/A'}, industry={info.get('industry') or 'N/A'}) **********",
+                )
+                break
 
     vprint(verbose, "FILTER3: (pass) (P/E, cap, price band ok)")
     return True
@@ -548,162 +623,110 @@ def compute_filter4_pass(filing, verbose: bool = False) -> bool:
 
 
 # ----------------
-# FILTER5: Non-LLM delta parser (2/3: past, guidance, EPS)
+# FILTER5: LM guidance sentiment (ported from edgar.py for backtest)
 # -----------------------------
-def _filter5_parse_number(raw_val: str, scale: Optional[str] = None) -> float:
-    """Convert string like '3,025' with optional million/billion into float magnitude."""
-    num = float((raw_val or "0").replace(",", ""))
-    if scale:
-        scale = scale.lower()
-        if scale == "billion":
-            num *= 1e9
-        elif scale == "million":
-            num *= 1e6
-    return num
+GUIDANCE_KEYWORDS = [
+    "guidance", "outlook", "financial outlook", "forecast", "projected", "projection",
+    "expects", "expect", "we expect", "anticipate", "target", "targets", "goal", "goals",
+    "estimate", "estimates", "future", "next quarter", "next year",
+]
+
+BOILERPLATE_PHRASES = [
+    "forward-looking statements",
+    "management believes that",
+    "we do not provide a forward-looking reconciliation",
+    "cannot be estimated at this time without unreasonable efforts",
+]
 
 
-def _filter5_extract_metrics(text: str) -> dict:
+def _filter5_split_sentences(text: str) -> list:
+    text = re.sub(r"\s+", " ", text)
+    parts = re.split(r"(?<=[\.\?\!])\s+", text)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _filter5_extract_guidance_sentences(text: str) -> list:
+    sentences = _filter5_split_sentences(text)
+    lower_kw = [k.lower() for k in GUIDANCE_KEYWORDS]
+    return [s for s in sentences if any(k in s.lower() for k in lower_kw)]
+
+
+def _filter5_is_boilerplate(sentence: str) -> bool:
+    lower = sentence.lower()
+    return any(phrase in lower for phrase in BOILERPLATE_PHRASES)
+
+
+def _filter5_compute_lm_guidance(text: str):
     """
-    Extract revenue, net income, EPS, guidance/backlog with optional % change.
-    Returns dict of lists: revenue, net_income, eps, guidance.
+    Run LM on guidance sentences. Returns None if ps missing / no guidance after boilerplate.
+    Else dict with passed, n_sentences, total_pos, total_neg, avg_polarity, net_polarity.
     """
-    number_pattern = r"\$?([\d,]+(?:\.\d+)?)\s*(million|billion)?"
-    metric_patterns = {
-        "revenue": re.compile(
-            rf"(revenue|revenues).*?{number_pattern}.*?(?:up|increase|down|decrease)?\s*(?:of\s*)?(\d+)?\s*%?",
-            re.IGNORECASE | re.DOTALL,
-        ),
-        "net_income": re.compile(
-            rf"(net\s+income).*?{number_pattern}.*?(?:up|increase|down|decrease)?\s*(?:of\s*)?(\d+)?\s*%?",
-            re.IGNORECASE | re.DOTALL,
-        ),
-        "eps": re.compile(
-            rf"(eps|earnings\s+per\s+share|diluted).*?{number_pattern}.*?(?:up|increase|down|decrease)?\s*(?:of\s*)?(\d+)?\s*%?",
-            re.IGNORECASE | re.DOTALL,
-        ),
-    }
-    metrics = {"revenue": [], "net_income": [], "eps": [], "guidance": []}
-
-    for key, pat in metric_patterns.items():
-        for m in pat.finditer(text):
-            g = m.groups()
-            raw_val = g[1] if len(g) > 1 else None
-            scale = g[2] if len(g) > 2 else None
-            pct_change = g[3] if len(g) > 3 and g[3] else None
-            if raw_val is None:
-                continue
-            try:
-                val = _filter5_parse_number(raw_val, scale)
-            except (ValueError, TypeError):
-                continue
-            pct = float(pct_change) if pct_change else None
-            metrics[key].append({"value": val, "pct_change": pct})
-
-    guidance_pat = re.compile(
-        rf"(guidance|backlog|remaining\s+performance\s+obligations).*?{number_pattern}",
-        re.IGNORECASE | re.DOTALL,
-    )
-    for m in guidance_pat.finditer(text):
-        g = m.groups()
-        raw_val = g[1] if len(g) > 1 else None
-        scale = g[2] if len(g) > 2 else None
-        if raw_val is None:
-            continue
-        try:
-            val = _filter5_parse_number(raw_val, scale)
-        except (ValueError, TypeError):
-            continue
-        metrics["guidance"].append({"value": val})
-
-    return metrics
-
-
-def _filter5_compute_parts(text: str, metrics: dict, verbose: bool) -> dict:
-    """
-    Return numeric parts for FILTER5 score. Each part in {-1, 0, +1}.
-    REVENUE = past performance (rev/NI/EPS): +1 good, 0 neutral, -1 bad.
-    GUIDANCE = +1 present, 0 absent.
-    EXPECTATION = tone: +1 SURPASS, 0 NEUTRAL, -1 SHORTFALL.
-    """
-    rev_up = any((m.get("pct_change") or 0) > 0 for m in metrics.get("revenue", []))
-    ni_up = any((m.get("pct_change") or 0) > 0 for m in metrics.get("net_income", []))
-    rev_down = any((m.get("pct_change") or 0) < 0 for m in metrics.get("revenue", []))
-    ni_down = any((m.get("pct_change") or 0) < 0 for m in metrics.get("net_income", []))
-    has_eps = len(metrics.get("eps", [])) > 0
-    eps_down = any((m.get("pct_change") or 0) < 0 for m in metrics.get("eps", [])) if has_eps else False
-
-    # Past performance: -1 if EPS down or rev/NI down; +1 if rev up and NI up and EPS not down; else 0
-    if (has_eps and eps_down) or rev_down or ni_down:
-        revenue = -1
-    elif rev_up and ni_up and not eps_down:
-        revenue = 1
-    else:
-        revenue = 0
-
-    # Guidance: +1 if present, 0 if absent
-    guidance = 1 if len(metrics.get("guidance", [])) > 0 else 0
-
-    # Expectation (tone): +1 SURPASS, -1 SHORTFALL, 0 NEUTRAL
-    negative = [
-        "slightly", "shift", "timing", "unchanged", "factored", "remains",
-        "declined", "decline", "fell", "fall", "contraction", "roll-down", "roll down",
-        "weaker", "weakness", "negative growth", "down approximately", "down from",
-    ]
-    positive = [
-        "ahead of expectations", "accelerat", "raised", "better than",
-        "outpaced", "above expectations", "improved", "improvement"
-    ]
-    neg_hits = sum(p in text for p in negative)
-    pos_hits = sum(p in text for p in positive)
-
-    expectation = pos_hits - neg_hits
-
-    print(f"POS: {pos_hits}")
-    print(f"NEG: {neg_hits}")
-
-    return {"REVENUE": revenue, "GUIDANCE": guidance, "EXPECTATION": expectation}
-
-
-FILTER5_PASS_THRESHOLD = 1  # Pass if total score >= this (internal only; no score returned)
+    if ps is None or not (text or "").strip():
+        return None
+    guidance = _filter5_extract_guidance_sentences(text)
+    candidates = [s for s in guidance if not _filter5_is_boilerplate(s)]
+    if not candidates:
+        return None
+    try:
+        lm = ps.LM()
+        total_pos = total_neg = 0
+        polarities = []
+        for s in candidates:
+            tokens = lm.tokenize(s)
+            score = lm.get_score(tokens)
+            total_pos += score.get("Positive", 0)
+            total_neg += score.get("Negative", 0)
+            polarities.append(score.get("Polarity", 0.0))
+        avg_polarity = sum(polarities) / len(polarities) if polarities else 0.0
+        denom = total_pos + total_neg
+        net_polarity = (total_pos - total_neg) / denom if denom > 0 else 0.0
+        passed = not (total_neg > total_pos)
+        return {
+            "passed": passed,
+            "n_sentences": len(candidates),
+            "total_pos": total_pos,
+            "total_neg": total_neg,
+            "avg_polarity": round(avg_polarity, 4),
+            "net_polarity": round(net_polarity, 4),
+        }
+    except Exception:
+        return None
 
 
 def compute_filter5_pass(filing, verbose: bool = False) -> bool:
     """
-    FILTER5: non-LLM delta parser (2/3 ducks).
-    Gets 99.x text, extracts metrics, computes REVENUE/GUIDANCE/EXPECTATION parts (-1/0/+1).
-    Returns True if score >= FILTER5_PASS_THRESHOLD (pass), False otherwise. No score exposed.
+    FILTER5: LM guidance sentiment (same logic as edgar.py).
+    Pass when neg does not beat pos; skip (pass) when no text / no guidance / ps unavailable.
     """
     exhibit_99_parts = []
     if hasattr(filing, "exhibits") and filing.exhibits:
         for ex in filing.exhibits:
-            ex_str = str(ex).lower()
-            if "99." in ex_str:
+            if "99." in str(ex).lower():
                 try:
                     exhibit_99_parts.append(ex.text())
                 except Exception:
                     pass
     text = " ".join(exhibit_99_parts) if exhibit_99_parts else ""
     if not text:
-        vprint(verbose, "FILTER5: no 99.x exhibit text → pass (skip)")
-        return True
+        vprint(verbose, "FILTER5: (fail) no 99.x exhibit text")
+        return False
 
-    metrics = _filter5_extract_metrics(text)
+    guidance_sents = _filter5_extract_guidance_sentences(text)
+    if not guidance_sents:
+        vprint(verbose, "FILTER5: (fail) no guidance sentences")
+        return False
 
-    total_extracted = sum(len(metrics.get(k, [])) for k in ("revenue", "net_income", "eps", "guidance"))
-    if total_extracted == 0:
-        vprint(verbose, "FILTER5: no metrics parsed → pass (skip)")
-        print("FILTER5: no metrics parsed → pass (skip)")
-        return True
+    non_boilerplate = [s for s in guidance_sents if not _filter5_is_boilerplate(s)]
+    vprint(verbose, f"FILTER5: guidance {len(guidance_sents)} total, {len(non_boilerplate)} after boilerplate")
 
-    parts = _filter5_compute_parts(text.lower(), metrics, verbose)
-    score = parts["REVENUE"] + parts["GUIDANCE"] + parts["EXPECTATION"]
-    passed = score >= FILTER5_PASS_THRESHOLD
+    result = _filter5_compute_lm_guidance(text)
+    if result is None:
+        vprint(verbose, "FILTER5: (pass) no guidance after boilerplate or pysentiment2 unavailable")
+        return False
 
-    if passed:
-        vprint(verbose, f"FILTER5: (pass) {parts}")
-    else:
-        vprint(verbose, f"FILTER5: (fail) {parts}")
-    return passed
+    vprint(verbose, f"FILTER5: ({'pass' if result['passed'] else 'fail'}) n_sentences={result['n_sentences']} total_pos={result['total_pos']} total_neg={result['total_neg']} net_polarity={result['net_polarity']:+.3f}")
+    return result["passed"]
+
 
 # ----------------
 # FILTER6: retrieve EPS beat (Alpha Vantage, quarter where reportedDate == filing date)
@@ -1015,9 +1038,20 @@ def run_for_accession(accession_number: str):
         print(f"❌ Could not find filing: {accession_number}")
         return
 
+    # Filing time: use header acceptance datetime if available, else date only
+    filed_str = str(getattr(filing, "filing_date", "N/A"))
+    header = getattr(filing, "header", None)
+    if header is not None:
+        acc = getattr(header, "acceptance_datetime", None) or getattr(header, "accepted", None)
+        if acc is not None:
+            if hasattr(acc, "strftime"):
+                filed_str = acc.strftime("%Y-%m-%d %H:%M")
+            elif isinstance(acc, str) and len(acc) >= 12:
+                # SEC format YYYYMMDDHHMMSS
+                filed_str = f"{acc[:4]}-{acc[4:6]}-{acc[6:8]} {acc[8:10]}:{acc[10:12]}"
     print(
         f"✓ Found filing: {getattr(filing, 'company', 'N/A')} - "
-        f"{getattr(filing, 'form', 'N/A')} on {getattr(filing, 'filing_date', 'N/A')}"
+        f"{getattr(filing, 'form', 'N/A')} filed {filed_str} ET"
     )
 
     if getattr(filing, "form", None) != "8-K":
