@@ -291,107 +291,8 @@ def _filter5_parse_number(raw_val: str, scale: Optional[str] = None) -> float:
     return num
 
 
-def _filter5_extract_metrics(text: str) -> dict:
-    number_pattern = r"\$?([\d,]+(?:\.\d+)?)\s*(million|billion)?"
-    metric_patterns = {
-        "revenue": re.compile(
-            rf"(revenue|revenues).*?{number_pattern}.*?(?:up|increase|down|decrease)?\s*(?:of\s*)?(\d+)?\s*%?",
-            re.IGNORECASE | re.DOTALL,
-        ),
-        "net_income": re.compile(
-            rf"(net\s+income).*?{number_pattern}.*?(?:up|increase|down|decrease)?\s*(?:of\s*)?(\d+)?\s*%?",
-            re.IGNORECASE | re.DOTALL,
-        ),
-        "eps": re.compile(
-            rf"(eps|earnings\s+per\s+share|diluted).*?{number_pattern}.*?(?:up|increase|down|decrease)?\s*(?:of\s*)?(\d+)?\s*%?",
-            re.IGNORECASE | re.DOTALL,
-        ),
-    }
-    metrics = {"revenue": [], "net_income": [], "eps": [], "guidance": []}
-    for key, pat in metric_patterns.items():
-        for m in pat.finditer(text):
-            g = m.groups()
-            raw_val = g[1] if len(g) > 1 else None
-            scale = g[2] if len(g) > 2 else None
-            pct_change = g[3] if len(g) > 3 and g[3] else None
-            if raw_val is None:
-                continue
-            try:
-                val = _filter5_parse_number(raw_val, scale)
-            except (ValueError, TypeError):
-                continue
-            metrics[key].append({"value": val, "pct_change": float(pct_change) if pct_change else None})
-    guidance_pat = re.compile(
-        rf"(guidance|backlog|remaining\s+performance\s+obligations).*?{number_pattern}",
-        re.IGNORECASE | re.DOTALL,
-    )
-    for m in guidance_pat.finditer(text):
-        g = m.groups()
-        raw_val = g[1] if len(g) > 1 else None
-        scale = g[2] if len(g) > 2 else None
-        if raw_val is None:
-            continue
-        try:
-            metrics["guidance"].append({"value": _filter5_parse_number(raw_val, scale)})
-        except (ValueError, TypeError):
-            continue
-    return metrics
-
-
-def _filter5_compute_parts(text: str, metrics: dict, verbose: bool) -> dict:
-    rev_up = any((m.get("pct_change") or 0) > 0 for m in metrics.get("revenue", []))
-    ni_up = any((m.get("pct_change") or 0) > 0 for m in metrics.get("net_income", []))
-    rev_down = any((m.get("pct_change") or 0) < 0 for m in metrics.get("revenue", []))
-    ni_down = any((m.get("pct_change") or 0) < 0 for m in metrics.get("net_income", []))
-    has_eps = len(metrics.get("eps", [])) > 0
-    eps_down = any((m.get("pct_change") or 0) < 0 for m in metrics.get("eps", [])) if has_eps else False
-    if (has_eps and eps_down) or rev_down or ni_down:
-        revenue = -1
-    elif rev_up and ni_up and not eps_down:
-        revenue = 1
-    else:
-        revenue = 0
-    guidance = 1 if len(metrics.get("guidance", [])) > 0 else 0
-    negative = [
-        "slightly", "shift", "timing", "unchanged", "factored", "remains",
-        "declined", "decline", "fell", "fall", "contraction", "roll-down", "roll down",
-        "weaker", "weakness", "negative growth", "down approximately", "down from",
-    ]
-    positive = [
-        "ahead of expectations", "accelerat", "raised", "better than",
-        "outpaced", "above expectations", "improved", "improvement"
-    ]
-    neg_hits = sum(p in text for p in negative)
-    pos_hits = sum(p in text for p in positive)
-    expectation = 1 if pos_hits > neg_hits else (-1 if neg_hits > pos_hits else 0)
-    return {"REVENUE": revenue, "GUIDANCE": guidance, "EXPECTATION": expectation}
-
-
-FILTER5_PASS_THRESHOLD = 1
-
-
 def compute_filter5_pass(filing, verbose: bool = False) -> bool:
-    exhibit_99_parts = []
-    if hasattr(filing, "exhibits") and filing.exhibits:
-        for ex in filing.exhibits:
-            if "99." in str(ex).lower():
-                try:
-                    exhibit_99_parts.append(ex.text())
-                except Exception:
-                    pass
-    text = " ".join(exhibit_99_parts) if exhibit_99_parts else ""
-    if not text:
-        vprint(verbose, "FILTER5: no 99.x exhibit text → pass (skip)")
-        return True
-    metrics = _filter5_extract_metrics(text)
-    if sum(len(metrics.get(k, [])) for k in ("revenue", "net_income", "eps", "guidance")) == 0:
-        vprint(verbose, "FILTER5: no metrics parsed → pass (skip)")
-        return True
-    parts = _filter5_compute_parts(text.lower(), metrics, verbose)
-    score = parts["REVENUE"] + parts["GUIDANCE"] + parts["EXPECTATION"]
-    passed = score >= FILTER5_PASS_THRESHOLD
-    vprint(verbose, f"FILTER5: {'(pass)' if passed else '(fail)'} {parts}")
-    return passed
+    return True
 
 
 def get_eps_for_report_date(ticker: str, report_date: date) -> Optional[Dict]:
@@ -505,7 +406,7 @@ class Edgar(AdvisorBase):
     """Advisor for 8-K earnings filings. Entry points and filters TBD."""
 
     def discover(self, sa):
-        return
+
         """
         Discovery entry point for the ED-8 advisor.
 
