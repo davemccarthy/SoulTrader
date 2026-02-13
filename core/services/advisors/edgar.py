@@ -3,7 +3,7 @@ Edgar advisor (ED-8): 8-K earnings–related filings, filters 1–6, analyze_8k.
 
 Test independently: python manage.py run_edgar
 
-Production: discover() will fetch 8-Ks, run filters (1–7, sector, reception),
+Production: discover() will fetch 8-Ks, run filters (1–6, sector, reception),
 and call self.discovered(...) for passing stocks.
 """
 
@@ -12,8 +12,8 @@ import os
 import re
 import time
 from collections import Counter
-from datetime import date
 from typing import Dict, Optional
+from datetime import date, timedelta
 
 import requests
 import yfinance as yf
@@ -176,32 +176,121 @@ FILTER3_MIN_CAP = 300e6
 FILTER3_PRICE_MIN = 5.0
 FILTER3_PRICE_MAX = 1000.0
 
+# Sector beware (vprint WARNING only; matches yfinance sector/industry wording)
+FILTER3_UNDERPERFORM_SECTORS = ("consumer cyclical", "real estate", "utilities")  # 🔴 Underperform
+FILTER3_WATCH_SECTOR_INDUSTRY = (  # 🟡 Neutral/cautious or Watch
+    ("technology", "software"),   # Tech (software): AI disruption, capex concerns
+    ("financial services", "insurance"),
+)
+
 
 def compute_filter3_pass(filing, verbose: bool = False) -> bool:
-    ticker = getattr(filing, "ticker", None) or cik_to_ticker(getattr(filing, "cik", ""))
+    """
+    FILTER3: valuation, cap, and price band.
+    - P/E: fail if trailing P/E > FILTER3_PE_MAX (overvalued definitive).
+    - Cap: fail if market_cap < FILTER3_MIN_CAP (nano/micro).
+    - Price: fail if price < FILTER3_PRICE_MIN or > FILTER3_PRICE_MAX.
+    Returns True if pass, False if fail. If no ticker or yfinance data missing, passes (no block).
+    """
+    ticker = getattr(filing, "ticker", None)
+    if not ticker:
+        ticker = cik_to_ticker(getattr(filing, "cik", ""))
+
     try:
-        time.sleep(0.05)
+        time.sleep(0.05)  # Rate limit yfinance
         stock = yf.Ticker(ticker)
         info = stock.info or {}
     except Exception as e:
         vprint(verbose, f"FILTER3: yfinance error → pass (skip checks): {e}")
         return True
+
+    # P/E: overvalued definitive
     pe = info.get("trailingPE") or info.get("forwardPE")
-    if pe is not None and isinstance(pe, (int, float)) and pe > FILTER3_PE_MAX:
-        vprint(verbose, f"FILTER3: fail P/E {pe:.1f} > {FILTER3_PE_MAX}")
-        return False
+    if pe is not None and isinstance(pe, (int, float)):
+        if pe > FILTER3_PE_MAX:
+            vprint(verbose, f"FILTER3: fail P/E {pe:.1f} > {FILTER3_PE_MAX} (overvalued)")
+            return False
+
+    # Cap: exclude nano/micro
     cap = info.get("marketCap")
-    if cap is not None and isinstance(cap, (int, float)) and cap < FILTER3_MIN_CAP:
-        vprint(verbose, f"FILTER3: fail market_cap {cap/1e6:.1f}M < {FILTER3_MIN_CAP/1e6:.0f}M")
-        return False
+    if cap is not None and isinstance(cap, (int, float)):
+        if cap < FILTER3_MIN_CAP:
+            vprint(verbose, f"FILTER3: fail market_cap {cap/1e6:.1f}M < {FILTER3_MIN_CAP/1e6:.0f}M (nano/micro)")
+            return False
+
+    # Price band: $5–$500
     price = info.get("regularMarketPrice") or info.get("currentPrice") or info.get("previousClose")
     if price is not None and isinstance(price, (int, float)):
         if price < FILTER3_PRICE_MIN:
-            vprint(verbose, f"FILTER3: fail price ${price:.2f} < ${FILTER3_PRICE_MIN}")
+            vprint(verbose, f"FILTER3: fail price ${price:.2f} < ${FILTER3_PRICE_MIN} (below band)")
             return False
         if price > FILTER3_PRICE_MAX:
-            vprint(verbose, f"FILTER3: fail price ${price:.2f} > ${FILTER3_PRICE_MAX}")
+            vprint(verbose, f"FILTER3: fail price ${price:.2f} > ${FILTER3_PRICE_MAX} (above band)")
             return False
+
+    # Warnings (vprint only): 90%+ of 52-week high, 90%+ of 2-week lead-up high
+    fifty_two_high = info.get("fiftyTwoWeekHigh")
+    if (
+        verbose
+        and price is not None
+        and fifty_two_high is not None
+        and isinstance(fifty_two_high, (int, float))
+        and fifty_two_high > 0
+    ):
+        pct_52 = 100.0 * price / fifty_two_high
+        if pct_52 >= 90.0:
+            vprint(
+                verbose,
+                f"********** WARNING: Price at {pct_52:.1f}% of 52-week high "
+                f"(price ${price:.2f}, 52w high ${fifty_two_high:.2f}) **********",
+            )
+
+    fd = getattr(filing, "filing_date", None)
+    if verbose and price is not None and fd is not None:
+        try:
+            if isinstance(fd, date):
+                filing_date = fd
+            elif isinstance(fd, str):
+                filing_date = date.fromisoformat(fd[:10])
+            elif hasattr(fd, "date") and callable(getattr(fd, "date")):
+                filing_date = fd.date()
+            else:
+                filing_date = date.fromisoformat(str(fd)[:10])
+            start = filing_date - timedelta(days=14)
+            end = filing_date + timedelta(days=2)
+            hist = stock.history(start=start, end=end, auto_adjust=True)
+            if hist is not None and not hist.empty:
+                two_week_high = float(hist["High"].max())
+                last_close = float(hist["Close"].iloc[-1])
+                if two_week_high > 0 and last_close >= 0.90 * two_week_high:
+                    pct_2w = 100.0 * last_close / two_week_high
+                    vprint(
+                        verbose,
+                        f"********** WARNING: Filing price at {pct_2w:.1f}% of 2-week high "
+                        f"(filing close ${last_close:.2f}, 2w high ${two_week_high:.2f}) **********",
+                    )
+        except Exception as e:
+            vprint(verbose, f"FILTER3: (skip 2-week high check: {e})")
+
+    # Warnings (vprint only): sector/industry in beware lists
+    if verbose:
+        sector = (info.get("sector") or "").strip().lower()
+        industry = (info.get("industry") or "").strip().lower()
+        if sector and sector in FILTER3_UNDERPERFORM_SECTORS:
+            vprint(
+                verbose,
+                f"********** WARNING: Sector in underperform list "
+                f"(sector={info.get('sector') or 'N/A'}, industry={info.get('industry') or 'N/A'}) **********",
+            )
+        for watch_sector, watch_industry in FILTER3_WATCH_SECTOR_INDUSTRY:
+            if sector and industry and watch_sector in sector and watch_industry in industry:
+                vprint(
+                    verbose,
+                    f"********** WARNING: Sector/industry in watch list "
+                    f"(sector={info.get('sector') or 'N/A'}, industry={info.get('industry') or 'N/A'}) **********",
+                )
+                break
+
     vprint(verbose, "FILTER3: (pass) (P/E, cap, price band ok)")
     return True
 
@@ -279,19 +368,113 @@ def compute_filter4_pass(filing, verbose: bool = False) -> bool:
         vprint(verbose, f"FILTER4: (pass) checks={result['checks']}")
     return True
 
+import pysentiment2 as ps
 
-def _filter5_parse_number(raw_val: str, scale: Optional[str] = None) -> float:
-    num = float((raw_val or "0").replace(",", ""))
-    if scale:
-        scale = scale.lower()
-        if scale == "billion":
-            num *= 1e9
-        elif scale == "million":
-            num *= 1e6
-    return num
+GUIDANCE_KEYWORDS = [
+    "guidance", "outlook", "financial outlook", "forecast", "projected", "projection",
+    "expects", "expect", "we expect", "anticipate", "target", "targets", "goal", "goals",
+    "estimate", "estimates", "future", "next quarter", "next year",
+]
+
+BOILERPLATE_PHRASES = [
+    "forward-looking statements",
+    "management believes that",
+    "we do not provide a forward-looking reconciliation",
+    "cannot be estimated at this time without unreasonable efforts",
+]
+
+def split_sentences(text: str) -> list[str]:
+    text = re.sub(r"\s+", " ", text)
+    parts = re.split(r"(?<=[\.\?\!])\s+", text)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def extract_guidance_sentences(text: str) -> list[str]:
+    sentences = split_sentences(text)
+    lower_kw = [k.lower() for k in GUIDANCE_KEYWORDS]
+    return [s for s in sentences if any(k in s.lower() for k in lower_kw)]
+
+
+def is_boilerplate(sentence: str) -> bool:
+    lower = sentence.lower()
+    return any(phrase in lower for phrase in BOILERPLATE_PHRASES)
+
+
+def compute_lm_guidance(text: str):
+    """
+    Run LM on guidance sentences in text. Return aggregate + pass/fail.
+    Returns None if pysentiment2 is missing, text is empty, or no guidance sentences
+    after boilerplate filter. Otherwise returns dict with:
+      passed: bool (False only when total_neg > total_pos)
+      n_sentences, total_pos, total_neg, avg_polarity, net_polarity
+    """
+    if ps is None or not (text or "").strip():
+        return None
+    guidance = extract_guidance_sentences(text)
+    candidates = [s for s in guidance if not is_boilerplate(s)]
+    if not candidates:
+        return None
+    try:
+        lm = ps.LM()
+        total_pos = total_neg = 0
+        polarities = []
+        for s in candidates:
+            tokens = lm.tokenize(s)
+            score = lm.get_score(tokens)
+            total_pos += score.get("Positive", 0)
+            total_neg += score.get("Negative", 0)
+            polarities.append(score.get("Polarity", 0.0))
+        avg_polarity = sum(polarities) / len(polarities) if polarities else 0.0
+        denom = total_pos + total_neg
+        net_polarity = (total_pos - total_neg) / denom if denom > 0 else 0.0
+        passed = not (total_neg > total_pos)
+        return {
+            "passed": passed,
+            "n_sentences": len(candidates),
+            "total_pos": total_pos,
+            "total_neg": total_neg,
+            "avg_polarity": round(avg_polarity, 4),
+            "net_polarity": round(net_polarity, 4),
+        }
+    except Exception:
+        return None
 
 
 def compute_filter5_pass(filing, verbose: bool = False) -> bool:
+    exhibit_99_parts = []
+    if hasattr(filing, "exhibits") and filing.exhibits:
+        for ex in filing.exhibits:
+            if "99." in str(ex).lower():
+                try:
+                    exhibit_99_parts.append(ex.text())
+                except Exception:
+                    pass
+    text = " ".join(exhibit_99_parts) if exhibit_99_parts else ""
+    if not text:
+        vprint(verbose, "FILTER5: no 99.x exhibit text → fail")
+        return False
+
+    guidance_sents = extract_guidance_sentences(text)
+    if not guidance_sents:
+        print("No guidance sentences found by keyword scan.")
+        return False
+
+    non_boilerplate = [s for s in guidance_sents if not is_boilerplate(s)]
+    print(f"Guidance sentences: {len(guidance_sents)} total, {len(non_boilerplate)} after dropping boilerplate")
+
+    result = compute_lm_guidance(text)
+    if result is None:
+        print("No guidance sentences left after boilerplate filter, or pysentiment2 not available.")
+        return False
+
+    print("\n--- Aggregate (guidance sentiment) ---")
+    print(f"  n_sentences   = {result['n_sentences']}")
+    print(f"  total_pos    = {result['total_pos']}")
+    print(f"  total_neg    = {result['total_neg']}")
+    print(f"  avg_polarity = {result['avg_polarity']:+.3f}")
+    print(f"  net_polarity = {result['net_polarity']:+.3f}  ( (Pos-Neg)/(Pos+Neg) )")
+    print(f"\n  FILTER5_LM →  {'PASS' if result['passed'] else 'FAIL'} (suggested)")
+
     return True
 
 
@@ -356,16 +539,6 @@ def compute_filter6_value(filing, verbose: bool = False) -> float:
     return surprise_val
 
 
-def compute_filter7_value(filing, verbose: bool = False):
-    """
-    Sector/trend consensus: 1 = favorable, 0 = neutral, -1 or None = avoid.
-    Stub: always returns 0 (neutral) until sector logic is implemented.
-    """
-    if verbose:
-        vprint(verbose, "FILTER7: sector consensus (stub) → 0")
-    return 0
-
-
 def analyze_8k(filing, verbose: bool = False):
     """
     Run FILTER1–6. If all pass, return (ticker, cik, accession, eps).
@@ -390,11 +563,9 @@ def analyze_8k(filing, verbose: bool = False):
         return None
     if (eps_beat := compute_filter6_value(filing, verbose)) is None:
         return None
-    if (sector_consensus := compute_filter7_value(filing, verbose)) is None:
-        return None
 
     vprint(verbose, f"SEC: https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude")
-    return ticker, cik, accession, eps_beat, sector_consensus
+    return ticker, cik, accession, eps_beat
 
 
 # ---------------------------------------------------------------------------
@@ -443,7 +614,7 @@ class Edgar(AdvisorBase):
         print("-" * 50)
 
         for candidate in candidates:
-            ticker, cik, accession, eps_beat, sector_consensus = candidate  # (ticker, cik, accession, eps, sector)
+            ticker, cik, accession, eps_beat = candidate  # (ticker, cik, accession, eps)
 
             row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {eps_beat:<10}"
             print(row)
