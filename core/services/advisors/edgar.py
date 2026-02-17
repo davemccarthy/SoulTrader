@@ -18,7 +18,7 @@ from datetime import date, timedelta
 import requests
 import yfinance as yf
 from django.conf import settings
-from edgar import Company, get_filings, set_identity
+from edgar import Company, get_filings, get_latest_filings, set_identity
 
 from core.services.advisors.advisor import AdvisorBase, register
 
@@ -111,66 +111,6 @@ GREEN_FLAGS = {
 }
 
 
-def compute_filter1_pass(filing, verbose: bool = False) -> bool:
-    form = getattr(filing, "form", None)
-    if form != "8-K":
-        vprint(verbose, "FILTER1: form not 8-K")
-        return False
-    ticker = getattr(filing, "ticker", None) or cik_to_ticker(getattr(filing, "cik", ""))
-    if not ticker:
-        vprint(verbose, "FILTER1: no tradable ticker → fail")
-        return False
-    if not (hasattr(filing, "exhibits") and filing.exhibits):
-        vprint(verbose, "FILTER1: no exhibits → fail")
-        return False
-    if not any("99." in str(ex).lower() for ex in filing.exhibits):
-        vprint(verbose, "FILTER1: no exhibit 99.x → fail")
-        return False
-    filing_text = filing.text().lower()
-    if "item 9.0" not in filing_text:
-        vprint(verbose, "FILTER1: item 9.0.x → fail")
-        return False
-    for kw in REG_FD_KEYWORDS:
-        if kw in filing_text:
-            vprint(verbose, f"FILTER1: Reg keyword {kw} in main text → fail")
-            return False
-    if not any(kw in filing_text for kw in EARNINGS_KEYWORDS):
-        vprint(verbose, "FILTER1: No earnings key phrase in main text")
-        return False
-    vprint(verbose, "FILTER1: (pass)")
-    return True
-
-
-def compute_filter2_pass(filing, verbose: bool = False) -> bool:
-    exhibit_99_parts = []
-    if hasattr(filing, "exhibits") and filing.exhibits:
-        for ex in filing.exhibits:
-            if "99." in str(ex).lower():
-                try:
-                    exhibit_99_parts.append(ex.text())
-                except Exception:
-                    pass
-    exhibit_99_text = " ".join(exhibit_99_parts) if exhibit_99_parts else ""
-    filing_text = (filing.text() or "") if hasattr(filing, "text") else ""
-    combined_text = (filing_text + " " + exhibit_99_text).lower()
-    exhibit_99_lower = exhibit_99_text.lower()
-    score = 0
-    for keyword, penalty in RED_FLAGS_SEVERE.items():
-        if keyword in combined_text:
-            vprint(verbose, f"FILTER2: severe red flag '{keyword}' → {penalty}")
-            score += penalty
-    for keyword, penalty in RED_FLAGS_MODERATE.items():
-        if keyword in combined_text:
-            vprint(verbose, f"FILTER2: moderate red flag '{keyword}' → {penalty}")
-            score += penalty
-    for keyword, bonus in GREEN_FLAGS.items():
-        if keyword in exhibit_99_lower:
-            vprint(verbose, f"FILTER2: green flag '{keyword}' → +{bonus}")
-            score += bonus
-    vprint(verbose, f"FILTER2: {'(pass)' if score >= 0 else 'fail'} {score}")
-    return score >= 0
-
-
 FILTER3_PE_MAX = 100
 FILTER3_MIN_CAP = 300e6
 FILTER3_PRICE_MIN = 5.0
@@ -182,117 +122,6 @@ FILTER3_WATCH_SECTOR_INDUSTRY = (  # 🟡 Neutral/cautious or Watch
     ("technology", "software"),   # Tech (software): AI disruption, capex concerns
     ("financial services", "insurance"),
 )
-
-
-def compute_filter3_pass(filing, verbose: bool = False) -> bool:
-    """
-    FILTER3: valuation, cap, and price band.
-    - P/E: fail if trailing P/E > FILTER3_PE_MAX (overvalued definitive).
-    - Cap: fail if market_cap < FILTER3_MIN_CAP (nano/micro).
-    - Price: fail if price < FILTER3_PRICE_MIN or > FILTER3_PRICE_MAX.
-    Returns True if pass, False if fail. If no ticker or yfinance data missing, passes (no block).
-    """
-    ticker = getattr(filing, "ticker", None)
-    if not ticker:
-        ticker = cik_to_ticker(getattr(filing, "cik", ""))
-
-    try:
-        time.sleep(0.05)  # Rate limit yfinance
-        stock = yf.Ticker(ticker)
-        info = stock.info or {}
-    except Exception as e:
-        vprint(verbose, f"FILTER3: yfinance error → pass (skip checks): {e}")
-        return True
-
-    # P/E: overvalued definitive
-    pe = info.get("trailingPE") or info.get("forwardPE")
-    if pe is not None and isinstance(pe, (int, float)):
-        if pe > FILTER3_PE_MAX:
-            vprint(verbose, f"FILTER3: fail P/E {pe:.1f} > {FILTER3_PE_MAX} (overvalued)")
-            return False
-
-    # Cap: exclude nano/micro
-    cap = info.get("marketCap")
-    if cap is not None and isinstance(cap, (int, float)):
-        if cap < FILTER3_MIN_CAP:
-            vprint(verbose, f"FILTER3: fail market_cap {cap/1e6:.1f}M < {FILTER3_MIN_CAP/1e6:.0f}M (nano/micro)")
-            return False
-
-    # Price band: $5–$500
-    price = info.get("regularMarketPrice") or info.get("currentPrice") or info.get("previousClose")
-    if price is not None and isinstance(price, (int, float)):
-        if price < FILTER3_PRICE_MIN:
-            vprint(verbose, f"FILTER3: fail price ${price:.2f} < ${FILTER3_PRICE_MIN} (below band)")
-            return False
-        if price > FILTER3_PRICE_MAX:
-            vprint(verbose, f"FILTER3: fail price ${price:.2f} > ${FILTER3_PRICE_MAX} (above band)")
-            return False
-
-    # Warnings (vprint only): 90%+ of 52-week high, 90%+ of 2-week lead-up high
-    fifty_two_high = info.get("fiftyTwoWeekHigh")
-    if (
-        verbose
-        and price is not None
-        and fifty_two_high is not None
-        and isinstance(fifty_two_high, (int, float))
-        and fifty_two_high > 0
-    ):
-        pct_52 = 100.0 * price / fifty_two_high
-        if pct_52 >= 90.0:
-            vprint(
-                verbose,
-                f"********** WARNING: Price at {pct_52:.1f}% of 52-week high "
-                f"(price ${price:.2f}, 52w high ${fifty_two_high:.2f}) **********",
-            )
-
-    fd = getattr(filing, "filing_date", None)
-    if verbose and price is not None and fd is not None:
-        try:
-            if isinstance(fd, date):
-                filing_date = fd
-            elif isinstance(fd, str):
-                filing_date = date.fromisoformat(fd[:10])
-            elif hasattr(fd, "date") and callable(getattr(fd, "date")):
-                filing_date = fd.date()
-            else:
-                filing_date = date.fromisoformat(str(fd)[:10])
-            start = filing_date - timedelta(days=14)
-            end = filing_date + timedelta(days=2)
-            hist = stock.history(start=start, end=end, auto_adjust=True)
-            if hist is not None and not hist.empty:
-                two_week_high = float(hist["High"].max())
-                last_close = float(hist["Close"].iloc[-1])
-                if two_week_high > 0 and last_close >= 0.90 * two_week_high:
-                    pct_2w = 100.0 * last_close / two_week_high
-                    vprint(
-                        verbose,
-                        f"********** WARNING: Filing price at {pct_2w:.1f}% of 2-week high "
-                        f"(filing close ${last_close:.2f}, 2w high ${two_week_high:.2f}) **********",
-                    )
-        except Exception as e:
-            vprint(verbose, f"FILTER3: (skip 2-week high check: {e})")
-
-    # Warnings (vprint only): sector/industry in beware lists
-    if verbose:
-        sector = (info.get("sector") or "").strip().lower()
-        industry = (info.get("industry") or "").strip().lower()
-        if sector and sector in FILTER3_UNDERPERFORM_SECTORS:
-            vprint(
-                verbose,
-                f"********** WARNING: Sector in underperform list "
-                f"(sector={info.get('sector') or 'N/A'}, industry={info.get('industry') or 'N/A'}) **********",
-            )
-        for watch_sector, watch_industry in FILTER3_WATCH_SECTOR_INDUSTRY:
-            if sector and industry and watch_sector in sector and watch_industry in industry:
-                vprint(
-                    verbose,
-                    f"********** WARNING: Sector/industry in watch list "
-                    f"(sector={info.get('sector') or 'N/A'}, industry={info.get('industry') or 'N/A'}) **********",
-                )
-                break
-
-    vprint(verbose, "FILTER3: (pass) (P/E, cap, price band ok)")
-    return True
 
 
 EARNINGS_CONTEXT = ["earnings", "financial results", "results of operations", "quarter ended", "fiscal quarter"]
@@ -344,29 +173,6 @@ def earnings_release_filter(raw_text: str) -> dict:
     score = sum([checks["table_structure"], checks["comparables"]])
     return {"pass": score >= 1, "score": score, "reason": "ok" if score >= 1 else "soft fail", "checks": checks}
 
-
-def compute_filter4_pass(filing, verbose: bool = False) -> bool:
-    exhibit_99_parts = []
-    if hasattr(filing, "exhibits") and filing.exhibits:
-        for ex in filing.exhibits:
-            if "99." in str(ex).lower():
-                try:
-                    exhibit_99_parts.append(ex.text())
-                except Exception:
-                    pass
-    text = " ".join(exhibit_99_parts) if exhibit_99_parts else ""
-    if not text:
-        vprint(verbose, "FILTER4: no 99.x exhibit text → fail")
-        return False
-    result = earnings_release_filter(text)
-    if not result["pass"]:
-        vprint(verbose, f"FILTER4: {result['reason']} → fail")
-        if verbose and result.get("checks"):
-            vprint(verbose, f"FILTER4: checks={result['checks']}")
-        return False
-    if verbose and result.get("checks"):
-        vprint(verbose, f"FILTER4: (pass) checks={result['checks']}")
-    return True
 
 try:
     import pysentiment2 as ps
@@ -442,46 +248,28 @@ def _filter5_compute_lm_guidance(text: str):
         return None
 
 
-def compute_filter5_pass(filing, verbose: bool = False) -> bool:
+def _latest_quarter_end_for_date(d: date) -> date:
+    """Return quarter-end date for the quarter this filing date reports. Jan/Feb/Mar → prev Dec 31; Apr/Jun → Mar 31; etc."""
+    y, m = d.year, d.month
+    if m in (1, 2, 3):
+        return date(y - 1, 12, 31)
+    if m in (4, 5, 6):
+        return date(y, 3, 31)
+    if m in (7, 8, 9):
+        return date(y, 6, 30)
+    return date(y, 9, 30)
+
+
+def get_eps_for_report_quarter(ticker: str, report_date: date) -> Optional[Dict]:
     """
-    FILTER5: LM guidance sentiment (same logic as edgar.py).
-    Pass when neg does not beat pos; skip (pass) when no text / no guidance / ps unavailable.
+    Fetch Alpha Vantage EARNINGS; find the quarterly record for the latest quarter (by filing date).
+    If no record for that quarter, or record has no EPS surprise, print and return None. Else return record.
     """
-    exhibit_99_parts = []
-    if hasattr(filing, "exhibits") and filing.exhibits:
-        for ex in filing.exhibits:
-            if "99." in str(ex).lower():
-                try:
-                    exhibit_99_parts.append(ex.text())
-                except Exception:
-                    pass
-    text = " ".join(exhibit_99_parts) if exhibit_99_parts else ""
-    if not text:
-        vprint(verbose, "FILTER5: (fail) no 99.x exhibit text")
-        return False
-
-    guidance_sents = _filter5_extract_guidance_sentences(text)
-    if not guidance_sents:
-        vprint(verbose, "FILTER5: (fail) no guidance sentences")
-        return False
-
-    non_boilerplate = [s for s in guidance_sents if not _filter5_is_boilerplate(s)]
-    vprint(verbose, f"FILTER5: guidance {len(guidance_sents)} total, {len(non_boilerplate)} after boilerplate")
-
-    result = _filter5_compute_lm_guidance(text)
-    if result is None:
-        vprint(verbose, "FILTER5: (pass) no guidance after boilerplate or pysentiment2 unavailable")
-        return False
-
-    vprint(verbose, f"FILTER5: ({'pass' if result['passed'] else 'fail'}) n_sentences={result['n_sentences']} total_pos={result['total_pos']} total_neg={result['total_neg']} net_polarity={result['net_polarity']:+.3f}")
-    return result["passed"]
-
-
-def get_eps_for_report_date(ticker: str, report_date: date) -> Optional[Dict]:
-    """Fetch Alpha Vantage EARNINGS; return quarter where reportedDate == report_date, or None."""
     api_key = getattr(settings, "ALPHAVANTAGE_API_KEY", None) or os.environ.get("ALPHAVANTAGE_API_KEY")
     if not api_key:
         return None
+    latest_quarter_end = _latest_quarter_end_for_date(report_date)
+    target = latest_quarter_end.isoformat()
     url = "https://www.alphavantage.co/query"
     params = {"function": "EARNINGS", "symbol": ticker.upper(), "apikey": api_key}
     try:
@@ -492,79 +280,27 @@ def get_eps_for_report_date(ticker: str, report_date: date) -> Optional[Dict]:
         if "Error Message" in data or "Note" in data or "Information" in data:
             return None
         quarterly = data.get("quarterlyEarnings") or []
-        target = report_date.isoformat()
-        for record in quarterly:
-            if record.get("reportedDate") == target:
-                return record
-        return None
+        record = None
+        for r in quarterly:
+            fd = r.get("fiscalDateEnding") or ""
+            if fd[:10] == target if len(fd) >= 10 else fd == target:
+                record = r
+                break
+        if record is None:
+            print("quarterly record not available")
+            return None
+        sp = record.get("surprisePercentage")
+        if sp is None or sp == "" or str(sp).strip() == "None":
+            print("quarterly record available but no EPSSurprise")
+            return None
+        try:
+            float(sp)
+        except (TypeError, ValueError):
+            print("quarterly record available but no EPSSurprise")
+            return None
+        return record
     except Exception:
         return None
-
-
-def compute_filter6_value(filing, verbose: bool = False) -> float:
-    ticker = getattr(filing, "ticker", None) or cik_to_ticker(str(getattr(filing, "cik", "")))
-    if not ticker:
-        return None
-    fd = getattr(filing, "filing_date", None)
-    if fd is None:
-        return None
-    if isinstance(fd, str):
-        try:
-            report_date = date.fromisoformat(fd[:10])
-        except ValueError:
-            return None
-    else:
-        report_date = getattr(fd, "date", lambda: fd)() if hasattr(fd, "date") else fd
-
-    record = get_eps_for_report_date(ticker, report_date)
-    if not record:
-        return None
-
-    surprise_str = record.get("surprisePercentage")
-    try:
-        surprise_val = float(surprise_str)
-    except (TypeError, ValueError):
-        # No usable surprise% → fail FILTER6
-        return None
-
-    if surprise_val <= 0:
-        if verbose:
-            vprint(verbose, f"FILTER6: {ticker} EPS surprise {surprise_val}% <= 0 → fail")
-        return None
-
-    if verbose:
-        vprint(verbose, f"FILTER6: {ticker} EPS surprise {surprise_val}% → pass")
-
-    return surprise_val
-
-
-def analyze_8k(filing, verbose: bool = False):
-    """
-    Run FILTER1–6. If all pass, return (ticker, cik, accession, eps).
-    eps is Alpha Vantage record for reportedDate == filing date, or None.
-    Otherwise return None.
-    """
-    accession = getattr(filing, "accession_no", None) or getattr(filing, "accession_number", None)
-    cik = str(getattr(filing, "cik", None))
-    ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
-    if not ticker:
-        return None
-    print(f"Inspecting: ticker={ticker or 'N/A'}, CIK={cik}, accession={accession}")
-    if not compute_filter1_pass(filing, verbose):
-        return None
-    if not compute_filter2_pass(filing, verbose):
-        return None
-    if not compute_filter4_pass(filing, verbose):
-        return None
-    if not compute_filter3_pass(filing, verbose):
-        return None
-    if not compute_filter5_pass(filing, verbose):
-        return None
-    if (eps_beat := compute_filter6_value(filing, verbose)) is None:
-        return None
-
-    vprint(verbose, f"SEC: https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude")
-    return ticker, cik, accession, eps_beat
 
 
 # ---------------------------------------------------------------------------
@@ -575,8 +311,260 @@ def analyze_8k(filing, verbose: bool = False):
 class Edgar(AdvisorBase):
     """Advisor for 8-K earnings filings. Entry points and filters TBD."""
 
+    def compute_filter1_pass(self, filing, verbose: bool = False) -> bool:
+        form = getattr(filing, "form", None)
+        if form != "8-K":
+            vprint(verbose, "FILTER1: form not 8-K")
+            return False
+        ticker = getattr(filing, "ticker", None) or cik_to_ticker(getattr(filing, "cik", ""))
+        if not ticker:
+            vprint(verbose, "FILTER1: no tradable ticker → fail")
+            return False
+        if not (hasattr(filing, "exhibits") and filing.exhibits):
+            vprint(verbose, "FILTER1: no exhibits → fail")
+            return False
+        if not any("99." in str(ex).lower() for ex in filing.exhibits):
+            vprint(verbose, "FILTER1: no exhibit 99.x → fail")
+            return False
+        filing_text = filing.text().lower()
+        if "item 9.0" not in filing_text:
+            vprint(verbose, "FILTER1: item 9.0.x → fail")
+            return False
+        for kw in REG_FD_KEYWORDS:
+            if kw in filing_text:
+                vprint(verbose, f"FILTER1: Reg keyword {kw} in main text → fail")
+                return False
+        if not any(kw in filing_text for kw in EARNINGS_KEYWORDS):
+            vprint(verbose, "FILTER1: No earnings key phrase in main text")
+            return False
+        vprint(verbose, "FILTER1: (pass)")
+        return True
+
+    def compute_filter2_pass(self, filing, verbose: bool = False) -> bool:
+        exhibit_99_parts = []
+        if hasattr(filing, "exhibits") and filing.exhibits:
+            for ex in filing.exhibits:
+                if "99." in str(ex).lower():
+                    try:
+                        exhibit_99_parts.append(ex.text())
+                    except Exception:
+                        pass
+        exhibit_99_text = " ".join(exhibit_99_parts) if exhibit_99_parts else ""
+        filing_text = (filing.text() or "") if hasattr(filing, "text") else ""
+        combined_text = (filing_text + " " + exhibit_99_text).lower()
+        exhibit_99_lower = exhibit_99_text.lower()
+        score = 0
+        for keyword, penalty in RED_FLAGS_SEVERE.items():
+            if keyword in combined_text:
+                vprint(verbose, f"FILTER2: severe red flag '{keyword}' → {penalty}")
+                score += penalty
+        for keyword, penalty in RED_FLAGS_MODERATE.items():
+            if keyword in combined_text:
+                vprint(verbose, f"FILTER2: moderate red flag '{keyword}' → {penalty}")
+                score += penalty
+        for keyword, bonus in GREEN_FLAGS.items():
+            if keyword in exhibit_99_lower:
+                vprint(verbose, f"FILTER2: green flag '{keyword}' → +{bonus}")
+                score += bonus
+        vprint(verbose, f"FILTER2: {'(pass)' if score >= 0 else 'fail'} {score}")
+        return score >= 0
+
+    def compute_filter3_pass(self, filing, verbose: bool = False) -> bool:
+        ticker = getattr(filing, "ticker", None)
+        if not ticker:
+            ticker = cik_to_ticker(getattr(filing, "cik", ""))
+        try:
+            time.sleep(0.05)
+            stock = yf.Ticker(ticker)
+            info = stock.info or {}
+        except Exception as e:
+            vprint(verbose, f"FILTER3: yfinance error → pass (skip checks): {e}")
+            return True
+        pe = info.get("trailingPE") or info.get("forwardPE")
+        if pe is not None and isinstance(pe, (int, float)):
+            if pe > FILTER3_PE_MAX:
+                vprint(verbose, f"FILTER3: fail P/E {pe:.1f} > {FILTER3_PE_MAX} (overvalued)")
+                return False
+        cap = info.get("marketCap")
+        if cap is not None and isinstance(cap, (int, float)):
+            if cap < FILTER3_MIN_CAP:
+                vprint(verbose, f"FILTER3: fail market_cap {cap/1e6:.1f}M < {FILTER3_MIN_CAP/1e6:.0f}M (nano/micro)")
+                return False
+        price = info.get("regularMarketPrice") or info.get("currentPrice") or info.get("previousClose")
+        if price is not None and isinstance(price, (int, float)):
+            if price < FILTER3_PRICE_MIN:
+                vprint(verbose, f"FILTER3: fail price ${price:.2f} < ${FILTER3_PRICE_MIN} (below band)")
+                return False
+            if price > FILTER3_PRICE_MAX:
+                vprint(verbose, f"FILTER3: fail price ${price:.2f} > ${FILTER3_PRICE_MAX} (above band)")
+                return False
+        fifty_two_high = info.get("fiftyTwoWeekHigh")
+        if verbose and price is not None and fifty_two_high is not None and isinstance(fifty_two_high, (int, float)) and fifty_two_high > 0:
+            pct_52 = 100.0 * price / fifty_two_high
+            if pct_52 >= 90.0:
+                vprint(verbose, f"********** WARNING: Price at {pct_52:.1f}% of 52-week high **********")
+        fd = getattr(filing, "filing_date", None)
+        if verbose and price is not None and fd is not None:
+            try:
+                if isinstance(fd, date):
+                    filing_date = fd
+                elif isinstance(fd, str):
+                    filing_date = date.fromisoformat(fd[:10])
+                elif hasattr(fd, "date") and callable(getattr(fd, "date")):
+                    filing_date = fd.date()
+                else:
+                    filing_date = date.fromisoformat(str(fd)[:10])
+                start = filing_date - timedelta(days=14)
+                end = filing_date + timedelta(days=2)
+                hist = stock.history(start=start, end=end, auto_adjust=True)
+                if hist is not None and not hist.empty:
+                    two_week_high = float(hist["High"].max())
+                    last_close = float(hist["Close"].iloc[-1])
+                    if two_week_high > 0 and last_close >= 0.90 * two_week_high:
+                        pct_2w = 100.0 * last_close / two_week_high
+                        vprint(verbose, f"********** WARNING: Filing price at {pct_2w:.1f}% of 2-week high **********")
+            except Exception as e:
+                vprint(verbose, f"FILTER3: (skip 2-week high check: {e})")
+        if verbose:
+            sector = (info.get("sector") or "").strip().lower()
+            industry = (info.get("industry") or "").strip().lower()
+            if sector and sector in FILTER3_UNDERPERFORM_SECTORS:
+                vprint(verbose, f"********** WARNING: Sector in underperform list **********")
+            for watch_sector, watch_industry in FILTER3_WATCH_SECTOR_INDUSTRY:
+                if sector and industry and watch_sector in sector and watch_industry in industry:
+                    vprint(verbose, f"********** WARNING: Sector/industry in watch list **********")
+                    break
+        vprint(verbose, "FILTER3: (pass) (P/E, cap, price band ok)")
+        return True
+
+    def compute_filter4_pass(self, filing, verbose: bool = False) -> bool:
+        exhibit_99_parts = []
+        if hasattr(filing, "exhibits") and filing.exhibits:
+            for ex in filing.exhibits:
+                if "99." in str(ex).lower():
+                    try:
+                        exhibit_99_parts.append(ex.text())
+                    except Exception:
+                        pass
+        text = " ".join(exhibit_99_parts) if exhibit_99_parts else ""
+        if not text:
+            vprint(verbose, "FILTER4: no 99.x exhibit text → fail")
+            return False
+        result = earnings_release_filter(text)
+        if not result["pass"]:
+            vprint(verbose, f"FILTER4: {result['reason']} → fail")
+            if verbose and result.get("checks"):
+                vprint(verbose, f"FILTER4: checks={result['checks']}")
+            return False
+        if verbose and result.get("checks"):
+            vprint(verbose, f"FILTER4: (pass) checks={result['checks']}")
+        return True
+
+    def compute_filter5_pass(self, filing, verbose: bool = False) -> bool:
+        exhibit_99_parts = []
+        if hasattr(filing, "exhibits") and filing.exhibits:
+            for ex in filing.exhibits:
+                if "99." in str(ex).lower():
+                    try:
+                        exhibit_99_parts.append(ex.text())
+                    except Exception:
+                        pass
+        text = " ".join(exhibit_99_parts) if exhibit_99_parts else ""
+        if not text:
+            vprint(verbose, "FILTER5: (fail) no 99.x exhibit text")
+            return False
+        guidance_sents = _filter5_extract_guidance_sentences(text)
+        if not guidance_sents:
+            vprint(verbose, "FILTER5: (fail) no guidance sentences")
+            return False
+        vprint(verbose, f"FILTER5: guidance {len(guidance_sents)} total, {len([s for s in guidance_sents if not _filter5_is_boilerplate(s)])} after boilerplate")
+        result = _filter5_compute_lm_guidance(text)
+        if result is None:
+            vprint(verbose, "FILTER5: (pass) no guidance after boilerplate or pysentiment2 unavailable")
+            return False
+        vprint(verbose, f"FILTER5: ({'pass' if result['passed'] else 'fail'}) n_sentences={result['n_sentences']} net_polarity={result['net_polarity']:+.3f}")
+        return result["passed"]
+
+    def compute_filter6_value(self, filing, verbose: bool = False):
+        ticker = getattr(filing, "ticker", None) or cik_to_ticker(str(getattr(filing, "cik", "")))
+        if not ticker:
+            return None
+        fd = getattr(filing, "filing_date", None)
+        if fd is None:
+            return None
+        if isinstance(fd, str):
+            try:
+                report_date = date.fromisoformat(fd[:10])
+            except ValueError:
+                return None
+        else:
+            report_date = getattr(fd, "date", lambda: fd)() if hasattr(fd, "date") else fd
+        record = get_eps_for_report_quarter(ticker, report_date)
+        if not record:
+            return None
+        surprise_str = record.get("surprisePercentage")
+        reported_str = record.get("reportedEPS")
+        try:
+            surprise_val = float(surprise_str)
+            reported_val = float(reported_str)
+            eps_score = min(surprise_val, 50) * (reported_val ** 0.5)
+        except (TypeError, ValueError):
+            return -1
+        if verbose:
+            vprint(verbose, f"FILTER6: {ticker} EPS surprise {surprise_str}% reported {reported_str} score {eps_score}")
+        return eps_score
+
+    def compute_filter6_pass(self, filing, verbose: bool = False):
+        score = self.compute_filter6_value(filing, verbose)
+        if score is None:
+            return None
+        if score < 0:
+            return False
+        return True
+
+    def compute_filter7_pass(self, filing, verbose: bool = False):
+        vprint(verbose, "FILTER7: (stub) 3-ducks not implemented → None")
+        return None
+
+    def compute_filter8_pass(self, filing, verbose: bool = False):
+        vprint(verbose, "FILTER8: (stub) media not implemented → None")
+        return None
+
+    def analyze_8k_advanced(self, filing, meta_requirements: dict, verbose: bool = False):
+        if meta_requirements.get("filter7") is None:
+            f7 = self.compute_filter7_pass(filing, verbose)
+            if f7 is False or f7 is None:
+                return (f7, (None, None, None))
+        if meta_requirements.get("filter6") is None:
+            f6 = self.compute_filter6_pass(filing, verbose)
+            if f6 is False or f6 is None:
+                return (f6, (True, None, None))
+        if meta_requirements.get("filter8") is None:
+            f8 = self.compute_filter8_pass(filing, verbose)
+            if f8 is False or f8 is None:
+                return (f8, (True, True, None))
+        return (True, (True, True, True))
+
+    def analyze_8k_basic(self, filing, verbose: bool = False):
+        accession = getattr(filing, "accession_no", None) or getattr(filing, "accession_number", None)
+        cik = str(getattr(filing, "cik", None))
+        ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
+        if not ticker:
+            return False
+        if not self.compute_filter1_pass(filing, verbose):
+            return False
+        if not self.compute_filter2_pass(filing, verbose):
+            return False
+        if not self.compute_filter4_pass(filing, verbose):
+            return False
+        if not self.compute_filter3_pass(filing, verbose):
+            return False
+        if not self.compute_filter5_pass(filing, verbose):
+            return False
+        return True
+
     def discover(self, sa):
-        return
+
         """
         Discovery entry point for the ED-8 advisor.
 
@@ -585,40 +573,44 @@ class Edgar(AdvisorBase):
           - invoke it independently via `run_edgar`
         """
 
-        target_date = self.get_last_trading_day()
+        print("Fetching latest filings...")
+        latest = get_latest_filings()
 
-        filings = get_filings(form="8-K", filing_date=target_date)
-
-        if not filings:
-            print("No 8-K filings found for that date.")
+        try:
+            filings = list(latest)
+        except Exception as e:
+            print(f"❌ Error converting latest filings to list: {e}")
             return
 
-        candidates: list[tuple[str, str, str, Optional[Dict]]] = []  # (ticker, cik, accession, eps)
+        # Filter to 8-Ks only
+        filings_8k = [f for f in filings if getattr(f, "form", None) == "8-K"]
+        if not filings_8k:
+            print("No latest 8-K filings found. Using last day for tests")
+            return
 
-        print(f"Found {len(filings)} 8-K filings. Running FILTER1 + basic inspection...")
-        for filing in filings:
+        print(f"Found {len(filings_8k)} 8-K filings. Running basic inspection (filters 1-5)...")
+        for filing in filings_8k:
             try:
-                candidate = analyze_8k(filing)
-
-                if candidate is not None:
-                    candidates.append(candidate)
+                if self.analyze_8k_basic(filing, True):
+                    pass
 
             except Exception as e:
                 print(f"  ⚠️  Error inspecting filing: {e}")
 
-        print(f"Passed {len(candidates)} candidates...")
-
-        header = f"{'Symbol':<8} {'CIK':<8} {'Accession':<22} {'EPS':<10}"
-        print(header)
-        print("-" * 50)
-
-        for candidate in candidates:
-            ticker, cik, accession, eps_beat = candidate  # (ticker, cik, accession, eps)
-
-            row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} +{eps_beat:<10}"
-            print(row)
-
-        return
+        """
+        TODO: Retrieve from watchlist oldest first
+        
+        if not 3ducks
+            get 3ducks
+            On fail delete from eatchlist
+            On no LLM continue
+            
+        if not eps ...
+        if not media ...
+    
+        if eps and 3ducks and media
+            discover
+        """
 
 
 def run_edgar_standalone():
