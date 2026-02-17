@@ -368,6 +368,7 @@ def compute_filter2_pass(filing, verbose: bool = False) -> bool:
 # -----------------------------
 FILTER3_PE_MAX = 100  # Overvalued definitive: fail if trailing P/E > this
 FILTER3_MIN_CAP = 300e6  # Exclude nano/micro: fail if market_cap < 300M
+FILTER3_MAX_CAP = 200e9  # Exclused mega cap
 FILTER3_PRICE_MIN = 5.0
 FILTER3_PRICE_MAX = 1000.0
 
@@ -383,7 +384,7 @@ def compute_filter3_pass(filing, verbose: bool = False) -> bool:
     """
     FILTER3: valuation, cap, and price band.
     - P/E: fail if trailing P/E > FILTER3_PE_MAX (overvalued definitive).
-    - Cap: fail if market_cap < FILTER3_MIN_CAP (nano/micro).
+    - Cap: fail if market_cap < FILTER3_MIN_CAP (nano/micro) or > FILTER3_MAX_CAP (mega).
     - Price: fail if price < FILTER3_PRICE_MIN or > FILTER3_PRICE_MAX.
     Returns True if pass, False if fail. If no ticker or yfinance data missing, passes (no block).
     """
@@ -411,6 +412,10 @@ def compute_filter3_pass(filing, verbose: bool = False) -> bool:
     if cap is not None and isinstance(cap, (int, float)):
         if cap < FILTER3_MIN_CAP:
             vprint(verbose, f"FILTER3: fail market_cap {cap/1e6:.1f}M < {FILTER3_MIN_CAP/1e6:.0f}M (nano/micro)")
+            return False
+
+        if cap > FILTER3_MAX_CAP:
+            vprint(verbose, f"FILTER3: fail market_cap {cap / 1e6:.1f}M > {FILTER3_MAX_CAP / 1e6:.0f}M (mega)")
             return False
 
     # Price band: $5–$500
@@ -625,6 +630,45 @@ def compute_filter4_pass(filing, verbose: bool = False) -> bool:
 # ----------------
 # FILTER5: LM guidance sentiment (ported from edgar.py for backtest)
 # -----------------------------
+
+# Section headings / openers that start the disclaimer block (remove before parsing).
+# Regex catches "Forward-Looking Statements", "Forward Looking Statements", "Forward - Looking Statements", etc.
+_FORWARD_LOOKING_PATTERN = re.compile(
+    r"forward\s*[-]?\s*looking\s+statements",
+    re.IGNORECASE,
+)
+_FORWARD_LOOKING_STARTS = [
+    "Cautionary Statement",
+    "Safe Harbor",
+    "This press release contains forward-looking statements",
+    "This release contains forward-looking statements",
+]
+
+
+def _filter5_strip_forward_looking_section(text: str) -> str:
+    """
+    Remove the Forward-Looking Statements (disclaimer) section from EX-99.1 text
+    before parsing, so its negative wording does not affect FILTER5 LM.
+    Uses earliest match of regex + phrase list; removes from there to end of text.
+    Note: ex99_1_dump.txt is written from raw exhibit text, so it will still contain
+    this section; FILTER5 uses the stripped text in memory only.
+    """
+    if not text or not text.strip():
+        return text
+    text_lower = text.lower()
+    earliest = len(text)
+    m = _FORWARD_LOOKING_PATTERN.search(text)
+    if m:
+        earliest = min(earliest, m.start())
+    for phrase in _FORWARD_LOOKING_STARTS:
+        idx = text_lower.find(phrase.lower())
+        if idx != -1 and idx < earliest:
+            earliest = idx
+    if earliest == len(text):
+        return text
+    return text[:earliest].strip()
+
+
 GUIDANCE_KEYWORDS = [
     "guidance", "outlook", "financial outlook", "forecast", "projected", "projection",
     "expects", "expect", "we expect", "anticipate", "target", "targets", "goal", "goals",
@@ -636,13 +680,34 @@ BOILERPLATE_PHRASES = [
     "management believes that",
     "we do not provide a forward-looking reconciliation",
     "cannot be estimated at this time without unreasonable efforts",
+    "cannot, without unreasonable effort",
+    "not be meaningful to investors",
+    "range of values so broad",
+    "summarized in the table below",
 ]
 
 
 def _filter5_split_sentences(text: str) -> list:
     text = re.sub(r"\s+", " ", text)
-    parts = re.split(r"(?<=[\.\?\!])\s+", text)
+    # Split on sentence end (.?!) or closing quote followed by space (so quoted text isn't merged with table headers).
+    parts = re.split(r"(?<=[\.\?\!])\s+|(?<=\")\s+", text)
     return [p.strip() for p in parts if p.strip()]
+
+
+def _filter5_looks_like_table_fragment(sentence: str) -> bool:
+    """Exclude table rows / financial grids from LM scoring (e.g. 'Q1 2026 ... $168.0 - $174.0 ... Non-GAAP')."""
+    s = sentence.strip()
+    if not s:
+        return True
+    # Many digits + dollar amounts + financial labels → likely a table row
+    digit_count = len(re.findall(r"\d", s))
+    dollar_count = len(re.findall(r"\$\d", s))
+    lower = s.lower()
+    if digit_count >= 12 and ("$" in s or "million" in lower or "non-gaap" in lower):
+        return True
+    if dollar_count >= 2 and ("non-gaap" in lower or "revenue" in lower or "operating income" in lower):
+        return True
+    return False
 
 
 def _filter5_extract_guidance_sentences(text: str) -> list:
@@ -664,7 +729,10 @@ def _filter5_compute_lm_guidance(text: str):
     if ps is None or not (text or "").strip():
         return None
     guidance = _filter5_extract_guidance_sentences(text)
-    candidates = [s for s in guidance if not _filter5_is_boilerplate(s)]
+    candidates = [
+        s for s in guidance
+        if not _filter5_is_boilerplate(s) and not _filter5_looks_like_table_fragment(s)
+    ]
     if not candidates:
         return None
     try:
@@ -680,7 +748,8 @@ def _filter5_compute_lm_guidance(text: str):
         avg_polarity = sum(polarities) / len(polarities) if polarities else 0.0
         denom = total_pos + total_neg
         net_polarity = (total_pos - total_neg) / denom if denom > 0 else 0.0
-        passed = not (total_neg > total_pos)
+        # Pass when pos >= neg, or when LM signal is too weak to conclude negative (e.g. few tokens)
+        passed = not (total_neg > total_pos) or denom < 4
         return {
             "passed": passed,
             "n_sentences": len(candidates),
@@ -711,13 +780,18 @@ def compute_filter5_pass(filing, verbose: bool = False) -> bool:
         vprint(verbose, "FILTER5: (fail) no 99.x exhibit text")
         return False
 
+    text = _filter5_strip_forward_looking_section(text)
+
     guidance_sents = _filter5_extract_guidance_sentences(text)
     if not guidance_sents:
         vprint(verbose, "FILTER5: (fail) no guidance sentences")
         return False
 
-    non_boilerplate = [s for s in guidance_sents if not _filter5_is_boilerplate(s)]
-    vprint(verbose, f"FILTER5: guidance {len(guidance_sents)} total, {len(non_boilerplate)} after boilerplate")
+    non_boilerplate = [
+        s for s in guidance_sents
+        if not _filter5_is_boilerplate(s) and not _filter5_looks_like_table_fragment(s)
+    ]
+    vprint(verbose, f"FILTER5: guidance {len(guidance_sents)} total, {len(non_boilerplate)} after boilerplate + table filter")
 
     result = _filter5_compute_lm_guidance(text)
     if result is None:
@@ -725,15 +799,74 @@ def compute_filter5_pass(filing, verbose: bool = False) -> bool:
         return False
 
     vprint(verbose, f"FILTER5: ({'pass' if result['passed'] else 'fail'}) n_sentences={result['n_sentences']} total_pos={result['total_pos']} total_neg={result['total_neg']} net_polarity={result['net_polarity']:+.3f}")
+    if not result["passed"] and non_boilerplate:
+        vprint(verbose, "FILTER5 failing sentences:")
+        for i, s in enumerate(non_boilerplate, 1):
+            vprint(verbose, f"  [{i}] {s[:200]}{'...' if len(s) > 200 else ''}")
     return result["passed"]
 
 
 # ----------------
-# FILTER6: retrieve EPS beat (Alpha Vantage, quarter where reportedDate == filing date)
+# FILTER6: retrieve EPS beat (Alpha Vantage, latest quarter for filing date)
 # -----------------------------
+def _latest_quarter_end_for_date(d: date) -> date:
+    """Return quarter-end date for the quarter this filing date reports. Jan/Feb/Mar → prev Dec 31; Apr/Jun → Mar 31; etc."""
+    y, m = d.year, d.month
+    if m in (1, 2, 3):
+        return date(y - 1, 12, 31)
+    if m in (4, 5, 6):
+        return date(y, 3, 31)
+    if m in (7, 8, 9):
+        return date(y, 6, 30)
+    return date(y, 9, 30)
+
+
+def get_eps_for_report_quarter(ticker: str, report_date: date) -> Optional[Dict]:
+    """
+    Fetch Alpha Vantage EARNINGS; find the quarterly record for the latest quarter (by filing date).
+    If no record for that quarter, or record has no EPS surprise, print and return None. Else return record.
+    """
+    api_key = os.environ.get("ALPHAVANTAGE_API_KEY")
+    if not api_key:
+        return None
+    latest_quarter_end = _latest_quarter_end_for_date(report_date)
+    target = latest_quarter_end.isoformat()  # "YYYY-MM-DD"
+    url = "https://www.alphavantage.co/query"
+    params = {"function": "EARNINGS", "symbol": ticker.upper(), "apikey": api_key}
+    try:
+        time.sleep(0.25)
+        resp = requests.get(url, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        if "Error Message" in data or "Note" in data or "Information" in data:
+            return None
+        quarterly = data.get("quarterlyEarnings") or []
+        record = None
+        for r in quarterly:
+            fd = r.get("fiscalDateEnding") or ""
+            if fd[:10] == target if len(fd) >= 10 else fd == target:
+                record = r
+                break
+        if record is None:
+            print("quarterly record not available")
+            return None
+        sp = record.get("surprisePercentage")
+        if sp is None or sp == "" or str(sp).strip() == "None":
+            print("quarterly record available but no EPSSurprise")
+            return None
+        try:
+            float(sp)
+        except (TypeError, ValueError):
+            print("quarterly record available but no EPSSurprise")
+            return None
+        return record
+    except Exception:
+        return None
+
+
 def compute_filter6_value(filing, verbose: bool = False) -> Optional[Dict]:
     """
-    Fetch EPS for the filing's date (reportedDate match). Returns Alpha Vantage record or None.
+    Fetch EPS for the filing's latest quarter (by filing date). Returns Alpha Vantage record or None.
     In production (edgar advisor) no EPS could eliminate; in test script we let through.
     """
     ticker = getattr(filing, "ticker", None) or cik_to_ticker(str(getattr(filing, "cik", "")))
@@ -749,9 +882,10 @@ def compute_filter6_value(filing, verbose: bool = False) -> Optional[Dict]:
             return None
     else:
         report_date = getattr(fd, "date", lambda: fd)() if hasattr(fd, "date") else fd
-    record = get_eps_for_report_date(ticker, report_date)
+    record = get_eps_for_report_quarter(ticker, report_date)
     if verbose and record:
         vprint(verbose, f"FILTER6: {ticker} EPS surprise={record.get('surprisePercentage')}%")
+
     return record
 
 # -----------------------------
@@ -832,12 +966,39 @@ def get_8ks_for_date(target_date: date):
     return filings
 
 
+# Accession pattern: 0001104659-26-015732
+_ACCESSION_RE = re.compile(r"^\d{10}-\d{2}-\d{6}$")
+
+
+def get_8ks_from_file(filepath) -> list[tuple[str, str, str]]:
+    """
+    Read a file of pasted table lines (symbol, CIK, accession, ...) and return
+    list of (symbol, cik, accession). Skips lines that don't have an
+    accession-like third column.
+    """
+    path = Path(filepath) if not isinstance(filepath, Path) else filepath
+    if not path.exists():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("-") or line.startswith("="):
+            continue
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        symbol, cik, accession = parts[0], parts[1], parts[2]
+        if _ACCESSION_RE.match(accession):
+            rows.append((symbol, cik, accession))
+    return rows
+
+
 def get_eps_for_report_date(ticker: str, report_date: date) -> Optional[Dict]:
     """
     Fetch Alpha Vantage EARNINGS for ticker and return the quarter whose
-    reportedDate matches report_date (backtest date). Enables clean backtest:
-    EPS shown is the one that was reported on that date.
-    Returns None if no match or unavailable. (One-day-off reportedDate can be handled later.)
+    reportedDate matches report_date (backtest date). Tries exact date, then
+    report_date - 1 day (filing_date can be UTC vs AV reportedDate).
+    Returns None if no match or unavailable.
     """
     api_key = os.environ.get("ALPHAVANTAGE_API_KEY")
     if not api_key:
@@ -852,10 +1013,11 @@ def get_eps_for_report_date(ticker: str, report_date: date) -> Optional[Dict]:
         if "Error Message" in data or "Note" in data or "Information" in data:
             return None
         quarterly = data.get("quarterlyEarnings") or []
-        target = report_date.isoformat()
-        for record in quarterly:
-            if record.get("reportedDate") == target:
-                return record
+        for d in (report_date, report_date - timedelta(days=1)):
+            target = d.isoformat()
+            for record in quarterly:
+                if record.get("reportedDate") == target:
+                    return record
         return None
     except Exception:
         return None
@@ -877,31 +1039,41 @@ def track_candidates(start_date: date, candidates):
     print(f"Price Reaction Analysis (Filing Date: {start_date})")
     print(f"{'=' * 110}")
     
-    # Table header (EPS after Accession, before Filing $)
-    header = f"{'Symbol':<8} {'CIK':<8} {'Accession':<22} {'EPS':<10} {'Filing $':<10} {'1d %':<8} {'7d %':<8}"
+    # Table header (EPS % = surprise, EPS $ = reported actual)
+    header = f"{'Symbol':<8} {'CIK':<8} {'Accession':<22} {'EPS %':<10} {'EPS $':<8} {'EPS #':<8} {'Filing $':<10} {'1d %':<8} {'7d %':<8}"
     print(header)
     print("-" * 110)
-    
-    results = []
-    
+
     for candidate in candidates:
         ticker, cik, accession, eps_record = candidate  # (ticker, cik, accession, eps)
 
         if not ticker:
-            # Skip if no ticker
-            row = f"{'N/A':<8} {cik[:8]:<8} {accession[:22]:<22} {'N/A':<10} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
+            row = f"{'N/A':<8} {cik[:8]:<8} {accession[:22]:<22} {'N/A':<10} {'N/A':<8} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
             print(row)
             continue
 
-        # EPS from analyze_8k (no second fetch)
-        if eps_record and eps_record.get("surprisePercentage") not in (None, "", "None"):
-            try:
-                pct = float(eps_record["surprisePercentage"])
-                eps_str = f"{pct:+.1f}%"
-            except (TypeError, ValueError):
-                eps_str = "N/A"
-        else:
-            eps_str = "N/A"
+        # EPS % (surprise) and EPS¢ (beat in cents) from analyze_8k
+        eps_str = "N/A"
+        eps_dollar_str = "N/A"
+        eps_score_str = "N/A"
+
+        if eps_record:
+            if eps_record.get("surprisePercentage") not in (None, "", "None"):
+                try:
+                    pct = float(eps_record["surprisePercentage"])
+                    eps_str = f"{pct:+.1f}%"
+                except (TypeError, ValueError):
+                    pass
+            reported = eps_record.get("reportedEPS")
+            if reported not in (None, "", "None"):
+                try:
+                    r = float(reported)
+                    s = min(pct, 50) * (r ** 0.5)
+
+                    eps_dollar_str = f"${r:.2f}"
+                    eps_score_str = f"{int(s)}"
+                except (TypeError, ValueError):
+                    pass
         
         try:
             # Fetch historical prices
@@ -916,8 +1088,7 @@ def track_candidates(start_date: date, candidates):
             hist = stock.history(start=start_lookup, end=end_lookup)
             
             if hist.empty:
-                # No price data available
-                row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {eps_str:<10} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
+                row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {eps_str:<10} {eps_dollar_str:<8} {eps_score_str:<8} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
                 print(row)
                 continue
             
@@ -953,13 +1124,11 @@ def track_candidates(start_date: date, candidates):
             else:
                 change_7d_str = "N/A"
             
-            # Print row (EPS after Accession, before Filing $)
-            row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {eps_str:<10} {filing_price_str:<10} {change_1d_str:<8} {change_7d_str:<8}"
+            row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {eps_str:<10} {eps_dollar_str:<8} {eps_score_str:<8} {filing_price_str:<10} {change_1d_str:<8} {change_7d_str:<8}"
             print(row)
-            
-        except Exception as e:
-            # Error fetching price data
-            row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {eps_str:<10} {'Error':<10} {'N/A':<8} {'N/A':<8}"
+
+        except Exception:
+            row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {eps_str:<10} {eps_dollar_str:<8} {eps_score_str:<8} {'Error':<10} {'N/A':<8} {'N/A':<8}"
             print(row)
     
     print(f"{'=' * 110}\n")
@@ -1008,6 +1177,8 @@ def run_for_date(date_str: str):
     if not filings:
         print("No 8-K filings found for that date.")
         return
+
+    print(filings)
 
     print(f"Found {len(filings)} 8-K filings. Running FILTER1 + basic inspection...")
     for filing in filings:
@@ -1068,6 +1239,32 @@ def run_for_accession(accession_number: str):
         print(f"❌ Error inspecting filing {accession_number}: {e}")
 
 
+def run_for_file(filepath: str):
+    """CLI handler for --file: read pasted table lines (symbol, CIK, accession), fetch each filing, run inspect + track."""
+    rows = get_8ks_from_file(filepath)
+    if not rows:
+        print(f"No accessions found in {filepath}")
+        return
+    print(f"Found {len(rows)} accessions in file. Fetching filings and running inspection...")
+    candidates: list[tuple[str, str, str, Optional[Dict]]] = []
+    for symbol, cik, accession in rows:
+        try:
+            filing = find(accession)
+            if not filing:
+                print(f"  ⚠️  Could not find filing: {accession}")
+                continue
+            candidate = analyze_8k(filing)
+            if candidate is not None:
+                candidates.append(candidate)
+        except Exception as e:
+            print(f"  ⚠️  Error inspecting {accession}: {e}")
+    if candidates:
+        print(f"Passed {len(candidates)} candidates...")
+        track_candidates(date.today(), candidates)
+    else:
+        print("No candidates passed.")
+
+
 def run_latest():
     """
     CLI handler for no-arg run:
@@ -1121,11 +1318,18 @@ if __name__ == "__main__":
         type=str,
         help="Inspect a specific filing by accession number (e.g., 0001660280-25-000128)",
     )
+    parser.add_argument(
+        "--file",
+        type=str,
+        help="Path to file of pasted table lines (symbol, CIK, accession) to process",
+    )
 
     args = parser.parse_args()
 
     if args.analyse:
         run_for_accession(args.analyse)
+    elif args.file:
+        run_for_file(args.file)
     elif args.date:
         run_for_date(args.date)
     else:

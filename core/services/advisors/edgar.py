@@ -110,6 +110,60 @@ GREEN_FLAGS = {
     "strongest quater": +2,
 }
 
+# 3-ducks LLM (Filter 7): prompt for EX-99.1 grading
+THREE_DUCKS_PROMPT = """You are an equity analyst.
+Given an earnings press release (EX-99.1 from an 8-K), evaluate and grade the following three metrics independently.
+Use only the information in the document.
+Ignore stock price movement.
+Ignore analyst consensus unless explicitly mentioned in the text.
+Do not speculate beyond the text.
+
+TASK
+Grade the following three metrics:
+
+1) Past Performance
+Evaluate historical results versus prior periods.
+Consider revenue, profitability, margins, cash flow, EPS trends, and balance sheet quality.
+
+2) Future Performance
+Evaluate forward-looking guidance and management commentary.
+Consider growth outlook, margins, demand environment, confidence vs caution, and risks mentioned.
+
+3) Expectation Gap
+Evaluate whether the reported results and commentary are better or worse than what a reasonable market participant would have expected before the release (i.e. typical pre-announcement expectations). Use the tone and content of the release to infer whether the company is signaling a positive surprise, in line, or a negative surprise relative to those prior expectations.
+
+Scoring:
+-2 = strong negative | -1 = negative | 0 = neutral | +1 = positive | +2 = strong positive
+Use +2 or -2 only when evidence is strong and unambiguous.
+Default to 0 when signals are mixed.
+
+OUTPUT FORMAT (STRICT):
+Respond with only a single valid JSON object, no other text. Use this structure:
+
+{
+  "past_performance": <integer>,
+  "future_performance": <integer>,
+  "expectation_gap": <integer>,
+  "justifications": {
+    "past_performance": "<1-2 sentences>",
+    "future_performance": "<1-2 sentences>",
+    "expectation_gap": "<1-2 sentences>"
+  }
+}
+
+Replace <integer> with -2, -1, 0, +1, or +2. Replace the placeholder strings with brief justifications (1–2 sentences per metric).
+
+----------------------------------------
+BEGIN EX-99.1
+----------------------------------------
+
+<<<EX99_1_TEXT>>>
+
+----------------------------------------
+END EX-99.1
+----------------------------------------
+"""
+
 
 FILTER3_PE_MAX = 100
 FILTER3_MIN_CAP = 300e6
@@ -303,6 +357,19 @@ def get_eps_for_report_quarter(ticker: str, report_date: date) -> Optional[Dict]
         return None
 
 
+def _get_ex99_text(filing) -> str:
+    """Return concatenated EX-99.x exhibit text from filing, or empty string."""
+    parts = []
+    if hasattr(filing, "exhibits") and filing.exhibits:
+        for ex in filing.exhibits:
+            if "99." in str(ex).lower():
+                try:
+                    parts.append(ex.text())
+                except Exception:
+                    continue
+    return " ".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # ED-8 advisor class and command entry
 # ---------------------------------------------------------------------------
@@ -485,7 +552,7 @@ class Edgar(AdvisorBase):
         vprint(verbose, f"FILTER5: ({'pass' if result['passed'] else 'fail'}) n_sentences={result['n_sentences']} net_polarity={result['net_polarity']:+.3f}")
         return result["passed"]
 
-    def compute_filter6_value(self, filing, verbose: bool = False):
+    def compute_filter6_pass(self, filing, verbose: bool = False):
         ticker = getattr(filing, "ticker", None) or cik_to_ticker(str(getattr(filing, "cik", "")))
         if not ticker:
             return None
@@ -507,24 +574,52 @@ class Edgar(AdvisorBase):
         try:
             surprise_val = float(surprise_str)
             reported_val = float(reported_str)
+
+            if reported_val == 0:
+                return None
+
             eps_score = min(surprise_val, 50) * (reported_val ** 0.5)
         except (TypeError, ValueError):
-            return -1
+            return None
         if verbose:
             vprint(verbose, f"FILTER6: {ticker} EPS surprise {surprise_str}% reported {reported_str} score {eps_score}")
-        return eps_score
+        return eps_score >= 10
 
-    def compute_filter6_pass(self, filing, verbose: bool = False):
-        score = self.compute_filter6_value(filing, verbose)
-        if score is None:
-            return None
-        if score < 0:
-            return False
-        return True
 
     def compute_filter7_pass(self, filing, verbose: bool = False):
-        vprint(verbose, "FILTER7: (stub) 3-ducks not implemented → None")
-        return None
+        """
+        FILTER7: 3-ducks LLM (past/future/expectation). Uses AdvisorBase.ask_gemini.
+        Strict pass: past_performance >= 0, future_performance >= 1, expectation_gap >= 1.
+        Returns True (pass), False (fail), or None (no text / LLM error / inconclusive).
+        """
+        text = _get_ex99_text(filing)
+        if not text.strip():
+            vprint(verbose, "FILTER7: no EX-99.x text → None")
+            return None
+        prompt = THREE_DUCKS_PROMPT.replace("<<<EX99_1_TEXT>>>", text.strip())
+        model, results = self.ask_gemini(prompt, timeout=120.0)
+        if not results:
+            vprint(verbose, "FILTER7: ask_gemini returned no results → None")
+            return None
+        try:
+            past = results.get("past_performance")
+            future = results.get("future_performance")
+            gap = results.get("expectation_gap")
+            past = int(past) if past is not None else None
+            future = int(future) if future is not None else None
+            gap = int(gap) if gap is not None else None
+        except (TypeError, ValueError):
+            vprint(verbose, "FILTER7: could not parse scores → None")
+            return None
+        if past is None or future is None or gap is None:
+            vprint(verbose, "FILTER7: missing score(s) → None")
+            return None
+        if verbose:
+            vprint(verbose, f"FILTER7: past={past} future={future} expectation_gap={gap}")
+        # Strict: past >= 0, future >= 1, expectation_gap >= 1
+        if past < 0 or future < 1 or gap < 1:
+            return False
+        return True
 
     def compute_filter8_pass(self, filing, verbose: bool = False):
         vprint(verbose, "FILTER8: (stub) media not implemented → None")
@@ -549,6 +644,9 @@ class Edgar(AdvisorBase):
         accession = getattr(filing, "accession_no", None) or getattr(filing, "accession_number", None)
         cik = str(getattr(filing, "cik", None))
         ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
+
+        logger.info(f"Inpecting: ticker={ticker or 'N/A'}, CIK={cik}, accession={accession}")
+
         if not ticker:
             return False
         if not self.compute_filter1_pass(filing, verbose):
@@ -592,6 +690,18 @@ class Edgar(AdvisorBase):
         for filing in filings_8k:
             try:
                 if self.analyze_8k_basic(filing, True):
+                    cik = str(getattr(filing, "cik", ""))
+                    ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
+                    accession = getattr(filing, "accession_no", None) or getattr(filing, "accession_number", None)
+                    company = getattr(filing, "company", None) or ""
+                    print(f"\n--- Candidate: {ticker or 'N/A'} | CIK={cik} | accession={accession or 'N/A'} ---")
+                    if company:
+                        print(f"    Company: {company}")
+                    print(f"    SEC: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=8-K")
+                    meta = {"filter7": None, "filter6": None, "filter8": None}
+                    result, state = self.analyze_8k_advanced(filing, meta, verbose=True)
+                    print(f"    Advanced: result={result} state={state}")
+                    # TODO: if result is True → buy; if False → dismiss; if None → add to watchlist with state
                     pass
 
             except Exception as e:

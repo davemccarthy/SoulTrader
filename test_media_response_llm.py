@@ -6,9 +6,10 @@ Uses the google-genai package and the google_search tool (required for search gr
 Usage:
     python test_media_response_llm.py --ticker RRR
     python test_media_response_llm.py --ticker EXEL
+    python test_media_response_llm.py --ticker APP --date 2026-02-11
 
-Uses yesterday's date as the filing date for the search window. Later we can pass
-company name, filing date, accession, etc.
+By default uses yesterday through today as the search window. With --date YYYY-MM-DD
+uses that date through the next day.
 """
 
 import json
@@ -31,11 +32,16 @@ MODELS = [
     "gemini-2.5-flash-lite",
 ]
 
-# Search window: yesterday (filing date) through today (catch same-day and next-day reaction)
-def _search_start_date():
+# Search window: by default yesterday through today; with --date D use D through D+1
+def _search_start_date(anchor: date | None = None):
+    if anchor is not None:
+        return anchor
     return date.today() - timedelta(days=1)
 
-def _search_end_date():
+
+def _search_end_date(anchor: date | None = None):
+    if anchor is not None:
+        return anchor + timedelta(days=1)
     return date.today()
 
 PROMPT_TEMPLATE = """Search the web for business and financial news from {start_date} through {end_date} about {ticker}'s earnings announcement, quarterly results, or 8-K filing.
@@ -120,15 +126,15 @@ def ask_gemini_with_search(prompt: str, timeout: float = 120.0):
     return None, None
 
 
-def run(ticker: str):
-    """Build prompt for ticker and yesterday's window, call Gemini with search, print result."""
+def run(ticker: str, anchor_date: date | None = None):
+    """Build prompt for ticker and search window; if anchor_date given use that day through next, else yesterday through today."""
     ticker = (ticker or "").strip().upper()
     if not ticker:
         print("Please provide --ticker (e.g. RRR, EXEL).")
         return
 
-    start_date = _search_start_date()
-    end_date = _search_end_date()
+    start_date = _search_start_date(anchor_date)
+    end_date = _search_end_date(anchor_date)
     prompt = PROMPT_TEMPLATE.format(
         ticker=ticker,
         start_date=start_date.isoformat(),
@@ -153,5 +159,18 @@ if __name__ == "__main__":
         description="Fetch business media response to a ticker's earnings/filing via Gemini (web search)"
     )
     parser.add_argument("--ticker", "-t", required=True, help="Stock ticker (e.g. RRR, EXEL)")
+    parser.add_argument(
+        "--date", "-d",
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Optional filing date for search window (default: yesterday through today)",
+    )
     args = parser.parse_args()
-    run(args.ticker)
+    anchor = None
+    if args.date:
+        try:
+            anchor = date.fromisoformat(args.date)
+        except ValueError:
+            print(f"Invalid --date '{args.date}'; use YYYY-MM-DD.")
+            raise SystemExit(1)
+    run(args.ticker, anchor)
