@@ -1,24 +1,36 @@
 
 import logging
+import os
 import time
 import json
 import re
 import numpy as np
 import yfinance as yf
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import pandas as pd
 from datetime import datetime, timedelta
 from django.db.models import F, ExpressionWrapper, DateTimeField, Func
 from django.db.models.functions import Cast
 from core.models import Stock, Discovery, Recommendation, Advisor
-from google.api_core import exceptions
 from django.conf import settings
 from decimal import Decimal
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-genai.configure(api_key=getattr(settings, 'GEMINI_KEY', None))
+
+def _get_gemini_keys() -> List[Optional[str]]:
+    """Build list of Gemini API keys from settings (GEMINI_KEY, GEMINI_KEY_2, ...) and env."""
+    keys: List[Optional[str]] = []
+    primary = getattr(settings, "GEMINI_KEY", None) or os.environ.get("GEMINI_KEY")
+    if primary:
+        keys.append(primary)
+    for i in range(2, 10):
+        k = getattr(settings, f"GEMINI_KEY_{i}", None) or os.environ.get(f"GEMINI_KEY_{i}")
+        if k:
+            keys.append(k)
+    return keys
 
 """
  Note: Gemini models
@@ -41,6 +53,7 @@ class AdvisorBase:
     def __init__(self, advisor):
         self.advisor = advisor
         self.gemini_model = 0
+        self._gemini_key_index = 0
 
     def market_open(self):
         """
@@ -410,7 +423,7 @@ class AdvisorBase:
 
         return watched
 
-    def watch(self, symbol, explanation, days=14):
+    def watch(self, symbol, explanation, days=14, meta=None):
         """
         Add a stock to the watchlist for this advisor.
 
@@ -418,6 +431,7 @@ class AdvisorBase:
             symbol: Stock symbol (str) - will auto-create Stock if it doesn't exist
             explanation: Explanation for why this stock is being watched
             days: Number of days until expiration (defaults to 14)
+            meta: Optional dict (e.g. filter state, accession) stored on Watchlist.meta
 
         Returns:
             Watchlist object or None if creation fails
@@ -441,7 +455,8 @@ class AdvisorBase:
             stock=stock,  # Model uses Stock object
             price=stock.price,  # Current price at time of adding to watchlist
             explanation=explanation[:500],  # Truncate to max length
-            days=days
+            days=days,
+            meta=meta if meta is not None else {},
         )
 
         logger.info(f"{self.advisor.name} added {stock.symbol} to watchlist at ${stock.price:.2f}: {explanation[:100]}")
@@ -836,71 +851,71 @@ Thank you
         }
 
 
-    def ask_gemini(self, prompt, timeout=120.0):
+    def ask_gemini(self, prompt, timeout=120.0, use_search=False):
         """
-        Call Gemini API with retry logic.
+        Call Gemini API (google.genai) with retry over models and round-robin API keys.
         Returns tuple (model, results) or (None, None) on failure.
-        
-        Note: Gemini models
+        use_search: if True, enable Google Search grounding (e.g. for media reaction).
         https://ai.google.dev/gemini-api/docs/rate-limits
         """
-        # Call on 3rd party gemini AI - exhaust all models if unavailable
+        keys = _get_gemini_keys()
+        if not keys:
+            logger.warning("No GEMINI_KEY (or GEMINI_KEY_2, ...) configured for ask_gemini")
+            return None, None
+
         for attempt in range(len(models)):
             try:
-                retry_exceptions = (
-                    exceptions.ServiceUnavailable,  # 503
-                    exceptions.ResourceExhausted,   # 429
-                    exceptions.DeadlineExceeded,    # 504
-                    exceptions.InternalServerError, # 500
-                )
-
+                key = keys[self._gemini_key_index % len(keys)]
+                self._gemini_key_index += 1
                 model = models[self.gemini_model]
                 logger.info(f"{self.advisor.name} using {model}")
 
-                # In the Gods hand's now
-                response = genai.GenerativeModel(model).generate_content(
-                    prompt, 
-                    request_options={"timeout": timeout}
+                client = genai.Client(
+                    api_key=key,
+                    http_options=types.HttpOptions(timeout=int(timeout * 1000)),
+                )
+                config = None
+                if use_search:
+                    config = types.GenerateContentConfig(
+                        tools=[types.Tool(google_search=types.GoogleSearch())]
+                    )
+                response = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=config,
                 )
 
-                # Extract text from nested structure
-                if not response.candidates or len(response.candidates) == 0:
-                    logger.warning(f"No candidates in Gemini response for {self.advisor.name}")
-                    return None, None
-
-                candidate = response.candidates[0]
-                if not candidate.content or not candidate.content.parts:
-                    logger.warning(f"No content/parts in Gemini response for {self.advisor.name}")
-                    return None, None
-
-                response_text = candidate.content.parts[0].text
-
+                response_text = getattr(response, "text", None) if response else None
                 if not response_text:
-                    logger.warning(f"Empty text in Gemini response for {self.advisor.name}")
+                    logger.warning(f"No text in Gemini response for {self.advisor.name}")
                     return None, None
 
-                # Verify feedback
                 results = self._extract_json(response_text)
-
                 if not results:
                     logger.warning(f"Cannot parse response for {self.advisor.name}")
                     return None, None
 
-                # Give Gemini a rest
                 time.sleep(1)
                 return model, results
 
-            except retry_exceptions as e:
-                logger.warning(f"Attempt {attempt + 1}: Service {model} unavailable. Retrying...")
-                # Try another model
+            except Exception as e:
+                err_str = str(e)
+                if "429" in err_str and "RESOURCE_EXHAUSTED" in err_str:
+                    short_error = "429 RESOURCE_EXHAUSTED"
+                elif "403" in err_str and "PERMISSION_DENIED" in err_str:
+                    short_error = "403 PERMISSION_DENIED"
+                elif "429" in err_str:
+                    short_error = "429 (quota exceeded)"
+                elif "403" in err_str:
+                    short_error = "403 (permission denied)"
+                else:
+                    short_error = err_str[:80] + ("..." if len(err_str) > 80 else "")
+                logger.warning(
+                    f"Attempt {attempt + 1}: {model} {short_error} for {self.advisor.name}. Trying next model."
+                )
                 self.gemini_model += 1
                 self.gemini_model %= len(models)
 
-            except Exception as e:
-                logger.error(f"Unexpected error in ask_gemini for {self.advisor.name}: {e}")
-                return None, None
-        
-        # All retries exhausted
         logger.error(f"All Gemini models exhausted for {self.advisor.name}")
         return None, None
 
@@ -1018,6 +1033,8 @@ Thank you
 
         for entry in pending_entries:
             self.discovered(sa, entry.stock.symbol, entry.explanation, sell_instructions, 1.0)
+
+            entry.status = "Executed"
             entry.save()
 
             logger.info(f"{self.advisor.name} processed pending watchlist entry: {entry.stock.symbol}")

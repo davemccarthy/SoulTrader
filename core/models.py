@@ -600,6 +600,7 @@ class Watchlist(models.Model):
     STATUS_CHOICES = [
         ('Pending', 'Pending'),
         ('Executed', 'Executed'),
+        ('Excluded', 'Excluded'),
     ]
 
     created = models.DateTimeField(auto_now_add=True)
@@ -607,15 +608,9 @@ class Watchlist(models.Model):
     stock = models.ForeignKey(Stock, on_delete=models.DO_NOTHING)
     price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)  # NEW
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='Pending')
+    meta = models.JSONField(default=dict, null=True, blank=True)
     explanation = models.CharField(max_length=500)
     days = models.IntegerField()
-
-    def save(self, *args, **kwargs):
-        # If this is an existing record (has pk) and status is 'Pending', set to 'Executed'
-        # This ensures that when a watchlist entry is updated/saved, it's marked as executed
-        if self.pk is not None and self.status == 'Pending':
-            self.status = 'Executed'
-        super().save(*args, **kwargs)
 
 
 # Stock health check

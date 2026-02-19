@@ -7,12 +7,13 @@ Production: discover() will fetch 8-Ks, run filters (1–6, sector, reception),
 and call self.discovered(...) for passing stocks.
 """
 
+import html
 import logging
 import os
 import re
 import time
 from collections import Counter
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from datetime import date, timedelta
 
 import requests
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 # 8-K helpers and constants (used by analyze_8k)
 # ---------------------------------------------------------------------------
 _CIK_TO_TICKER_CACHE: Dict[str, Optional[str]] = {}
+_CIK_TO_NAME_CACHE: Dict[str, Optional[str]] = {}
 
 # -----------------------------
 # 1️⃣ Set SEC identity (mandatory!)
@@ -50,9 +52,32 @@ def cik_to_ticker(cik: str) -> Optional[str]:
         company = Company(cik)
         ticker = company.get_ticker()
         _CIK_TO_TICKER_CACHE[cik] = ticker
+        name = getattr(company, "name", None) or getattr(company, "title", None)
+        if name and isinstance(name, str):
+            _CIK_TO_NAME_CACHE[cik] = name.strip() or None
+        else:
+            _CIK_TO_NAME_CACHE[cik] = None
         return ticker
     except Exception:
         _CIK_TO_TICKER_CACHE[cik] = None
+        _CIK_TO_NAME_CACHE[cik] = None
+        return None
+
+
+def cik_to_company_name(cik: str) -> Optional[str]:
+    """Company name for display/search. Uses cache; populates from Company(cik) if needed."""
+    cik = str(cik).zfill(10)
+    if cik in _CIK_TO_NAME_CACHE:
+        return _CIK_TO_NAME_CACHE[cik]
+    try:
+        company = Company(cik)
+        name = getattr(company, "name", None) or getattr(company, "title", None)
+        if name and isinstance(name, str):
+            name = name.strip() or None
+        _CIK_TO_NAME_CACHE[cik] = name
+        return name
+    except Exception:
+        _CIK_TO_NAME_CACHE[cik] = None
         return None
 
 
@@ -164,6 +189,23 @@ END EX-99.1
 ----------------------------------------
 """
 
+# Filter 8 (media reaction): third-party reaction only; company name + date required.
+MEDIA_RESPONSE_PROMPT_TEMPLATE = """Search the web for business and financial news from {start_date} through {end_date} about {company_name} ({ticker})—earnings announcement, quarterly results, or 8-K filing.
+
+What was the media response (headlines, articles, analyst or press commentary)?
+- Consider sources like Reuters, Bloomberg, CNBC, MarketWatch, Yahoo Finance, Seeking Alpha, and similar.
+- Report only third-party reaction; do not give your own opinion.
+
+Respond with STRICT JSON only. No other text before or after. Use this structure:
+
+{{
+  "reaction": "positive" | "negative" | "neutral" | "no_coverage",
+  "headlines_or_snippets": ["<quote or headline 1>", "<quote or headline 2>", ...],
+  "reason": "<1-2 sentences summarizing media tone and key points>"
+}}
+
+If you find no relevant coverage in that window, set reaction to "no_coverage" and reason accordingly."""
+
 
 FILTER3_PE_MAX = 100
 FILTER3_MIN_CAP = 300e6
@@ -234,6 +276,40 @@ except ImportError:
     ps = None
 
 # FILTER5: LM guidance sentiment (same as test_8k_inspector.py)
+# Section headings / openers that start the disclaimer block (remove before parsing).
+_FORWARD_LOOKING_PATTERN = re.compile(
+    r"forward\s*[-]?\s*looking\s+statements",
+    re.IGNORECASE,
+)
+_FORWARD_LOOKING_STARTS = [
+    "Cautionary Statement",
+    "Safe Harbor",
+    "This press release contains forward-looking statements",
+    "This release contains forward-looking statements",
+]
+
+
+def _filter5_strip_forward_looking_section(text: str) -> str:
+    """
+    Remove the Forward-Looking Statements (disclaimer) section from EX-99.1 text
+    before parsing, so its negative wording does not affect FILTER5 LM.
+    """
+    if not text or not text.strip():
+        return text
+    text_lower = text.lower()
+    earliest = len(text)
+    m = _FORWARD_LOOKING_PATTERN.search(text)
+    if m:
+        earliest = min(earliest, m.start())
+    for phrase in _FORWARD_LOOKING_STARTS:
+        idx = text_lower.find(phrase.lower())
+        if idx != -1 and idx < earliest:
+            earliest = idx
+    if earliest == len(text):
+        return text
+    return text[:earliest].strip()
+
+
 GUIDANCE_KEYWORDS = [
     "guidance", "outlook", "financial outlook", "forecast", "projected", "projection",
     "expects", "expect", "we expect", "anticipate", "target", "targets", "goal", "goals",
@@ -245,13 +321,32 @@ BOILERPLATE_PHRASES = [
     "management believes that",
     "we do not provide a forward-looking reconciliation",
     "cannot be estimated at this time without unreasonable efforts",
+    "cannot, without unreasonable effort",
+    "not be meaningful to investors",
+    "range of values so broad",
+    "summarized in the table below",
 ]
 
 
 def _filter5_split_sentences(text: str) -> list:
     text = re.sub(r"\s+", " ", text)
-    parts = re.split(r"(?<=[\.\?\!])\s+", text)
+    parts = re.split(r"(?<=[\.\?\!])\s+|(?<=\")\s+", text)
     return [p.strip() for p in parts if p.strip()]
+
+
+def _filter5_looks_like_table_fragment(sentence: str) -> bool:
+    """Exclude table rows / financial grids from LM scoring."""
+    s = sentence.strip()
+    if not s:
+        return True
+    digit_count = len(re.findall(r"\d", s))
+    dollar_count = len(re.findall(r"\$\d", s))
+    lower = s.lower()
+    if digit_count >= 12 and ("$" in s or "million" in lower or "non-gaap" in lower):
+        return True
+    if dollar_count >= 2 and ("non-gaap" in lower or "revenue" in lower or "operating income" in lower):
+        return True
+    return False
 
 
 def _filter5_extract_guidance_sentences(text: str) -> list:
@@ -273,7 +368,10 @@ def _filter5_compute_lm_guidance(text: str):
     if ps is None or not (text or "").strip():
         return None
     guidance = _filter5_extract_guidance_sentences(text)
-    candidates = [s for s in guidance if not _filter5_is_boilerplate(s)]
+    candidates = [
+        s for s in guidance
+        if not _filter5_is_boilerplate(s) and not _filter5_looks_like_table_fragment(s)
+    ]
     if not candidates:
         return None
     try:
@@ -341,20 +439,116 @@ def get_eps_for_report_quarter(ticker: str, report_date: date) -> Optional[Dict]
                 record = r
                 break
         if record is None:
-            print("quarterly record not available")
-            return None
-        sp = record.get("surprisePercentage")
-        if sp is None or sp == "" or str(sp).strip() == "None":
-            print("quarterly record available but no EPSSurprise")
-            return None
-        try:
-            float(sp)
-        except (TypeError, ValueError):
-            print("quarterly record available but no EPSSurprise")
             return None
         return record
     except Exception:
         return None
+
+
+# -------- 8-K actual EPS (for Filter 6 fallback when AV reportedEPS missing) --------
+
+def _extract_eps_from_xbrl(filing) -> Optional[float]:
+    """Try diluted EPS from 8-K XBRL if available."""
+    try:
+        xbrl = filing.xbrl()
+    except Exception:
+        return None
+    if not xbrl:
+        return None
+    concepts = ("EarningsPerShareDiluted", "EarningsPerShare", "EarningsPerShareBasic")
+    for concept in concepts:
+        try:
+            facts = xbrl.query().by_concept(concept, exact=False).execute()
+            if not facts:
+                continue
+            duration_facts = [f for f in facts if f.get("period_type") == "duration"]
+            if not duration_facts:
+                duration_facts = facts
+            sorted_facts = sorted(
+                duration_facts,
+                key=lambda f: f.get("period_end", "") or "",
+                reverse=True,
+            )
+            val = sorted_facts[0].get("numeric_value") or sorted_facts[0].get("value")
+            if val is not None:
+                return float(val)
+        except Exception:
+            continue
+    return None
+
+
+_EPS_PATTERNS = [
+    r"(?:diluted|basic)\s+EPS\s+(?:of\s+|were\s+)?\$?\s*([\d,]+\.?\d{2,})",
+    r"(?:GAAP\s+)?EPS\s+(?:of\s+|were\s+)?\$?\s*([\d,]+\.?\d{2,})",
+    r"earnings\s+per\s+(?:common\s+)?share\s+(?:\(?EPS\)?)?\s+(?:of\s+|were\s+)?\$?\s*([\d,]+\.?\d{2,})",
+    r"\$([\d,]+\.?\d{2,})\s+per\s+(?:diluted|basic)?\s*(?:share|diluted share)",
+    r"(?:Diluted|diluted)\s+.*?(?:per\s+share|operations).*?\$\s*([\d,]+\.?\d{2,})",
+    r"Continuing\s+operations\s+\$\s*([\d,]+\.?\d{2,})",
+]
+_NONGAAP_PATTERNS = [
+    r"(?:non[-\s]?GAAP|adjusted)\s+EPS\s+(?:of\s+)?\$?\s*([\d,]+\.?\d{2,})",
+]
+
+
+def _normalize_exhibit_text(raw: str) -> str:
+    """Strip HTML and normalize whitespace for EPS regex matching."""
+    if not raw:
+        return ""
+    s = raw
+    try:
+        s = html.unescape(s)
+    except Exception:
+        pass
+    s = re.sub(r"<script[^>]*>.*?</script>", " ", s, flags=re.DOTALL | re.IGNORECASE)
+    s = re.sub(r"<style[^>]*>.*?</style>", " ", s, flags=re.DOTALL | re.IGNORECASE)
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _extract_eps_from_text(text: str) -> Optional[float]:
+    """Extract one EPS value from exhibit 99 text; prefer diluted/GAAP, then non-GAAP."""
+    text = _normalize_exhibit_text(text)
+    if not text:
+        return None
+    for pattern in _EPS_PATTERNS:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            try:
+                val = float(m.group(1).replace(",", ""))
+                if abs(val) < 1e6 and val != 0:
+                    return val
+            except ValueError:
+                pass
+    for pattern in _NONGAAP_PATTERNS:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            try:
+                val = float(m.group(1).replace(",", ""))
+                if abs(val) < 1e6 and val != 0:
+                    return val
+            except ValueError:
+                pass
+    return None
+
+
+def get_actual_eps_from_8k(filing, verbose: bool = False) -> Tuple[Optional[float], str]:
+    """
+    Get reported EPS from 8-K: try XBRL first, then exhibit 99 text.
+    Returns (eps_value, source) where source is "xbrl" or "text" or "none".
+    """
+    eps = _extract_eps_from_xbrl(filing)
+    if eps is not None:
+        if verbose:
+            vprint(verbose, f"  [8-K XBRL] EPS ${eps:.2f}")
+        return eps, "xbrl"
+    text = _get_ex99_text(filing)
+    eps = _extract_eps_from_text(text)
+    if eps is not None:
+        if verbose:
+            vprint(verbose, f"  [8-K text] EPS ${eps:.2f}")
+        return eps, "text"
+    return None, "none"
 
 
 def _get_ex99_text(filing) -> str:
@@ -540,16 +734,21 @@ class Edgar(AdvisorBase):
         if not text:
             vprint(verbose, "FILTER5: (fail) no 99.x exhibit text")
             return False
+        text = _filter5_strip_forward_looking_section(text)
         guidance_sents = _filter5_extract_guidance_sentences(text)
         if not guidance_sents:
             vprint(verbose, "FILTER5: (fail) no guidance sentences")
             return False
-        vprint(verbose, f"FILTER5: guidance {len(guidance_sents)} total, {len([s for s in guidance_sents if not _filter5_is_boilerplate(s)])} after boilerplate")
+        non_boilerplate = [
+            s for s in guidance_sents
+            if not _filter5_is_boilerplate(s) and not _filter5_looks_like_table_fragment(s)
+        ]
+        vprint(verbose, f"FILTER5: guidance {len(guidance_sents)} total, {len(non_boilerplate)} after boilerplate + table filter")
         result = _filter5_compute_lm_guidance(text)
         if result is None:
             vprint(verbose, "FILTER5: (pass) no guidance after boilerplate or pysentiment2 unavailable")
             return False
-        vprint(verbose, f"FILTER5: ({'pass' if result['passed'] else 'fail'}) n_sentences={result['n_sentences']} net_polarity={result['net_polarity']:+.3f}")
+        vprint(verbose, f"FILTER5: ({'pass' if result['passed'] else 'fail'}) n_sentences={result['n_sentences']} total_pos={result['total_pos']} total_neg={result['total_neg']} net_polarity={result['net_polarity']:+.3f}")
         return result["passed"]
 
     def compute_filter6_pass(self, filing, verbose: bool = False):
@@ -568,22 +767,35 @@ class Edgar(AdvisorBase):
             report_date = getattr(fd, "date", lambda: fd)() if hasattr(fd, "date") else fd
         record = get_eps_for_report_quarter(ticker, report_date)
         if not record:
+            logger.warning(f"No EPS record ticker={ticker or 'N/A'}")
             return None
         surprise_str = record.get("surprisePercentage")
         reported_str = record.get("reportedEPS")
         try:
             surprise_val = float(surprise_str)
             reported_val = float(reported_str)
-
-            if reported_val == 0:
-                return None
-
-            eps_score = min(surprise_val, 50) * (reported_val ** 0.5)
+            if reported_val != 0:
+                eps_score = min(surprise_val, 50) * (reported_val ** 0.5)
+                if verbose:
+                    vprint(verbose, f"FILTER6: {ticker} EPS surprise {surprise_str}% reported {reported_str} score {eps_score}")
+                return eps_score >= 10
         except (TypeError, ValueError):
-            return None
-        if verbose:
-            vprint(verbose, f"FILTER6: {ticker} EPS surprise {surprise_str}% reported {reported_str} score {eps_score}")
-        return eps_score >= 10
+            pass
+        # Fallback: AV reported missing/0 → use 8-K actual + AV estimate (test_eps_8k_plus_av)
+        actual_eps, source = get_actual_eps_from_8k(filing, verbose=verbose)
+        estimated_eps = record.get("estimatedEPS")
+        try:
+            estimated_eps = float(estimated_eps) if estimated_eps not in (None, "", "None") else None
+        except (TypeError, ValueError):
+            estimated_eps = None
+        if actual_eps is not None and estimated_eps is not None and estimated_eps != 0:
+            surprise_pct = ((actual_eps - estimated_eps) / abs(estimated_eps)) * 100
+            eps_score = min(surprise_pct, 50) * (actual_eps ** 0.5)
+            if verbose:
+                vprint(verbose, f"FILTER6: {ticker} 8-K actual ${actual_eps:.2f} ({source}) + AV estimate ${estimated_eps:.2f} → surprise {surprise_pct:+.2f}% score {eps_score}")
+            return eps_score >= 10
+        logger.warning(f"Missing EPS value ticker={ticker or 'N/A'} (AV reported missing/0 and 8-K+AV fallback failed)")
+        return None
 
 
     def compute_filter7_pass(self, filing, verbose: bool = False):
@@ -622,23 +834,73 @@ class Edgar(AdvisorBase):
         return True
 
     def compute_filter8_pass(self, filing, verbose: bool = False):
-        vprint(verbose, "FILTER8: (stub) media not implemented → None")
-        return None
+        """
+        FILTER8: Third-party media reaction (company name + date required; no our intel).
+        Uses ask_gemini(..., use_search=True). Pass: positive → True; negative/neutral/no_coverage → False.
+        Returns True (pass), False (fail), or None (no ticker/date/LLM error).
+        """
+        cik = str(getattr(filing, "cik", "") or "")
+        ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
+        if not ticker:
+            vprint(verbose, "FILTER8: no ticker → None")
+            return None
+        company_name = cik_to_company_name(cik) or ticker
+        fd = getattr(filing, "filing_date", None)
+        if fd is None:
+            vprint(verbose, "FILTER8: no filing date → None")
+            return None
+        try:
+            if isinstance(fd, date):
+                filing_date = fd
+            elif isinstance(fd, str):
+                filing_date = date.fromisoformat(fd[:10])
+            elif hasattr(fd, "date") and callable(getattr(fd, "date")):
+                filing_date = fd.date()
+            else:
+                filing_date = date.fromisoformat(str(fd)[:10])
+        except (TypeError, ValueError):
+            vprint(verbose, "FILTER8: invalid filing date → None")
+            return None
+        start_date = filing_date
+        end_date = filing_date + timedelta(days=1)
+        prompt = MEDIA_RESPONSE_PROMPT_TEMPLATE.format(
+            company_name=company_name,
+            ticker=ticker,
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+        )
+        model, results = self.ask_gemini(prompt, timeout=120.0, use_search=True)
+        if not results:
+            vprint(verbose, "FILTER8: ask_gemini returned no results → None")
+            return None
+        reaction = (results.get("reaction") or "").strip().lower()
+        if not reaction:
+            vprint(verbose, "FILTER8: missing reaction in response → None")
+            return None
+        if verbose:
+            vprint(verbose, f"FILTER8: reaction={reaction}")
+        if reaction == "positive":
+            return True
+        return False
 
     def analyze_8k_advanced(self, filing, meta_requirements: dict, verbose: bool = False):
+
         if meta_requirements.get("filter7") is None:
             f7 = self.compute_filter7_pass(filing, verbose)
             if f7 is False or f7 is None:
-                return (f7, (None, None, None))
+                return f7, (None, None, None)
+
         if meta_requirements.get("filter6") is None:
             f6 = self.compute_filter6_pass(filing, verbose)
             if f6 is False or f6 is None:
-                return (f6, (True, None, None))
+                return f6, (True, None, None)
+
         if meta_requirements.get("filter8") is None:
             f8 = self.compute_filter8_pass(filing, verbose)
             if f8 is False or f8 is None:
-                return (f8, (True, True, None))
-        return (True, (True, True, True))
+                return f8, (True, True, None)
+
+        return True, (True, True, True)
 
     def analyze_8k_basic(self, filing, verbose: bool = False):
         accession = getattr(filing, "accession_no", None) or getattr(filing, "accession_number", None)
@@ -670,7 +932,7 @@ class Edgar(AdvisorBase):
           - register the advisor
           - invoke it independently via `run_edgar`
         """
-
+        """
         print("Fetching latest filings...")
         latest = get_latest_filings()
 
@@ -683,8 +945,13 @@ class Edgar(AdvisorBase):
         # Filter to 8-Ks only
         filings_8k = [f for f in filings if getattr(f, "form", None) == "8-K"]
         if not filings_8k:
-            print("No latest 8-K filings found. Using last day for tests")
+            print("No latest 8-K filings found.")
             return
+        """
+        from edgar import find
+        filing = find("0001193125-26-056025")
+        filings_8k = [filing]
+
 
         print(f"Found {len(filings_8k)} 8-K filings. Running basic inspection (filters 1-5)...")
         for filing in filings_8k:
@@ -701,8 +968,34 @@ class Edgar(AdvisorBase):
                     meta = {"filter7": None, "filter6": None, "filter8": None}
                     result, state = self.analyze_8k_advanced(filing, meta, verbose=True)
                     print(f"    Advanced: result={result} state={state}")
-                    # TODO: if result is True → buy; if False → dismiss; if None → add to watchlist with state
-                    pass
+                    watch_meta = {
+                        "cik": cik,
+                        "accession": accession,
+                        "filter7": state[0],
+                        "filter6": state[1],
+                        "filter8": state[2],
+                    }
+                    if result is True and ticker:
+                        market_status = self.market_open()
+                        if market_status is None or market_status < 0:
+                            self.watch(
+                                ticker,
+                                explanation="8-K passed; market closed",
+                                days=1,
+                                meta=watch_meta,
+                            )
+                            print(f"    Added to watchlist (days=1, market closed)")
+                        else:
+                            # TODO: buy when market open
+                            pass
+                    elif result is None and ticker:
+                        self.watch(
+                            ticker,
+                            explanation=f"8-K pending filters {accession or ''}",
+                            days=1,
+                            meta=watch_meta,
+                        )
+                        print(f"    Added to watchlist (days=1)")
 
             except Exception as e:
                 print(f"  ⚠️  Error inspecting filing: {e}")

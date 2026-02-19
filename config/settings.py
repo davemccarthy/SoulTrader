@@ -152,7 +152,8 @@ POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "MSVhtqDKV9HyMOdla5UunU2EFs53MweY
 
 # API Keys - Must be set via environment variables (.env file)
 # Never commit API keys to the repository!
-GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_KEY = os.getenv("GEMINI_KEY") or os.getenv("GEMINI_API_KEY")
+# Optional extra keys for round-robin (GEMINI_KEY_2, GEMINI_KEY_3, ... in .env)
 
 OPENFIGI_API_KEY = os.getenv("OPENFIGI_API_KEY")  # Optional, for symbol lookups
 
