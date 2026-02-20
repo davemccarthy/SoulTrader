@@ -19,7 +19,7 @@ from datetime import date, timedelta
 import requests
 import yfinance as yf
 from django.conf import settings
-from edgar import Company, find, set_identity
+from edgar import Company, find, set_identity, get_latest_filings
 
 from core.services.advisors.advisor import AdvisorBase, register
 
@@ -214,6 +214,7 @@ FILTER3_PE_MAX = 100
 FILTER3_MIN_CAP = 300e6
 FILTER3_PRICE_MIN = 5.0
 FILTER3_PRICE_MAX = 1000.0
+FILTER3_PREV_DAY_GAIN_WARN_PCT = 7.0
 
 # Sector beware (vprint WARNING only; matches yfinance sector/industry wording)
 FILTER3_UNDERPERFORM_SECTORS = ("consumer cyclical", "real estate", "utilities")  # 🔴 Underperform
@@ -638,7 +639,10 @@ class Edgar(AdvisorBase):
         return score >= 0
 
     def compute_filter3_pass(self, filing, verbose: bool = False) -> bool:
+
         ticker = getattr(filing, "ticker", None)
+        comments = []
+
         if not ticker:
             ticker = cik_to_ticker(getattr(filing, "cik", ""))
         try:
@@ -670,7 +674,7 @@ class Edgar(AdvisorBase):
         if verbose and price is not None and fifty_two_high is not None and isinstance(fifty_two_high, (int, float)) and fifty_two_high > 0:
             pct_52 = 100.0 * price / fifty_two_high
             if pct_52 >= 90.0:
-                vprint(verbose, f"********** WARNING: Price at {pct_52:.1f}% of 52-week high **********")
+                comments.append(f"⚠️ BASIC FILTER WARNING: Price at {pct_52:.1f}% of 52-week high")
         fd = getattr(filing, "filing_date", None)
         if verbose and price is not None and fd is not None:
             try:
@@ -690,20 +694,33 @@ class Edgar(AdvisorBase):
                     last_close = float(hist["Close"].iloc[-1])
                     if two_week_high > 0 and last_close >= 0.90 * two_week_high:
                         pct_2w = 100.0 * last_close / two_week_high
-                        vprint(verbose, f"********** WARNING: Filing price at {pct_2w:.1f}% of 2-week high **********")
+                        comments.append(f"⚠️ BASIC FILTER WARNING: Filing price at {pct_2w:.1f}% of 2-week high")
+
+                    # Previous trading day big price gain (last close before filing vs day before)
+                    before_filing = hist[[(x.date() if hasattr(x, "date") else x) < filing_date for x in hist.index]]
+                    if len(before_filing) >= 2:
+                        close_prev = float(before_filing["Close"].iloc[-1])
+                        close_prev2 = float(before_filing["Close"].iloc[-2])
+                        if close_prev2 > 0:
+                            prev_day_pct = (close_prev - close_prev2) / close_prev2 * 100
+                            if prev_day_pct >= FILTER3_PREV_DAY_GAIN_WARN_PCT:
+                                comments.append(f"⚠️ BASIC FILTER WARNING: Previous day price gain +{prev_day_pct:.1f}%")
+
             except Exception as e:
                 vprint(verbose, f"FILTER3: (skip 2-week high check: {e})")
         if verbose:
             sector = (info.get("sector") or "").strip().lower()
             industry = (info.get("industry") or "").strip().lower()
             if sector and sector in FILTER3_UNDERPERFORM_SECTORS:
-                vprint(verbose, f"********** WARNING: Sector in underperform list **********")
+                comments.append(f"⚠️ WARNING: Sector in underperform list")
+
             for watch_sector, watch_industry in FILTER3_WATCH_SECTOR_INDUSTRY:
                 if sector and industry and watch_sector in sector and watch_industry in industry:
-                    vprint(verbose, f"********** WARNING: Sector/industry in watch list **********")
+                    comments.append(f"⚠️* BASIC FILTER WARNING: Sector/industry in watch list **********")
                     break
+
         vprint(verbose, "FILTER3: (pass) (P/E, cap, price band ok)")
-        return True
+        return True, comments
 
     def compute_filter4_pass(self, filing, verbose: bool = False) -> bool:
         exhibit_99_parts = []
@@ -760,22 +777,24 @@ class Edgar(AdvisorBase):
 
     def compute_filter6_pass(self, filing, verbose: bool = False):
         ticker = getattr(filing, "ticker", None) or cik_to_ticker(str(getattr(filing, "cik", "")))
+        comments = []
+
         if not ticker:
-            return None
+            return None,[]
         fd = getattr(filing, "filing_date", None)
         if fd is None:
-            return None
+            return None,[]
         if isinstance(fd, str):
             try:
                 report_date = date.fromisoformat(fd[:10])
             except ValueError:
-                return None
+                return None,[]
         else:
             report_date = getattr(fd, "date", lambda: fd)() if hasattr(fd, "date") else fd
         record = get_eps_for_report_quarter(ticker, report_date)
         if not record:
             logger.warning(f"No EPS record ticker={ticker or 'N/A'}")
-            return None
+            return None,[]
         surprise_str = record.get("surprisePercentage")
         reported_str = record.get("reportedEPS")
         try:
@@ -784,8 +803,8 @@ class Edgar(AdvisorBase):
             if reported_val != 0:
                 eps_score = min(surprise_val, 50) * (reported_val ** 0.5)
                 if verbose:
-                    vprint(verbose, f"FILTER6: {ticker} EPS surprise {surprise_str}% reported {reported_str} score {eps_score}")
-                return eps_score >= 10
+                    comments.append(f"AV EPS surprise {surprise_str}% reported {reported_str} score {eps_score}")
+                return eps_score >= 10,comments
         except (TypeError, ValueError):
             pass
         # Fallback: AV reported missing/0 → use 8-K actual + AV estimate (test_eps_8k_plus_av)
@@ -799,10 +818,10 @@ class Edgar(AdvisorBase):
             surprise_pct = ((actual_eps - estimated_eps) / abs(estimated_eps)) * 100
             eps_score = min(surprise_pct, 50) * (actual_eps ** 0.5)
             if verbose:
-                vprint(verbose, f"FILTER6: {ticker} 8-K actual ${actual_eps:.2f} ({source}) + AV estimate ${estimated_eps:.2f} → surprise {surprise_pct:+.2f}% score {eps_score}")
-            return eps_score >= 10
+                comments.append(f"8-K actual ${actual_eps:.2f} ({source}) + AV estimate ${estimated_eps:.2f} → surprise {surprise_pct:+.2f}% score {eps_score}")
+            return eps_score >= 10,comments
         logger.warning(f"Missing EPS value ticker={ticker or 'N/A'} (AV reported missing/0 and 8-K+AV fallback failed)")
-        return None
+        return None,[]
 
 
     def compute_filter7_pass(self, filing, verbose: bool = False):
@@ -812,14 +831,16 @@ class Edgar(AdvisorBase):
         Returns True (pass), False (fail), or None (no text / LLM error / inconclusive).
         """
         text = _get_ex99_text(filing)
+        comments = []
+
         if not text.strip():
             vprint(verbose, "FILTER7: no EX-99.x text → None")
-            return None
+            return None,[]
         prompt = THREE_DUCKS_PROMPT.replace("<<<EX99_1_TEXT>>>", text.strip())
         model, results = self.ask_gemini(prompt, timeout=120.0)
         if not results:
             vprint(verbose, "FILTER7: ask_gemini returned no results → None")
-            return None
+            return None,[]
         try:
             past = results.get("past_performance")
             future = results.get("future_performance")
@@ -829,16 +850,16 @@ class Edgar(AdvisorBase):
             gap = int(gap) if gap is not None else None
         except (TypeError, ValueError):
             vprint(verbose, "FILTER7: could not parse scores → None")
-            return None
+            return None,[]
         if past is None or future is None or gap is None:
             vprint(verbose, "FILTER7: missing score(s) → None")
-            return None
-        if verbose:
-            vprint(verbose, f"FILTER7: past={past} future={future} expectation_gap={gap}")
+            return None,[]
         # Strict: past >= 0, future >= 1, expectation_gap >= 1
         if past < 0 or future < 1 or gap < 1:
-            return False
-        return True
+            return False,[]
+
+        comments.append(f"Ex99.1 LLM interpretation: Past performance={past} guidance={future} expectation_gap={gap}")
+        return True,comments
 
     def compute_filter8_pass(self, filing, verbose: bool = False):
         """
@@ -848,14 +869,16 @@ class Edgar(AdvisorBase):
         """
         cik = str(getattr(filing, "cik", "") or "")
         ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
+        comments = []
+
         if not ticker:
             vprint(verbose, "FILTER8: no ticker → None")
-            return None
+            return None,[]
         company_name = cik_to_company_name(cik) or ticker
         fd = getattr(filing, "filing_date", None)
         if fd is None:
             vprint(verbose, "FILTER8: no filing date → None")
-            return None
+            return None,[]
         try:
             if isinstance(fd, date):
                 filing_date = fd
@@ -867,7 +890,7 @@ class Edgar(AdvisorBase):
                 filing_date = date.fromisoformat(str(fd)[:10])
         except (TypeError, ValueError):
             vprint(verbose, "FILTER8: invalid filing date → None")
-            return None
+            return None,[]
         start_date = filing_date
         end_date = filing_date + timedelta(days=1)
         prompt = MEDIA_RESPONSE_PROMPT_TEMPLATE.format(
@@ -879,21 +902,21 @@ class Edgar(AdvisorBase):
         model, results = self.ask_gemini(prompt, timeout=120.0, use_search=True)
         if not results:
             vprint(verbose, "FILTER8: ask_gemini returned no results → None")
-            return None
+            return None,[]
         reaction = (results.get("reaction") or "").strip().lower()
-
-        print(results.get("reason"))
+        reason = results.get("reason")
 
         if not reaction:
             vprint(verbose, "FILTER8: missing reaction in response → None")
-            return None
+            return None,[]
         if verbose:
             vprint(verbose, f"FILTER8: reaction={reaction}")
         if reaction == "no_coverage":
-            return None
+            return None,[]
         if reaction == "positive":
-            return True
-        return False
+            comments.append(f"LLM found media reaction {reaction}: {reason}")
+            return True,comments
+        return False,[]
 
     def analyze_8k_advanced(self, filing, meta_requirements: dict, verbose: bool = False):
 
@@ -929,18 +952,24 @@ class Edgar(AdvisorBase):
         logger.info(f"Inpecting: ticker={ticker or 'N/A'}, CIK={cik}, accession={accession}")
 
         if not ticker:
-            return False
+            return False,[]
         if not self.compute_filter1_pass(filing, verbose):
-            return False
+            return False,[]
         if not self.compute_filter2_pass(filing, verbose):
-            return False
+            return False,[]
         if not self.compute_filter4_pass(filing, verbose):
-            return False
+            return False,[]
+
+        filter3, comments = self.compute_filter3_pass(filing, verbose)
+
+        if not filter3:
+            return False,[]
+
         if not self.compute_filter3_pass(filing, verbose):
-            return False
+            return False,[]
         if not self.compute_filter5_pass(filing, verbose):
             return False
-        return True
+        return True, comments,[]
 
     def _meta_filters_complete(self, meta):
         """True if meta has all of filter6, filter7, filter8 set (non-None)."""
@@ -1013,8 +1042,23 @@ class Edgar(AdvisorBase):
             return
         """
 
-        filing = find("0001628280-26-009478")
+        filing = find("0001628280-26-009996")
         filings_8k = [filing]
+
+        # Process pending watchlist entries with incomplete meta (filter6/7/8)
+        if not filings_8k:
+
+            pending = self.watchlist().order_by("created")
+            for entry in pending:
+                if self._meta_filters_complete(entry.meta):
+                    if market_status is not None or market_status > 0:
+                        print(f"2 WOULD DISCOVER {entry.stock.symbol} AND REMOVE FROM WATCH")
+                        # self.discovered(self, sa, ticker, "explanation", None)
+                    continue
+                print(f"  Processing incomplete: {entry.stock.symbol} accession={(entry.meta or {}).get('accession')}")
+                self._process_incomplete_watchlist_entry(entry, verbose=True)
+
+            return
 
         print(f"Found {len(filings_8k)} 8-K filings. Running basic inspection (filters 1-5)...")
         for filing in filings_8k:
@@ -1076,17 +1120,6 @@ class Edgar(AdvisorBase):
 
             except Exception as e:
                 print(f"  ⚠️  Error inspecting filing: {e}")
-
-        # Process pending watchlist entries with incomplete meta (filter6/7/8)
-        pending = self.watchlist().order_by("created")
-        for entry in pending:
-            if self._meta_filters_complete(entry.meta):
-                if market_status is not None or market_status > 0:
-                    print(f"2 WOULD DISCOVER {ticker} AND REMOVE FROM WATCH")
-                    #self.discovered(self, sa, ticker, "explanation", None)
-                continue
-            print(f"  Processing incomplete: {entry.stock.symbol} accession={(entry.meta or {}).get('accession')}")
-            self._process_incomplete_watchlist_entry(entry, verbose=True)
 
 
 def run_edgar_standalone():
