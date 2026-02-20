@@ -214,7 +214,8 @@ FILTER3_PE_MAX = 100
 FILTER3_MIN_CAP = 300e6
 FILTER3_PRICE_MIN = 5.0
 FILTER3_PRICE_MAX = 1000.0
-FILTER3_PREV_DAY_GAIN_WARN_PCT = 7.0
+FILTER3_PREV_DAY_GAIN_WARN_PCT = 5.0
+FILTER3_PREV_DAY_GAIN_FAIL_PCT = 10.0
 
 # Sector beware (vprint WARNING only; matches yfinance sector/industry wording)
 FILTER3_UNDERPERFORM_SECTORS = ("consumer cyclical", "real estate", "utilities")  # 🔴 Underperform
@@ -703,6 +704,9 @@ class Edgar(AdvisorBase):
                         close_prev2 = float(before_filing["Close"].iloc[-2])
                         if close_prev2 > 0:
                             prev_day_pct = (close_prev - close_prev2) / close_prev2 * 100
+                            if prev_day_pct >= FILTER3_PREV_DAY_GAIN_FAIL_PCT:
+                                comments.append(f"Previous day price gain +{prev_day_pct:.1f}% (hard fail >= {FILTER3_PREV_DAY_GAIN_FAIL_PCT}%)")
+                                return False, comments
                             if prev_day_pct >= FILTER3_PREV_DAY_GAIN_WARN_PCT:
                                 comments.append(f"⚠️ BASIC FILTER WARNING: Previous day price gain +{prev_day_pct:.1f}%")
 
@@ -919,30 +923,44 @@ class Edgar(AdvisorBase):
         return False,[]
 
     def analyze_8k_advanced(self, filing, meta_requirements: dict, verbose: bool = False):
-
+        """
+        Run advanced filters (6, 7, 8) for any missing in meta_requirements.
+        Returns (result, state, advanced_comments) where state is (f7, f6, f8) and
+        advanced_comments is a list of comment strings from the filters that ran.
+        """
         cik = str(getattr(filing, "cik", None))
         ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
+        advanced_comments = []
 
         if meta_requirements.get("filter6") is None:
             f6 = self.compute_filter6_pass(filing, verbose)
-            if f6 is False or f6 is None:
-                logger.info(f"compute_filter6_pass(EPS beat): ticker={ticker or 'N/A'}, returns {f6}")
-                return f6, (f6, None, None)
+            f6_pass = f6[0] if isinstance(f6, (list, tuple)) and len(f6) >= 1 else f6
+            f6_comments = f6[1] if isinstance(f6, (list, tuple)) and len(f6) >= 2 else []
+            if f6_pass is False or f6_pass is None:
+                logger.info(f"compute_filter6_pass(EPS beat): ticker={ticker or 'N/A'}, returns {f6_pass}")
+                return f6_pass, (f6_pass, None, None), (f6_comments or [])
+            advanced_comments.extend(f6_comments or [])
 
         if meta_requirements.get("filter7") is None:
             f7 = self.compute_filter7_pass(filing, verbose)
-            if f7 is False or f7 is None:
-                logger.info(f"compute_filter7_pass(3ducks): ticker={ticker or 'N/A'}, returns {f7}")
-                return f7, (True, f7, None)
+            f7_pass = f7[0] if isinstance(f7, (list, tuple)) and len(f7) >= 1 else f7
+            f7_comments = f7[1] if isinstance(f7, (list, tuple)) and len(f7) >= 2 else []
+            if f7_pass is False or f7_pass is None:
+                logger.info(f"compute_filter7_pass(3ducks): ticker={ticker or 'N/A'}, returns {f7_pass}")
+                return f7_pass, (True, f7_pass, None), advanced_comments
+            advanced_comments.extend(f7_comments or [])
 
         if meta_requirements.get("filter8") is None:
             f8 = self.compute_filter8_pass(filing, verbose)
-            if f8 is False or f8 is None:
-                logger.info(f"compute_filter8_pass(media reaction): ticker={ticker or 'N/A'}, returns {f8}")
-                return f8, (True, True, f8)
+            f8_pass = f8[0] if isinstance(f8, (list, tuple)) and len(f8) >= 1 else f8
+            f8_comments = f8[1] if isinstance(f8, (list, tuple)) and len(f8) >= 2 else []
+            if f8_pass is False or f8_pass is None:
+                logger.info(f"compute_filter8_pass(media reaction): ticker={ticker or 'N/A'}, returns {f8_pass}")
+                return f8_pass, (True, True, f8_pass), advanced_comments
+            advanced_comments.extend(f8_comments or [])
 
         logger.info(f"analyze_8k_advanced: ticker={ticker or 'N/A'}, passed")
-        return True, (True, True, True)
+        return True, (True, True, True), advanced_comments
 
     def analyze_8k_basic(self, filing, verbose: bool = False):
         accession = getattr(filing, "accession_no", None) or getattr(filing, "accession_number", None)
@@ -952,24 +970,24 @@ class Edgar(AdvisorBase):
         logger.info(f"Inpecting: ticker={ticker or 'N/A'}, CIK={cik}, accession={accession}")
 
         if not ticker:
-            return False,[]
+            return False, []
         if not self.compute_filter1_pass(filing, verbose):
-            return False,[]
+            return False, []
         if not self.compute_filter2_pass(filing, verbose):
-            return False,[]
+            return False, []
         if not self.compute_filter4_pass(filing, verbose):
-            return False,[]
+            return False, []
 
         filter3, comments = self.compute_filter3_pass(filing, verbose)
 
         if not filter3:
-            return False,[]
+            return False, []
 
         if not self.compute_filter3_pass(filing, verbose):
-            return False,[]
+            return False, []
         if not self.compute_filter5_pass(filing, verbose):
-            return False
-        return True, comments,[]
+            return False, []
+        return True, comments
 
     def _meta_filters_complete(self, meta):
         """True if meta has all of filter6, filter7, filter8 set (non-None)."""
@@ -1000,13 +1018,14 @@ class Edgar(AdvisorBase):
         if filing is None:
             logger.warning(f"Could not find filing {accession}")
             return
-        result, state = self.analyze_8k_advanced(filing, meta, verbose=verbose)
+        result, state, advanced_comments = self.analyze_8k_advanced(filing, meta, verbose=verbose)
         if verbose:
             print(f"    Advanced: result={result} state={state}")
         new_meta = dict(meta)
         new_meta["filter7"] = state[0]
         new_meta["filter6"] = state[1]
         new_meta["filter8"] = state[2]
+        new_meta["comments"] = (meta.get("comments") or []) + (advanced_comments or [])
         new_meta.setdefault("cik", cik)
         new_meta.setdefault("accession", accession)
         entry.meta = new_meta
@@ -1042,23 +1061,10 @@ class Edgar(AdvisorBase):
             return
         """
 
-        filing = find("0001628280-26-009996")
-        filings_8k = [filing]
+        filing1 = find("0001193125-26-058069")
+        filing2 = find("0001193125-26-059359")
 
-        # Process pending watchlist entries with incomplete meta (filter6/7/8)
-        if not filings_8k:
-
-            pending = self.watchlist().order_by("created")
-            for entry in pending:
-                if self._meta_filters_complete(entry.meta):
-                    if market_status is not None or market_status > 0:
-                        print(f"2 WOULD DISCOVER {entry.stock.symbol} AND REMOVE FROM WATCH")
-                        # self.discovered(self, sa, ticker, "explanation", None)
-                    continue
-                print(f"  Processing incomplete: {entry.stock.symbol} accession={(entry.meta or {}).get('accession')}")
-                self._process_incomplete_watchlist_entry(entry, verbose=True)
-
-            return
+        filings_8k = [filing1,filing2]
 
         print(f"Found {len(filings_8k)} 8-K filings. Running basic inspection (filters 1-5)...")
         for filing in filings_8k:
@@ -1068,24 +1074,22 @@ class Edgar(AdvisorBase):
                 if ticker and self.watched(ticker):
                     print(f"  Skip {ticker} (already watched)")
                     continue
-                if self.analyze_8k_basic(filing, True):
+                basic_passed, basic_comments = self.analyze_8k_basic(filing, True)
+                if basic_passed:
                     cik = str(getattr(filing, "cik", ""))
                     ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
                     accession = getattr(filing, "accession_no", None) or getattr(filing, "accession_number", None)
-                    company = getattr(filing, "company", None) or ""
-                    print(f"\n--- Candidate: {ticker or 'N/A'} | CIK={cik} | accession={accession or 'N/A'} ---")
-                    if company:
-                        print(f"    Company: {company}")
-                    print(f"    SEC: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=8-K")
+
                     meta = {"filter7": None, "filter6": None, "filter8": None}
-                    result, state = self.analyze_8k_advanced(filing, meta, verbose=True)
-                    print(f"    Advanced: result={result} state={state}")
+                    result, state, advanced_comments = self.analyze_8k_advanced(filing, meta, verbose=True)
+                    all_comments = (basic_comments or []) + (advanced_comments or [])
                     watch_meta = {
                         "cik": cik,
                         "accession": accession,
                         "filter7": state[0],
                         "filter6": state[1],
                         "filter8": state[2],
+                        "comments": all_comments,
                     }
                     if result is True and ticker:
                         if market_status is None or market_status < 0:
@@ -1097,9 +1101,15 @@ class Edgar(AdvisorBase):
                             )
                             print(f"    Added to watchlist (days=1, market closed)")
                         else:
-                            print(f"1 WOULD DISCOVER {ticker} AND REMOVE FROM WATCH")
-                            #self.discovered(self, sa, ticker, "explanation", None)
-                            pass
+                            explanation = " | ".join(all_comments) if all_comments else "8-K passed"
+                            self.discovered(sa, ticker, explanation, None)
+                            self.watch(
+                                ticker,
+                                explanation="8-K passed; discovered",
+                                days=1,
+                                meta=watch_meta,
+                                status="Executed",
+                            )
                     elif result is None and ticker:
                         self.watch(
                             ticker,
@@ -1121,6 +1131,20 @@ class Edgar(AdvisorBase):
             except Exception as e:
                 print(f"  ⚠️  Error inspecting filing: {e}")
 
+        # Process pending watchlist entries with incomplete meta (filter6/7/8)
+        pending = self.watchlist().order_by("created")
+        for entry in pending:
+            if self._meta_filters_complete(entry.meta):
+                if market_status is not None and market_status >= 0:
+                    comments = entry.meta.get("comments") or []
+                    explanation = " | ".join(comments) if comments else "8-K passed"
+                    # self.discovered(sa, entry.stock.symbol, explanation, None)
+                    print(explanation)
+                    entry.status = "Executed"
+                    entry.save(update_fields=["status"])
+                continue
+            print(f"  Processing incomplete: {entry.stock.symbol} accession={(entry.meta or {}).get('accession')}")
+            self._process_incomplete_watchlist_entry(entry, verbose=True)
 
 def run_edgar_standalone():
     """
