@@ -9,7 +9,8 @@ import yfinance as yf
 from dotenv import load_dotenv
 from edgar import set_identity, get_filings, get_latest_filings, find, Company
 from datetime import date, timedelta
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
+import html
 import argparse
 
 try:
@@ -821,10 +822,129 @@ def _latest_quarter_end_for_date(d: date) -> date:
     return date(y, 9, 30)
 
 
+# -------- 8-K actual EPS (for Filter 6 fallback when AV reportedEPS/surprise missing) --------
+
+def _get_ex99_text(filing) -> str:
+    """Return concatenated EX-99.x exhibit text from filing, or empty string."""
+    parts = []
+    if hasattr(filing, "exhibits") and filing.exhibits:
+        for ex in filing.exhibits:
+            if "99." in str(ex).lower():
+                try:
+                    parts.append(ex.text())
+                except Exception:
+                    continue
+    return " ".join(parts)
+
+
+def _extract_eps_from_xbrl(filing) -> Optional[float]:
+    """Try diluted EPS from 8-K XBRL if available."""
+    try:
+        xbrl = filing.xbrl()
+    except Exception:
+        return None
+    if not xbrl:
+        return None
+    concepts = ("EarningsPerShareDiluted", "EarningsPerShare", "EarningsPerShareBasic")
+    for concept in concepts:
+        try:
+            facts = xbrl.query().by_concept(concept, exact=False).execute()
+            if not facts:
+                continue
+            duration_facts = [f for f in facts if f.get("period_type") == "duration"]
+            if not duration_facts:
+                duration_facts = facts
+            sorted_facts = sorted(
+                duration_facts,
+                key=lambda f: f.get("period_end", "") or "",
+                reverse=True,
+            )
+            val = sorted_facts[0].get("numeric_value") or sorted_facts[0].get("value")
+            if val is not None:
+                return float(val)
+        except Exception:
+            continue
+    return None
+
+
+_EPS_PATTERNS = [
+    r"(?:diluted|basic)\s+EPS\s+(?:of\s+|were\s+)?\$?\s*([\d,]+\.?\d{2,})",
+    r"(?:GAAP\s+)?EPS\s+(?:of\s+|were\s+)?\$?\s*([\d,]+\.?\d{2,})",
+    r"earnings\s+per\s+(?:common\s+)?share\s+(?:\(?EPS\)?)?\s+(?:of\s+|were\s+)?\$?\s*([\d,]+\.?\d{2,})",
+    r"\$([\d,]+\.?\d{2,})\s+per\s+(?:diluted|basic)?\s*(?:share|diluted share)",
+    r"(?:Diluted|diluted)\s+.*?(?:per\s+share|operations).*?\$\s*([\d,]+\.?\d{2,})",
+    r"Continuing\s+operations\s+\$\s*([\d,]+\.?\d{2,})",
+]
+_NONGAAP_PATTERNS = [
+    r"(?:non[-\s]?GAAP|adjusted)\s+EPS\s+(?:of\s+)?\$?\s*([\d,]+\.?\d{2,})",
+]
+
+
+def _normalize_exhibit_text(raw: str) -> str:
+    """Strip HTML and normalize whitespace for EPS regex matching."""
+    if not raw:
+        return ""
+    s = raw
+    try:
+        s = html.unescape(s)
+    except Exception:
+        pass
+    s = re.sub(r"<script[^>]*>.*?</script>", " ", s, flags=re.DOTALL | re.IGNORECASE)
+    s = re.sub(r"<style[^>]*>.*?</style>", " ", s, flags=re.DOTALL | re.IGNORECASE)
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _extract_eps_from_text(text: str) -> Optional[float]:
+    """Extract one EPS value from exhibit 99 text; prefer diluted/GAAP, then non-GAAP."""
+    text = _normalize_exhibit_text(text)
+    if not text:
+        return None
+    for pattern in _EPS_PATTERNS:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            try:
+                val = float(m.group(1).replace(",", ""))
+                if abs(val) < 1e6 and val != 0:
+                    return val
+            except ValueError:
+                pass
+    for pattern in _NONGAAP_PATTERNS:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            try:
+                val = float(m.group(1).replace(",", ""))
+                if abs(val) < 1e6 and val != 0:
+                    return val
+            except ValueError:
+                pass
+    return None
+
+
+def get_actual_eps_from_8k(filing, verbose: bool = False) -> Tuple[Optional[float], str]:
+    """
+    Get reported EPS from 8-K: try XBRL first, then exhibit 99 text.
+    Returns (eps_value, source) where source is "xbrl" or "text" or "none".
+    """
+    eps = _extract_eps_from_xbrl(filing)
+    if eps is not None:
+        if verbose:
+            vprint(verbose, f"  [8-K XBRL] EPS ${eps:.2f}")
+        return eps, "xbrl"
+    text = _get_ex99_text(filing)
+    eps = _extract_eps_from_text(text)
+    if eps is not None:
+        if verbose:
+            vprint(verbose, f"  [8-K text] EPS ${eps:.2f}")
+        return eps, "text"
+    return None, "none"
+
+
 def get_eps_for_report_quarter(ticker: str, report_date: date) -> Optional[Dict]:
     """
     Fetch Alpha Vantage EARNINGS; find the quarterly record for the latest quarter (by filing date).
-    If no record for that quarter, or record has no EPS surprise, print and return None. Else return record.
+    Returns the quarter-matched record even when surprisePercentage/reportedEPS is missing (same as edgar).
     """
     api_key = os.environ.get("ALPHAVANTAGE_API_KEY")
     if not api_key:
@@ -841,33 +961,19 @@ def get_eps_for_report_quarter(ticker: str, report_date: date) -> Optional[Dict]
         if "Error Message" in data or "Note" in data or "Information" in data:
             return None
         quarterly = data.get("quarterlyEarnings") or []
-        record = None
         for r in quarterly:
             fd = r.get("fiscalDateEnding") or ""
             if fd[:10] == target if len(fd) >= 10 else fd == target:
-                record = r
-                break
-        if record is None:
-            print("quarterly record not available")
-            return None
-        sp = record.get("surprisePercentage")
-        if sp is None or sp == "" or str(sp).strip() == "None":
-            print("quarterly record available but no EPSSurprise")
-            return None
-        try:
-            float(sp)
-        except (TypeError, ValueError):
-            print("quarterly record available but no EPSSurprise")
-            return None
-        return record
+                return r
+        return None
     except Exception:
         return None
 
 
 def compute_filter6_value(filing, verbose: bool = False) -> Optional[Dict]:
     """
-    Fetch EPS for the filing's latest quarter (by filing date). Returns Alpha Vantage record or None.
-    In production (edgar advisor) no EPS could eliminate; in test script we let through.
+    Fetch EPS for the filing's latest quarter (by filing date). Returns AV record or synthetic record
+    when surprise is computed from 8-K actual + AV estimate (same logic as edgar Filter 6).
     """
     ticker = getattr(filing, "ticker", None) or cik_to_ticker(str(getattr(filing, "cik", "")))
     if not ticker:
@@ -883,9 +989,38 @@ def compute_filter6_value(filing, verbose: bool = False) -> Optional[Dict]:
     else:
         report_date = getattr(fd, "date", lambda: fd)() if hasattr(fd, "date") else fd
     record = get_eps_for_report_quarter(ticker, report_date)
-    if verbose and record:
-        vprint(verbose, f"FILTER6: {ticker} EPS surprise={record.get('surprisePercentage')}%")
-
+    if not record:
+        return None
+    # Primary: AV reported EPS + surprise
+    surprise_str = record.get("surprisePercentage")
+    reported_str = record.get("reportedEPS")
+    try:
+        surprise_val = float(surprise_str)
+        reported_val = float(reported_str)
+        if reported_val != 0:
+            eps_score = min(surprise_val, 50) * (reported_val ** 0.5)
+            if verbose:
+                vprint(verbose, f"FILTER6: {ticker} EPS surprise={surprise_str}% reported={reported_str} score={eps_score}")
+            return record
+    except (TypeError, ValueError):
+        pass
+    # Fallback: 8-K actual + AV estimatedEPS (same as edgar)
+    actual_eps, source = get_actual_eps_from_8k(filing, verbose=verbose)
+    estimated_eps = record.get("estimatedEPS")
+    try:
+        estimated_eps = float(estimated_eps) if estimated_eps not in (None, "", "None") else None
+    except (TypeError, ValueError):
+        estimated_eps = None
+    if actual_eps is not None and estimated_eps is not None and estimated_eps != 0:
+        surprise_pct = ((actual_eps - estimated_eps) / abs(estimated_eps)) * 100
+        eps_score = min(surprise_pct, 50) * (actual_eps ** 0.5)
+        if verbose:
+            vprint(verbose, f"FILTER6: {ticker} 8-K actual ${actual_eps:.2f} ({source}) + AV estimate ${estimated_eps:.2f} → surprise {surprise_pct:+.2f}% score {eps_score}")
+        # Synthetic record so downstream (track_candidates, etc.) sees surprisePercentage and reportedEPS
+        out = dict(record)
+        out["surprisePercentage"] = surprise_pct
+        out["reportedEPS"] = str(actual_eps)
+        return out
     return record
 
 # -----------------------------
@@ -1057,6 +1192,7 @@ def track_candidates(start_date: date, candidates):
         eps_dollar_str = "N/A"
         eps_score_str = "N/A"
 
+        pct = None
         if eps_record:
             if eps_record.get("surprisePercentage") not in (None, "", "None"):
                 try:
@@ -1068,10 +1204,10 @@ def track_candidates(start_date: date, candidates):
             if reported not in (None, "", "None"):
                 try:
                     r = float(reported)
-                    s = min(pct, 50) * (r ** 0.5)
-
                     eps_dollar_str = f"${r:.2f}"
-                    eps_score_str = f"{int(s)}"
+                    if pct is not None:
+                        s = min(pct, 50) * (r ** 0.5)
+                        eps_score_str = f"{int(s)}"
                 except (TypeError, ValueError):
                     pass
         

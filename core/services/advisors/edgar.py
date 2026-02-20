@@ -19,7 +19,7 @@ from datetime import date, timedelta
 import requests
 import yfinance as yf
 from django.conf import settings
-from edgar import Company, get_filings, get_latest_filings, set_identity
+from edgar import Company, find, set_identity
 
 from core.services.advisors.advisor import AdvisorBase, register
 
@@ -189,19 +189,22 @@ END EX-99.1
 ----------------------------------------
 """
 
-# Filter 8 (media reaction): third-party reaction only; company name + date required.
-MEDIA_RESPONSE_PROMPT_TEMPLATE = """Search the web for business and financial news from {start_date} through {end_date} about {company_name} ({ticker})—earnings announcement, quarterly results, or 8-K filing.
+# Filter 8 (media reaction): same prompt as test_media_response_llm.py; company name for clarity.
+MEDIA_RESPONSE_PROMPT_TEMPLATE = """Search the web for business and financial news from {start_date} through {end_date} regarding {company_name} ({ticker})'s earnings.
 
-What was the media response (headlines, articles, analyst or press commentary)?
-- Consider sources like Reuters, Bloomberg, CNBC, MarketWatch, Yahoo Finance, Seeking Alpha, and similar.
-- Report only third-party reaction; do not give your own opinion.
+Analyze the gap between "Headline Results" and "Market Reaction."
+- Identify if the company beat/missed analyst consensus for EPS and Revenue.
+- Specifically look for forward-looking guidance, management's tone during the Q&A, and any cited "headwinds" (e.g., rising expenses, interest rates, or segment softness).
+- Specifically look for mentions of interest expense, capital expenditures (CapEx), or operating margins, as these often drive post-earnings sell-offs.
+- Compare the "Positive" headlines to the actual stock price movement immediately following the release.
 
-Respond with STRICT JSON only. No other text before or after. Use this structure:
-
+Respond with STRICT JSON only. No other text before or after:
 {{
   "reaction": "positive" | "negative" | "neutral" | "no_coverage",
-  "headlines_or_snippets": ["<quote or headline 1>", "<quote or headline 2>", ...],
-  "reason": "<1-2 sentences summarizing media tone and key points>"
+  "headline_beat": {{ "eps": true/false, "revenue": true/false }},
+  "market_reaction_pct": "<e.g. -2.5%>",
+  "headlines_or_snippets": ["<quote 1>", "<quote 2>"],
+  "reason": "<2-3 sentences explaining why the market reacted the way it did despite/because of the headline numbers. Mention specific guidance or expense figures if available.>"
 }}
 
 If you find no relevant coverage in that window, set reaction to "no_coverage" and reason accordingly."""
@@ -427,6 +430,10 @@ def get_eps_for_report_quarter(ticker: str, report_date: date) -> Optional[Dict]
     try:
         time.sleep(0.25)
         resp = requests.get(url, params=params, timeout=15)
+        print(f"alphavantage {resp}")
+        if resp.status_code == 429:
+            logger.warning("Alpha Vantage rate limit (429): request rejected for ticker=%s", ticker)
+            return None
         resp.raise_for_status()
         data = resp.json()
         if "Error Message" in data or "Note" in data or "Information" in data:
@@ -874,32 +881,44 @@ class Edgar(AdvisorBase):
             vprint(verbose, "FILTER8: ask_gemini returned no results → None")
             return None
         reaction = (results.get("reaction") or "").strip().lower()
+
+        print(results.get("reason"))
+
         if not reaction:
             vprint(verbose, "FILTER8: missing reaction in response → None")
             return None
         if verbose:
             vprint(verbose, f"FILTER8: reaction={reaction}")
+        if reaction == "no_coverage":
+            return None
         if reaction == "positive":
             return True
         return False
 
     def analyze_8k_advanced(self, filing, meta_requirements: dict, verbose: bool = False):
 
-        if meta_requirements.get("filter7") is None:
-            f7 = self.compute_filter7_pass(filing, verbose)
-            if f7 is False or f7 is None:
-                return f7, (None, None, None)
+        cik = str(getattr(filing, "cik", None))
+        ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
 
         if meta_requirements.get("filter6") is None:
             f6 = self.compute_filter6_pass(filing, verbose)
             if f6 is False or f6 is None:
-                return f6, (True, None, None)
+                logger.info(f"compute_filter6_pass(EPS beat): ticker={ticker or 'N/A'}, returns {f6}")
+                return f6, (f6, None, None)
+
+        if meta_requirements.get("filter7") is None:
+            f7 = self.compute_filter7_pass(filing, verbose)
+            if f7 is False or f7 is None:
+                logger.info(f"compute_filter7_pass(3ducks): ticker={ticker or 'N/A'}, returns {f7}")
+                return f7, (True, f7, None)
 
         if meta_requirements.get("filter8") is None:
             f8 = self.compute_filter8_pass(filing, verbose)
             if f8 is False or f8 is None:
-                return f8, (True, True, None)
+                logger.info(f"compute_filter8_pass(media reaction): ticker={ticker or 'N/A'}, returns {f8}")
+                return f8, (True, True, f8)
 
+        logger.info(f"analyze_8k_advanced: ticker={ticker or 'N/A'}, passed")
         return True, (True, True, True)
 
     def analyze_8k_basic(self, filing, verbose: bool = False):
@@ -923,6 +942,50 @@ class Edgar(AdvisorBase):
             return False
         return True
 
+    def _meta_filters_complete(self, meta):
+        """True if meta has all of filter6, filter7, filter8 set (non-None)."""
+        m = meta or {}
+        return (
+            m.get("filter6") is not None
+            and m.get("filter7") is not None
+            and m.get("filter8") is not None
+        )
+
+    def _process_incomplete_watchlist_entry(self, entry, verbose=True):
+        """
+        Fetch filing for this watchlist entry, run advanced filters for any missing
+        meta filter6/7/8, merge state into entry.meta and save. If result is False, set status Excluded.
+        Skips if accession/cik missing or filing not found.
+        """
+        meta = entry.meta or {}
+        accession = meta.get("accession")
+        cik = meta.get("cik")
+        if not accession or not cik:
+            logger.warning(f"Watchlist entry {entry.id} missing accession or cik in meta, skip")
+            return
+        try:
+            filing = find(accession)
+        except Exception as e:
+            logger.warning(f"Could not find filing {accession}: {e}")
+            return
+        if filing is None:
+            logger.warning(f"Could not find filing {accession}")
+            return
+        result, state = self.analyze_8k_advanced(filing, meta, verbose=verbose)
+        if verbose:
+            print(f"    Advanced: result={result} state={state}")
+        new_meta = dict(meta)
+        new_meta["filter7"] = state[0]
+        new_meta["filter6"] = state[1]
+        new_meta["filter8"] = state[2]
+        new_meta.setdefault("cik", cik)
+        new_meta.setdefault("accession", accession)
+        entry.meta = new_meta
+        if result is False:
+            entry.status = "Excluded"
+            entry.explanation = "8-K dismissed"
+        entry.save()
+
     def discover(self, sa):
 
         """
@@ -932,6 +995,7 @@ class Edgar(AdvisorBase):
           - register the advisor
           - invoke it independently via `run_edgar`
         """
+        market_status = self.market_open()
         """
         print("Fetching latest filings...")
         latest = get_latest_filings()
@@ -948,14 +1012,18 @@ class Edgar(AdvisorBase):
             print("No latest 8-K filings found.")
             return
         """
-        from edgar import find
-        filing = find("0001193125-26-056025")
-        filings_8k = [filing]
 
+        filing = find("0001628280-26-009478")
+        filings_8k = [filing]
 
         print(f"Found {len(filings_8k)} 8-K filings. Running basic inspection (filters 1-5)...")
         for filing in filings_8k:
             try:
+                cik = str(getattr(filing, "cik", ""))
+                ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
+                if ticker and self.watched(ticker):
+                    print(f"  Skip {ticker} (already watched)")
+                    continue
                 if self.analyze_8k_basic(filing, True):
                     cik = str(getattr(filing, "cik", ""))
                     ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
@@ -976,7 +1044,6 @@ class Edgar(AdvisorBase):
                         "filter8": state[2],
                     }
                     if result is True and ticker:
-                        market_status = self.market_open()
                         if market_status is None or market_status < 0:
                             self.watch(
                                 ticker,
@@ -986,7 +1053,8 @@ class Edgar(AdvisorBase):
                             )
                             print(f"    Added to watchlist (days=1, market closed)")
                         else:
-                            # TODO: buy when market open
+                            print(f"1 WOULD DISCOVER {ticker} AND REMOVE FROM WATCH")
+                            #self.discovered(self, sa, ticker, "explanation", None)
                             pass
                     elif result is None and ticker:
                         self.watch(
@@ -996,24 +1064,29 @@ class Edgar(AdvisorBase):
                             meta=watch_meta,
                         )
                         print(f"    Added to watchlist (days=1)")
+                    elif result is False and ticker:
+                        self.watch(
+                            ticker,
+                            explanation="8-K dismissed",
+                            days=1,
+                            meta=watch_meta,
+                            status="Excluded",
+                        )
+                        print(f"    Added to watchlist (Excluded, days=1)")
 
             except Exception as e:
                 print(f"  ⚠️  Error inspecting filing: {e}")
 
-        """
-        TODO: Retrieve from watchlist oldest first
-        
-        if not 3ducks
-            get 3ducks
-            On fail delete from eatchlist
-            On no LLM continue
-            
-        if not eps ...
-        if not media ...
-    
-        if eps and 3ducks and media
-            discover
-        """
+        # Process pending watchlist entries with incomplete meta (filter6/7/8)
+        pending = self.watchlist().order_by("created")
+        for entry in pending:
+            if self._meta_filters_complete(entry.meta):
+                if market_status is not None or market_status > 0:
+                    print(f"2 WOULD DISCOVER {ticker} AND REMOVE FROM WATCH")
+                    #self.discovered(self, sa, ticker, "explanation", None)
+                continue
+            print(f"  Processing incomplete: {entry.stock.symbol} accession={(entry.meta or {}).get('accession')}")
+            self._process_incomplete_watchlist_entry(entry, verbose=True)
 
 
 def run_edgar_standalone():

@@ -423,7 +423,7 @@ class AdvisorBase:
 
         return watched
 
-    def watch(self, symbol, explanation, days=14, meta=None):
+    def watch(self, symbol, explanation, days=14, meta=None, status=None):
         """
         Add a stock to the watchlist for this advisor.
 
@@ -432,6 +432,7 @@ class AdvisorBase:
             explanation: Explanation for why this stock is being watched
             days: Number of days until expiration (defaults to 14)
             meta: Optional dict (e.g. filter state, accession) stored on Watchlist.meta
+            status: Optional str ('Pending', 'Excluded', etc.). Default 'Pending'.
 
         Returns:
             Watchlist object or None if creation fails
@@ -457,6 +458,7 @@ class AdvisorBase:
             explanation=explanation[:500],  # Truncate to max length
             days=days,
             meta=meta if meta is not None else {},
+            status=(status or "Pending"),
         )
 
         logger.info(f"{self.advisor.name} added {stock.symbol} to watchlist at ${stock.price:.2f}: {explanation[:100]}")
@@ -490,6 +492,22 @@ class AdvisorBase:
             params=[now]
         ).select_related('stock')
 
+    def watched(self, symbol):
+        """
+        True if this advisor has any non-expired watchlist entry for this symbol
+        (any status: Pending or Excluded). Use to skip re-processing in discover.
+        """
+        from core.models import Watchlist
+        from django.utils import timezone
+
+        now = timezone.now()
+        return Watchlist.objects.filter(
+            advisor=self.advisor,
+            stock__symbol=(symbol or "").strip().upper(),
+        ).extra(
+            where=["created + (days || ' days')::interval >= %s"],
+            params=[now],
+        ).exists()
 
     def health_check(self, stock, sa):
         """
