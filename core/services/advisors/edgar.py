@@ -852,6 +852,7 @@ class Edgar(AdvisorBase):
             past = int(past) if past is not None else None
             future = int(future) if future is not None else None
             gap = int(gap) if gap is not None else None
+
         except (TypeError, ValueError):
             vprint(verbose, "FILTER7: could not parse scores → None")
             return None,[]
@@ -1061,10 +1062,26 @@ class Edgar(AdvisorBase):
             return
         """
 
-        filing1 = find("0001193125-26-058069")
-        filing2 = find("0001193125-26-059359")
+        filing1 = find("0000352541-26-000005")
+        filing2 = find("0000825542-26-000015")
 
         filings_8k = [filing1,filing2]
+
+        # Process pending watchlist entries with incomplete meta (filter6/7/8)
+        pending = self.watchlist().order_by("created")
+        for entry in pending:
+            if self._meta_filters_complete(entry.meta):
+
+                if market_status is not None and market_status >= 0:
+                    comments = entry.meta.get("comments") or []
+                    explanation = " | ".join(comments) if comments else "8-K passed"
+                    self.discovered(sa, entry.stock.symbol, explanation, None)
+
+                    entry.status = "Executed"
+                    entry.save(update_fields=["status"])
+                continue
+            print(f"  Processing incomplete: {entry.stock.symbol} accession={(entry.meta or {}).get('accession')}")
+            self._process_incomplete_watchlist_entry(entry, verbose=True)
 
         print(f"Found {len(filings_8k)} 8-K filings. Running basic inspection (filters 1-5)...")
         for filing in filings_8k:
@@ -1074,14 +1091,14 @@ class Edgar(AdvisorBase):
                 if ticker and self.watched(ticker):
                     print(f"  Skip {ticker} (already watched)")
                     continue
-                basic_passed, basic_comments = self.analyze_8k_basic(filing, True)
+                basic_passed, basic_comments = self.analyze_8k_basic(filing, False)
                 if basic_passed:
                     cik = str(getattr(filing, "cik", ""))
                     ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
                     accession = getattr(filing, "accession_no", None) or getattr(filing, "accession_number", None)
 
                     meta = {"filter7": None, "filter6": None, "filter8": None}
-                    result, state, advanced_comments = self.analyze_8k_advanced(filing, meta, verbose=True)
+                    result, state, advanced_comments = self.analyze_8k_advanced(filing, meta, verbose=False)
                     all_comments = (basic_comments or []) + (advanced_comments or [])
                     watch_meta = {
                         "cik": cik,
@@ -1099,7 +1116,6 @@ class Edgar(AdvisorBase):
                                 days=1,
                                 meta=watch_meta,
                             )
-                            print(f"    Added to watchlist (days=1, market closed)")
                         else:
                             explanation = " | ".join(all_comments) if all_comments else "8-K passed"
                             self.discovered(sa, ticker, explanation, None)
@@ -1130,21 +1146,6 @@ class Edgar(AdvisorBase):
 
             except Exception as e:
                 print(f"  ⚠️  Error inspecting filing: {e}")
-
-        # Process pending watchlist entries with incomplete meta (filter6/7/8)
-        pending = self.watchlist().order_by("created")
-        for entry in pending:
-            if self._meta_filters_complete(entry.meta):
-                if market_status is not None and market_status >= 0:
-                    comments = entry.meta.get("comments") or []
-                    explanation = " | ".join(comments) if comments else "8-K passed"
-                    # self.discovered(sa, entry.stock.symbol, explanation, None)
-                    print(explanation)
-                    entry.status = "Executed"
-                    entry.save(update_fields=["status"])
-                continue
-            print(f"  Processing incomplete: {entry.stock.symbol} accession={(entry.meta or {}).get('accession')}")
-            self._process_incomplete_watchlist_entry(entry, verbose=True)
 
 def run_edgar_standalone():
     """

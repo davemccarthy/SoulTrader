@@ -8,7 +8,7 @@ import requests
 import yfinance as yf
 from dotenv import load_dotenv
 from edgar import set_identity, get_filings, get_latest_filings, find, Company
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional, Dict, Tuple
 import html
 import argparse
@@ -1023,6 +1023,44 @@ def compute_filter6_value(filing, verbose: bool = False) -> Optional[Dict]:
         return out
     return record
 
+def _filing_datetime(filing):
+    """
+    Return filing datetime for sorting/display, or None.
+    Uses header.acceptance_datetime / accepted if available, else filing_date (as start-of-day).
+    """
+    header = getattr(filing, "header", None)
+    if header is not None:
+        acc = getattr(header, "acceptance_datetime", None) or getattr(header, "accepted", None)
+        if acc is not None:
+            if hasattr(acc, "hour"):  # datetime-like
+                return acc
+            if hasattr(acc, "strftime") and hasattr(acc, "date"):
+                return acc
+            if isinstance(acc, str) and len(acc) >= 12:  # SEC YYYYMMDDHHMMSS
+                try:
+                    return datetime(
+                        int(acc[:4]), int(acc[4:6]), int(acc[6:8]),
+                        int(acc[8:10]), int(acc[10:12]), int(acc[12:14]) if len(acc) >= 14 else 0,
+                    )
+                except (ValueError, TypeError):
+                    pass
+    fd = getattr(filing, "filing_date", None)
+    if fd is None:
+        return None
+    if hasattr(fd, "date"):
+        d = fd.date() if callable(getattr(fd, "date")) else fd
+    elif isinstance(fd, str):
+        try:
+            d = date.fromisoformat(fd[:10])
+        except ValueError:
+            return None
+    else:
+        d = fd
+    if isinstance(d, date) and not isinstance(d, datetime):
+        return datetime.combine(d, datetime.min.time())
+    return d
+
+
 # -----------------------------
 # 4️⃣ Core 8-K inspection entry point
 # -----------------------------
@@ -1083,7 +1121,8 @@ def analyze_8k(filing, verbose: bool = False):
     vprint(verbose,f"SEC: https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude")
 
     # TODO: more filters (e.g. filter7 LLM)
-    return ticker, cik, accession, eps
+    filing_dt = _filing_datetime(filing)
+    return ticker, cik, accession, eps, filing_dt
 
 
 # -----------------------------
@@ -1169,21 +1208,41 @@ def track_candidates(start_date: date, candidates):
     if not candidates:
         print("No candidates to track.")
         return
-    
-    print(f"\n{'=' * 110}")
+
+    # Sort by filing time (earliest first); candidates with no time last
+    def _sort_key(c):
+        if len(c) >= 5 and c[4] is not None:
+            dt = c[4]
+            try:
+                return (0, dt.timestamp())
+            except (AttributeError, OSError):
+                return (0, dt)
+        return (1, float("inf"))
+
+    candidates = sorted(candidates, key=_sort_key)
+
+    print(f"\n{'=' * 120}")
     print(f"Price Reaction Analysis (Filing Date: {start_date})")
-    print(f"{'=' * 110}")
-    
-    # Table header (EPS % = surprise, EPS $ = reported actual)
-    header = f"{'Symbol':<8} {'CIK':<8} {'Accession':<22} {'EPS %':<10} {'EPS $':<8} {'EPS #':<8} {'Filing $':<10} {'1d %':<8} {'7d %':<8}"
+    print(f"{'=' * 120}")
+
+    # Table header (Time = filing time, EPS % = surprise, etc.)
+    header = f"{'Time':<6} {'Symbol':<8} {'CIK':<8} {'Accession':<22} {'EPS %':<10} {'EPS $':<8} {'EPS #':<8} {'Filing $':<10} {'1d %':<8} {'7d %':<8}"
     print(header)
-    print("-" * 110)
+    print("-" * 120)
 
     for candidate in candidates:
-        ticker, cik, accession, eps_record = candidate  # (ticker, cik, accession, eps)
+        # Support 5-tuple (with filing_dt) or 4-tuple (legacy)
+        ticker = candidate[0] or ""
+        cik = (candidate[1] or "")[:8]
+        accession = (candidate[2] or "")[:22]
+        eps_record = candidate[3] if len(candidate) > 3 else None
+        filing_dt = candidate[4] if len(candidate) >= 5 else None
+        time_str = filing_dt.strftime("%H:%M") if (filing_dt is not None and hasattr(filing_dt, "hour")) else (
+            filing_dt.strftime("%Y-%m-%d") if (filing_dt is not None and hasattr(filing_dt, "strftime")) else "N/A"
+        )
 
         if not ticker:
-            row = f"{'N/A':<8} {cik[:8]:<8} {accession[:22]:<22} {'N/A':<10} {'N/A':<8} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
+            row = f"{time_str:<6} {'N/A':<8} {cik:<8} {accession:<22} {'N/A':<10} {'N/A':<8} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
             print(row)
             continue
 
@@ -1213,61 +1272,74 @@ def track_candidates(start_date: date, candidates):
         
         try:
             # Fetch historical prices
-            # Get data from 5 days before filing to 10 days after (buffer for weekends/holidays)
             start_lookup = start_date - timedelta(days=5)
             end_lookup = start_date + timedelta(days=10)
-            
-            # Rate limiting
             time.sleep(0.05)
-            
             stock = yf.Ticker(ticker)
             hist = stock.history(start=start_lookup, end=end_lookup)
-            
-            if hist.empty:
-                row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {eps_str:<10} {eps_dollar_str:<8} {eps_score_str:<8} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
+
+            if hist is None or hist.empty or "Close" not in hist.columns:
+                row = f"{time_str:<6} {ticker:<8} {cik:<8} {accession:<22} {eps_str:<10} {eps_dollar_str:<8} {eps_score_str:<8} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
                 print(row)
                 continue
-            
-            # Get filing date price (or nearest trading day before filing)
-            filing_prices = hist[hist.index.date <= start_date]
-            if filing_prices.empty:
-                filing_price = None
-            else:
-                filing_price = filing_prices.iloc[-1]["Close"]
-            
-            # Get 1d price (next trading day after filing)
+
+            # Index dates: handle timezone-aware or naive
+            def _index_dates(df):
+                try:
+                    return [t.date() if hasattr(t, "date") and callable(getattr(t, "date")) else t for t in df.index]
+                except Exception:
+                    return []
+
+            index_dates = _index_dates(hist)
+            if not index_dates:
+                row = f"{time_str:<6} {ticker:<8} {cik:<8} {accession:<22} {eps_str:<10} {eps_dollar_str:<8} {eps_score_str:<8} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
+                print(row)
+                continue
+
+            # Filing date price (last close on or before start_date)
+            filing_price = None
+            for i, d in enumerate(index_dates):
+                if d <= start_date:
+                    filing_price = float(hist.iloc[i]["Close"])
+                else:
+                    break
+            if filing_price is None and index_dates and index_dates[0] > start_date:
+                filing_price = float(hist.iloc[0]["Close"])
+
             after_1d_date = start_date + timedelta(days=1)
-            after_1d_prices = hist[hist.index.date >= after_1d_date]
-            after_1d_price = after_1d_prices.iloc[0]["Close"] if not after_1d_prices.empty else None
-            
-            # Get 7d price (7 calendar days after filing, find next trading day)
+            after_1d_price = None
+            for i, d in enumerate(index_dates):
+                if d >= after_1d_date:
+                    after_1d_price = float(hist.iloc[i]["Close"])
+                    break
+
             after_7d_date = start_date + timedelta(days=7)
-            after_7d_prices = hist[hist.index.date >= after_7d_date]
-            after_7d_price = after_7d_prices.iloc[0]["Close"] if not after_7d_prices.empty else None
-            
-            # Calculate percentage changes
-            filing_price_str = f"${filing_price:.2f}" if filing_price else "N/A"
-            
-            if filing_price and after_1d_price:
+            after_7d_price = None
+            for i, d in enumerate(index_dates):
+                if d >= after_7d_date:
+                    after_7d_price = float(hist.iloc[i]["Close"])
+                    break
+
+            filing_price_str = f"${filing_price:.2f}" if filing_price is not None else "N/A"
+            if filing_price is not None and after_1d_price is not None:
                 change_1d = ((after_1d_price - filing_price) / filing_price) * 100
                 change_1d_str = f"{change_1d:+.1f}%"
             else:
                 change_1d_str = "N/A"
-            
-            if filing_price and after_7d_price:
+            if filing_price is not None and after_7d_price is not None:
                 change_7d = ((after_7d_price - filing_price) / filing_price) * 100
                 change_7d_str = f"{change_7d:+.1f}%"
             else:
                 change_7d_str = "N/A"
-            
-            row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {eps_str:<10} {eps_dollar_str:<8} {eps_score_str:<8} {filing_price_str:<10} {change_1d_str:<8} {change_7d_str:<8}"
+
+            row = f"{time_str:<6} {ticker:<8} {cik:<8} {accession:<22} {eps_str:<10} {eps_dollar_str:<8} {eps_score_str:<8} {filing_price_str:<10} {change_1d_str:<8} {change_7d_str:<8}"
             print(row)
 
-        except Exception:
-            row = f"{ticker:<8} {cik[:8]:<8} {accession[:22]:<22} {eps_str:<10} {eps_dollar_str:<8} {eps_score_str:<8} {'Error':<10} {'N/A':<8} {'N/A':<8}"
+        except Exception as e:
+            row = f"{time_str:<6} {ticker:<8} {cik:<8} {accession:<22} {eps_str:<10} {eps_dollar_str:<8} {eps_score_str:<8} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
             print(row)
     
-    print(f"{'=' * 110}\n")
+    print(f"{'=' * 120}\n")
 
 # -----------------------------
 # 6️⃣ CLI helpers
@@ -1308,13 +1380,11 @@ def run_for_date(date_str: str):
 
     filings = list(get_8ks_for_date(target_date) or [])
     # TODO: Filter by market times (exclude filings accepted during market hours).
-    candidates: list[tuple[str, str, str, Optional[Dict]]] = []  # (ticker, cik, accession, eps)
+    candidates: list[tuple[str, str, str, Optional[Dict], Optional[datetime]]] = []  # (ticker, cik, accession, eps, filing_dt)
 
     if not filings:
         print("No 8-K filings found for that date.")
         return
-
-    print(filings)
 
     print(f"Found {len(filings)} 8-K filings. Running FILTER1 + basic inspection...")
     for filing in filings:
@@ -1382,7 +1452,7 @@ def run_for_file(filepath: str):
         print(f"No accessions found in {filepath}")
         return
     print(f"Found {len(rows)} accessions in file. Fetching filings and running inspection...")
-    candidates: list[tuple[str, str, str, Optional[Dict]]] = []
+    candidates: list[tuple[str, str, str, Optional[Dict], Optional[datetime]]] = []
     for symbol, cik, accession in rows:
         try:
             filing = find(accession)
@@ -1423,7 +1493,7 @@ def run_latest():
         return
 
     print(f"Found {len(filings_8k)} latest 8-K filings. Running FILTER1 + basic inspection...")
-    candidates: list[tuple[str, str, str, Optional[Dict]]] = []
+    candidates: list[tuple[str, str, str, Optional[Dict], Optional[datetime]]] = []
     for filing in filings_8k:
         try:
             candidate = analyze_8k(filing)
