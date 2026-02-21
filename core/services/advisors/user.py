@@ -13,10 +13,10 @@ def _default_user_sell_instructions(stock):
         ]
     target_price = (Decimal(str(stock.price)) * Decimal("1.20")).quantize(Decimal("0.01"))
     return [
-        ("STOP_PERCENTAGE", Decimal("0.94"), None),   # Stop loss at 95% of discovery price
+        ("STOP_PERCENTAGE", Decimal("0.90"), None),   # Stop loss at 90% of discovery price
         ("TARGET_DIMINISHING", target_price, 10),     # Take profit at 120% diminishing over 14 days
         ("PEAKED", Decimal("7.0"), None),             # Sell when down 5% from peak since purchase
-        ("PROFIT_FLAT", Decimal("5.0"), 4),           # Profit hovering around 5% for 5 days
+        ("PROFIT_FLAT", Decimal("0.5"), 4),           # Profit hovering around 5% for 5 days
     ]
 
 
