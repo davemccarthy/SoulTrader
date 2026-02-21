@@ -29,10 +29,10 @@ COL_TRADES = "Trades"
 COL_WINNERS = "Winners"
 COL_LOSERS = "Losers"
 COL_WIN_RATE_PCT = "Win rate %"
-COL_AVG_PCT = "Avg % change"
-COL_TOTAL_PCT = "Total % gain/loss"
+COL_TOTAL_PCT = "gain/loss %"
+COL_PNL = "P&L"
 
-COLUMNS = (COL_TRADES, COL_WINNERS, COL_LOSERS, COL_WIN_RATE_PCT, COL_AVG_PCT, COL_TOTAL_PCT)
+COLUMNS = (COL_TRADES, COL_WINNERS, COL_LOSERS, COL_WIN_RATE_PCT, COL_TOTAL_PCT, COL_PNL)
 
 
 @dataclass
@@ -56,16 +56,17 @@ def _cutoff_lookback(days: int):
 
 
 def _discovery_advisor_map(sa_ids, stock_ids):
-    """(sa_id, stock_id) -> advisor name. Last discovery per (sa, stock) to match UI."""
+    """(sa_id, stock_id) -> advisor name. First discovery per (sa, stock) — the one that led to the buy."""
     discoveries = (
         Discovery.objects.filter(sa_id__in=sa_ids, stock_id__in=stock_ids)
         .select_related("advisor")
-        .order_by("sa_id", "stock_id", "id")
+        .order_by("sa_id", "stock_id", "created")
     )
     out = {}
     for d in discoveries:
         key = (d.sa_id, d.stock_id)
-        out[key] = d.advisor.name  # last wins (same as UI trades view)
+        if key not in out:
+            out[key] = d.advisor.name
     return out
 
 
@@ -115,12 +116,10 @@ def _fifo_outcomes_for_user_stock(user_id, stock_id, cutoff_dt, advisor_for_buy)
     for t in buy_trades:
         if t.sa.started < cutoff_dt:
             continue
-        # Prefer Stock.advisor (matches trade table join to core_stock.advisor_id); else Discovery
-        advisor = None
-        if t.stock and getattr(t.stock, "advisor_id", None):
+        # Prefer Discovery (advisor that led to this buy); else Stock.advisor
+        advisor = advisor_for_buy.get((t.sa_id, t.stock_id))
+        if not advisor and t.stock and getattr(t.stock, "advisor_id", None):
             advisor = t.stock.advisor.name
-        if not advisor:
-            advisor = advisor_for_buy.get((t.sa_id, t.stock_id))
         if not advisor:
             continue
         cost = Decimal(t.shares) * t.price
@@ -182,25 +181,23 @@ def _build_scoreboard(lot_outcomes):
         by_advisor[o.advisor].append(o)
 
     scoreboard = {}
-    all_pcts = []
 
     for advisor, outcomes in sorted(by_advisor.items()):
         n = len(outcomes)
         winners = sum(1 for o in outcomes if o.winner)
         losers = n - winners
         win_rate = (winners / n * 100) if n else 0.0
-        avg_pct = sum(o.pct for o in outcomes) / n if n else 0.0
         total_cost = sum(o.cost for o in outcomes)
         total_exit = sum(o.exit_value for o in outcomes)
         total_pct = float((total_exit - total_cost) / total_cost * 100) if total_cost else 0.0
+        pnl = float(total_exit - total_cost)
 
         scoreboard[(advisor, COL_TRADES)] = n
         scoreboard[(advisor, COL_WINNERS)] = winners
         scoreboard[(advisor, COL_LOSERS)] = losers
         scoreboard[(advisor, COL_WIN_RATE_PCT)] = win_rate
-        scoreboard[(advisor, COL_AVG_PCT)] = avg_pct
         scoreboard[(advisor, COL_TOTAL_PCT)] = total_pct
-        all_pcts.extend(o.pct for o in outcomes)
+        scoreboard[(advisor, COL_PNL)] = pnl
 
     # Total row
     if by_advisor:
@@ -210,12 +207,12 @@ def _build_scoreboard(lot_outcomes):
         scoreboard[("Total", COL_WINNERS)] = winners_total
         scoreboard[("Total", COL_LOSERS)] = n_total - winners_total
         scoreboard[("Total", COL_WIN_RATE_PCT)] = (winners_total / n_total * 100) if n_total else 0.0
-        scoreboard[("Total", COL_AVG_PCT)] = sum(all_pcts) / len(all_pcts) if all_pcts else 0.0
         total_cost_all = sum(o.cost for o in lot_outcomes)
         total_exit_all = sum(o.exit_value for o in lot_outcomes)
         scoreboard[("Total", COL_TOTAL_PCT)] = (
             float((total_exit_all - total_cost_all) / total_cost_all * 100) if total_cost_all else 0.0
         )
+        scoreboard[("Total", COL_PNL)] = float(total_exit_all - total_cost_all)
 
     return scoreboard
 
@@ -230,6 +227,8 @@ def _print_scoreboard(scoreboard, stdout, cols=COLUMNS):
     for (r, c), v in scoreboard.items():
         if c in (COL_TRADES, COL_WINNERS, COL_LOSERS):
             width[c] = max(width[c], len(str(int(v))))
+        elif c == COL_PNL:
+            width[c] = max(width[c], len(f"{v:,.2f}"))
         else:
             width[c] = max(width[c], len(f"{v:.1f}"))
     row_label_width = max(len(r) for r in rows)
@@ -245,6 +244,8 @@ def _print_scoreboard(scoreboard, stdout, cols=COLUMNS):
             v = scoreboard.get((r, c), "")
             if c in (COL_TRADES, COL_WINNERS, COL_LOSERS):
                 cells.append(str(int(v)).rjust(width[c]))
+            elif c == COL_PNL:
+                cells.append(f"{v:,.2f}".rjust(width[c]))
             else:
                 cells.append(f"{v:.1f}".rjust(width[c]))
         stdout.write(r.ljust(row_label_width) + sep + sep.join(cells))
@@ -257,8 +258,9 @@ class Command(BaseCommand):
         parser.add_argument(
             "--days",
             type=int,
-            default=14,
-            help="Lookback days (days ago from now) for BUY trades (default: 14)",
+            default=None,
+            metavar="N",
+            help="Lookback days for BUY trades (default: 14, or user's account age when --user is set)",
         )
         parser.add_argument(
             "--user",
@@ -271,17 +273,26 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         days = options["days"]
         username = options.get("user")
-        cutoff = _cutoff_lookback(days)
+        user = None
 
-        qs = Trade.objects.filter(
-            action="BUY",
-            sa__started__gte=cutoff,
-        )
         if username:
             try:
                 user = User.objects.get(username=username)
             except User.DoesNotExist:
                 raise CommandError(f"User '{username}' not found.")
+            if days is None:
+                days = (timezone.now() - user.date_joined).days
+                if days <= 0:
+                    days = 1
+        if days is None:
+            days = 14
+
+        cutoff = _cutoff_lookback(days)
+        qs = Trade.objects.filter(
+            action="BUY",
+            sa__started__gte=cutoff,
+        )
+        if user is not None:
             qs = qs.filter(user=user)
         buy_trades = qs.select_related("sa", "user", "stock").order_by("created")
         buy_list = list(buy_trades)
