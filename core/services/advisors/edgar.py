@@ -192,19 +192,19 @@ END EX-99.1
 # Filter 8 (media reaction): same prompt as test_media_response_llm.py; company name for clarity.
 MEDIA_RESPONSE_PROMPT_TEMPLATE = """Search the web for business and financial news from {start_date} through {end_date} regarding {company_name} ({ticker})'s earnings.
 
-Analyze the gap between "Headline Results" and "Market Reaction."
+Analyze the gap between "Headline Results" and any "Market Reaction" (if the market has traded since the release).
 - Identify if the company beat/missed analyst consensus for EPS and Revenue.
 - Specifically look for forward-looking guidance, management's tone during the Q&A, and any cited "headwinds" (e.g., rising expenses, interest rates, or segment softness).
 - Specifically look for mentions of interest expense, capital expenditures (CapEx), or operating margins, as these often drive post-earnings sell-offs.
-- Compare the "Positive" headlines to the actual stock price movement immediately following the release.
+- If the market has traded since the release, compare headlines to the actual stock price movement; otherwise set market_reaction_pct to null and note in reason that trading had not occurred yet in the search window.
 
 Respond with STRICT JSON only. No other text before or after:
 {{
   "reaction": "positive" | "negative" | "neutral" | "no_coverage",
   "headline_beat": {{ "eps": true/false, "revenue": true/false }},
-  "market_reaction_pct": "<e.g. -2.5%>",
+  "market_reaction_pct": "<e.g. -2.5%> or null if no trading since release",
   "headlines_or_snippets": ["<quote 1>", "<quote 2>"],
-  "reason": "<2-3 sentences explaining why the market reacted the way it did despite/because of the headline numbers. Mention specific guidance or expense figures if available.>"
+  "reason": "<2-3 sentences: why the market reacted as it did (or that it had not yet traded). Mention specific guidance or expense figures if available.>"
 }}
 
 If you find no relevant coverage in that window, set reaction to "no_coverage" and reason accordingly."""
@@ -808,7 +808,7 @@ class Edgar(AdvisorBase):
                 eps_score = min(surprise_val, 50) * (reported_val ** 0.5)
                 if verbose:
                     comments.append(f"AV EPS surprise {surprise_str}% reported {reported_str} score {eps_score}")
-                return eps_score >= 10,comments
+                return eps_score >= 5,comments
         except (TypeError, ValueError):
             pass
         # Fallback: AV reported missing/0 → use 8-K actual + AV estimate (test_eps_8k_plus_av)
@@ -881,6 +881,7 @@ class Edgar(AdvisorBase):
             return None,[]
         company_name = cik_to_company_name(cik) or ticker
         fd = getattr(filing, "filing_date", None)
+
         if fd is None:
             vprint(verbose, "FILTER8: no filing date → None")
             return None,[]
@@ -896,7 +897,7 @@ class Edgar(AdvisorBase):
         except (TypeError, ValueError):
             vprint(verbose, "FILTER8: invalid filing date → None")
             return None,[]
-        start_date = filing_date
+        start_date = filing_date - timedelta(days=1)
         end_date = filing_date + timedelta(days=1)
         prompt = MEDIA_RESPONSE_PROMPT_TEMPLATE.format(
             company_name=company_name,
@@ -1062,8 +1063,8 @@ class Edgar(AdvisorBase):
             return
         """
 
-        filing1 = find("0000352541-26-000005")
-        filing2 = find("0000825542-26-000015")
+        filing1 = find("0001125376-26-000008")
+        filing2 = find("0001628280-26-005263")
 
         filings_8k = [filing1,filing2]
 

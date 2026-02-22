@@ -1225,8 +1225,8 @@ def track_candidates(start_date: date, candidates):
     print(f"Price Reaction Analysis (Filing Date: {start_date})")
     print(f"{'=' * 120}")
 
-    # Table header (Time = filing time, EPS % = surprise, etc.)
-    header = f"{'Time':<6} {'Symbol':<8} {'CIK':<8} {'Accession':<22} {'EPS %':<10} {'EPS $':<8} {'EPS #':<8} {'Filing $':<10} {'1d %':<8} {'7d %':<8}"
+    # Table header (1d = close on filing date, 2d = close on filing date + 1)
+    header = f"{'Time':<6} {'Symbol':<8} {'CIK':<8} {'Accession':<22} {'EPS %':<10} {'EPS $':<8} {'EPS #':<8} {'Filing $':<10} {'1d %':<8} {'2d %':<8} {'7d %':<8}"
     print(header)
     print("-" * 120)
 
@@ -1242,7 +1242,7 @@ def track_candidates(start_date: date, candidates):
         )
 
         if not ticker:
-            row = f"{time_str:<6} {'N/A':<8} {cik:<8} {accession:<22} {'N/A':<10} {'N/A':<8} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
+            row = f"{time_str:<6} {'N/A':<8} {cik:<8} {accession:<22} {'N/A':<10} {'N/A':<8} {'N/A':<8} {'N/A':<10} {'N/A':<8} {'N/A':<8} {'N/A':<8}"
             print(row)
             continue
 
@@ -1279,7 +1279,7 @@ def track_candidates(start_date: date, candidates):
             hist = stock.history(start=start_lookup, end=end_lookup)
 
             if hist is None or hist.empty or "Close" not in hist.columns:
-                row = f"{time_str:<6} {ticker:<8} {cik:<8} {accession:<22} {eps_str:<10} {eps_dollar_str:<8} {eps_score_str:<8} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
+                row = f"{time_str:<6} {ticker:<8} {cik:<8} {accession:<22} {eps_str:<10} {eps_dollar_str:<8} {eps_score_str:<8} {'N/A':<10} {'N/A':<8} {'N/A':<8} {'N/A':<8}"
                 print(row)
                 continue
 
@@ -1292,51 +1292,66 @@ def track_candidates(start_date: date, candidates):
 
             index_dates = _index_dates(hist)
             if not index_dates:
-                row = f"{time_str:<6} {ticker:<8} {cik:<8} {accession:<22} {eps_str:<10} {eps_dollar_str:<8} {eps_score_str:<8} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
+                row = f"{time_str:<6} {ticker:<8} {cik:<8} {accession:<22} {eps_str:<10} {eps_dollar_str:<8} {eps_score_str:<8} {'N/A':<10} {'N/A':<8} {'N/A':<8} {'N/A':<8}"
                 print(row)
                 continue
 
-            # Filing date price (last close on or before start_date)
-            filing_price = None
+            # Prior close = last close before start_date (baseline for 1d/2d/7d %)
+            prior_close = None
             for i, d in enumerate(index_dates):
-                if d <= start_date:
-                    filing_price = float(hist.iloc[i]["Close"])
+                if d < start_date:
+                    prior_close = float(hist.iloc[i]["Close"])
                 else:
                     break
+
+            # Filing $ = close on filing date (same calendar day)
+            close_1d = None
+            for i, d in enumerate(index_dates):
+                if d >= start_date:
+                    close_1d = float(hist.iloc[i]["Close"])
+                    break
+            filing_price = close_1d  # display as Filing $
             if filing_price is None and index_dates and index_dates[0] > start_date:
                 filing_price = float(hist.iloc[0]["Close"])
 
-            after_1d_date = start_date + timedelta(days=1)
-            after_1d_price = None
+            # 2d = close on filing date + 1
+            after_2d_date = start_date + timedelta(days=1)
+            close_2d = None
             for i, d in enumerate(index_dates):
-                if d >= after_1d_date:
-                    after_1d_price = float(hist.iloc[i]["Close"])
+                if d >= after_2d_date:
+                    close_2d = float(hist.iloc[i]["Close"])
                     break
 
             after_7d_date = start_date + timedelta(days=7)
-            after_7d_price = None
+            close_7d = None
             for i, d in enumerate(index_dates):
                 if d >= after_7d_date:
-                    after_7d_price = float(hist.iloc[i]["Close"])
+                    close_7d = float(hist.iloc[i]["Close"])
                     break
 
             filing_price_str = f"${filing_price:.2f}" if filing_price is not None else "N/A"
-            if filing_price is not None and after_1d_price is not None:
-                change_1d = ((after_1d_price - filing_price) / filing_price) * 100
+            # 1d % = (filing day close - previous day close) / previous day close
+            if prior_close is not None and close_1d is not None:
+                change_1d = ((close_1d - prior_close) / prior_close) * 100
                 change_1d_str = f"{change_1d:+.1f}%"
             else:
                 change_1d_str = "N/A"
-            if filing_price is not None and after_7d_price is not None:
-                change_7d = ((after_7d_price - filing_price) / filing_price) * 100
+            if prior_close is not None and close_2d is not None:
+                change_2d = ((close_2d - prior_close) / prior_close) * 100
+                change_2d_str = f"{change_2d:+.1f}%"
+            else:
+                change_2d_str = "N/A"
+            if prior_close is not None and close_7d is not None:
+                change_7d = ((close_7d - prior_close) / prior_close) * 100
                 change_7d_str = f"{change_7d:+.1f}%"
             else:
                 change_7d_str = "N/A"
 
-            row = f"{time_str:<6} {ticker:<8} {cik:<8} {accession:<22} {eps_str:<10} {eps_dollar_str:<8} {eps_score_str:<8} {filing_price_str:<10} {change_1d_str:<8} {change_7d_str:<8}"
+            row = f"{time_str:<6} {ticker:<8} {cik:<8} {accession:<22} {eps_str:<10} {eps_dollar_str:<8} {eps_score_str:<8} {filing_price_str:<10} {change_1d_str:<8} {change_2d_str:<8} {change_7d_str:<8}"
             print(row)
 
         except Exception as e:
-            row = f"{time_str:<6} {ticker:<8} {cik:<8} {accession:<22} {eps_str:<10} {eps_dollar_str:<8} {eps_score_str:<8} {'N/A':<10} {'N/A':<8} {'N/A':<8}"
+            row = f"{time_str:<6} {ticker:<8} {cik:<8} {accession:<22} {eps_str:<10} {eps_dollar_str:<8} {eps_score_str:<8} {'N/A':<10} {'N/A':<8} {'N/A':<8} {'N/A':<8}"
             print(row)
     
     print(f"{'=' * 120}\n")
