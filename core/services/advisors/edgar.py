@@ -14,7 +14,7 @@ import re
 import time
 from collections import Counter
 from typing import Dict, Optional, Tuple
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import requests
 import yfinance as yf
@@ -866,6 +866,52 @@ class Edgar(AdvisorBase):
         comments.append(f"Ex99.1 LLM interpretation: Past performance={past} guidance={future} expectation_gap={gap}")
         return True,comments
 
+    @staticmethod
+    def _filing_datetime_et(filing):
+        """
+        Return filing datetime in US/Eastern, or None.
+        Uses header.acceptance_datetime / accepted if available; else filing_date at start-of-day ET.
+        """
+        import pytz
+        et = pytz.timezone("US/Eastern")
+        header = getattr(filing, "header", None)
+        if header is not None:
+            acc = getattr(header, "acceptance_datetime", None) or getattr(header, "accepted", None)
+            if acc is not None:
+                if hasattr(acc, "hour"):  # datetime-like
+                    dt = acc
+                elif hasattr(acc, "strftime") and hasattr(acc, "date"):
+                    dt = acc
+                elif isinstance(acc, str) and len(acc) >= 12:  # SEC YYYYMMDDHHMMSS
+                    try:
+                        dt = datetime(
+                            int(acc[:4]), int(acc[4:6]), int(acc[6:8]),
+                            int(acc[8:10]), int(acc[10:12]), int(acc[12:14]) if len(acc) >= 14 else 0,
+                        )
+                    except (ValueError, TypeError):
+                        dt = None
+                else:
+                    dt = None
+                if dt is not None:
+                    if dt.tzinfo is None:
+                        return et.localize(dt)
+                    return dt.astimezone(et)
+        fd = getattr(filing, "filing_date", None)
+        if fd is None:
+            return None
+        try:
+            if isinstance(fd, date) and not isinstance(fd, datetime):
+                d = fd
+            elif hasattr(fd, "date") and callable(getattr(fd, "date")):
+                d = fd.date()
+            elif isinstance(fd, str):
+                d = date.fromisoformat(fd[:10])
+            else:
+                d = date.fromisoformat(str(fd)[:10])
+        except (TypeError, ValueError):
+            return None
+        return et.localize(datetime.combine(d, datetime.min.time()))
+
     def compute_filter8_pass(self, filing, verbose: bool = False):
         """
         FILTER8: Third-party media reaction (company name + date required; no our intel).
@@ -897,6 +943,22 @@ class Edgar(AdvisorBase):
         except (TypeError, ValueError):
             vprint(verbose, "FILTER8: invalid filing date → None")
             return None,[]
+        # When market is closed, defer the LLM call until at least 1 hour after filing (save on calls).
+        market_status = self.market_open()
+        is_market_open = market_status is not None and market_status >= 0
+        if not is_market_open:
+            filing_dt_et = self._filing_datetime_et(filing)
+            if filing_dt_et is not None:
+                import pytz
+                now_et = datetime.now(pytz.timezone("US/Eastern"))
+                if now_et < filing_dt_et + timedelta(hours=1):
+                    filing_time_str = filing_dt_et.strftime("%Y-%m-%d %H:%M ET")
+                    logger.info(
+                        "FILTER8: deferred (market closed and filing < 1h old), ticker=%s filing_time=%s",
+                        ticker,
+                        filing_time_str,
+                    )
+                    return None,[]
         start_date = filing_date - timedelta(days=1)
         end_date = filing_date + timedelta(days=1)
         prompt = MEDIA_RESPONSE_PROMPT_TEMPLATE.format(
@@ -969,26 +1031,31 @@ class Edgar(AdvisorBase):
         cik = str(getattr(filing, "cik", None))
         ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
 
-        logger.info(f"Inpecting: ticker={ticker or 'N/A'}, CIK={cik}, accession={accession}")
+        #logger.info(f"Inpecting: ticker={ticker or 'N/A'}, CIK={cik}, accession={accession}")
 
         if not ticker:
             return False, []
         if not self.compute_filter1_pass(filing, verbose):
+            logger.info(f"{ticker} CIK={cik}, accession={accession} failed filter1")
             return False, []
         if not self.compute_filter2_pass(filing, verbose):
+            logger.info(f"{ticker} CIK={cik}, accession={accession} failed filter2")
             return False, []
         if not self.compute_filter4_pass(filing, verbose):
+            logger.info(f"{ticker} CIK={cik}, accession={accession} failed filter4")
             return False, []
 
         filter3, comments = self.compute_filter3_pass(filing, verbose)
 
         if not filter3:
+            logger.info(f"{ticker} CIK={cik}, accession={accession} failed filter3")
             return False, []
 
-        if not self.compute_filter3_pass(filing, verbose):
-            return False, []
         if not self.compute_filter5_pass(filing, verbose):
+            logger.info(f"{ticker} CIK={cik}, accession={accession} failed filter5")
             return False, []
+
+        logger.info(f"{ticker} CIK={cik}, accession={accession} passed basic filters")
         return True, comments
 
     def _meta_filters_complete(self, meta):
@@ -1040,40 +1107,36 @@ class Edgar(AdvisorBase):
 
         """
         Discovery entry point for the ED-8 advisor.
-
-        For now this is a no-op stub so we can:
-          - register the advisor
-          - invoke it independently via `run_edgar`
         """
         market_status = self.market_open()
-        """
-        print("Fetching latest filings...")
+
+        logger.info("Fetching latest filings...")
         latest = get_latest_filings()
 
         try:
             filings = list(latest)
         except Exception as e:
-            print(f"❌ Error converting latest filings to list: {e}")
+            logger.warning(f"❌ Error converting latest filings to list: {e}")
             return
 
         # Filter to 8-Ks only
         filings_8k = [f for f in filings if getattr(f, "form", None) == "8-K"]
         if not filings_8k:
-            print("No latest 8-K filings found.")
+            logger.info("No latest 8-K filings found.")
             return
         """
 
-        filing1 = find("0001125376-26-000008")
+        filing1 = find("0000896622-26-000004")
         filing2 = find("0001628280-26-005263")
 
         filings_8k = [filing1,filing2]
-
+        """
         # Process pending watchlist entries with incomplete meta (filter6/7/8)
         pending = self.watchlist().order_by("created")
         for entry in pending:
             if self._meta_filters_complete(entry.meta):
 
-                if market_status is not None and market_status >= 0:
+                if True or market_status is not None and market_status >= 0:
                     comments = entry.meta.get("comments") or []
                     explanation = " | ".join(comments) if comments else "8-K passed"
                     self.discovered(sa, entry.stock.symbol, explanation, None)
@@ -1081,7 +1144,7 @@ class Edgar(AdvisorBase):
                     entry.status = "Executed"
                     entry.save(update_fields=["status"])
                 continue
-            print(f"  Processing incomplete: {entry.stock.symbol} accession={(entry.meta or {}).get('accession')}")
+            logger.info(f"Processing incomplete: {entry.stock.symbol} accession={(entry.meta or {}).get('accession')}")
             self._process_incomplete_watchlist_entry(entry, verbose=True)
 
         print(f"Found {len(filings_8k)} 8-K filings. Running basic inspection (filters 1-5)...")
@@ -1090,7 +1153,7 @@ class Edgar(AdvisorBase):
                 cik = str(getattr(filing, "cik", ""))
                 ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
                 if ticker and self.watched(ticker):
-                    print(f"  Skip {ticker} (already watched)")
+                    logger.info(f"  Skip {ticker} (already watched)")
                     continue
                 basic_passed, basic_comments = self.analyze_8k_basic(filing, False)
                 if basic_passed:
@@ -1134,7 +1197,7 @@ class Edgar(AdvisorBase):
                             days=1,
                             meta=watch_meta,
                         )
-                        print(f"    Added to watchlist (days=1)")
+                        logger.info(f"    Added to watchlist (days=1)")
                     elif result is False and ticker:
                         self.watch(
                             ticker,
@@ -1143,10 +1206,10 @@ class Edgar(AdvisorBase):
                             meta=watch_meta,
                             status="Excluded",
                         )
-                        print(f"    Added to watchlist (Excluded, days=1)")
+                        logger.info(f"    Added to watchlist (Excluded, days=1)")
 
             except Exception as e:
-                print(f"  ⚠️  Error inspecting filing: {e}")
+                logger.error(f"  ⚠️  Error inspecting filing: {e}")
 
 def run_edgar_standalone():
     """
