@@ -548,7 +548,10 @@ class AdvisorBase:
             confidence_score = Decimal(str(score_data['confidence_score']))
             logger.info(f"Confidence score calculated for {stock.symbol}: {confidence_score}")
 
-            # 2. Call Gemini for opinion (using V5 prompt)
+            # 2. Call Gemini for opinion (using V5 prompt) — skip if score invalid to avoid wasted LLM call
+            if confidence_score.is_nan():
+                logger.warning(f"Skipping health check for {stock.symbol}: confidence score is NaN (bad data)")
+                return None
             gemini_result = self._get_gemini_opinion(stock)
             gemini_weight = Decimal('1.0')  # Default to neutral if Gemini fails
             gemini_recommendation = None
@@ -614,12 +617,15 @@ class AdvisorBase:
             return None
 
     def _safe_div(self, a, b):
-        """Safely divide two numbers, returning None for invalid operations."""
+        """Safely divide two numbers, returning None for invalid operations or NaN/Inf."""
         try:
             if a is None or b in (0, None):
                 return None
-            return a / b
-        except:
+            result = a / b
+            if np.isnan(result) or np.isinf(result):
+                return None
+            return result
+        except Exception:
             return None
 
     def _get_buy_score(self, symbol: str) -> Optional[Dict]:
