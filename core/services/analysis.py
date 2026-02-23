@@ -215,7 +215,7 @@ def analyze_holdings(sa, users, advisors):
                                                 range_threshold = avg_price * range_threshold_pct
                                                 
                                                 if price_range <= range_threshold:
-                                                    execute_sell(sa, user, profile, holding, f"Flat near {range_threshold_pct*100:.0f}% over {evaluation_days} days")
+                                                    execute_sell(sa, user, profile, holding, f"Flat near {range_threshold_pct:.0f}% over {evaluation_days} days")
                                                     continue
                                     except Exception as e:
                                         logger.warning(f"Error checking PROFIT_FLAT for {holding.stock.symbol}: {e}")
