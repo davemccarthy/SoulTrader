@@ -34,7 +34,11 @@ class User(AdvisorBase):
                 stock = Stock.objects.get(symbol=symbol)
             except Stock.DoesNotExist:
                 stock = Stock.create(symbol, self.advisor)
-            stock.refresh()
+                if stock is None:
+                    return
+                stock.refresh()
+            else:
+                stock.refresh()
             instructions = _default_user_sell_instructions(stock)
         super().discovered(sa=sa, symbol=symbol, explanation=explanation, sell_instructions=instructions)
 

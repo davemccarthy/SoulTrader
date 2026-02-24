@@ -37,6 +37,11 @@ class Command(BaseCommand):
             if not advisor_row:
                 raise CommandError('No enabled advisors found')
             stock = Stock.create(symbol, advisor_row)
+            if stock is None:
+                raise CommandError(
+                    f'{symbol} is not listed on a national exchange (e.g. OTC excluded). '
+                    'Cannot run health check.'
+                )
             self.stdout.write(f'Created stock {symbol}')
         stock.refresh()
 

@@ -313,6 +313,8 @@ class AdvisorBase:
             stock = Stock.objects.get(symbol=symbol)
         except Stock.DoesNotExist:
             stock = Stock.create(symbol, self.advisor)
+            if stock is None:
+                return None
             logger.info(f"{self.advisor.name} created stock {stock.symbol}")
 
         # Latest price
@@ -443,8 +445,9 @@ class AdvisorBase:
         try:
             stock = Stock.objects.get(symbol=symbol)
         except Stock.DoesNotExist:
-            # Create stock if it doesn't exist
             stock = Stock.create(symbol, self.advisor)
+            if stock is None:
+                return None
             logger.info(f"{self.advisor.name} created stock {stock.symbol} for watchlist")
 
         # Refresh stock price to ensure we capture current price at watchlist entry time
@@ -849,7 +852,7 @@ Respond in JSON format:
 Thank you
 """
         
-        model, results = self.ask_gemini(prompt)
+        model, results = self.ask_gemini(prompt, use_search=True)
         
         if not results:
             return None

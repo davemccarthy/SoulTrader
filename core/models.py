@@ -93,6 +93,9 @@ class Advisor(models.Model):
         return self.enabled
 
 
+# East-coast national exchanges only (exclude OTC, regional, etc.)
+NATIONAL_EXCHANGES = ('NMS', 'NYQ', 'NAS', 'NYS')
+
 # Basic stock at the core of everything
 class Stock(models.Model):
     symbol = models.CharField(max_length=10, unique=True)
@@ -127,6 +130,17 @@ class Stock(models.Model):
             exchange = info.get('fullExchangeName') or info.get('exchange')
             if exchange:
                 stock.exchange = exchange[:32]
+
+            # Exclude non–east-coast national (e.g. OTC)
+            exchange_code = info.get('exchange')
+            if exchange_code not in NATIONAL_EXCHANGES:
+                logger.warning(
+                    "Stock.create: excluded %s (exchange=%s); only national exchanges allowed: %s",
+                    symbol,
+                    exchange_code or "(unknown)",
+                    ", ".join(NATIONAL_EXCHANGES),
+                )
+                return None
 
             # Sector
             sector = info.get('sector')
