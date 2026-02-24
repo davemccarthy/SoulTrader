@@ -52,10 +52,10 @@ class Profile(models.Model):
             "stocks": 30
         },
         "EXPERIMENTAL": {
-            "min_health": 15.0,
-            "advisors": ['User'],
+            "min_health": 20.0,
+            "advisors": ['User','Edgar'],
             "weight": 1.25,
-            "stocks": 20
+            "stocks": 15
         },
     }
 
