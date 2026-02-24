@@ -1073,6 +1073,8 @@ def analyze_8k(filing, verbose: bool = False):
     Otherwise return None.
     """
 
+    t = _filing_datetime(filing)
+
     # Handle both accession_no and accession_number attributes
     accession = getattr(filing, "accession_no", None) or getattr(
         filing, "accession_number", None
