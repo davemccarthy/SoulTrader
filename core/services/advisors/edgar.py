@@ -432,7 +432,7 @@ def get_eps_for_report_quarter(ticker: str, report_date: date) -> Optional[Dict]
     try:
         time.sleep(0.25)
         resp = requests.get(url, params=params, timeout=15)
-        print(f"alphavantage {resp}")
+
         if resp.status_code == 429:
             logger.warning("Alpha Vantage rate limit (429): request rejected for ticker=%s", ticker)
             return None
@@ -1024,14 +1024,14 @@ class Edgar(AdvisorBase):
             advanced_comments.extend(f8_comments or [])
 
         logger.info(f"analyze_8k_advanced: ticker={ticker or 'N/A'}, passed")
+        logger.warning("NO NINTH GATE!!!!")
+
         return True, (True, True, True), advanced_comments
 
     def analyze_8k_basic(self, filing, verbose: bool = False):
         accession = getattr(filing, "accession_no", None) or getattr(filing, "accession_number", None)
         cik = str(getattr(filing, "cik", None))
         ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
-
-        #logger.info(f"Inpecting: ticker={ticker or 'N/A'}, CIK={cik}, accession={accession}")
 
         if not ticker:
             return False, []
@@ -1126,10 +1126,10 @@ class Edgar(AdvisorBase):
             return
         """
 
-        filing1 = find("0000896622-26-000004")
+        filing1 = find("0001127703-26-000006")
         filing2 = find("0001628280-26-005263")
 
-        filings_8k = [filing1,filing2]
+        filings_8k = [filing1]
         """
         # Process pending watchlist entries with incomplete meta (filter6/7/8)
         pending = self.watchlist().order_by("created")
@@ -1147,13 +1147,15 @@ class Edgar(AdvisorBase):
             logger.info(f"Processing incomplete: {entry.stock.symbol} accession={(entry.meta or {}).get('accession')}")
             self._process_incomplete_watchlist_entry(entry, verbose=True)
 
-        print(f"Found {len(filings_8k)} 8-K filings. Running basic inspection (filters 1-5)...")
+        logger.info(f"Found {len(filings_8k)} 8-K filings. Running basic inspection (filters 1-5)...")
+
         for filing in filings_8k:
             try:
                 cik = str(getattr(filing, "cik", ""))
                 ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
+
                 if ticker and self.watched(ticker):
-                    logger.info(f"  Skip {ticker} (already watched)")
+                    logger.info(f"Skip {ticker} (already watched)")
                     continue
                 basic_passed, basic_comments = self.analyze_8k_basic(filing, False)
                 if basic_passed:
@@ -1161,9 +1163,11 @@ class Edgar(AdvisorBase):
                     ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
                     accession = getattr(filing, "accession_no", None) or getattr(filing, "accession_number", None)
 
+                    comments = [f"Postive 8-K earnings filing - accession: {accession} cik: {cik}"]
+
                     meta = {"filter7": None, "filter6": None, "filter8": None}
                     result, state, advanced_comments = self.analyze_8k_advanced(filing, meta, verbose=False)
-                    all_comments = (basic_comments or []) + (advanced_comments or [])
+                    all_comments = comments + (basic_comments or []) + (advanced_comments or [])
                     watch_meta = {
                         "cik": cik,
                         "accession": accession,
@@ -1222,7 +1226,7 @@ def run_edgar_standalone():
     from core.models import Advisor, SmartAnalysis
 
     try:
-        advisor_row = Advisor.objects.get(name="ED-8")
+        advisor_row = Advisor.objects.get(name="EDDIE-8")
     except Advisor.DoesNotExist:
         return None, "ED-8 advisor not found in Advisor table"
 
