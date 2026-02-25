@@ -438,7 +438,10 @@ def get_eps_for_report_quarter(ticker: str, report_date: date) -> Optional[Dict]
             return None
         resp.raise_for_status()
         data = resp.json()
-        if "Error Message" in data or "Note" in data or "Information" in data:
+        if "Error Message" in data or "Note" in data:
+            return None
+        if "Information" in data:
+            print("Alpha Vantage (Information) for %s: %s" % (ticker, data["Information"][:250]))
             return None
         quarterly = data.get("quarterlyEarnings") or []
         record = None
@@ -672,12 +675,12 @@ class Edgar(AdvisorBase):
                 vprint(verbose, f"FILTER3: fail price ${price:.2f} > ${FILTER3_PRICE_MAX} (above band)")
                 return False
         fifty_two_high = info.get("fiftyTwoWeekHigh")
-        if verbose and price is not None and fifty_two_high is not None and isinstance(fifty_two_high, (int, float)) and fifty_two_high > 0:
+        if price is not None and fifty_two_high is not None and isinstance(fifty_two_high, (int, float)) and fifty_two_high > 0:
             pct_52 = 100.0 * price / fifty_two_high
             if pct_52 >= 90.0:
                 comments.append(f"⚠️ BASIC FILTER WARNING: Price at {pct_52:.1f}% of 52-week high")
         fd = getattr(filing, "filing_date", None)
-        if verbose and price is not None and fd is not None:
+        if price is not None and fd is not None:
             try:
                 if isinstance(fd, date):
                     filing_date = fd
@@ -705,7 +708,7 @@ class Edgar(AdvisorBase):
                         if close_prev2 > 0:
                             prev_day_pct = (close_prev - close_prev2) / close_prev2 * 100
                             if prev_day_pct >= FILTER3_PREV_DAY_GAIN_FAIL_PCT:
-                                comments.append(f"Previous day price gain +{prev_day_pct:.1f}% (hard fail >= {FILTER3_PREV_DAY_GAIN_FAIL_PCT}%)")
+                                logger.warning(f"Previous day price gain +{prev_day_pct:.1f}% (hard fail >= {FILTER3_PREV_DAY_GAIN_FAIL_PCT}%)")
                                 return False, comments
                             if prev_day_pct >= FILTER3_PREV_DAY_GAIN_WARN_PCT:
                                 comments.append(f"⚠️ BASIC FILTER WARNING: Previous day price gain +{prev_day_pct:.1f}%")
@@ -1002,7 +1005,7 @@ class Edgar(AdvisorBase):
             f6_comments = f6[1] if isinstance(f6, (list, tuple)) and len(f6) >= 2 else []
             if f6_pass is False or f6_pass is None:
                 logger.info(f"compute_filter6_pass(EPS beat): ticker={ticker or 'N/A'}, returns {f6_pass}")
-                return f6_pass, (f6_pass, None, None), (f6_comments or [])
+                return f6_pass, (None, f6_pass, None), (f6_comments or [])
             advanced_comments.extend(f6_comments or [])
 
         if meta_requirements.get("filter7") is None:
@@ -1011,7 +1014,7 @@ class Edgar(AdvisorBase):
             f7_comments = f7[1] if isinstance(f7, (list, tuple)) and len(f7) >= 2 else []
             if f7_pass is False or f7_pass is None:
                 logger.info(f"compute_filter7_pass(3ducks): ticker={ticker or 'N/A'}, returns {f7_pass}")
-                return f7_pass, (True, f7_pass, None), advanced_comments
+                return f7_pass, (f7_pass, True, None), advanced_comments
             advanced_comments.extend(f7_comments or [])
 
         if meta_requirements.get("filter8") is None:
@@ -1109,7 +1112,7 @@ class Edgar(AdvisorBase):
         Discovery entry point for the ED-8 advisor.
         """
         market_status = self.market_open()
-
+        """
         logger.info("Fetching latest filings...")
         latest = get_latest_filings()
 
@@ -1125,12 +1128,12 @@ class Edgar(AdvisorBase):
             logger.info("No latest 8-K filings found.")
             return
         """
-
-        filing1 = find("0001127703-26-000006")
-        filing2 = find("0001628280-26-005263")
+        filing1 = find("0000764622-26-000010")
+        filing2 = find("0001140361-26-006718")
+        filing3 = find("0001193125-26-068512")
 
         filings_8k = [filing1]
-        """
+
         # Process pending watchlist entries with incomplete meta (filter6/7/8)
         pending = self.watchlist().order_by("created")
         for entry in pending:
@@ -1163,7 +1166,7 @@ class Edgar(AdvisorBase):
                     ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
                     accession = getattr(filing, "accession_no", None) or getattr(filing, "accession_number", None)
 
-                    comments = [f"Postive 8-K earnings filing - accession: {accession} cik: {cik}"]
+                    comments = [f"Positive 8-K earnings filing: {accession}"]
 
                     meta = {"filter7": None, "filter6": None, "filter8": None}
                     result, state, advanced_comments = self.analyze_8k_advanced(filing, meta, verbose=False)
@@ -1201,7 +1204,7 @@ class Edgar(AdvisorBase):
                             days=1,
                             meta=watch_meta,
                         )
-                        logger.info(f"    Added to watchlist (days=1)")
+                        logger.info(f"Added to watchlist (days=1)")
                     elif result is False and ticker:
                         self.watch(
                             ticker,
@@ -1210,10 +1213,10 @@ class Edgar(AdvisorBase):
                             meta=watch_meta,
                             status="Excluded",
                         )
-                        logger.info(f"    Added to watchlist (Excluded, days=1)")
+                        logger.info(f"Added to watchlist (Excluded, days=1)")
 
             except Exception as e:
-                logger.error(f"  ⚠️  Error inspecting filing: {e}")
+                logger.error(f"⚠️ Error inspecting filing: {e}")
 
 def run_edgar_standalone():
     """

@@ -958,7 +958,14 @@ def get_eps_for_report_quarter(ticker: str, report_date: date) -> Optional[Dict]
         resp = requests.get(url, params=params, timeout=15)
         resp.raise_for_status()
         data = resp.json()
-        if "Error Message" in data or "Note" in data or "Information" in data:
+        if "Error Message" in data:
+            return None
+        if "Note" in data:
+            print("Alpha Vantage (Note) for %s: %s" % (ticker, data["Note"][:250]))
+            return None
+        if "Information" in data:
+            print("Alpha Vantage (Information) for %s: %s" % (ticker, data["Information"][:250]))
+            time.sleep(10)
             return None
         quarterly = data.get("quarterlyEarnings") or []
         for r in quarterly:
@@ -1186,7 +1193,13 @@ def get_eps_for_report_date(ticker: str, report_date: date) -> Optional[Dict]:
         resp = requests.get(url, params=params, timeout=15)
         resp.raise_for_status()
         data = resp.json()
-        if "Error Message" in data or "Note" in data or "Information" in data:
+        if "Error Message" in data:
+            return None
+        if "Note" in data:
+            print("Alpha Vantage (Note) for %s: %s" % (ticker, data["Note"][:250]))
+            return None
+        if "Information" in data:
+            print("Alpha Vantage (Information) for %s: %s" % (ticker, data["Information"][:250]))
             return None
         quarterly = data.get("quarterlyEarnings") or []
         for d in (report_date, report_date - timedelta(days=1)):

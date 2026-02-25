@@ -50,15 +50,14 @@ Analyze the gap between "Headline Results" and "Market Reaction."
 - Identify if the company beat/missed analyst consensus for EPS and Revenue.
 - Specifically look for forward-looking guidance, management's tone during the Q&A, and any cited "headwinds" (e.g., rising expenses, interest rates, or segment softness).
 - Specifically look for mentions of interest expense, capital expenditures (CapEx), or operating margins, as these often drive post-earnings sell-offs.
-- Compare the "Positive" headlines to the actual stock price movement immediately following the release.
+- Downgrade if you can find at least one bearish reason why the stock might trade down despite the headline beat (e.g., guidance, CapEx, or "priced in" news).
 
 Respond with STRICT JSON only. No other text before or after:
 {{
   "reaction": "positive" | "negative" | "neutral" | "no_coverage",
   "headline_beat": {{ "eps": true/false, "revenue": true/false }},
-  "market_reaction_pct": "<e.g. -2.5%>",
   "headlines_or_snippets": ["<quote 1>", "<quote 2>"],
-  "reason": "<2-3 sentences explaining why the market reacted the way it did despite/because of the headline numbers. Mention specific guidance or expense figures if available.>"
+  "reason": "<2-3 sentences explaining your decision. Mention specific guidance, expense figures, or bearish/bullish cues if relevant.>"
 }}
 
 If you find no relevant coverage in that window, set reaction to "no_coverage" and reason accordingly."""
