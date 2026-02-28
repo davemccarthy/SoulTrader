@@ -35,19 +35,19 @@ class Profile(models.Model):
     RISK = {
         "CONSERVATIVE": {
             "min_health": 50.0,  # Only top ~20% of your scores
-            "advisors": ['Story', 'FDA', 'Insider'],
+            "advisors": ['Story', 'FDA', 'Insider','Edgar'],
             "weight": 1.0,
             "stocks": 50
         },
         "MODERATE": {
             "min_health": 40.0,  # Above average
-            "advisors": ['Story', 'FDA', 'Insider', 'Polygon'],
+            "advisors": ['Story', 'FDA', 'Insider', 'Polygon','Edgar'],
             "weight": 1.00,
             "stocks": 40
         },
         "AGGRESSIVE": {
             "min_health": 30.0,  # Below average but not bottom
-            "advisors": ['User', 'FDA', 'Insider', 'Story', 'Polygon'],
+            "advisors": ['User', 'FDA', 'Insider', 'Story', 'Polygon','Edgar'],
             "weight": 1.25,
             "stocks": 30
         },
@@ -94,7 +94,8 @@ class Advisor(models.Model):
 
 
 # East-coast national exchanges only (exclude OTC, regional, etc.)
-NATIONAL_EXCHANGES = ('NMS', 'NYQ', 'NAS', 'NYS')
+# NMS=NASDAQ Global Select, NYQ=NYSE, NAS=NASDAQ, NYS=NYSE MKT, NGM=NASDAQ Global Market, NCM=NASDAQ Capital Market
+NATIONAL_EXCHANGES = ('NMS', 'NYQ', 'NAS', 'NYS', 'NGM', 'NCM')
 
 # Basic stock at the core of everything
 class Stock(models.Model):
