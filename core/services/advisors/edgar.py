@@ -1091,8 +1091,7 @@ class Edgar(AdvisorBase):
             logger.warning(f"Could not find filing {accession}")
             return
         result, state, advanced_comments = self.analyze_8k_advanced(filing, meta, verbose=verbose)
-        if verbose:
-            print(f"    Advanced: result={result} state={state}")
+
         new_meta = dict(meta)
         new_meta["filter7"] = state[0]
         new_meta["filter6"] = state[1]
@@ -1112,7 +1111,33 @@ class Edgar(AdvisorBase):
         Discovery entry point for the ED-8 advisor.
         """
         market_status = self.market_open()
-        """
+
+        sell_instructions = [
+            ("PERCENTAGE_DIMINISHING", 1.20, 14),
+            ("PERCENTAGE_AUGMENTING", 0.90, 14),
+            ("PEAKED", 7.0, None),
+            ("PROFIT_FLAT", 0.5, 4),
+            ("DESCENDING_TREND", -0.20, None),
+        ]
+
+        # Process pending watchlist entries with incomplete meta (filter6/7/8)
+        logger.info("Process pending watchlist...")
+
+        pending = self.watchlist().order_by("created")
+        for entry in pending:
+            if self._meta_filters_complete(entry.meta):
+
+                if True or market_status is not None and market_status >= 0:
+                    comments = entry.meta.get("comments") or []
+                    explanation = " | ".join(comments) if comments else "8-K passed"
+                    self.discovered(sa, entry.stock.symbol, explanation, sell_instructions)
+
+                    entry.status = "Executed"
+                    entry.save(update_fields=["status"])
+                continue
+            logger.info(f"Processing incomplete: {entry.stock.symbol} accession={(entry.meta or {}).get('accession')}")
+            self._process_incomplete_watchlist_entry(entry, verbose=False)
+
         logger.info("Fetching latest filings...")
         latest = get_latest_filings()
 
@@ -1128,28 +1153,12 @@ class Edgar(AdvisorBase):
             logger.info("No latest 8-K filings found.")
             return
         """
-        filing1 = find("0000764622-26-000010")
-        filing2 = find("0001140361-26-006718")
-        filing3 = find("0001193125-26-068512")
+        filing1 = find("0002013745-26-000003")
+        filing2 = find("0001193125-26-076617")
+        filing3 = find("0001632127-26-000004")
 
         filings_8k = [filing1]
-
-        # Process pending watchlist entries with incomplete meta (filter6/7/8)
-        pending = self.watchlist().order_by("created")
-        for entry in pending:
-            if self._meta_filters_complete(entry.meta):
-
-                if True or market_status is not None and market_status >= 0:
-                    comments = entry.meta.get("comments") or []
-                    explanation = " | ".join(comments) if comments else "8-K passed"
-                    self.discovered(sa, entry.stock.symbol, explanation, None)
-
-                    entry.status = "Executed"
-                    entry.save(update_fields=["status"])
-                continue
-            logger.info(f"Processing incomplete: {entry.stock.symbol} accession={(entry.meta or {}).get('accession')}")
-            self._process_incomplete_watchlist_entry(entry, verbose=True)
-
+        """
         logger.info(f"Found {len(filings_8k)} 8-K filings. Running basic inspection (filters 1-5)...")
 
         for filing in filings_8k:
@@ -1189,7 +1198,7 @@ class Edgar(AdvisorBase):
                             )
                         else:
                             explanation = " | ".join(all_comments) if all_comments else "8-K passed"
-                            self.discovered(sa, ticker, explanation, None)
+                            self.discovered(sa, ticker, explanation, sell_instructions)
                             self.watch(
                                 ticker,
                                 explanation="8-K passed; discovered",
