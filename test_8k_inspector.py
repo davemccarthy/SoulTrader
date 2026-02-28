@@ -429,22 +429,35 @@ def compute_filter3_pass(filing, verbose: bool = False) -> bool:
             vprint(verbose, f"FILTER3: fail price ${price:.2f} > ${FILTER3_PRICE_MAX} (above band)")
             return False
 
-    # Warnings (vprint only): 90%+ of 52-week high, 90%+ of 2-week lead-up high
+    # Warnings (vprint only): 90%+ of 52-week high, near 52-week low, 90%+ of 2-week lead-up high
     fifty_two_high = info.get("fiftyTwoWeekHigh")
-    if (
-        verbose
-        and price is not None
-        and fifty_two_high is not None
-        and isinstance(fifty_two_high, (int, float))
-        and fifty_two_high > 0
-    ):
-        pct_52 = 100.0 * price / fifty_two_high
-        if pct_52 >= 90.0:
-            vprint(
-                verbose,
-                f"********** WARNING: Price at {pct_52:.1f}% of 52-week high "
-                f"(price ${price:.2f}, 52w high ${fifty_two_high:.2f}) **********",
-            )
+    fifty_two_low = info.get("fiftyTwoWeekLow")
+    if verbose and price is not None:
+        if (
+            fifty_two_high is not None
+            and isinstance(fifty_two_high, (int, float))
+            and fifty_two_high > 0
+        ):
+            pct_52_high = 100.0 * price / fifty_two_high
+            if pct_52_high >= 90.0:
+                vprint(
+                    verbose,
+                    f"********** WARNING: Price at {pct_52_high:.1f}% of 52-week high "
+                    f"(price ${price:.2f}, 52w high ${fifty_two_high:.2f}) **********",
+                )
+        if (
+            fifty_two_low is not None
+            and isinstance(fifty_two_low, (int, float))
+            and fifty_two_low > 0
+        ):
+            pct_52_low = 100.0 * price / fifty_two_low
+            # Within ~10% of 52-week low → highlight as opportunity
+            if pct_52_low <= 110.0:
+                vprint(
+                    verbose,
+                    f"🟢 OPPORTUNITY: Price at {pct_52_low:.1f}% of 52-week low "
+                    f"(price ${price:.2f}, 52w low ${fifty_two_low:.2f})",
+                )
 
     fd = getattr(filing, "filing_date", None)
     if verbose and price is not None and fd is not None:
@@ -470,6 +483,37 @@ def compute_filter3_pass(filing, verbose: bool = False) -> bool:
                         f"********** WARNING: Filing price at {pct_2w:.1f}% of 2-week high "
                         f"(filing close ${last_close:.2f}, 2w high ${two_week_high:.2f}) **********",
                     )
+
+                # Price vs averages: relative to 2-week and 52-week averages (100% = at average)
+                two_week_avg = float(hist["Close"].mean())
+                rel_2w = 100.0 * last_close / two_week_avg if two_week_avg > 0 else None
+
+                rel_52w = None
+                avg_52w = None
+                try:
+                    hist_52w = stock.history(
+                        start=filing_date - timedelta(days=365),
+                        end=filing_date,
+                        auto_adjust=True,
+                    )
+                    if hist_52w is not None and not hist_52w.empty:
+                        avg_52w = float(hist_52w["Close"].mean())
+                        if avg_52w > 0:
+                            rel_52w = 100.0 * last_close / avg_52w
+                except Exception:
+                    hist_52w = None
+
+                parts = []
+                if rel_2w is not None:
+                    parts.append(
+                        f"2w={rel_2w:.1f}% (last_close ${last_close:.2f}, 2w avg ${two_week_avg:.2f})"
+                    )
+                if rel_52w is not None and avg_52w is not None:
+                    parts.append(
+                        f"52w={rel_52w:.1f}% (last_close ${last_close:.2f}, 52w avg ${avg_52w:.2f})"
+                    )
+                if parts:
+                    vprint(verbose, "Price vs averages: " + "; ".join(parts))
         except Exception as e:
             vprint(verbose, f"FILTER3: (skip 2-week high check: {e})")
 
@@ -965,7 +1009,7 @@ def get_eps_for_report_quarter(ticker: str, report_date: date) -> Optional[Dict]
             return None
         if "Information" in data:
             print("Alpha Vantage (Information) for %s: %s" % (ticker, data["Information"][:250]))
-            time.sleep(10)
+            get_actual_eps_from_8k().sleep(10)
             return None
         quarterly = data.get("quarterlyEarnings") or []
         for r in quarterly:
@@ -1241,7 +1285,12 @@ def track_candidates(start_date: date, candidates):
     print(f"{'=' * 120}")
 
     # Table header (1d = close on filing date, 2d = close on filing date + 1)
-    header = f"{'Time':<6} {'Symbol':<8} {'CIK':<8} {'Accession':<22} {'EPS %':<10} {'EPS $':<8} {'EPS #':<8} {'Filing $':<10} {'1d %':<8} {'2d %':<8} {'7d %':<8}"
+    # EPS $ and EPS # removed to make space for 2w % and 52w % (relative to averages)
+    header = (
+        f"{'Time':<6} {'Symbol':<8} {'CIK':<8} {'Accession':<22} "
+        f"{'EPS %':<10} {'Filing $':<10} {'1d %':<8} {'2d %':<8} "
+        f"{'7d %':<8} {'2w %':<8} {'52w %':<8}"
+    )
     print(header)
     print("-" * 120)
 
@@ -1257,14 +1306,17 @@ def track_candidates(start_date: date, candidates):
         )
 
         if not ticker:
-            row = f"{time_str:<6} {'N/A':<8} {cik:<8} {accession:<22} {'N/A':<10} {'N/A':<8} {'N/A':<8} {'N/A':<10} {'N/A':<8} {'N/A':<8} {'N/A':<8}"
+            row = (
+                f"{time_str:<6} {'N/A':<8} {cik:<8} {accession:<22} "
+                f"{'N/A':<10} {'N/A':<10} {'N/A':<8} {'N/A':<8} "
+                f"{'N/A':<8} {'N/A':<8} {'N/A':<8}"
+            )
             print(row)
             continue
 
         # EPS % (surprise) and EPS¢ (beat in cents) from analyze_8k
         eps_str = "N/A"
-        eps_dollar_str = "N/A"
-        eps_score_str = "N/A"
+        # EPS $ and EPS # no longer shown in the candidates table
 
         pct = None
         if eps_record:
@@ -1294,7 +1346,11 @@ def track_candidates(start_date: date, candidates):
             hist = stock.history(start=start_lookup, end=end_lookup)
 
             if hist is None or hist.empty or "Close" not in hist.columns:
-                row = f"{time_str:<6} {ticker:<8} {cik:<8} {accession:<22} {eps_str:<10} {eps_dollar_str:<8} {eps_score_str:<8} {'N/A':<10} {'N/A':<8} {'N/A':<8} {'N/A':<8}"
+                row = (
+                    f"{time_str:<6} {ticker:<8} {cik:<8} {accession:<22} "
+                    f"{eps_str:<10} {'N/A':<10} {'N/A':<8} {'N/A':<8} "
+                    f"{'N/A':<8} {'N/A':<8} {'N/A':<8}"
+                )
                 print(row)
                 continue
 
@@ -1307,7 +1363,11 @@ def track_candidates(start_date: date, candidates):
 
             index_dates = _index_dates(hist)
             if not index_dates:
-                row = f"{time_str:<6} {ticker:<8} {cik:<8} {accession:<22} {eps_str:<10} {eps_dollar_str:<8} {eps_score_str:<8} {'N/A':<10} {'N/A':<8} {'N/A':<8} {'N/A':<8}"
+                row = (
+                    f"{time_str:<6} {ticker:<8} {cik:<8} {accession:<22} "
+                    f"{eps_str:<10} {'N/A':<10} {'N/A':<8} {'N/A':<8} "
+                    f"{'N/A':<8} {'N/A':<8} {'N/A':<8}"
+                )
                 print(row)
                 continue
 
@@ -1328,6 +1388,15 @@ def track_candidates(start_date: date, candidates):
             filing_price = close_1d  # display as Filing $
             if filing_price is None and index_dates and index_dates[0] > start_date:
                 filing_price = float(hist.iloc[0]["Close"])
+
+            # If we still don't have a filing_price (e.g. running before the filing-day bar exists),
+            # fall back to the latest available close in the lookup window so we can still
+            # compute relative metrics (2w %, 52w %) using a "last close" anchor.
+            if filing_price is None:
+                try:
+                    filing_price = float(hist["Close"].iloc[-1])
+                except Exception:
+                    filing_price = None
 
             # 2d = close on filing date + 1
             after_2d_date = start_date + timedelta(days=1)
@@ -1362,11 +1431,50 @@ def track_candidates(start_date: date, candidates):
             else:
                 change_7d_str = "N/A"
 
-            row = f"{time_str:<6} {ticker:<8} {cik:<8} {accession:<22} {eps_str:<10} {eps_dollar_str:<8} {eps_score_str:<8} {filing_price_str:<10} {change_1d_str:<8} {change_2d_str:<8} {change_7d_str:<8}"
+            # Relative to 2-week and 52-week highs, using filing_price as anchor
+            two_week_pct_str = "N/A"
+            fifty_two_pct_str = "N/A"
+            if filing_price is not None:
+                try:
+                    hist_2w = stock.history(
+                        start=start_date - timedelta(days=14),
+                        end=start_date + timedelta(days=2),
+                        auto_adjust=True,
+                    )
+                    if hist_2w is not None and not hist_2w.empty and "High" in hist_2w.columns:
+                        high_2w = float(hist_2w["High"].max())
+                        if high_2w > 0:
+                            two_week_pct = 100.0 * filing_price / high_2w
+                            two_week_pct_str = f"{two_week_pct:.1f}%"
+                except Exception:
+                    pass
+                try:
+                    hist_52w = stock.history(
+                        start=start_date - timedelta(days=365),
+                        end=start_date,
+                        auto_adjust=True,
+                    )
+                    if hist_52w is not None and not hist_52w.empty and "High" in hist_52w.columns:
+                        high_52w = float(hist_52w["High"].max())
+                        if high_52w > 0:
+                            fifty_two_pct = 100.0 * filing_price / high_52w
+                            fifty_two_pct_str = f"{fifty_two_pct:.1f}%"
+                except Exception:
+                    pass
+
+            row = (
+                f"{time_str:<6} {ticker:<8} {cik:<8} {accession:<22} "
+                f"{eps_str:<10} {filing_price_str:<10} {change_1d_str:<8} {change_2d_str:<8} "
+                f"{change_7d_str:<8} {two_week_pct_str:<8} {fifty_two_pct_str:<8}"
+            )
             print(row)
 
         except Exception as e:
-            row = f"{time_str:<6} {ticker:<8} {cik:<8} {accession:<22} {eps_str:<10} {eps_dollar_str:<8} {eps_score_str:<8} {'N/A':<10} {'N/A':<8} {'N/A':<8} {'N/A':<8}"
+            row = (
+                f"{time_str:<6} {ticker:<8} {cik:<8} {accession:<22} "
+                f"{eps_str:<10} {'N/A':<10} {'N/A':<8} {'N/A':<8} "
+                f"{'N/A':<8} {'N/A':<8} {'N/A':<8}"
+            )
             print(row)
     
     print(f"{'=' * 120}\n")
