@@ -50,6 +50,31 @@ def cik_to_ticker(cik: str) -> Optional[str]:
         return None
 
 
+def _filing_date_or_none(filing) -> Optional[date]:
+    """
+    Normalize filing.filing_date into a date, or return None if unusable.
+    """
+    fd = getattr(filing, "filing_date", None)
+    if fd is None:
+        return None
+    if isinstance(fd, date):
+        return fd
+    if isinstance(fd, str):
+        try:
+            return date.fromisoformat(fd[:10])
+        except ValueError:
+            return None
+    if hasattr(fd, "date") and callable(getattr(fd, "date")):
+        try:
+            return fd.date()
+        except Exception:
+            return None
+    try:
+        return date.fromisoformat(str(fd)[:10])
+    except Exception:
+        return None
+
+
 def _get_ex99_text(filing) -> str:
     """Return concatenated EX-99.x exhibit text from filing, or empty string."""
     parts = []
@@ -203,6 +228,23 @@ def _latest_quarter_end_for_date(d: date) -> date:
     if m in (7, 8, 9):
         return date(y, 6, 30)
     return date(y, 9, 30)
+
+
+def quarter_label_for_filing_date(filing_date: date) -> str:
+    """
+    Human-readable quarter label (e.g. 'Q4 2025') for this filing date,
+    using the same quarter-end mapping as _latest_quarter_end_for_date.
+    """
+    qe = _latest_quarter_end_for_date(filing_date)
+    if qe.month == 3:
+        q = "Q1"
+    elif qe.month == 6:
+        q = "Q2"
+    elif qe.month == 9:
+        q = "Q3"
+    else:
+        q = "Q4"
+    return f"{q} {qe.year}"
 
 
 def get_eps_for_report_quarter(ticker: str, report_date: date) -> Optional[Dict]:
@@ -426,6 +468,38 @@ def _ratio_score(positive: int, negative: int) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Media reaction LLM prompt template
+# ---------------------------------------------------------------------------
+
+MEDIA_REACTION_PROMPT_TEMPLATE = """Today is {date}. Search for the most recent news about {company} ({ticker}) {quarter} earnings results..
+
+<<<EPS_SECTION>>>
+
+Analyze the gap between "Headline Results" and "Market Reaction."
+- Specifically look for forward-looking guidance, management's tone during the Q&A, and any cited "headwinds" (e.g., rising expenses, interest rates, or segment softness).
+- Specifically look for mentions of interest expense, capital expenditures (CapEx), or operating margins, as these often drive post-earnings sell-offs.
+- Downgrade if you can find at least one bearish reason why the stock might trade down despite the headline beat (e.g., guidance, CapEx, or "priced in" news).
+
+Respond with STRICT JSON only. No other text before or after:
+{{
+  "reaction": "strong_positive" | "positive" | "negative" | "neutral" | "no_coverage",
+  "headline_beat": {{ "eps": "weak_beat"|"beat"|"strong_beat"|"miss"|"unknown", "revenue": "weak_beat"|"beat"|"strong_beat"|"miss"|"unknown" }},
+  "headlines_or_snippets": ["<quote 1>", "<quote 2>"],
+  "reason": "<2-3 sentences explaining your decision. Mention specific guidance, expense figures, or bearish/bullish cues if relevant.>"
+}}
+
+If you find no relevant coverage in response to this filing, set reaction to "no_coverage" and reason accordingly."""
+
+
+MEDIA_REACTION_EPS_ASK = """- Identify if the company beat or missed analyst consensus for EPS and Revenue.
+"""
+
+
+MEDIA_REACTION_EPS_KNOWN = """The EPS outcome is already known separately; do NOT attempt to infer or override whether EPS beat or missed expectations. You may mention EPS narratively. Focus your analysis on whether revenue appears to have beaten or missed expectations.
+"""
+
+
+# ---------------------------------------------------------------------------
 # ED-8 advisor class and command entry
 # ---------------------------------------------------------------------------
 
@@ -562,17 +636,9 @@ class Edgar(AdvisorBase):
                     return _fail(f"sector/industry hard fail ({entry})")
 
         # Previous trading day big price gain (>= 10%) → hard fail
-        fd = getattr(filing, "filing_date", None)
-        if fd is not None and price is not None:
+        filing_date = _filing_date_or_none(filing)
+        if filing_date is not None and price is not None:
             try:
-                if isinstance(fd, date):
-                    filing_date = fd
-                elif isinstance(fd, str):
-                    filing_date = date.fromisoformat(fd[:10])
-                elif hasattr(fd, "date") and callable(getattr(fd, "date")):
-                    filing_date = fd.date()
-                else:
-                    filing_date = date.fromisoformat(str(fd)[:10])
                 start = filing_date - timedelta(days=14)
                 end = filing_date + timedelta(days=2)
                 hist = stock.history(start=start, end=end, auto_adjust=True)
@@ -622,8 +688,8 @@ class Edgar(AdvisorBase):
             )
             return None
 
-        fd = getattr(filing, "filing_date", None)
-        if fd is None:
+        report_date = _filing_date_or_none(filing)
+        if report_date is None:
             logger.info(
                 "ticker=%s, CIK=%s, accession=%s EPS: no filing_date",
                 ticker,
@@ -631,13 +697,6 @@ class Edgar(AdvisorBase):
                 accession,
             )
             return None
-        if isinstance(fd, str):
-            try:
-                report_date = date.fromisoformat(fd[:10])
-            except ValueError:
-                return None
-        else:
-            report_date = getattr(fd, "date", lambda: fd)() if hasattr(fd, "date") else fd
 
         record = get_eps_for_report_quarter(ticker, report_date)
         if not record:
@@ -869,6 +928,128 @@ class Edgar(AdvisorBase):
 
         return None
 
+    def media_reaction_llm(self, filing, eps_beat: Optional[str]) -> Optional[Dict[str, Optional[object]]]:
+        """
+        Run media-reaction LLM over business/financial coverage around the filing.
+
+        Returns either:
+          - dict with:
+              {
+                "reaction": "strong_positive" | "positive" | "negative" | "neutral" | "no_coverage" | None,
+                "headline_beat": {
+                  "eps": "weak_beat" | "beat" | "strong_beat" | "miss" | "unknown" | None,
+                  "revenue": "weak_beat" | "beat" | "strong_beat" | "miss" | "unknown" | None,
+                } or None,
+                "headlines_or_snippets": list[str],
+                "reason": str or None,
+              }
+          - None on media-driven hard fail, when:
+              eps_label in {"miss", "unknown"}
+              AND reaction not in {"strong_positive", "positive"}
+              AND revenue label == "miss"
+        """
+        cik = str(getattr(filing, "cik", "") or "")
+        ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
+        accession = (
+            getattr(filing, "accession_no", None)
+            or getattr(filing, "accession_number", None)
+            or ""
+        )
+
+        # Filing date → used only for descriptive context in the prompt.
+        filing_date = _filing_date_or_none(filing) or date.today()
+        date_str = date.today().strftime("%B %-d, %Y")
+
+        # Prompt: single template with EPS section substituted depending on eps_beat availability.
+        company = getattr(filing, "company_name", None) or getattr(filing, "company", None) or (ticker or cik or "Unknown")
+        quarter = quarter_label_for_filing_date(filing_date)
+
+        eps_section = MEDIA_REACTION_EPS_ASK if eps_beat is None else MEDIA_REACTION_EPS_KNOWN
+        media_prompt = MEDIA_REACTION_PROMPT_TEMPLATE.format(
+            company=company,
+            ticker=ticker or "",
+            quarter=quarter,
+            date=date_str,
+        ).replace("<<<EPS_SECTION>>>", eps_section)
+
+        print(media_prompt)
+
+        model, parsed = self.ask_gemini(media_prompt, timeout=120.0, use_search=True)
+        if not parsed or not isinstance(parsed, dict):
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s media LLM: no result from Gemini",
+                ticker or "N/A",
+                cik or "N/A",
+                accession,
+            )
+            return None
+
+        reaction = parsed.get("reaction")
+        hb = parsed.get("headline_beat") if isinstance(parsed.get("headline_beat"), dict) else {}
+        eps_label_llm = hb.get("eps")
+        rev_label = hb.get("revenue")
+        headlines = parsed.get("headlines_or_snippets") or []
+        reason = parsed.get("reason")
+
+        def _norm_reaction(label: Optional[str]) -> Optional[str]:
+            if not isinstance(label, str):
+                return None
+            label = label.strip().lower()
+            if label in {"strong_positive", "positive", "negative", "neutral", "no_coverage"}:
+                return label
+            return None
+
+        def _norm_beat(label: Optional[str]) -> Optional[str]:
+            if not isinstance(label, str):
+                return "unknown"
+            label = label.strip().lower()
+            if label in {"weak_beat", "beat", "strong_beat", "miss", "unknown"}:
+                return label
+            return "unknown"
+
+        reaction_norm = _norm_reaction(reaction)
+        eps_label = eps_beat if eps_beat is not None else _norm_beat(eps_label_llm)
+        rev_label_norm = _norm_beat(rev_label)
+
+        # Media-driven hard fail:
+        # eps_label in {"miss", "unknown"} AND reaction not in {"strong_positive", "positive"} AND revenue == "miss"
+        # TODO:
+        if reaction_norm == "negative" or eps_label in {"miss", "unknown"} and reaction_norm not in {"strong_positive", "positive"} and rev_label_norm == "miss":
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s media LLM: "
+                "(eps_label=%s, reaction=%s, revenue=%s) -> fail",
+                ticker or "N/A",
+                cik or "N/A",
+                accession,
+                eps_label,
+                reaction_norm or "N/A",
+                rev_label_norm,
+            )
+            #return None
+
+        result: Dict[str, Optional[object]] = {
+            "reaction": reaction_norm,
+            "headline_beat": {
+                "eps": eps_label,
+                "revenue": rev_label_norm,
+            },
+            "headlines_or_snippets": headlines if isinstance(headlines, list) else [],
+            "reason": reason if isinstance(reason, str) else None,
+        }
+
+        logger.info(
+            "ticker=%s, CIK=%s, accession=%s media LLM: model=%s "
+            "reaction=%s eps=%s revenue=%s -> pass",
+            ticker or "N/A",
+            cik or "N/A",
+            accession,
+            model or "N/A",
+            result["reaction"] or "N/A",
+            eps_label,
+            rev_label_norm,
+        )
+
+        return result
 
     def analyze_8k_basic(self, filing) -> bool:
         """
@@ -895,15 +1076,22 @@ class Edgar(AdvisorBase):
         # First AI - anaylase ex99.1 8-K attachment
         if (ex99 := self.analyse_ex99_llm(filing, eps_beat)) is None:
             return False
-
+        
         print(ex99)
+
+        # Second AI - media_reaction_llm
+        if (media := self.media_reaction_llm(filing, eps_beat)) is None:
+            return False
+
+        print(media)
         return True
 
     def discover(self, sa):
-        return
+
         logger.info("Fetching latest filings...")
-        latest = get_latest_filings()
         """
+        latest = get_latest_filings()
+        
         try:
             filings = list(latest)
         except Exception as e:
@@ -911,7 +1099,7 @@ class Edgar(AdvisorBase):
             return
 
         """
-        filing1 = find("0001997859-26-000015")
+        filing1 = find("0001393052-26-000007")
         filing2 = find("0001437749-26-006392")
         filing3 = find("0001628280-26-013191")
 
