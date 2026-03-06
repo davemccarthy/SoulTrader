@@ -90,6 +90,48 @@ class AdvisorBase:
         
         return int(minutes_diff)
 
+    def evaluate_stock(
+        self,
+        ticker_symbol: str,
+        required_return: float = 0.10,
+        max_growth: float = 0.20,
+        max_roe: float = 0.30,
+        info: Optional[Dict] = None,
+    ) -> float:
+        """
+        ROE-based notional valuation. Returns current_price / fair_value (valuation ratio).
+        If no usable EPS/ROE or on error, logs a warning and returns 1.0 (neutral).
+        If info is provided, uses it instead of fetching yf.Ticker(ticker_symbol).info.
+        """
+        try:
+            if info is None:
+                ticker = yf.Ticker(ticker_symbol)
+                info = ticker.info or {}
+            eps = info.get("trailingEps")
+            roe = info.get("returnOnEquity")
+            payout = info.get("payoutRatio")
+            current_price = info.get("currentPrice") or info.get("regularMarketPrice")
+            if eps is None or eps <= 0 or roe is None or roe <= 0:
+                logger.warning("evaluate_stock %s: no usable EPS/ROE", ticker_symbol)
+                return 1.0
+            if current_price is None or current_price <= 0:
+                logger.warning("evaluate_stock %s: no usable price", ticker_symbol)
+                return 1.0
+            payout = 0 if payout is None or payout < 0 else min(max(payout, 0), 0.9)
+            adjusted_roe = min(roe, max_roe)
+            g = adjusted_roe * (1 - payout)
+            g = min(g, max_growth)
+            denominator = max(required_return - g, 0.01)
+            justified_pe = (adjusted_roe * (1 - payout)) / denominator
+            fair_value = eps * justified_pe
+            if fair_value <= 0:
+                logger.warning("evaluate_stock %s: invalid fair value", ticker_symbol)
+                return 1.0
+            return float(current_price / fair_value)
+        except Exception as e:
+            logger.warning("evaluate_stock %s: %s", ticker_symbol, e)
+            return 1.0
+
     @staticmethod
     def get_last_trading_day(test_date=None):
         """
@@ -824,7 +866,7 @@ class AdvisorBase:
 
     def _get_gemini_opinion(self, stock):
         """
-        Get Gemini's independent opinion on a stock using V5 prompt (nervous investor perspective).
+        Get Gemini's independent opinion on a stock using V5 prompt.
         
         Args:
             stock: Stock model instance (with symbol, company, price populated)
@@ -836,7 +878,7 @@ class AdvisorBase:
         prompt = f"""
 Starting afresh,
 
-From the perspective of a nervous investor, would you recommend buying {stock.symbol} ({stock.company}) @ ${float(stock.price):.2f}?
+Would you recommend buying {stock.symbol} ({stock.company}) @ ${float(stock.price):.2f}?
 
 Considering:
 - Recent news and media coverage

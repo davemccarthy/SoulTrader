@@ -471,32 +471,43 @@ def _ratio_score(positive: int, negative: int) -> float:
 # Media reaction LLM prompt template
 # ---------------------------------------------------------------------------
 
-MEDIA_REACTION_PROMPT_TEMPLATE = """Today is {date}. Search for the most recent news about {company} ({ticker}) {quarter} earnings results..
+MEDIA_REACTION_PROMPT_TEMPLATE = """{company} ({ticker}) has released its {quarter} earnings results.
 
-<<<EPS_SECTION>>>
+Search for recent news and media coverage discussing the earnings announcement. Focus on:
+- Financial results vs analyst expectations
+- Management guidance and forward-looking commentary
+- Analyst reactions or commentary
+- Any early market reaction or sentiment
 
-Analyze the gap between "Headline Results" and "Market Reaction."
-- Specifically look for forward-looking guidance, management's tone during the Q&A, and any cited "headwinds" (e.g., rising expenses, interest rates, or segment softness).
-- Specifically look for mentions of interest expense, capital expenditures (CapEx), or operating margins, as these often drive post-earnings sell-offs.
-- Downgrade if you can find at least one bearish reason why the stock might trade down despite the headline beat (e.g., guidance, CapEx, or "priced in" news).
+Your goal is to evaluate whether the **tone of coverage aligns with the headline results**.
 
-Respond with STRICT JSON only. No other text before or after:
+Analysis Guidelines:
+1. Identify whether the company beat or missed analyst consensus for **EPS** and **Revenue**.
+2. Assess the overall **tone of media coverage** (e.g. positive, negative, or neutral).
+3. Look for explanations that could influence the stock’s reaction, including:
+   - Forward guidance
+   - Management tone during earnings call or Q&A
+   - Changes in operating margins
+   - Interest expense or financing costs
+   - Capital expenditures (CapEx)
+   - Segment weakness or macro headwinds
+4. If headline results appear strong but coverage highlights risks (e.g., weak guidance, margin pressure, high CapEx), reflect that in the reaction.
+5. If little or no media coverage exists yet,set "reaction" to "no_coverage".
+
+Respond with **STRICT JSON only** (no text before or after):
+
 {{
-  "reaction": "strong_positive" | "positive" | "negative" | "neutral" | "no_coverage",
-  "headline_beat": {{ "eps": "weak_beat"|"beat"|"strong_beat"|"miss"|"unknown", "revenue": "weak_beat"|"beat"|"strong_beat"|"miss"|"unknown" }},
-  "headlines_or_snippets": ["<quote 1>", "<quote 2>"],
-  "reason": "<2-3 sentences explaining your decision. Mention specific guidance, expense figures, or bearish/bullish cues if relevant.>"
-}}
-
-If you find no relevant coverage in response to this filing, set reaction to "no_coverage" and reason accordingly."""
-
-
-MEDIA_REACTION_EPS_ASK = """- Identify if the company beat or missed analyst consensus for EPS and Revenue.
-"""
-
-
-MEDIA_REACTION_EPS_KNOWN = """The EPS outcome is already known separately; do NOT attempt to infer or override whether EPS beat or missed expectations. You may mention EPS narratively. Focus your analysis on whether revenue appears to have beaten or missed expectations.
-"""
+  "reaction": "strong_positive" | "positive" | "neutral" | "negative" | "no_coverage",
+  "headline_beat": {{
+    "eps": "strong_beat" | "beat" | "weak_beat" | "miss" | "unknown",
+    "revenue": "strong_beat" | "beat" | "weak_beat" | "miss" | "unknown"
+  }},
+  "headlines_or_snippets": [
+    "<short quote or headline>",
+    "<short quote or headline>"
+  ],
+  "reason": "<2–3 sentences summarizing why coverage tone is positive/neutral/negative. Mention guidance, margins, expenses, or other key drivers if relevant.>"
+}}"""
 
 
 # ---------------------------------------------------------------------------
@@ -532,9 +543,6 @@ class Edgar(AdvisorBase):
         form = getattr(filing, "form", None)
         if form != "8-K":
             return _fail("not 8-K")
-
-        if not ticker:
-            return _fail("no tradable ticker")
 
         if not (hasattr(filing, "exhibits") and filing.exhibits):
             return _fail("no exhibits")
@@ -573,6 +581,7 @@ class Edgar(AdvisorBase):
         result = _earnings_release_filter(exhibit_99_text)
         if not result["pass"]:
             return _fail(result["reason"])
+
         return True
 
     def filter_financials(self, filing) -> bool:
@@ -956,23 +965,18 @@ class Edgar(AdvisorBase):
             or ""
         )
 
-        # Filing date → used only for descriptive context in the prompt.
+        # Filing date → used for quarter label only.
         filing_date = _filing_date_or_none(filing) or date.today()
-        date_str = date.today().strftime("%B %-d, %Y")
 
         # Prompt: single template with EPS section substituted depending on eps_beat availability.
         company = getattr(filing, "company_name", None) or getattr(filing, "company", None) or (ticker or cik or "Unknown")
         quarter = quarter_label_for_filing_date(filing_date)
 
-        eps_section = MEDIA_REACTION_EPS_ASK if eps_beat is None else MEDIA_REACTION_EPS_KNOWN
         media_prompt = MEDIA_REACTION_PROMPT_TEMPLATE.format(
             company=company,
             ticker=ticker or "",
             quarter=quarter,
-            date=date_str,
-        ).replace("<<<EPS_SECTION>>>", eps_section)
-
-        print(media_prompt)
+        )
 
         model, parsed = self.ask_gemini(media_prompt, timeout=120.0, use_search=True)
         if not parsed or not isinstance(parsed, dict):
@@ -1086,6 +1090,27 @@ class Edgar(AdvisorBase):
         print(media)
         return True
 
+    def analyze_8k(self, filing) -> bool:
+
+        cik = str(getattr(filing, "cik", "") or "")
+        ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
+
+        if not ticker:
+            logger.info(f"{ticker} - no tradable ticker")
+            return False
+
+        # Check if already discovered - rediscover if >1 days ago
+        if not self.allow_discovery(ticker, period=24):
+            return False
+
+        if not self.analyze_8k_basic(filing):
+            return False
+
+        if not self.analyze_8k_advanced(filing):
+            return False
+
+        return True
+
     def discover(self, sa):
 
         logger.info("Fetching latest filings...")
@@ -1099,11 +1124,11 @@ class Edgar(AdvisorBase):
             return
 
         """
-        filing1 = find("0001393052-26-000007")
-        filing2 = find("0001437749-26-006392")
+        filing1 = find("0001835632-26-000006")
+        filing2 = find("0001628280-26-015170")
         filing3 = find("0001628280-26-013191")
 
-        filings = [filing1]
+        filings = [filing1, filing2]
 
         # Filter to 8-Ks only
         filings_8k = [f for f in filings if getattr(f, "form", None) == "8-K"]
@@ -1115,11 +1140,7 @@ class Edgar(AdvisorBase):
 
         for filing in filings_8k:
             try:
-                if not self.analyze_8k_basic(filing):
-                    continue
-
-                if not self.analyze_8k_advanced(filing):
-                    continue
+                self.analyze_8k(filing)
 
             except Exception as e:
                 logger.error("⚠️ Error inspecting filing: %s", e)
