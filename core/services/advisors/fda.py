@@ -667,8 +667,8 @@ def calculate_confidence_score(approval):
 
 def build_discovery_explanation(approval, score):
     parts = [
-        f"Confidence score {score:.2f}",
-        f"{approval.get('company')} received {approval.get('status')} for {approval.get('drug_name')}",
+        f"{approval.get('drug_name')} approval score: {score:.2f}",
+        f"{approval.get('company')} received {approval.get('status')}",
     ]
 
     classification = approval.get("submission_classification")

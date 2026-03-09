@@ -1092,7 +1092,7 @@ class Edgar(AdvisorBase):
             weight = 1.0
         ex99 = advanced.get("ex99") or {}
         media = advanced.get("media") or {}
-        parts = [f"8-K {accession} WEIGHT: {weight:.2f}"]
+        parts = [f"8-K earnings weight: {weight:.2f} | Accession: {accession}"]
 
         justifications = ex99.get("justifications") or {}
         if isinstance(justifications, dict):
@@ -1324,6 +1324,7 @@ class Edgar(AdvisorBase):
         logger.info("Fetching latest filings...")
 
         prev_ts = self.get_previous_sa_timestamp(sa)
+
         latest = get_latest_filings()
 
         try:
@@ -1333,7 +1334,7 @@ class Edgar(AdvisorBase):
             return
 
         """
-        filing1 = find("0001628280-26-013191")
+        filing1 = find("0001104659-26-024968")
         filing2 = find("0001628280-26-015170")
         filing3 = find("0001628280-26-013191")
 

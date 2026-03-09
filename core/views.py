@@ -131,9 +131,31 @@ def holdings(request):
         if holding.latest_trade_sa:
             discovery_obj = discoveries_map.get((stock.id, holding.latest_trade_sa))
         
+        discovery_comment = None
         if discovery_obj:
             discovery = discovery_obj.advisor.name if discovery_obj.advisor else ""
             discovery_advisor = discovery_obj.advisor
+
+            # Derive a short comment from the discovery explanation (first non-empty clause)
+            explanation = (discovery_obj.explanation or "").strip()
+            if explanation:
+                normalized = " ".join(explanation.split())
+                if normalized:
+                    segments = [segment.strip() for segment in normalized.split("|") if segment.strip()]
+                    for segment in segments:
+                        lower = segment.lower()
+                        # Skip bare URLs
+                        if segment.startswith("http://") or segment.startswith("https://"):
+                            continue
+                        # Handle "Article: Title" style segments
+                        if lower.startswith("article:"):
+                            title = segment.split(":", 1)[1].strip()
+                            if title:
+                                discovery_comment = title
+                                break
+                        else:
+                            discovery_comment = segment
+                            break
         else:
             # Fallback to stock.advisor if no discovery found
             discovery = stock.advisor.name if stock.advisor else ""
@@ -154,6 +176,7 @@ def holdings(request):
             'price_class': price_class,
             'website': stock.website,
             'buy_date': holding.created,
+            'discovery_comment': discovery_comment,
         })
     
     # Build snapshot data for holdings stacked bar chart (last 120 days)

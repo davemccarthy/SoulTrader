@@ -1083,16 +1083,17 @@ Thank you
             return
 
         # If market not open yet, add to watchlist (will be processed when market opens via news_watch())
+        """
         if not is_market_open:
             for ticker in tickers:
                 self.watch(
                     symbol=ticker,
-                    explanation=f"{model} recommended {recommendation} from reading article. | Article: {title} | {url} | {explanation} ",
+                    explanation=f"{model} recommendation | Article: {title} | {url} | {explanation} ",
                     days=1
                 )
                 logger.info(f"{self.advisor.name} added {ticker} to watchlist (market closed, {recommendation}): {title[:80]}")
             return
-
+        """
         # Market open - new discoveries (process immediately)
         for ticker in tickers:
             self.discovered(sa, ticker, f"{model} recommended {recommendation} from reading article. | Article: {title} | {url} | {explanation} ",
