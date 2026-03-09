@@ -4,7 +4,6 @@ import requests
 import re
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone as dt_timezone
-from core.models import SmartAnalysis
 from core.services.advisors.advisor import AdvisorBase, register
 from django.utils import timezone
 
@@ -15,14 +14,12 @@ class Story(AdvisorBase):
         """Discover stocks from StockStory news articles"""
         try:
             # Get time window: from previous SA to current SA
-            prev_sa = SmartAnalysis.objects.filter(
-                id__lt=sa.id
-            ).order_by('-id').first()
-            
+            start_ts = self.get_previous_sa_timestamp(sa)
+
             # Set bounds: prev SA started -> now (to catch articles published since SA started)
             end_time = timezone.now()
-            if prev_sa:
-                start_time = timezone.make_aware(prev_sa.started) if timezone.is_naive(prev_sa.started) else prev_sa.started
+            if start_ts is not None:
+                start_time = timezone.make_aware(start_ts) if timezone.is_naive(start_ts) else start_ts
             else:
                 # Fallback: last 24 hours if no previous SA
                 start_time = end_time - timedelta(hours=24)

@@ -345,6 +345,7 @@ def analyze_discovery(sa, users, advisors):
 
             # Get advisor weight (normalized)
             advisor_weight = discovery.advisor.weight
+            discovery_weight = discovery.weight
 
             # Calculate allowance with weighting
             allowance = base_allowance

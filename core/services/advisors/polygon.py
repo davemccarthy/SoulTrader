@@ -2,7 +2,6 @@ import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from core.models import SmartAnalysis
 from core.services.advisors.advisor import AdvisorBase, register
 import logging
 
@@ -32,19 +31,15 @@ class Polygon(AdvisorBase):
                 return
 
             # Calculate time window: since last SA session for this username
-            prev_sa = SmartAnalysis.objects.filter(
-                username=sa.username,
-                id__lt=sa.id
-            ).order_by('-id').first()
+            sa_start_ts = self.get_previous_sa_timestamp(sa, username=sa.username)
 
             # Process articles already read
             self.news_watch(sa)
 
             # Set bounds: prev SA started -> current SA started
             sa_end_utc = timezone.make_aware(sa.started) if timezone.is_naive(sa.started) else sa.started
-            if prev_sa:
-                sa_start_utc = timezone.make_aware(prev_sa.started) if timezone.is_naive(
-                    prev_sa.started) else prev_sa.started
+            if sa_start_ts is not None:
+                sa_start_utc = timezone.make_aware(sa_start_ts) if timezone.is_naive(sa_start_ts) else sa_start_ts
             else:
                 sa_start_utc = sa_end_utc - timedelta(days=7)
 

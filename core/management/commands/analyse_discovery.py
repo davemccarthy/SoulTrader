@@ -30,9 +30,11 @@ COL_WINNERS = "Winners"
 COL_LOSERS = "Losers"
 COL_WIN_RATE_PCT = "Win rate %"
 COL_TOTAL_PCT = "gain/loss %"
+COL_PEAK_INVEST = "peak invest"
 COL_PNL = "P&L"
+COL_RETURN_PEAK = "return"
 
-COLUMNS = (COL_TRADES, COL_WINNERS, COL_LOSERS, COL_WIN_RATE_PCT, COL_TOTAL_PCT, COL_PNL)
+COLUMNS = (COL_TRADES, COL_WINNERS, COL_LOSERS, COL_WIN_RATE_PCT, COL_TOTAL_PCT, COL_PEAK_INVEST, COL_PNL, COL_RETURN_PEAK)
 
 
 @dataclass
@@ -174,8 +176,52 @@ def _refresh_stock_prices(stock_ids):
         stock.refresh()
 
 
-def _build_scoreboard(lot_outcomes):
-    """From list of LotOutcome, build (row, col) -> value. Row = advisor or 'Total'."""
+def _peak_holdings_cost(user_ids, cutoff):
+    """
+    Maximum total cost basis in holdings at any time in the lookback window.
+    Walks all BUY/SELL trades for user_ids with created >= cutoff, FIFO per (user, stock).
+    Returns float (peak cost) or 0.0 if no trades.
+    """
+    trades = (
+        Trade.objects.filter(
+            user_id__in=user_ids,
+            action__in=("BUY", "SELL"),
+            created__gte=cutoff,
+        )
+        .order_by("created")
+    )
+    # (user_id, stock_id) -> list of (shares_remaining, cost_per_share)
+    positions = defaultdict(list)
+    peak = Decimal("0")
+
+    for t in trades:
+        key = (t.user_id, t.stock_id)
+        if t.action == "BUY":
+            positions[key].append((t.shares, t.price))
+        else:
+            remaining = t.shares
+            while remaining > 0 and positions[key]:
+                lot_shares, cost_per_share = positions[key][0]
+                take = min(remaining, lot_shares)
+                remaining -= take
+                if lot_shares == take:
+                    positions[key].pop(0)
+                else:
+                    positions[key][0] = (lot_shares - take, cost_per_share)
+
+        total_cost = sum(
+            Decimal(str(sh)) * Decimal(str(cost))
+            for (user_id, stock_id), lots in positions.items()
+            for sh, cost in lots
+        )
+        if total_cost > peak:
+            peak = total_cost
+
+    return float(peak)
+
+
+def _build_scoreboard(lot_outcomes, return_peak_pct=None, peak_cost=None):
+    """From list of LotOutcome, build (row, col) -> value. return_peak_pct and peak_cost only on Total row."""
     by_advisor = defaultdict(list)
     for o in lot_outcomes:
         by_advisor[o.advisor].append(o)
@@ -212,7 +258,11 @@ def _build_scoreboard(lot_outcomes):
         scoreboard[("Total", COL_TOTAL_PCT)] = (
             float((total_exit_all - total_cost_all) / total_cost_all * 100) if total_cost_all else 0.0
         )
+        if peak_cost is not None:
+            scoreboard[("Total", COL_PEAK_INVEST)] = peak_cost
         scoreboard[("Total", COL_PNL)] = float(total_exit_all - total_cost_all)
+        if return_peak_pct is not None:
+            scoreboard[("Total", COL_RETURN_PEAK)] = return_peak_pct
 
     return scoreboard
 
@@ -227,8 +277,10 @@ def _print_scoreboard(scoreboard, stdout, cols=COLUMNS):
     for (r, c), v in scoreboard.items():
         if c in (COL_TRADES, COL_WINNERS, COL_LOSERS):
             width[c] = max(width[c], len(str(int(v))))
-        elif c == COL_PNL:
+        elif c in (COL_PNL, COL_PEAK_INVEST):
             width[c] = max(width[c], len(f"{v:,.2f}"))
+        elif c == COL_RETURN_PEAK and v != "" and v is not None:
+            width[c] = max(width[c], len(f"{v:.1f}"))
         else:
             width[c] = max(width[c], len(f"{v:.1f}"))
     row_label_width = max(len(r) for r in rows)
@@ -244,8 +296,10 @@ def _print_scoreboard(scoreboard, stdout, cols=COLUMNS):
             v = scoreboard.get((r, c), "")
             if c in (COL_TRADES, COL_WINNERS, COL_LOSERS):
                 cells.append(str(int(v)).rjust(width[c]))
-            elif c == COL_PNL:
-                cells.append(f"{v:,.2f}".rjust(width[c]))
+            elif c in (COL_PNL, COL_PEAK_INVEST):
+                cells.append((f"{v:,.2f}" if v != "" and v is not None else "-").rjust(width[c]))
+            elif c == COL_RETURN_PEAK:
+                cells.append((f"{v:.1f}" if v != "" and v is not None else "-").rjust(width[c]))
             else:
                 cells.append(f"{v:.1f}".rjust(width[c]))
         stdout.write(r.ljust(row_label_width) + sep + sep.join(cells))
@@ -315,7 +369,14 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING("No BUY lots in period could be attributed to an advisor."))
             return
 
-        scoreboard = _build_scoreboard(lot_outcomes)
+        user_ids = list({t.user_id for t in buy_list})
+        peak_cost = _peak_holdings_cost(user_ids, cutoff)
+        total_pnl = sum(float(o.exit_value - o.cost) for o in lot_outcomes)
+        return_peak_pct = (total_pnl / peak_cost * 100) if peak_cost and peak_cost > 0 else None
+
+        scoreboard = _build_scoreboard(
+            lot_outcomes, return_peak_pct=return_peak_pct, peak_cost=peak_cost if peak_cost else None
+        )
         period_msg = f"last {days} days"
         user_note = f" (user: {username})" if username else ""
         self.stdout.write(f"\nDiscovery success (BUY trades, {period_msg}){user_note}\n")

@@ -346,6 +346,22 @@ class AdvisorBase:
     def discover(self, sa):
         return
 
+    def get_previous_sa_timestamp(self, sa, username=None):
+        """
+        Return the started datetime of the most recent SmartAnalysis before sa,
+        for time-window / dedupe. Returns None if there is no previous SA
+        or if sa has no id (e.g. unsaved stub).
+        username: if set, scope to that user; else global previous SA.
+        """
+        if sa is None or getattr(sa, "id", None) is None:
+            return None
+        from core.models import SmartAnalysis
+        qs = SmartAnalysis.objects.filter(id__lt=sa.id)
+        if username is not None:
+            qs = qs.filter(username=username)
+        prev = qs.order_by('-id').first()
+        return prev.started if prev else None
+
     def analyze(self, sa, stock):
         return
 

@@ -4,6 +4,7 @@ Track Vunder Advisor Stocks for a User
 Usage:
     python manage.py track_vunder User23
     python manage.py track_vunder User23 --detailed
+    python manage.py track_vunder -t NTRA   # Test single ticker: notional vs current price
 """
 from django.core.management.base import BaseCommand
 from django.contrib.auth.models import User
@@ -12,7 +13,10 @@ from django.utils import timezone
 from decimal import Decimal
 from datetime import timedelta
 
+import yfinance as yf
+
 from core.models import Holding, Discovery, Advisor, Stock, SellInstruction
+from core.services.advisors.vunder import Vunder
 
 
 class Command(BaseCommand):
@@ -21,8 +25,14 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument(
             'username',
+            nargs='?',
             type=str,
-            help='Username to track Vunder stocks for'
+            help='Username to track Vunder stocks for (omit when using -t)'
+        )
+        parser.add_argument(
+            '-t', '--ticker',
+            type=str,
+            help='Test single ticker: show notional vs current price and percentage (e.g. 90%% = 10%% below notional)'
         )
         parser.add_argument(
             '--detailed',
@@ -30,8 +40,45 @@ class Command(BaseCommand):
             help='Show detailed information including sell instructions'
         )
     
+    def run_single_ticker(self, ticker: str):
+        """Run Vunder notional-price logic for one ticker and print actual vs notional and percentage."""
+        ticker = (ticker or "").strip().upper()
+        if not ticker:
+            self.stdout.write(self.style.ERROR('Ticker required for -t'))
+            return
+        try:
+            t = yf.Ticker(ticker)
+            info = t.info or {}
+        except Exception as e:
+            self.stdout.write(self.style.ERROR(f'Failed to fetch data for {ticker}: {e}'))
+            return
+        actual = info.get('currentPrice') or info.get('regularMarketPrice') or info.get('previousClose')
+        if not actual or actual <= 0:
+            self.stdout.write(self.style.ERROR(f'No price for {ticker}'))
+            return
+        vunder = Vunder("Vunder")
+        method, notional = vunder._calculate_best_notional_price(info)
+        if notional is None or notional <= 0:
+            self.stdout.write(self.style.WARNING(f'{ticker}: Could not compute notional price (missing data for all methods)'))
+            return
+        ratio = actual / notional
+        ratio_pct = ratio * 100
+        discount_pct = (1 - ratio) * 100
+        name = info.get('shortName') or info.get('longName') or ticker
+        self.stdout.write(self.style.SUCCESS(f'\n{ticker} ({name})'))
+        self.stdout.write(f'  Current price:   ${actual:.2f}')
+        self.stdout.write(f'  Notional price: ${notional:.2f}  (method: {method})')
+        self.stdout.write(f'  → {ratio_pct:.1f}% of notional  ({discount_pct:.1f}% below notional)\n')
+    
     def handle(self, *args, **options):
-        username = options['username']
+        ticker = options.get('ticker')
+        if ticker:
+            self.run_single_ticker(ticker)
+            return
+        username = options.get('username')
+        if not username:
+            self.stdout.write(self.style.ERROR('Provide username or use -t TICKER'))
+            return
         detailed = options['detailed']
         
         try:

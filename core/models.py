@@ -662,7 +662,7 @@ class Discovery(models.Model):
     advisor = models.ForeignKey(Advisor, on_delete=models.DO_NOTHING)
     created = models.DateTimeField(auto_now_add=True)
     weight = models.DecimalField(max_digits=5, decimal_places=2, default=1.0)
-    explanation = models.CharField(max_length=1000)
+    explanation = models.TextField()
 
 class SellInstruction(models.Model):
     choices = [
