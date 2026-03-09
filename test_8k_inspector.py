@@ -371,7 +371,7 @@ FILTER3_PE_MAX = 100  # Overvalued definitive: fail if trailing P/E > this
 FILTER3_MIN_CAP = 300e6  # Exclude nano/micro: fail if market_cap < 300M
 FILTER3_MAX_CAP = 200e9  # Exclused mega cap
 FILTER3_PRICE_MIN = 5.0
-FILTER3_PRICE_MAX = 1000.0
+FILTER3_PRICE_MAX = 200.0
 
 # Sector beware (vprint WARNING only; matches yfinance sector/industry wording)
 FILTER3_UNDERPERFORM_SECTORS = ("consumer cyclical", "real estate", "utilities")  # 🔴 Underperform
@@ -428,6 +428,14 @@ def compute_filter3_pass(filing, verbose: bool = False) -> bool:
         if price > FILTER3_PRICE_MAX:
             vprint(verbose, f"FILTER3: fail price ${price:.2f} > ${FILTER3_PRICE_MAX} (above band)")
             return False
+
+    # Profitability: warning only (not a hard fail)
+    profit_margin = info.get("profitMargins")
+    if profit_margin is None or (isinstance(profit_margin, (int, float)) and profit_margin <= 0):
+        vprint(
+            verbose,
+            "⚠️ BASIC FILTER WARNING: Company not profitable (negative or missing profit margin)",
+        )
 
     # Warnings (vprint only): 90%+ of 52-week high, near 52-week low, 90%+ of 2-week lead-up high
     fifty_two_high = info.get("fiftyTwoWeekHigh")

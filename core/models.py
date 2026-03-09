@@ -35,19 +35,19 @@ class Profile(models.Model):
     RISK = {
         "CONSERVATIVE": {
             "min_health": 50.0,  # Only top ~20% of your scores
-            "advisors": ['Story', 'FDA', 'Insider','Edgar'],
+            "advisors": ['Story', 'FDA', 'Insider'],
             "weight": 1.0,
             "stocks": 50
         },
         "MODERATE": {
             "min_health": 40.0,  # Above average
-            "advisors": ['Story', 'FDA', 'Insider', 'Polygon','Edgar'],
+            "advisors": ['Story', 'FDA', 'Insider', 'Polygon'],
             "weight": 1.00,
             "stocks": 40
         },
         "AGGRESSIVE": {
             "min_health": 30.0,  # Below average but not bottom
-            "advisors": ['User', 'FDA', 'Insider', 'Story', 'Polygon','Edgar'],
+            "advisors": ['User', 'FDA', 'Insider', 'Story', 'Polygon'],
             "weight": 1.25,
             "stocks": 30
         },

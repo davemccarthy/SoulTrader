@@ -35,46 +35,50 @@ MODELS = [
 ]
 
 PROMPT_TEMPLATE = """You are an equity analyst.
-Given an earnings press release (EX-99.1 from an 8-K), evaluate and grade the following three metrics independently.
+Given an earnings press release (EX-99.1 from an 8-K), evaluate the following three metrics independently.
 Use only the information in the document.
 Ignore stock price movement.
 Ignore analyst consensus unless explicitly mentioned in the text.
 Do not speculate beyond the text.
 
 TASK
-Grade the following three metrics:
+For each of the four metrics below, output a single label: "negative", "neutral", "positive", or "strong_positive".
+
+- strong_positive: Clearly strong; multiple positive themes, confident tone, materially better than prior/expectations.
+- positive: Net positive; more supportive than concerning; above average or improved.
+- neutral: Mixed or ambiguous; balanced positives and negatives, or no clear signal.
+- negative: Net negative; more concerning than supportive; weak vs prior or vs expectations.
 
 1) Past Performance
-Evaluate historical results versus prior periods.
-Consider revenue, profitability, margins, cash flow, EPS trends, and balance sheet quality.
+Assess historical results versus prior periods. Consider revenue, profitability, margins, cash flow, EPS trends, and balance sheet quality. Output one label.
 
 2) Future Performance
-Evaluate forward-looking guidance and management commentary.
-Consider growth outlook, margins, demand environment, confidence vs caution, and risks mentioned.
+Assess forward-looking guidance and management commentary. Consider growth outlook, margins, demand environment, confidence vs caution, and risks mentioned. Output one label.
 
 3) Expectation Gap
-Evaluate whether the reported results and commentary are better or worse than what a reasonable market participant would have expected before the release (i.e. typical pre-announcement expectations). Use the tone and content of the release to infer whether the company is signaling a positive surprise, in line, or a negative surprise relative to those prior expectations.
+Assess whether results and commentary are better or worse than a reasonable pre-announcement expectation. Use the tone and content of the release to infer positive surprise vs negative surprise. Output one label.
 
-Scoring:
--2 = strong negative | -1 = negative | 0 = neutral | +1 = positive | +2 = strong positive
-Use +2 or -2 only when evidence is strong and unambiguous.
-Default to 0 when signals are mixed.
+4) Market reaction
+How does the market normally react typically to this kind of earnings press release. Consider the companies financial history and sector.
 
 OUTPUT FORMAT (STRICT):
 Respond with only a single valid JSON object, no other text. Use this structure:
 
 {
-  "past_performance": <integer>,
-  "future_performance": <integer>,
-  "expectation_gap": <integer>,
+  "past_performance": "negative" | "neutral" | "positive" | "strong_positive",
+  "future_performance": "negative" | "neutral" | "positive" | "strong_positive",
+  "expectation_gap": "negative" | "neutral" | "positive" | "strong_positive",
+  "market_reaction": "negative" | "neutral" | "positive" | "strong_positive",
   "justifications": {
     "past_performance": "<1-2 sentences>",
     "future_performance": "<1-2 sentences>",
-    "expectation_gap": "<1-2 sentences>"
+    "expectation_gap": "<1-2 sentences>",
+    "market_reaction": "<1-2 sentences>"
   }
 }
 
-Replace <integer> with -2, -1, 0, +1, or +2. Replace the placeholder strings with brief justifications (1–2 sentences per metric).
+For past_performance, future_performance, and expectation_gap use exactly one of: "negative", "neutral", "positive", "strong_positive".
+Replace the justification placeholder strings with brief text (1–2 sentences per metric).
 
 ----------------------------------------
 BEGIN EX-99.1
@@ -189,6 +193,17 @@ def run(path: Path | None = None):
     print(f"\nModel: {model}")
     print("Result:")
     print(json.dumps(result, indent=2))
+
+    # Print 3-ducks labels (negative | neutral | positive | strong_positive)
+    print("\n3-ducks labels:")
+    for key in ("past_performance", "future_performance", "expectation_gap"):
+        val = result.get(key)
+        if isinstance(val, str):
+            print(f"  {key}: {val}")
+        elif isinstance(val, dict):
+            print(f"  {key}: (legacy counts) {val}")
+        else:
+            print(f"  {key}: N/A")
 
 
 if __name__ == "__main__":

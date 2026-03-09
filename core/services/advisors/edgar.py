@@ -477,10 +477,6 @@ Assess forward-looking guidance and management commentary. Consider growth outlo
 3) Expectation Gap
 Assess whether results and commentary are better or worse than a reasonable pre-announcement expectation. Use the tone and content of the release to infer positive surprise vs negative surprise. Output one label.
 
-4) Beat (AKA surprise)
-Note if the release states whether the company beat or missed expectations for EPS and/or revenue.
-When there is evidence of a beat, also qualitatively distinguish whether it was a weak beat, normal beat, or strong beat based on the language in the release.
-
 OUTPUT FORMAT (STRICT):
 Respond with only a single valid JSON object, no other text. Use this structure:
 
@@ -488,10 +484,6 @@ Respond with only a single valid JSON object, no other text. Use this structure:
   "past_performance": "negative" | "neutral" | "positive" | "strong_positive",
   "future_performance": "negative" | "neutral" | "positive" | "strong_positive",
   "expectation_gap": "negative" | "neutral" | "positive" | "strong_positive",
-  "headline_beat": {
-    "eps": "weak_beat"|"beat"|"strong_beat"|"miss"|"unknown",
-    "revenue": "weak_beat"|"beat"|"strong_beat"|"miss"|"unknown"
-  },
   "justifications": {
     "past_performance": "<1-2 sentences>",
     "future_performance": "<1-2 sentences>",
@@ -500,12 +492,6 @@ Respond with only a single valid JSON object, no other text. Use this structure:
 }
 
 For past_performance, future_performance, and expectation_gap use exactly one of: "negative", "neutral", "positive", "strong_positive".
-For headline_beat, use:
-- "strong_beat" when the release clearly emphasizes a large upside surprise (e.g. "significantly exceeded expectations" or "well above consensus").
-- "beat" for a normal, clearly positive surprise without language suggesting it was exceptionally large.
-- "weak_beat" when the beat appears small, marginal, or only mildly emphasized.
-- "miss" when the release clearly indicates that EPS or revenue fell short of expectations.
-- "unknown" when the release does not clearly state whether expectations were beaten or missed.
 Replace the justification placeholder strings with brief text (1–2 sentences per metric).
 
 ----------------------------------------
@@ -699,7 +685,7 @@ class Edgar(AdvisorBase):
                     if (sector_str in sector or sector_str in industry) and (ind_str in sector or ind_str in industry):
                         return _fail(f"sector/industry hard fail ({entry[0]}, {entry[1]})")
 
-        # Previous trading day big price gain (>= 10%) → hard fail
+        # Recent 5-day big price gain (>= 10%) → hard fail
         filing_date = _filing_date_or_none(filing)
         if filing_date is not None and price is not None:
             try:
@@ -708,13 +694,14 @@ class Edgar(AdvisorBase):
                 hist = stock.history(start=start, end=end, auto_adjust=True)
                 if hist is not None and not hist.empty:
                     before_filing = hist[[(x.date() if hasattr(x, "date") else x) < filing_date for x in hist.index]]
-                    if len(before_filing) >= 2:
+                    # Require at least 6 prior closes to compute a 5-day move
+                    if len(before_filing) >= 6:
                         close_prev = float(before_filing["Close"].iloc[-1])
-                        close_prev2 = float(before_filing["Close"].iloc[-2])
-                        if close_prev2 > 0:
-                            prev_day_pct = (close_prev - close_prev2) / close_prev2 * 100.0
-                            if prev_day_pct >= FILTER3_PREV_DAY_GAIN_FAIL_PCT:
-                                return _fail(f"previous day gain >= {FILTER3_PREV_DAY_GAIN_FAIL_PCT:.0f}%")
+                        close_5d_ago = float(before_filing["Close"].iloc[-6])
+                        if close_5d_ago > 0:
+                            pct_5d = (close_prev - close_5d_ago) / close_5d_ago * 100.0
+                            if pct_5d >= FILTER3_PREV_DAY_GAIN_FAIL_PCT:
+                                return _fail(f"5-day gain >= {FILTER3_PREV_DAY_GAIN_FAIL_PCT:.0f}%")
             except Exception:
                 # If history fails we don't block on this check
                 pass
@@ -859,17 +846,15 @@ class Edgar(AdvisorBase):
 
         Returns a dict:
             {
-              "eps": <weak_beat|beat|strong_beat|miss|unknown|None>,
-              "revenue": <same set as eps>,
+              "eps": None,
+              "revenue": None,
               "past_performance": "negative"|"neutral"|"positive"|"strong_positive" or None,
               "guidance": "negative"|"neutral"|"positive"|"strong_positive" or None,
               "expectation": "negative"|"neutral"|"positive"|"strong_positive" or None,
               "justifications": dict with keys past_performance, guidance, expectation (str or None) for discovery explanation,
             }
 
-        If eps_beat is not None, the returned "eps" field will be that value
-        (LLM headline_beat.eps is ignored). When eps_beat is None, we use the
-        LLM headline_beat.eps mapping.
+        Beat vs. consensus is now handled only by the media LLM (media_reaction_llm).
         """
         cik = str(getattr(filing, "cik", "") or "")
         ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
@@ -925,27 +910,6 @@ class Edgar(AdvisorBase):
             else:
                 result_dict[key_dst] = None
 
-        # Headline beat mapping
-        hb = parsed.get("headline_beat") or {}
-        eps_label = hb.get("eps") if isinstance(hb, dict) else None
-        rev_label = hb.get("revenue") if isinstance(hb, dict) else None
-
-        def _norm_label(label: Optional[str]) -> Optional[str]:
-            if not isinstance(label, str):
-                return "unknown"
-            label = label.strip().lower()
-            if label in {"weak_beat", "beat", "strong_beat", "miss", "unknown"}:
-                return label
-            return "unknown"
-
-        if eps_beat is not None:
-            # Use numeric EPS intel as the authoritative EPS label.
-            result_dict["eps"] = eps_beat
-        else:
-            result_dict["eps"] = _norm_label(eps_label)
-
-        result_dict["revenue"] = _norm_label(rev_label)
-
         # Justifications for discovery explanation (past_performance, guidance, expectation)
         j = parsed.get("justifications") or {}
         if isinstance(j, dict):
@@ -969,13 +933,13 @@ class Edgar(AdvisorBase):
             if v == "negative":
                 passed = False
 
-        # Hard-fails: revenue miss and neutral guidance
-        if result_dict.get("revenue") == "miss" or g == "neutral":
+        # Hard-fail: neutral guidance is not good enough
+        if g == "neutral":
             passed = False
 
         logger.info(
             "ticker=%s, CIK=%s, accession=%s EX99 LLM: model=%s "
-            "past=%s guidance=%s expectation=%s eps=%s revenue=%s %s",
+            "past=%s guidance=%s expectation=%s eps=%s %s",
             ticker or "N/A",
             cik or "N/A",
             accession,
@@ -984,7 +948,6 @@ class Edgar(AdvisorBase):
             result_dict["guidance"] or "N/A",
             result_dict["expectation"] or "N/A",
             result_dict["eps"],
-            result_dict["revenue"],
             "-> pass"  if passed else "-> fail"
         )
 
@@ -1078,7 +1041,7 @@ class Edgar(AdvisorBase):
         if reaction_norm in ["no_coverage", "neutral", "negative"] or eps_label in ["miss", "unknown"] or rev_label_norm == 'miss':
             logger.info(
                 "ticker=%s, CIK=%s, accession=%s media LLM: "
-                "(eps_label=%s, revenue=%s) -> %s",
+                "(eps_label=%s, revenue=%s, reaction=%s) -> fail",
                 ticker or "N/A",
                 cik or "N/A",
                 accession,
@@ -1145,16 +1108,16 @@ class Edgar(AdvisorBase):
         if isinstance(headlines, list) and headlines:
             snippets = [str(h).strip() for h in headlines[:2] if h and str(h).strip()]
             if snippets:
-                parts.append("Headlines: " + " | ".join(snippets))
+                parts.append("Headlines: | " + " | ".join(snippets))
 
         bonuses = advanced.get("bonuses") or []
         penalties = advanced.get("penalties") or []
 
         if bonuses:
-            parts.append("Bonuses: " + " | ".join(bonuses))
+            parts.append("Bonuses: | " + " | ".join(bonuses))
 
         if penalties:
-            parts.append("Penalties: " + " | ".join(penalties))
+            parts.append("Penalties: | " + " | ".join(penalties))
 
         return " | ".join(filter(None, parts))
 
@@ -1173,26 +1136,26 @@ class Edgar(AdvisorBase):
         guidance = ex99['guidance']
 
         if past_perform == "strong_positive":
-            bonuses.append("strong past (+0.1)")
+            bonuses.append("Strong past (+0.1)")
             weight += 0.1
         elif past_perform == "neutral":
-            penalties.append("neutral past (-0.1)")
+            penalties.append("Neutral past (-0.1)")
             weight -= 0.1
 
         if expectation == "strong_positive":
-            bonuses.append("strong expectation (+0.1)")
+            bonuses.append("Strong expectation (+0.1)")
             weight += 0.1
         elif expectation == "neutral":
-            penalties.append("neutral expectation (-0.1)")
+            penalties.append("Neutral expectation (-0.1)")
             weight -= 0.1
 
         if guidance == "strong_positive":
-            bonuses.append("strong guidance (+0.2)")
+            bonuses.append("Strong guidance (+0.2)")
             weight += 0.2
 
         # Media
         if media['reaction'] == "strong_positive":
-            bonuses.append("strong reaction (+0.2)")
+            bonuses.append("Strong reaction (+0.2)")
             weight += 0.2
 
         # Beats
@@ -1201,30 +1164,30 @@ class Edgar(AdvisorBase):
         rev_label = (hb.get("revenue") or "").strip().lower() if isinstance(hb.get("revenue"), str) else ""
 
         if eps_label == "strong_beat":
-            bonuses.append("strong eps (+0.2)")
+            bonuses.append("Strong eps (+0.2)")
             weight += 0.2
         elif eps_label == "weak_beat":
-            penalties.append("weak eps (-0.2)")
+            penalties.append("Weak eps (-0.2)")
             weight -= 0.2
 
         if rev_label == "strong_beat":
-            bonuses.append("strong revenue (+0.1)")
+            bonuses.append("Strong revenue (+0.1)")
             weight += 0.1
         elif rev_label == "weak_beat":
-            penalties.append("weak revenue (-0.1)")
+            penalties.append("Weak revenue (-0.1)")
             weight -= 0.1
         elif rev_label == "neutral":
-            penalties.append("neutral revenue (-0.2)")
+            penalties.append("Neutral revenue (-0.2)")
             weight -= 0.2
 
         # Valuation
         valuation = self.evaluate_stock(ticker)
 
         if valuation >= 1.10:
-            penalties.append("overvalued (-0.2)")
+            penalties.append("Overvalued (-0.2)")
             weight -= 0.2
         elif valuation < 0.90:
-            bonuses.append("undervalued (+0.2)")
+            bonuses.append("Undervalued (+0.2)")
             weight += 0.2
 
         # Sector (BAD_SECTOR / WATCH -0.2) and 52-week high/low
@@ -1243,10 +1206,12 @@ class Edgar(AdvisorBase):
                 sector_str, ind_str = entry[0], entry[1]
                 if ind_str is None:
                     if sector_str in sector or sector_str in industry:
+                        penalties.append(f"Bad sector: {sector_str} (-0.2)")
                         weight -= 0.2
                         break
                 else:
                     if sector_str in sector and ind_str in industry:
+                        penalties.append(f"Bad sector: {sector_str} (-0.2)")
                         weight -= 0.2
                         break
 
@@ -1359,7 +1324,6 @@ class Edgar(AdvisorBase):
         logger.info("Fetching latest filings...")
 
         prev_ts = self.get_previous_sa_timestamp(sa)
-        """
         latest = get_latest_filings()
 
         try:
@@ -1369,13 +1333,13 @@ class Edgar(AdvisorBase):
             return
 
         """
-        filing1 = find("0001922446-26-000028")
+        filing1 = find("0001628280-26-013191")
         filing2 = find("0001628280-26-015170")
         filing3 = find("0001628280-26-013191")
 
         filings = [filing1]
-
-        # Filter to 8-Ks only
+        """
+        # Filter latest to 8-Ks only
         filings_8k = [f for f in filings if getattr(f, "form", None) == "8-K"]
         if not filings_8k:
             logger.info("No latest 8-K filings found.")
@@ -1388,9 +1352,25 @@ class Edgar(AdvisorBase):
                 filing_dt = _filing_datetime(filing)
                 if prev_ts is not None and filing_dt is not None and filing_dt < prev_ts:
                     accession = getattr(filing, "accession_no", None) or getattr(filing, "accession_number", None) or ""
-                    logger.warning("Filing %s (filing_time=%s) is before prev SA %s — would skip in production",
+                    logger.warning("Filing %s (filing_time=%s) is before prev SA %s — skipping",
                                    accession, filing_dt, prev_ts)
-                    #continue
+                    continue
+
+                self.analyze_8k(filing, sa)
+
+            except Exception as e:
+                logger.error("⚠️ Error inspecting filing: %s", e)
+
+        # Filter wathced 8-Ks
+        watched_8ks = self.watchlist()
+
+        logger.info("Found %d 8-K watched filings.", len(watched_8ks))
+
+        for item in watched_8ks:
+            try:
+                filing = find(item.explanation)
+                item.status = "Excluded"
+                item.save()
 
                 self.analyze_8k(filing, sa)
 

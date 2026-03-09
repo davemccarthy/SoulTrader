@@ -401,7 +401,7 @@ class AdvisorBase:
         discovery.stock = stock
         discovery.price = stock.price  # NEW: Capture price at discovery time
         discovery.advisor = self.advisor
-        discovery.explanation = explanation[:1000]
+        discovery.explanation = explanation
         discovery.weight = weight
         discovery.save()
 

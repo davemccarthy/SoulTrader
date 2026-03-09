@@ -55,7 +55,7 @@ Analyze the gap between "Headline Results" and "Market Reaction."
 Respond with STRICT JSON only. No other text before or after:
 {{
   "reaction": "positive" | "negative" | "neutral" | "no_coverage",
-  "headline_beat": {{ "eps": true/false, "revenue": true/false }},
+  "headline_beat": {{ "eps": beat/miss/unknown, "revenue": beat/miss/unknown }},
   "headlines_or_snippets": ["<quote 1>", "<quote 2>"],
   "reason": "<2-3 sentences explaining your decision. Mention specific guidance, expense figures, or bearish/bullish cues if relevant.>"
 }}
