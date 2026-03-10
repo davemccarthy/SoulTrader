@@ -48,10 +48,24 @@
         }
         
         .logo {
-            font-size: 1.8rem;
-            font-weight: bold;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
             text-decoration: none;
             color: white;
+            line-height: 1.2;
+        }
+        .logo-line-top {
+            font-size: 1.2rem;
+            font-weight: bold;
+            letter-spacing: 0.02em;
+        }
+        .logo-line-bottom {
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            color: #fbbf24;
         }
         
         .nav {
@@ -1221,7 +1235,10 @@
 <body>
     <header class="header">
         <div class="header-content">
-            <a href="{% url 'core:home' %}" class="logo">SOULTRADER</a>
+            <a href="{% url 'core:home' %}" class="logo">
+                <span class="logo-line-top">SOULTRADER</span>
+                <span class="logo-line-bottom">KLYNT INDUSTRIES</span>
+            </a>
 
             <nav class="nav">
                 {% if user.is_authenticated %}

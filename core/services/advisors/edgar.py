@@ -144,22 +144,6 @@ def _get_ex99_text(filing) -> str:
     return " ".join(parts)
 
 
-# Filing filter (Filter 1): earnings 8-K / exhibit 99
-EARNINGS_KEYWORDS = [
-    "results of operations", "financial condition", "period ended",
-    "three months ended", "six months ended", "nine months ended",
-    "fiscal quarter", "fiscal year", "furnished pursuant to",
-    "press release announcing", "press release regarding", "attached as exhibit 99",
-    "included as exhibit", "announced its results", "reported results",
-    "released results", "announced financial results", "reported financial results",
-    "provided guidance", "updated guidance", "outlook for", "expects for",
-    "anticipated results", "quarter ended", "year ended", "period results",
-    "financial results", "earnings release", "quarterly results", "full year results",
-    "earnings per share", "eps", "net income per share", "guidance", "outlook",
-    "expects", "forecast",
-]
-REG_FD_KEYWORDS = ["furnished pursuant to regulation fd", "Item 3.01", "Item 1.03"]
-
 # Filing filter (Filter 2): red/green flags
 RED_FLAGS_SEVERE = {
     "chapter 11": -10, "bankruptcy filing": -10, "receivership": -10,
@@ -450,18 +434,18 @@ def get_actual_eps_from_8k(filing, verbose: bool = False) -> Tuple[Optional[floa
 
 
 # ---------------------------------------------------------------------------
-# EX-99.1 LLM (3-ducks labels: negative | neutral | positive | strong_positive)
+# EX-99.1 LLM (4-ducks: past, future, expectation, market)
 # ---------------------------------------------------------------------------
 
-THREE_DUCKS_PROMPT_COUNTS = """You are an equity analyst.
-Given an earnings press release (EX-99.1 from an 8-K), evaluate the following three metrics independently.
+FOUR_DUCKS_PROMPT_LABELS = """You are an equity analyst.
+Given an earnings press release (EX-99.1 from an 8-K), evaluate the following four metrics independently.
 Use only the information in the document.
 Ignore stock price movement.
 Ignore analyst consensus unless explicitly mentioned in the text.
 Do not speculate beyond the text.
 
 TASK
-For each of the three metrics below, output a single label: "negative", "neutral", "positive", or "strong_positive".
+For each of the four metrics below, output a single label: "negative", "neutral", "positive", or "strong_positive".
 
 - strong_positive: Clearly strong; multiple positive themes, confident tone, materially better than prior/expectations.
 - positive: Net positive; more supportive than concerning; above average or improved.
@@ -477,6 +461,9 @@ Assess forward-looking guidance and management commentary. Consider growth outlo
 3) Expectation Gap
 Assess whether results and commentary are better or worse than a reasonable pre-announcement expectation. Use the tone and content of the release to infer positive surprise vs negative surprise. Output one label.
 
+4) Market reaction
+How does the market normally react typically to this kind of earnings press release. Consider the company's financial history and sector. Output one label.
+
 OUTPUT FORMAT (STRICT):
 Respond with only a single valid JSON object, no other text. Use this structure:
 
@@ -484,14 +471,16 @@ Respond with only a single valid JSON object, no other text. Use this structure:
   "past_performance": "negative" | "neutral" | "positive" | "strong_positive",
   "future_performance": "negative" | "neutral" | "positive" | "strong_positive",
   "expectation_gap": "negative" | "neutral" | "positive" | "strong_positive",
+  "market_reaction": "negative" | "neutral" | "positive" | "strong_positive",
   "justifications": {
     "past_performance": "<1-2 sentences>",
     "future_performance": "<1-2 sentences>",
-    "expectation_gap": "<1-2 sentences>"
+    "expectation_gap": "<1-2 sentences>",
+    "market_reaction": "<1-2 sentences>"
   }
 }
 
-For past_performance, future_performance, and expectation_gap use exactly one of: "negative", "neutral", "positive", "strong_positive".
+For past_performance, future_performance, expectation_gap, and market_reaction use exactly one of: "negative", "neutral", "positive", "strong_positive".
 Replace the justification placeholder strings with brief text (1–2 sentences per metric).
 
 ----------------------------------------
@@ -531,7 +520,7 @@ Analysis Guidelines:
    - Capital expenditures (CapEx)
    - Segment weakness or macro headwinds
 4. If headline results appear strong but coverage highlights risks (e.g., weak guidance, margin pressure, high CapEx), reflect that in the reaction.
-5. If little or no media coverage exists yet,set "reaction" to "no_coverage".
+5. If you cannot determine a clear beat/miss for EPS or Revenue or if little or no media coverage exists yet, set "reaction" to "no_coverage".
 
 Respond with **STRICT JSON only** (no text before or after):
 
@@ -589,13 +578,14 @@ class Edgar(AdvisorBase):
             return _fail("no exhibit 99.x")
 
         filing_text = (filing.text() or "").lower() if hasattr(filing, "text") else ""
-        if "item 9.0" not in filing_text:
-            return _fail("no item 9.0")
-        for kw in REG_FD_KEYWORDS:
-            if kw in filing_text:
-                return _fail("Reg FD / non-earnings 8-K")
-        if not any(kw in filing_text for kw in EARNINGS_KEYWORDS):
-            return _fail("not earnings 8-K")
+
+        # Prefer the formal earnings announcement item over loose keyword heuristics.
+        has_item_202 = (
+            "item 2.02" in filing_text
+            or "results of operations and financial condition" in filing_text
+        )
+        if not has_item_202:
+            return _fail("no item 2.02 / results of operations and financial condition")
 
         # Filter 2: red/green flags
         exhibit_99_text = _get_ex99_text(filing)
@@ -870,6 +860,7 @@ class Edgar(AdvisorBase):
             "past_performance": None,
             "guidance": None,
             "expectation": None,
+            "market_reaction": None,
             "justifications": None,
         }
 
@@ -883,7 +874,7 @@ class Edgar(AdvisorBase):
             )
             return result_dict
 
-        prompt = THREE_DUCKS_PROMPT_COUNTS.replace("<<<EX99_1_TEXT>>>", text.strip())
+        prompt = FOUR_DUCKS_PROMPT_LABELS.replace("<<<EX99_1_TEXT>>>", text.strip())
         model, parsed = self.ask_gemini(prompt, timeout=120.0)
         if not parsed:
             logger.info(
@@ -902,6 +893,7 @@ class Edgar(AdvisorBase):
             ("past_performance", "past_performance"),
             ("future_performance", "guidance"),
             ("expectation_gap", "expectation"),
+            ("market_reaction", "market_reaction"),
         ):
             val = parsed.get(key_src)
             if isinstance(val, str):
@@ -910,13 +902,14 @@ class Edgar(AdvisorBase):
             else:
                 result_dict[key_dst] = None
 
-        # Justifications for discovery explanation (past_performance, guidance, expectation)
+        # Justifications for discovery explanation (past_performance, guidance, expectation, market_reaction)
         j = parsed.get("justifications") or {}
         if isinstance(j, dict):
             result_dict["justifications"] = {
                 "past_performance": j.get("past_performance") if isinstance(j.get("past_performance"), str) else None,
                 "guidance": j.get("future_performance") if isinstance(j.get("future_performance"), str) else None,
                 "expectation": j.get("expectation_gap") if isinstance(j.get("expectation_gap"), str) else None,
+                "market_reaction": j.get("market_reaction") if isinstance(j.get("market_reaction"), str) else None,
             }
         else:
             result_dict["justifications"] = None
@@ -927,15 +920,17 @@ class Edgar(AdvisorBase):
         g = result_dict.get("guidance")
         e = result_dict.get("expectation")
         p = result_dict.get("past_performance")
+        m = result_dict.get("market_reaction")
 
-        # Any metric labeled negative
-        for name, v in (("guidance", g), ("expectation", e), ("past_performance", p)):
+        # Hard-fail: Any metric labeled negative
+        for name, v in (("guidance", g), ("expectation", e), ("past_performance", p), ("market_reaction", m)):
             if v == "negative":
                 passed = False
 
-        # Hard-fail: neutral guidance is not good enough
-        if g == "neutral":
-            passed = False
+        # Hard-fail: neutral guidance or market is not good enough
+        for name, v in (("guidance", g), ("market_reaction", m)):
+            if v == "negative":
+                passed = False
 
         logger.info(
             "ticker=%s, CIK=%s, accession=%s EX99 LLM: model=%s "
@@ -1128,12 +1123,13 @@ class Edgar(AdvisorBase):
 
         bonuses: list[str] = []
         penalties: list[str] = []
-        weight = 1.0
+        weight = 0.5
 
-        # 3 ducks
+        # 4 ducks
         past_perform = ex99['past_performance']
         expectation = ex99['expectation']
         guidance = ex99['guidance']
+        market = ex99['market_reaction']
 
         if past_perform == "strong_positive":
             bonuses.append("Strong past (+0.1)")
@@ -1147,10 +1143,14 @@ class Edgar(AdvisorBase):
             weight += 0.1
         elif expectation == "neutral":
             penalties.append("Neutral expectation (-0.1)")
-            weight -= 0.1
+            weight -= 0.2
 
         if guidance == "strong_positive":
             bonuses.append("Strong guidance (+0.2)")
+            weight += 0.2
+
+        if market == "strong_positive":
+            bonuses.append("Strong market (+0.2)")
             weight += 0.2
 
         # Media
@@ -1334,11 +1334,11 @@ class Edgar(AdvisorBase):
             return
 
         """
-        filing1 = find("0001104659-26-024968")
-        filing2 = find("0001628280-26-015170")
-        filing3 = find("0001628280-26-013191")
+        filing1 = find("0001193125-26-099319")
+        filing2 = find("0001709682-26-000006")
+        filing3 = find("0001020859-26-000004")
 
-        filings = [filing1]
+        filings = [filing1, filing2, filing3]
         """
         # Filter latest to 8-Ks only
         filings_8k = [f for f in filings if getattr(f, "form", None) == "8-K"]
