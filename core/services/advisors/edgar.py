@@ -501,41 +501,20 @@ END EX-99.1
 
 MEDIA_REACTION_PROMPT_TEMPLATE = """{company} ({ticker}) has released its {quarter} earnings results.
 
-Search for recent news and media coverage discussing the earnings announcement. Focus on:
-- Financial results vs analyst expectations
-- Management guidance and forward-looking commentary
-- Analyst reactions or commentary
-- Any early market reaction or sentiment
+Analyze the gap between "Headline Results" and "Market Reaction."
+- Identify if the company beat/missed analyst consensus for EPS and Revenue.
+- Specifically look for forward-looking guidance, management's tone during the Q&A, and any cited "headwinds" (e.g., rising expenses, interest rates, or segment softness).
+- Specifically look for mentions of interest expense, capital expenditures (CapEx), or operating margins, as these often drive post-earnings sell-offs.
 
-Your goal is to evaluate whether the **tone of coverage aligns with the headline results**.
-
-Analysis Guidelines:
-1. Identify whether the company beat or missed analyst consensus for **EPS** and **Revenue**.
-2. Assess the overall **tone of media coverage** (e.g. positive, negative, or neutral).
-3. Look for explanations that could influence the stock’s reaction, including:
-   - Forward guidance
-   - Management tone during earnings call or Q&A
-   - Changes in operating margins
-   - Interest expense or financing costs
-   - Capital expenditures (CapEx)
-   - Segment weakness or macro headwinds
-4. If headline results appear strong but coverage highlights risks (e.g., weak guidance, margin pressure, high CapEx), reflect that in the reaction.
-5. If you cannot determine a clear beat/miss for EPS or Revenue or if little or no media coverage exists yet, set "reaction" to "no_coverage".
-
-Respond with **STRICT JSON only** (no text before or after):
-
+Respond with STRICT JSON only. No other text before or after:
 {{
-  "reaction": "strong_positive" | "positive" | "neutral" | "negative" | "no_coverage",
-  "headline_beat": {{
-    "eps": "strong_beat" | "beat" | "weak_beat" | "miss" | "unknown",
-    "revenue": "strong_beat" | "beat" | "weak_beat" | "miss" | "unknown"
-  }},
-  "headlines_or_snippets": [
-    "<short quote or headline>",
-    "<short quote or headline>"
-  ],
-  "reason": "<2–3 sentences summarizing why coverage tone is positive/neutral/negative. Mention guidance, margins, expenses, or other key drivers if relevant.>"
-}}"""
+  "reaction": "positive" | "strong_positive" | "negative" | "neutral" | "no_coverage",
+  "headline_beat": {{ "eps": beat/strong_beat/miss/unknown, "revenue": beat/strong_beat/miss/unknown }},
+  "headlines_or_snippets": ["<quote 1>", "<quote 2>"],
+  "reason": "<2-3 sentences explaining your decision. Mention specific guidance, expense figures, or bearish/bullish cues if relevant.>"
+}}
+
+If you find no relevant coverage in that window, set reaction to "no_coverage" and reason accordingly."""
 
 
 # ---------------------------------------------------------------------------
@@ -934,7 +913,7 @@ class Edgar(AdvisorBase):
 
         logger.info(
             "ticker=%s, CIK=%s, accession=%s EX99 LLM: model=%s "
-            "past=%s guidance=%s expectation=%s eps=%s %s",
+            "past=%s guidance=%s expectation=%s %s",
             ticker or "N/A",
             cik or "N/A",
             accession,
@@ -942,7 +921,6 @@ class Edgar(AdvisorBase):
             result_dict["past_performance"] or "N/A",
             result_dict["guidance"] or "N/A",
             result_dict["expectation"] or "N/A",
-            result_dict["eps"],
             "-> pass"  if passed else "-> fail"
         )
 
@@ -991,6 +969,9 @@ class Edgar(AdvisorBase):
             ticker=ticker or "",
             quarter=quarter,
         )
+        print("-------")
+        print(media_prompt)
+        print("-------")
 
         model, parsed = self.ask_gemini(media_prompt, timeout=120.0, use_search=True)
         if not parsed or not isinstance(parsed, dict):
@@ -1003,6 +984,10 @@ class Edgar(AdvisorBase):
             # No LLM - try again later
             self.watch(ticker, explanation=f"{accession}")
             return None
+
+        print("-------")
+        print(parsed)
+        print("-------")
 
         reaction = parsed.get("reaction")
         hb = parsed.get("headline_beat") if isinstance(parsed.get("headline_beat"), dict) else {}
@@ -1033,10 +1018,10 @@ class Edgar(AdvisorBase):
 
         # Media-driven hard fail:
         # eps_label in {"miss", "unknown"} AND reaction not in {"strong_positive", "positive"} AND revenue == "miss"
-        if reaction_norm in ["no_coverage", "neutral", "negative"] or eps_label in ["miss", "unknown"] or rev_label_norm == 'miss':
+        if reaction_norm in ["no_coverage", "neutral", "negative"] or eps_label in ["miss", "unknown"]:
             logger.info(
                 "ticker=%s, CIK=%s, accession=%s media LLM: "
-                "(eps_label=%s, revenue=%s, reaction=%s) -> fail",
+                "(eps=%s, revenue=%s, reaction=%s) -> fail",
                 ticker or "N/A",
                 cik or "N/A",
                 accession,
@@ -1075,6 +1060,7 @@ class Edgar(AdvisorBase):
 
     def build_explanation(self, filing, advanced: dict) -> str:
 
+        cik = str(getattr(filing, "cik", "") or "")
         accession = (
             getattr(filing, "accession_no", None)
             or getattr(filing, "accession_number", None)
@@ -1085,9 +1071,10 @@ class Edgar(AdvisorBase):
         weight = advanced.get("weight")
         if weight is None or not isinstance(weight, (int, float)):
             weight = 1.0
+
         ex99 = advanced.get("ex99") or {}
         media = advanced.get("media") or {}
-        parts = [f"8-K earnings weight: {weight:.2f} | Accession: {accession}"]
+        parts = [f"8-K earnings weight: {weight:.2f} | Accession: {accession} | https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude"]
 
         justifications = ex99.get("justifications") or {}
         if isinstance(justifications, dict):
@@ -1179,6 +1166,9 @@ class Edgar(AdvisorBase):
         elif rev_label == "neutral":
             penalties.append("Neutral revenue (-0.2)")
             weight -= 0.2
+        elif rev_label == "miss":
+            penalties.append("Neutral revenue (-0.3)")
+            weight -= 0.3
 
         # Valuation
         valuation = self.evaluate_stock(ticker)
@@ -1334,11 +1324,11 @@ class Edgar(AdvisorBase):
             return
 
         """
-        filing1 = find("0001193125-26-099319")
-        filing2 = find("0001709682-26-000006")
-        filing3 = find("0001020859-26-000004")
+        filing1 = find("0001437749-26-007827")
+        filing2 = find("0001104659-26-026708")
+        filing3 = find("0001140361-26-009133")
 
-        filings = [filing1, filing2, filing3]
+        filings = [filing1, filing3]
         """
         # Filter latest to 8-Ks only
         filings_8k = [f for f in filings if getattr(f, "form", None) == "8-K"]
