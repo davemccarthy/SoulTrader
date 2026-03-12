@@ -1,792 +1,507 @@
 """
-Vunder Advisor - The search for undervalued stocks (SIMPLIFIED FOR TESTING)
+Vunder Advisor - Down-in-the-dumps style value discovery (WIP)
 
-Based on notional price calculation with minimal filtering:
-- Undervalued ratio filter (actual/notional <= 0.70)
-- Profit margin filter (>= 0% - profitable or break-even only)
-
-All other filters (trends, SMA, volume, volatility) are disabled for testing.
-Uses Polygon API via base class get_filtered_stocks() method.
-Only runs during first hour of market open (9:30-10:30 AM ET).
+New paradigm (high level):
+- Build a liquid, mid-priced universe from Polygon via AdvisorBase.get_filtered_stocks().
+- For each stock, fetch ~6M daily history from yfinance and basic fundamentals.
+- Require profitability and reasonable valuation via AdvisorBase.evaluate_stock().
+- Score candidates by liquidity/health, valuation, and proximity to 6M/2-week lows.
+- Pre-LLM long list: sort by total_score and keep the strongest names.
+- LLM: use AdvisorBase.ask_gemini for consensus; keep Buy/Strong Buy only.
 """
-import logging
-from decimal import Decimal
-import pandas as pd
 
+import logging
+from typing import Dict, Any, List, Optional
+
+import numpy as np
+import pandas as pd
 import yfinance as yf
 
 from core.services.advisors.advisor import AdvisorBase, register
 
 logger = logging.getLogger(__name__)
 
-# Discovery settings (SIMPLIFIED FOR TESTING)
-UNDERVALUED_RATIO_THRESHOLD = 0.70  # Discount threshold (actual/notional <= 0.70)
-MIN_PROFIT_MARGIN = 0.0  # Only profitable or break-even companies
+# ------------------------------
+# CONFIG (aligned with test_dumps)
+# ------------------------------
+MIN_PRICE = 8.0
+MAX_PRICE = 80.0
+MIN_AVG_VOLUME = 2_000_000  # 2M+ average daily volume
+
+# How close to the 6M low we require the current price to be
+MAX_DIST_FROM_6M_LOW_PCT = 0.15  # within 15% of 6M low
+
+# Optional filter: exclude names very near 6M high
+MAX_DIST_FROM_6M_HIGH_PCT = 0.85  # price / high_6m must be <= 0.85 (not near highs)
+
+# Valuation: ROE-based valuation ratio from AdvisorBase.evaluate_stock
+MAX_VALUATION_RATIO = 1.0   # <1.0 = undervalued, <0.75 = deep value
+
+# Scoring: only send candidates with total_score >= this (0–1 scale) to LLM step
+SCORE_THRESHOLD = 0.7
+
+# Caps
+MAX_UNIVERSE = 500          # max Polygon names to analyze per run
+MAX_LLM_CANDIDATES = 10     # max candidates to send to LLM per run
 
 
 class Vunder(AdvisorBase):
-    """
-    Vunder Advisor - Discovers undervalued stocks using notional price calculation
-    with comprehensive fundamental and technical filtering.
-    """
 
-    def __init__(self, advisor):
-        if isinstance(advisor, str):
-            super().__init__(advisor)
-            self.advisor = None
-        else:
-            super().__init__(advisor.name)
-            self.advisor = advisor
+    # ---------
+    # Core helpers
+    # ---------
 
-    # ============================================================================
-    # NOTIONAL PRICE CALCULATION METHODS
-    # ============================================================================
-
-    def _calculate_notional_price_dcf(self, ticker_info):
-        """Calculate notional price using DCF method (simplified)."""
-        try:
-            fcf = ticker_info.get('freeCashflow') or ticker_info.get('operatingCashflow')
-            shares = ticker_info.get('sharesOutstanding')
-            
-            if not fcf or not shares or fcf <= 0 or shares <= 0:
-                return None
-            
-            # Simplified DCF: assume 5% growth, 10% discount rate, 10x terminal multiple
-            growth_rate = 0.05
-            discount_rate = 0.10
-            terminal_multiple = 10.0
-            years = 5
-            
-            # Project FCF for 5 years
-            pv_fcf = 0
-            for year in range(1, years + 1):
-                future_fcf = fcf * ((1 + growth_rate) ** year)
-                pv_fcf += future_fcf / ((1 + discount_rate) ** year)
-            
-            # Terminal value
-            terminal_fcf = fcf * ((1 + growth_rate) ** years)
-            terminal_value = terminal_fcf * terminal_multiple
-            pv_terminal = terminal_value / ((1 + discount_rate) ** years)
-            
-            equity_value = pv_fcf + pv_terminal
-            notional_price = equity_value / shares
-            
-            return notional_price
-        except:
-            return None
-
-    def _calculate_notional_price_pe(self, ticker_info):
-        """Calculate notional price using P/E multiple method."""
-        try:
-            eps = ticker_info.get('trailingEps') or ticker_info.get('forwardEps')
-            shares = ticker_info.get('sharesOutstanding')
-            
-            if not eps or not shares or eps <= 0 or shares <= 0:
-                return None
-            
-            # Use sector average P/E
-            sector_pe_map = {
-                'Technology': 28.0,
-                'Healthcare': 22.0,
-                'Financial Services': 13.0,
-                'Consumer Cyclical': 19.0,
-                'Consumer Defensive': 21.0,
-                'Energy': 11.0,
-                'Industrials': 19.0,
-                'Basic Materials': 16.0,
-                'Real Estate': 18.0,
-                'Utilities': 16.0,
-                'Communication Services': 16.0,
-            }
-            
-            sector = ticker_info.get('sector', '')
-            pe_ratio = sector_pe_map.get(sector, 18.0)  # Default to market average
-            
-            notional_price = eps * pe_ratio
-            return notional_price
-        except:
-            return None
-
-    def _calculate_notional_price_ev_ebitda(self, ticker_info):
-        """Calculate notional price using EV/EBITDA multiple method."""
-        try:
-            ebitda = ticker_info.get('ebitda')
-            shares = ticker_info.get('sharesOutstanding')
-            market_cap = ticker_info.get('marketCap')
-            total_debt = ticker_info.get('totalDebt') or 0
-            cash = ticker_info.get('totalCash') or 0
-            
-            if not ebitda or not shares or ebitda <= 0 or shares <= 0:
-                return None
-            
-            # Use company's own EV/EBITDA if available, otherwise use sector average
-            ev_ebitda = ticker_info.get('enterpriseToEbitda') or 10.0
-            
-            # Calculate Enterprise Value
-            enterprise_value = ebitda * ev_ebitda
-            
-            # Convert to Equity Value
-            net_debt = total_debt - cash
-            equity_value = enterprise_value - net_debt
-            
-            # If we have market cap, use it to validate/adjust
-            if market_cap and market_cap > 0:
-                # Use a blend: 70% calculated, 30% market-based
-                equity_value = equity_value * 0.7 + market_cap * 0.3
-            
-            notional_price = equity_value / shares
-            return notional_price
-        except:
-            return None
-
-    def _calculate_notional_price_revenue(self, ticker_info):
-        """Calculate notional price using revenue multiple method."""
-        try:
-            revenue_per_share = ticker_info.get('revenuePerShare')
-            shares = ticker_info.get('sharesOutstanding')
-            total_revenue = ticker_info.get('totalRevenue')
-            
-            if not revenue_per_share and total_revenue and shares and shares > 0:
-                revenue_per_share = total_revenue / shares
-            
-            if not revenue_per_share or revenue_per_share <= 0:
-                return None
-            
-            # Use price-to-sales ratio (default 2.0 for growth companies)
-            ps_ratio = ticker_info.get('priceToSalesTrailing12Months')
-            if not ps_ratio or ps_ratio < 0.5 or ps_ratio > 20:
-                ps_ratio = 2.0
-            
-            notional_price = revenue_per_share * ps_ratio
-            
-            # Sanity check
-            if notional_price > 10000:
-                return None
-            
-            return notional_price
-        except:
-            return None
-
-    def _calculate_notional_price_book(self, ticker_info):
-        """Calculate notional price using price-to-book method."""
-        try:
-            book_value = ticker_info.get('bookValue')
-            shares = ticker_info.get('sharesOutstanding')
-            
-            if not book_value or not shares or book_value <= 0 or shares <= 0:
-                return None
-            
-            book_per_share = book_value / shares
-            
-            # Use company's P/B if available, otherwise use sector average (default 1.5)
-            pb_ratio = ticker_info.get('priceToBook') or 1.5
-            
-            notional_price = book_per_share * pb_ratio
-            return notional_price
-        except:
-            return None
-
-    def _calculate_best_notional_price(self, ticker_info):
-        """Calculate notional price using the best available method."""
-        methods = []
-        actual_price = ticker_info.get('currentPrice') or ticker_info.get('regularMarketPrice') or 0
-        
-        # Try EV/EBITDA first (most reliable for most companies)
-        ev_ebitda_price = self._calculate_notional_price_ev_ebitda(ticker_info)
-        if ev_ebitda_price and ev_ebitda_price > 0 and ev_ebitda_price < actual_price * 10:
-            methods.append(('EV/EBITDA', ev_ebitda_price))
-        
-        # Try P/E (good for profitable companies)
-        pe_price = self._calculate_notional_price_pe(ticker_info)
-        if pe_price and pe_price > 0 and pe_price < actual_price * 10:
-            methods.append(('P/E', pe_price))
-        
-        # Try DCF (most rigorous but requires assumptions)
-        dcf_price = self._calculate_notional_price_dcf(ticker_info)
-        if dcf_price and dcf_price > 0 and dcf_price < actual_price * 10:
-            methods.append(('DCF', dcf_price))
-        
-        # Try P/B (for financial companies)
-        pb_price = self._calculate_notional_price_book(ticker_info)
-        if pb_price and pb_price > 0 and pb_price < actual_price * 10:
-            methods.append(('P/B', pb_price))
-        
-        # Try Revenue multiple last (for growth companies, less reliable)
-        revenue_price = self._calculate_notional_price_revenue(ticker_info)
-        if revenue_price and revenue_price > 0 and revenue_price < actual_price * 10:
-            methods.append(('Revenue', revenue_price))
-        
-        if not methods:
-            return None, None
-        
-        # Use the method with the most reasonable price
-        if actual_price and actual_price > 0:
-            valid_methods = [m for m in methods if m[1] > actual_price * 0.5 and m[1] < actual_price * 5]
-            if valid_methods:
-                best_method = min(valid_methods, key=lambda x: abs(x[1] - actual_price))
-            else:
-                best_method = min(methods, key=lambda x: abs(x[1] - actual_price))
-        else:
-            best_method = methods[0]
-        
-        return best_method[0], best_method[1]
-
-    # ============================================================================
-    # STOCK FETCHING
-    # ============================================================================
-
-    def _get_active_stocks(self, limit=200, min_volume=None, max_volume=None, sort_volume_asc=False, sa=None):
+    def _get_6m_history(self, ticker: str) -> pd.DataFrame:
         """
-        Get stocks from Polygon using base advisor method with price and volume filtering.
-        
-        Args:
-            limit: Maximum number of stocks to return
-            min_volume: Optional minimum daily volume (not used, average volume is calculated)
-            max_volume: Optional maximum daily volume (not used)
-            sort_volume_asc: If True, sort by volume ascending (lowest first, for less discovered stocks)
-            sa: SmartAnalysis session (optional, for logging)
+        Fetch ~6 months of daily history for a ticker from yfinance.
+        Returns DataFrame with columns: date, open, close, high, low, volume.
         """
         try:
-            # Use base advisor method to fetch stocks from Polygon
-            # Filter by price range: $2 - $18
-            df = self.get_filtered_stocks(
-                sa=sa,
-                min_price=2.0,
-                max_price=18.0,
-                min_volume=None  # We'll filter by average volume below
+            t = yf.Ticker(ticker)
+            hist = t.history(period="6mo", interval="1d", raise_errors=False)
+            if hist is None or hist.empty:
+                return pd.DataFrame()
+            df = pd.DataFrame(
+                {
+                    "date": hist.index,
+                    "open": hist["Open"].values,
+                    "close": hist["Close"].values,
+                    "high": hist["High"].values,
+                    "low": hist["Low"].values,
+                    "volume": hist["Volume"].values,
+                }
             )
-            
-            if df.empty:
-                logger.warning("No stocks returned from Polygon")
-                return []
-            
-            # Calculate average volume and filter to stocks with at least average volume
-            avg_volume = df['today_volume'].mean()
-            initial_count = len(df)
-            df = df[df['today_volume'] >= avg_volume]
-            
-            if df.empty:
-                logger.warning("No stocks with average or above average volume")
-                return []
-            
-            logger.info(f"Filtered {initial_count} stocks (price $2-$18) to {len(df)} stocks with >= average volume ({avg_volume:,.0f})")
-            
-            # Convert DataFrame to list of dicts (matching original format)
-            stocks = []
-            for _, row in df.iterrows():
-                # Get company name from yfinance (for display purposes)
-                try:
-                    ticker = yf.Ticker(row['ticker'])
-                    info = ticker.info
-                    name = info.get('shortName') or info.get('longName', 'N/A')
-                except:
-                    name = row['ticker']  # Fallback to ticker if name fetch fails
-                
-                stocks.append({
-                    'symbol': row['ticker'],
-                    'name': name,
-                    'price': float(row['price']),
-                    'volume': float(row['today_volume']),
-                })
-            
-            # Sort by volume (ascending or descending based on param)
-            stocks.sort(key=lambda x: x['volume'], reverse=not sort_volume_asc)
-            return stocks[:limit]
-            
-        except Exception as e:
-            logger.warning(f"Error fetching stocks from Polygon: {e}", exc_info=True)
-            return []
+            return df.reset_index(drop=True)
+        except Exception:
+            return pd.DataFrame()
 
-    # ============================================================================
-    # TREND CALCULATION
-    # ============================================================================
+    def _compute_scores(
+        self,
+        avg_volume: float,
+        rel_volume: float,
+        valuation_ratio: float,
+        ratio_to_low_6m: float,
+        ratio_to_low_2w: float,
+        min_avg_volume: int = MIN_AVG_VOLUME,
+    ):
+        """
+        Compute health (liquidity + stability + profitability), valuation, and proximity to lows.
+        Returns (health_score, valuation_score, low_6m_score, total_score), all in [0, 1].
 
-    def _calculate_recent_trend(self, symbol, days=5):
-        """Calculate price trend over the last N trading days."""
-        try:
-            ticker = yf.Ticker(symbol)
-            hist = ticker.history(period=f"{days}d", interval="1d")
-            
-            if hist.empty or len(hist) < 2:
-                return None
-            
-            # Get first and last close prices
-            first_close = hist['Close'].iloc[0]
-            last_close = hist['Close'].iloc[-1]
-            
-            # Calculate percentage change
-            trend_pct = ((last_close - first_close) / first_close) * 100
-            return trend_pct
-        except Exception as e:
-            logger.debug(f"Could not calculate recent trend for {symbol}: {e}")
-            return None
+        Mirrors the scoring weights from test_dumps:
+          total_score = 0.35*health + 0.25*valuation + 0.25*low_6m + 0.15*low_2w.
+        """
+        # Health: liquidity (cap at 5M), stability (rel_volume near 1), profitability (already filtered = 1)
+        liquidity = min(1.0, avg_volume / max(5_000_000, min_avg_volume))
+        stability = 1.0 if 0.5 <= rel_volume <= 1.5 else max(0.0, 1.0 - abs(rel_volume - 1.0))
+        health_score = (liquidity + stability + 1.0) / 3.0
 
-    def _calculate_sma20(self, symbol):
-        """Calculate 20-day Simple Moving Average."""
-        try:
-            ticker = yf.Ticker(symbol)
-            hist = ticker.history(period='30d', interval='1d')
-            
-            if hist.empty or len(hist) < 20:
-                return None
-            
-            sma20 = hist['Close'].rolling(window=20).mean().iloc[-1]
-            return float(sma20) if not pd.isna(sma20) else None
-        except Exception as e:
-            logger.debug(f"Could not calculate SMA20 for {symbol}: {e}")
-            return None
+        # Valuation: lower ratio = better value; score = max(0, 1 - ratio)
+        valuation_score = max(0.0, 1.0 - valuation_ratio)
 
-    def _calculate_atr20(self, symbol):
-        """Calculate 20-day Average True Range."""
-        try:
-            ticker = yf.Ticker(symbol)
-            hist = ticker.history(period='30d', interval='1d')
-            
-            if hist.empty or len(hist) < 20:
-                return None
-            
-            # Calculate True Range
-            hist['High-Low'] = hist['High'] - hist['Low']
-            hist['High-PrevClose'] = abs(hist['High'] - hist['Close'].shift(1))
-            hist['Low-PrevClose'] = abs(hist['Low'] - hist['Close'].shift(1))
-            hist['TR'] = hist[['High-Low', 'High-PrevClose', 'Low-PrevClose']].max(axis=1)
-            
-            # Calculate 20-day ATR
-            atr20 = hist['TR'].rolling(window=20).mean().iloc[-1]
-            return float(atr20) if not pd.isna(atr20) else None
-        except Exception as e:
-            logger.debug(f"Could not calculate ATR20 for {symbol}: {e}")
-            return None
+        # 6M low: ratio_to_low 1.0 = at low (best), 1.0 + MAX_DIST_FROM_6M_LOW_PCT = worst in band
+        low_6m_score = max(
+            0.0,
+            1.0 - (ratio_to_low_6m - 1.0) / max(MAX_DIST_FROM_6M_LOW_PCT, 1e-6),
+        )
 
-    def _calculate_20day_dollar_volume(self, symbol):
-        """Calculate 20-day average dollar volume."""
-        try:
-            ticker = yf.Ticker(symbol)
-            hist = ticker.history(period='30d', interval='1d')
-            
-            if hist.empty or len(hist) < 20:
-                return None
-            
-            # Calculate dollar volume (price * volume) for each day
-            hist['DollarVolume'] = hist['Close'] * hist['Volume']
-            
-            # Calculate 20-day average
-            avg_dollar_volume = hist['DollarVolume'].tail(20).mean()
-            return float(avg_dollar_volume) if not pd.isna(avg_dollar_volume) else None
-        except Exception as e:
-            logger.debug(f"Could not calculate 20-day dollar volume for {symbol}: {e}")
-            return None
+        # 2-week low: same structure but on short window
+        low_2w_score = max(
+            0.0,
+            1.0 - (ratio_to_low_2w - 1.0) / max(MAX_DIST_FROM_6M_LOW_PCT, 1e-6),
+        )
 
-    def _calculate_daily_return(self, symbol):
-        """Calculate today's return percentage."""
-        try:
-            ticker = yf.Ticker(symbol)
-            hist = ticker.history(period='2d', interval='1d')
-            
-            if hist.empty or len(hist) < 2:
-                return None
-            
-            prev_close = hist['Close'].iloc[-2]
-            current_close = hist['Close'].iloc[-1]
-            
-            daily_return = ((current_close - prev_close) / prev_close) * 100
-            return float(daily_return)
-        except Exception as e:
-            logger.debug(f"Could not calculate daily return for {symbol}: {e}")
-            return None
+        total_score = (
+            0.35 * health_score
+            + 0.25 * valuation_score
+            + 0.25 * low_6m_score
+            + 0.15 * low_2w_score
+        )
+        return health_score, valuation_score, low_6m_score, total_score
 
-    # ============================================================================
-    # FILTERING METHODS
-    # ============================================================================
+    def _is_profitable(self, info: Dict[str, Any]) -> bool:
+        """
+        Simple profitability test: any of trailing EPS, net income, or profit margin >= 0.
+        Mirrors test_dumps.is_profitable.
+        """
+        trailing_eps = info.get("trailingEps")
+        net_income = info.get("netIncomeToCommon") or info.get("netIncome")
+        profit_margin = info.get("profitMargins")
 
-    def _filter_fundamentals(self, results):
-        """Filter stocks by profit margin only (simplified for testing)."""
-        filtered = []
-        
-        for stock in results:
-            profit_margin = stock.get('profit_margin')
-            
-            # Check profit margin - None means missing data (unprofitable companies often have None)
-            if profit_margin is None or profit_margin < MIN_PROFIT_MARGIN:
-                continue
-            
-            filtered.append(stock)
-        
-        return filtered
+        return bool(
+            (trailing_eps is not None and trailing_eps >= 0)
+            or (net_income is not None and net_income >= 0)
+            or (profit_margin is not None and profit_margin >= 0)
+        )
 
-    def _filter_recent_trend(self, results):
-        """Filter for stocks with positive but not extended 5-day momentum (enhanced)."""
-        filtered = []
-        
-        for stock in results:
-            symbol = stock.get('symbol')
-            if not symbol:
-                continue
-            
-            # Calculate trend over last 5 trading days
-            trend_pct = self._calculate_recent_trend(symbol, days=5)
-            
-            # If we can't calculate trend, include the stock (don't exclude due to data issues)
-            if trend_pct is None:
-                filtered.append(stock)
-                continue
-            
-            # Require positive momentum (early turn confirmation) - relaxed to allow slightly negative
-            if trend_pct < MIN_5_DAY_TREND:
-                logger.debug(f"Filtered out {symbol} - negative 5-day trend: {trend_pct:.2f}%")
-                continue
-            
-            # But not too extended
-            if trend_pct > MAX_5_DAY_TREND:
-                logger.debug(f"Filtered out {symbol} - trend too extended: {trend_pct:.2f}%")
-                continue
-            
-            # Store trend for reference
-            stock['recent_trend_pct'] = trend_pct
-            filtered.append(stock)
-        
-        return filtered
+    def _build_quant_static_list(self, sa) -> pd.DataFrame:
+        """
+        Pre-LLM long list builder (STATIC VERSION, no Polygon).
 
-    def _filter_longer_term_trend(self, results):
-        """Filter out stocks with sustained declines over longer periods."""
-        filtered = []
-        
-        for stock in results:
-            symbol = stock.get('symbol')
-            if not symbol:
-                continue
-            
-            # Calculate trend over last 30 trading days
-            trend_pct = self._calculate_recent_trend(symbol, days=30)
-            
-            # If we can't calculate trend, include the stock (don't exclude due to data issues)
-            if trend_pct is None:
-                filtered.append(stock)
-                continue
-            
-            # Filter out stocks with sustained declines (stricter: -10% instead of -15%)
-            if trend_pct < MAX_30_DAY_DECLINE:
-                logger.debug(f"Filtered out {symbol} - 30-day decline too severe: {trend_pct:.2f}%")
-                continue
-            
-            # Store 30-day trend for reference
-            stock['thirty_day_trend_pct'] = trend_pct
-            filtered.append(stock)
-        
-        return filtered
+        - Starts from a fixed list of tickers.
+        - For each stock, fetches ~6M history + basic fundamentals from yfinance.
+        - Applies profitability, valuation, and 6M/2w low proximity filters.
+        - Returns DataFrame sorted by total_score desc, filtered to total_score >= SCORE_THRESHOLD.
+        """
+        # Static test universe (adjust as you like)
+        tickers = [
+            "LYFT", "GIS", "GPK", "SYF", "CPB",
+            "WFC", "UPWK", "WHR", "OBDC", "DXC", "GNTX",
+        ]
 
-    def _filter_price_vs_sma20(self, results):
-        """Hybrid SMA filter: Price >= 90% of 20-day SMA AND <= 110% of 20-day SMA."""
-        filtered = []
-        ratios_below = []
-        ratios_above = []
-        ratios_valid = []
-        no_sma_count = 0
-        
-        for stock in results:
-            symbol = stock.get('symbol')
-            current_price = stock.get('actual_price', 0)
-            
-            if not symbol or not current_price:
-                continue
-            
-            sma20 = self._calculate_sma20(symbol)
-            
-            # If we can't calculate SMA20, include the stock (don't exclude due to data issues)
-            if sma20 is None or sma20 <= 0:
-                no_sma_count += 1
-                filtered.append(stock)
-                continue
-            
-            price_ratio = current_price / sma20
-            
-            # Hybrid: slightly below OK (>= 90%), but not far below, and not extended (<= 110%)
-            if price_ratio < MIN_PRICE_VS_SMA20:
-                ratios_below.append((symbol, price_ratio, current_price, sma20))
-                logger.debug(f"Filtered out {symbol} - too far below 20-day SMA: price=${current_price:.2f}, SMA20=${sma20:.2f}, ratio={price_ratio:.2%}")
-                continue
-            
-            if price_ratio > MAX_PRICE_VS_SMA20:
-                ratios_above.append((symbol, price_ratio, current_price, sma20))
-                logger.debug(f"Filtered out {symbol} - too far above 20-day SMA: price=${current_price:.2f}, SMA20=${sma20:.2f}, ratio={price_ratio:.2%}")
-                continue
-            
-            ratios_valid.append((symbol, price_ratio))
-            filtered.append(stock)
-        
-        # Log summary statistics
-        logger.info(f"SMA20 filter: {len(results)} stocks -> {len(filtered)} passed")
-        logger.info(f"  {no_sma_count} stocks included (no SMA20 data)")
-        logger.info(f"  {len(ratios_below)} stocks filtered (too far below: < {MIN_PRICE_VS_SMA20:.0%})")
-        logger.info(f"  {len(ratios_above)} stocks filtered (too far above: > {MAX_PRICE_VS_SMA20:.0%})")
-        logger.info(f"  {len(ratios_valid)} stocks passed (ratio between {MIN_PRICE_VS_SMA20:.0%} and {MAX_PRICE_VS_SMA20:.0%})")
-        
-        # Log sample of ratios below threshold (first 5)
-        if ratios_below:
-            logger.info(f"Sample stocks below threshold (first 5):")
-            for symbol, ratio, price, sma in ratios_below[:5]:
-                logger.info(f"  {symbol}: price=${price:.2f}, SMA20=${sma:.2f}, ratio={ratio:.2%}")
-        
-        # Log sample of ratios above threshold (first 5)
-        if ratios_above:
-            logger.info(f"Sample stocks above threshold (first 5):")
-            for symbol, ratio, price, sma in ratios_above[:5]:
-                logger.info(f"  {symbol}: price=${price:.2f}, SMA20=${sma:.2f}, ratio={ratio:.2%}")
-        
-        return filtered
+        rows: List[Dict[str, Any]] = []
 
-    def _filter_dollar_volume(self, results):
-        """Filter by 20-day average dollar volume."""
-        filtered = []
-        
-        for stock in results:
-            symbol = stock.get('symbol')
-            if not symbol:
-                continue
-            
-            avg_dollar_volume = self._calculate_20day_dollar_volume(symbol)
-            
-            # If we can't calculate, include the stock (don't exclude due to data issues)
-            if avg_dollar_volume is None:
-                filtered.append(stock)
-                continue
-            
-            if avg_dollar_volume < MIN_20_DAY_DOLLAR_VOLUME:
-                logger.debug(f"Filtered out {symbol} - dollar volume too low: ${avg_dollar_volume:,.0f}")
-                continue
-            
-            filtered.append(stock)
-        
-        return filtered
+        for ticker in tickers:
+            ticker = ticker.upper()
 
-    def _filter_volatility(self, results):
-        """Filter by ATR/Price ratio to avoid excessive volatility."""
-        filtered = []
-        
-        for stock in results:
-            symbol = stock.get('symbol')
-            current_price = stock.get('actual_price', 0)
-            
-            if not symbol or not current_price or current_price <= 0:
+            df_6m = self._get_6m_history(ticker)
+            if df_6m.empty or len(df_6m) < 40:
                 continue
-            
-            atr20 = self._calculate_atr20(symbol)
-            
-            # If we can't calculate ATR, include the stock (don't exclude due to data issues)
-            if atr20 is None or atr20 <= 0:
-                filtered.append(stock)
-                continue
-            
-            atr_pct = atr20 / current_price
-            
-            if atr_pct > MAX_ATR_PCT:
-                logger.debug(f"Filtered out {symbol} - volatility too high: {atr_pct:.2%}")
-                continue
-            
-            filtered.append(stock)
-        
-        return filtered
 
-    def _filter_daily_spikes(self, results):
-        """Filter out stocks with extreme daily return spikes."""
-        filtered = []
-        
-        for stock in results:
-            symbol = stock.get('symbol')
-            if not symbol:
+            df_6m = df_6m.sort_values("date")
+            low_6m = float(df_6m["low"].min())
+            high_6m = float(df_6m["high"].max())
+            if low_6m <= 0 or high_6m <= 0:
                 continue
-            
-            daily_return = self._calculate_daily_return(symbol)
-            
-            # If we can't calculate, include the stock (don't exclude due to data issues)
-            if daily_return is None:
-                filtered.append(stock)
-                continue
-            
-            abs_return = abs(daily_return)
-            
-            if abs_return > MAX_DAILY_RETURN_PCT:
-                logger.debug(f"Filtered out {symbol} - daily return spike: {daily_return:.2f}%")
-                continue
-            
-            filtered.append(stock)
-        
-        return filtered
 
-    def _check_average_low(self, symbol, current_price):
-        """Check if stock is trading near/below its 50-day SMA (legacy filter, disabled by default)."""
-        # If filter is disabled, always return True
-        if MAX_PRICE_VS_SMA50 is None:
-            return True
-        
-        try:
-            ticker = yf.Ticker(symbol)
-            hist = ticker.history(period='60d', interval='1d')
-            
-            if hist.empty or len(hist) < 50:
-                return True
-            
-            # Calculate 50-day SMA
-            hist['SMA50'] = hist['Close'].rolling(window=50).mean()
-            sma50 = hist['SMA50'].iloc[-1]
-            
-            if pd.isna(sma50) or sma50 <= 0:
-                return True
-            
-            # Check if current price is within threshold of SMA50
-            price_ratio = current_price / sma50
-            return price_ratio <= MAX_PRICE_VS_SMA50
-            
-        except Exception as e:
-            logger.debug(f"Could not check average low for {symbol}: {e}")
-            return True
+            current_price = float(df_6m["close"].iloc[-1])
 
-    def _filter_average_low(self, results):
-        """Filter stocks to only include those trading near/below their 50-day average (legacy, disabled by default)."""
-        # If filter is disabled, return all results unchanged
-        if MAX_PRICE_VS_SMA50 is None:
-            return results
-        
-        filtered = []
-        
-        for stock in results:
-            symbol = stock.get('symbol')
-            current_price = stock.get('actual_price', 0)
-            
-            if not symbol or not current_price:
+            # Short-term (~2-week) low for additional proximity signal
+            recent_window = df_6m.tail(10)
+            low_2w = float(recent_window["low"].min())
+            if low_2w <= 0:
                 continue
-            
-            if self._check_average_low(symbol, current_price):
-                filtered.append(stock)
-            else:
-                logger.debug(f"Filtered out {symbol} - trading too far above 50-day SMA")
-        
-        return filtered
 
-    # ============================================================================
-    # DISCOVERY METHOD
-    # ============================================================================
+            ratio_to_low = current_price / low_6m
+            ratio_to_high = current_price / high_6m
+            ratio_to_low_2w = current_price / low_2w
+
+            if ratio_to_low > (1.0 + MAX_DIST_FROM_6M_LOW_PCT):
+                continue
+            if ratio_to_high > MAX_DIST_FROM_6M_HIGH_PCT:
+                continue
+
+            avg_volume_6m = float(df_6m["volume"].tail(40).mean())
+            if avg_volume_6m < MIN_AVG_VOLUME:
+                continue
+
+            # For static testing we don't have today_volume; approximate rel_volume ~ 1.0
+            rel_volume = 1.0
+
+            # Fundamentals + valuation via AdvisorBase.evaluate_stock
+            try:
+                t = yf.Ticker(ticker)
+                info = t.info or {}
+            except Exception:
+                info = {}
+
+            if not self._is_profitable(info):
+                continue
+
+            valuation_ratio = self.evaluate_stock(ticker_symbol=ticker, info=info)
+            if valuation_ratio > MAX_VALUATION_RATIO:
+                continue
+
+            health_score, valuation_score, low_score, total_score = self._compute_scores(
+                avg_volume_6m,
+                rel_volume,
+                valuation_ratio,
+                ratio_to_low,
+                ratio_to_low_2w,
+                MIN_AVG_VOLUME,
+            )
+
+            rows.append(
+                {
+                    "ticker": ticker,
+                    "price": round(current_price, 2),
+                    "low_6m": round(low_6m, 2),
+                    "high_6m": round(high_6m, 2),
+                    "ratio_to_low": round(ratio_to_low, 2),
+                    "ratio_to_high": round(ratio_to_high, 2),
+                    "avg_volume": int(avg_volume_6m),
+                    "valuation_ratio": float(round(valuation_ratio, 2)),
+                    "health_score": round(health_score, 3),
+                    "valuation_score": round(valuation_score, 3),
+                    "low_score": round(low_score, 3),
+                    "total_score": round(total_score, 3),
+                }
+            )
+
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(rows)
+        df = df[df["total_score"] >= SCORE_THRESHOLD]
+        if df.empty:
+            return df
+
+        df = df.sort_values(by="total_score", ascending=False).reset_index(drop=True)
+        return df
+
+    def _build_quant_long_list(self, sa) -> pd.DataFrame:
+        """
+        Pre-LLM long list builder.
+
+        - Uses AdvisorBase.get_filtered_stocks() to fetch last-trading-day Polygon universe.
+        - For each stock, fetches ~6M history + basic fundamentals from yfinance.
+        - Applies profitability, valuation, and 6M/2w low proximity filters.
+        - Returns DataFrame sorted by total_score desc, filtered to total_score >= SCORE_THRESHOLD.
+        """
+        df_universe = self.get_filtered_stocks(
+            sa=sa,
+            min_price=MIN_PRICE,
+            max_price=MAX_PRICE,
+            min_volume=MIN_AVG_VOLUME,
+        )
+        if df_universe is None or df_universe.empty:
+            logger.info("Vunder: no Polygon universe available")
+            return pd.DataFrame()
+
+        # Cap raw universe size for speed (highest volume first)
+        if MAX_UNIVERSE and len(df_universe) > MAX_UNIVERSE:
+            df_universe = df_universe.sort_values("today_volume", ascending=False).head(MAX_UNIVERSE)
+
+        rows: List[Dict[str, Any]] = []
+
+        for _, row in df_universe.iterrows():
+            ticker = row["ticker"]
+            price = float(row["price"])
+            today_volume = int(row["today_volume"])
+
+            df_6m = self._get_6m_history(ticker)
+            if df_6m.empty or len(df_6m) < 40:
+                continue
+
+            df_6m = df_6m.sort_values("date")
+            low_6m = float(df_6m["low"].min())
+            high_6m = float(df_6m["high"].max())
+            if low_6m <= 0 or high_6m <= 0:
+                continue
+
+            current_price = float(df_6m["close"].iloc[-1])
+
+            # Short-term (~2-week) low for additional proximity signal
+            recent_window = df_6m.tail(10)
+            low_2w = float(recent_window["low"].min())
+            if low_2w <= 0:
+                continue
+
+            ratio_to_low = current_price / low_6m
+            ratio_to_high = current_price / high_6m
+            ratio_to_low_2w = current_price / low_2w
+
+            if ratio_to_low > (1.0 + MAX_DIST_FROM_6M_LOW_PCT):
+                continue
+            if ratio_to_high > MAX_DIST_FROM_6M_HIGH_PCT:
+                continue
+
+            avg_volume_6m = float(df_6m["volume"].tail(40).mean())
+            if avg_volume_6m < MIN_AVG_VOLUME:
+                continue
+            rel_volume = today_volume / avg_volume_6m if avg_volume_6m > 0 else 0.0
+
+            # Fundamentals + valuation via AdvisorBase.evaluate_stock
+            try:
+                t = yf.Ticker(ticker)
+                info = t.info or {}
+            except Exception:
+                info = {}
+
+            if not self._is_profitable(info):
+                continue
+
+            valuation_ratio = self.evaluate_stock(ticker_symbol=ticker, info=info)
+            if valuation_ratio > MAX_VALUATION_RATIO:
+                continue
+
+            health_score, valuation_score, low_score, total_score = self._compute_scores(
+                avg_volume_6m,
+                rel_volume,
+                valuation_ratio,
+                ratio_to_low,
+                ratio_to_low_2w,
+                MIN_AVG_VOLUME,
+            )
+
+            rows.append(
+                {
+                    "ticker": ticker,
+                    "price": round(current_price, 2),
+                    "low_6m": round(low_6m, 2),
+                    "high_6m": round(high_6m, 2),
+                    "ratio_to_low": round(ratio_to_low, 2),
+                    "ratio_to_high": round(ratio_to_high, 2),
+                    "avg_volume": int(avg_volume_6m),
+                    "valuation_ratio": float(round(valuation_ratio, 2)),
+                    "health_score": round(health_score, 3),
+                    "valuation_score": round(valuation_score, 3),
+                    "low_score": round(low_score, 3),
+                    "total_score": round(total_score, 3),
+                }
+            )
+
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(rows)
+        df = df[df["total_score"] >= SCORE_THRESHOLD]
+        if df.empty:
+            return df
+
+        df = df.sort_values(by="total_score", ascending=False).reset_index(drop=True)
+        return df
+
+    def _llm_consensus(self, df_top: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
+        """
+        Call Gemini via AdvisorBase.ask_gemini to get consensus and confidence for each ticker.
+        Returns dict[ticker_upper] = {consensus, summary, confidence}.
+        """
+        tickers = df_top["ticker"].tolist()
+        if not tickers:
+            return {}
+
+        # Build one-line context per ticker (mirrors test_dumps)
+        lines = []
+        for _, row in df_top.iterrows():
+            lines.append(
+                f"  {row['ticker']}: price=${row['price']:.2f}, "
+                f"ratio_to_6m_low={row['ratio_to_low']:.2f}, "
+                f"valuation_ratio={row['valuation_ratio']:.2f}, "
+                f"total_score={row['total_score']:.3f}"
+            )
+        context_block = "\n".join(lines)
+
+        prompt = f"""
+You are an equity research assistant. For each of the following stocks, determine the current analyst-style
+consensus recommendation (Strong Buy, Buy, Hold, Sell) based on typical analyst ratings and recent sentiment.
+
+These stocks are candidates in a "down in the dumps" screen (near 6-month lows, liquid, profitable).
+
+Stocks and context:
+{context_block}
+
+TASK: For each ticker, return:
+1) consensus: one of "Strong Buy", "Buy", "Hold", or "Sell".
+2) summary: one short sentence on why this rating (catalysts, risks, or sentiment).
+3) confidence: a number from 0.0 to 1.0 indicating your conviction (1.0 = high, 0.5 = moderate, 0.0 = low).
+
+OUTPUT FORMAT: Respond with ONLY a single JSON object.
+Keys are ticker symbols. Each value is an object with "consensus", "summary", and "confidence" (number).
+
+Example:
+{{
+  "AAPL": {{"consensus": "Buy", "summary": "...", "confidence": 0.8}},
+  "MSFT": {{"consensus": "Strong Buy", "summary": "...", "confidence": 0.9}}
+}}
+"""
+
+        model, results = self.ask_gemini(prompt, timeout=120.0, use_search=False)
+        if not results or not isinstance(results, dict):
+            logger.info("Vunder: no usable LLM consensus")
+            return {}
+
+        consensus_map: Dict[str, Dict[str, Any]] = {}
+        for t in tickers:
+            t_upper = t.upper()
+            data = results.get(t) or results.get(t_upper)
+            if not data or not isinstance(data, dict):
+                continue
+            consensus = (data.get("consensus") or "").strip()
+            raw_conf = data.get("confidence")
+            try:
+                confidence = float(raw_conf) if raw_conf is not None else 0.75
+                confidence = max(0.0, min(1.0, confidence))
+            except (TypeError, ValueError):
+                confidence = 0.75
+            consensus_map[t_upper] = {
+                "consensus": consensus or "N/A",
+                "summary": (data.get("summary") or "")[:200],
+                "confidence": confidence,
+                "model": model,
+            }
+        return consensus_map
+
+    # ---------
+    # Entry point
+    # ---------
 
     def discover(self, sa):
-        """Discover undervalued stocks using notional price method with comprehensive filters.
-        
-        Only runs during the first hour of market open (9:30-10:30 AM ET).
-        """
-        # Check if within first hour of market open
-        market_status = self.market_open()
-        if market_status is None or market_status < 0 or market_status >= 60:
-            logger.info(f"Vunder discovery skipped: outside first hour window (market_status={market_status})")
+        # Once-per-day guard: if there was a previous SA today, skip entirely
+        prev = self.get_previous_sa_timestamp(sa, username=getattr(sa, "username", None))
+        if prev and prev.date() == sa.started.date():
+            logger.info("Vunder: already ran for this user today, skipping.")
             return
-        
-        try:
-            # Get stocks from Polygon with price filter ($2-$18) and average volume filter
-            # Using higher limit for weekly process
-            stocks = self._get_active_stocks(limit=1000, sort_volume_asc=False, sa=sa)
-            if not stocks:
-                logger.warning("No active stocks retrieved")
-                return
-            
-            # Calculate notional prices
-            results = []
-            batch_size = 20
-            
-            for i in range(0, len(stocks), batch_size):
-                batch = stocks[i:i+batch_size]
-                
-                for stock in batch:
-                    try:
-                        ticker = yf.Ticker(stock['symbol'])
-                        info = ticker.info
-                        
-                        method, notional_price = self._calculate_best_notional_price(info)
-                        
-                        if notional_price and notional_price > 0:
-                            actual_price = stock['price']
-                            discount_ratio = actual_price / notional_price
-                            
-                            # Get fundamental metrics
-                            profit_margin = info.get('profitMargins')
-                            yearly_change = (info.get('fiftyTwoWeekChangePercent', 0) or 0)
-                            market_cap = info.get('marketCap', 0) or 0
-                            revenue_growth = (info.get('revenueGrowth') * 100) if info.get('revenueGrowth') is not None else None
-                            
-                            results.append({
-                                'symbol': stock['symbol'],
-                                'name': stock['name'],
-                                'actual_price': actual_price,
-                                'notional_price': notional_price,
-                                'discount_ratio': discount_ratio,
-                                'method': method,
-                                'profit_margin': profit_margin,
-                                'yearly_change_pct': yearly_change,
-                                'market_cap': market_cap,
-                                'revenue_growth': revenue_growth,
-                            })
-                    except Exception as e:
-                        logger.debug(f"Error processing {stock.get('symbol', 'unknown')}: {e}")
-                        continue
-            
-            if not results:
-                logger.info("No stocks with notional prices calculated")
-                return
-            
-            # STEP 1: Filter for undervalued (discount ratio <= threshold) - EARLY FILTER FOR PERFORMANCE
-            undervalued_filtered = [
-                r for r in results 
-                if r['discount_ratio'] <= UNDERVALUED_RATIO_THRESHOLD
-            ]
-            
-            if not undervalued_filtered:
-                logger.info("No undervalued stocks found (ratio <= %.2f)", UNDERVALUED_RATIO_THRESHOLD)
-                return
-            
-            logger.info(f"Early filter: {len(results)} stocks with notional prices -> {len(undervalued_filtered)} undervalued stocks")
-            
-            # STEP 2: Filter by profit margin only (simplified for testing)
-            final_stocks = self._filter_fundamentals(undervalued_filtered)
-            
-            if not final_stocks:
-                logger.info("No stocks passed profit margin filter")
-                return
 
-            # Pass sell instructions - Balanced approach for value discovery
-            sell_instructions = [
-                ("PERCENTAGE_DIMINISHING", 1.50, 180),
-                ("PERCENTAGE_AUGMENTING", 0.80, 180),
-            ]
-            
-            # Discover each stock that passed all filters
-            discovered = 0
-            for stock in final_stocks:
-                symbol = stock['symbol']
-                current_price = stock['actual_price']
+        # Pre-LLM long list
+        df_long = self._build_quant_long_list(sa)
+        if df_long is None or df_long.empty:
+            logger.info("Vunder: no quant candidates found")
+            return
 
-                # Check if already discovered - rediscover if >30 days ago OR price dropped to 80%
-                if not self.allow_discovery(symbol, period=30 * 24, price_decline = 0.75):
-                    continue
+        # Limit to top N by total_score
+        df_top = df_long.head(MAX_LLM_CANDIDATES).copy()
+        if df_top.empty:
+            return
 
-                discount_pct = (1 - stock['discount_ratio']) * 100
-                upside = stock['notional_price'] - stock['actual_price']
-                upside_pct = (upside / stock['actual_price']) * 100 if stock['actual_price'] > 0 else 0
-                
-                recent_trend = stock.get('recent_trend_pct')
-                trend_str = f", Recent trend: {recent_trend:+.1f}%" if recent_trend is not None else ""
-                
-                explanation_parts = [
-                    f"Under valued: ${stock['notional_price']:.2f} vs ${stock['actual_price']:.2f}",
-                    f"Discount: {discount_pct:.1f}%",
-                    f"Upside: {upside_pct:.1f}%",
-                    f"Method: {stock['method']}{trend_str}",
-                ]
-                
-                explanation = " | ".join(explanation_parts)
-                self.discovered(sa, symbol, explanation, sell_instructions=sell_instructions)
-                discovered += 1
-            
-            logger.info("Vunder discovery complete: %s stocks found", discovered)
-            
-        except Exception as e:
-            logger.error(f"Error in Vunder discovery: {e}", exc_info=True)
+        # Apply allow_discovery before LLM
+        allowed_rows = []
+        for _, row in df_top.iterrows():
+            symbol = row["ticker"]
+            # Example: 24h window, no price_decline filter yet
+            if not self.allow_discovery(symbol, period=240, price_decline=None):
+                continue
+            allowed_rows.append(row)
+
+        if not allowed_rows:
+            logger.info("Vunder: all top candidates filtered out by allow_discovery")
+            return
+
+        df_allowed = pd.DataFrame(allowed_rows).reset_index(drop=True)
+
+        # LLM consensus step
+        consensus_map = self._llm_consensus(df_allowed)
+        if not consensus_map:
+            logger.info("Vunder: LLM consensus map empty; skipping discoveries")
+            return
+
+        # Map consensus to weights
+        weight_map = {
+            "strong buy": 1.25,
+            "buy": 0.8,
+        }
+
+        # Sell instructions (still simple; can be tuned later)
+        sell_instructions = [
+            ("PERCENTAGE_DIMINISHING", 1.30, 120),
+            ("PERCENTAGE_AUGMENTING", 0.85, 120),
+            ("PEAKED", 7.0, None),
+            ("DESCENDING_TREND", -0.20, None),
+        ]
+
+        # Final discoveries: only Buy / Strong Buy
+        for _, row in df_allowed.iterrows():
+            symbol = row["ticker"]
+            data = consensus_map.get(symbol.upper())
+            if not data:
+                continue
+            consensus = (data.get("consensus") or "").strip().lower()
+            if consensus not in ("buy", "strong buy"):
+                continue
+
+            base_weight = weight_map.get(consensus, 1.0)
+            # Optionally could factor in confidence here; for now, log only
+            confidence = data.get("confidence", 1.0)
+            weight = base_weight  # * confidence  # if you later want to include it
+
+            explanation = (
+                f"LLM {consensus} - confidence: {confidence} | "
+                f"Quant: price={row['price']}, ratio_to_low={row['ratio_to_low']} | "
+                f"valuation_ratio={row['valuation_ratio']}, total_score={row['total_score']} | "
+                f"{data.get('model')}: {data.get('summary')}"
+            )
+
+            self.discovered(sa, symbol, explanation, sell_instructions, weight=weight)
 
 
 register(name="Vunder", python_class="Vunder")
