@@ -464,12 +464,12 @@ Example:
         if not consensus_map:
             logger.info("Vunder: LLM consensus map empty; skipping discoveries")
             return
-
-        # Map consensus to weights
+            # Map consensus to weights
         weight_map = {
             "strong buy": 1.25,
             "buy": 0.8,
         }
+
 
         # Sell instructions (still simple; can be tuned later)
         sell_instructions = [

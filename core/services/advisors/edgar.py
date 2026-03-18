@@ -500,22 +500,40 @@ END EX-99.1
 # Media reaction LLM prompt template
 # ---------------------------------------------------------------------------
 
-MEDIA_REACTION_PROMPT_TEMPLATE = """{company} ({ticker}) has released its {quarter} earnings results.
+MEDIA_REACTION_PROMPT_TEMPLATE = """Analyze {company} ({ticker}) {quarter} earnings release and, if available, earnings call transcript from the perspective of a professional buy-side equity analyst.
 
-Analyze the gap between "Headline Results" and "Market Reaction."
-- Identify if the company beat/missed analyst consensus for EPS and Revenue.
-- Specifically look for forward-looking guidance, management's tone during the Q&A, and any cited "headwinds" (e.g., rising expenses, interest rates, or segment softness).
-- Specifically look for mentions of interest expense, capital expenditures (CapEx), or operating margins, as these often drive post-earnings sell-offs.
+Search the web for recent business and financial news and analysis about this event.
+
+Use reputable sources such as Bloomberg, Reuters, CNBC, Financial Times, Wall Street Journal, Barron's, MarketWatch, and major broker research (e.g., Goldman Sachs, Morgan Stanley, JPMorgan) where available.
+
+Your tasks:
+1. Assess the overall sentiment of coverage toward the earnings and outlook.
+2. Determine whether the company beat or missed consensus expectations on EPS and Revenue (when such information is available).
+3. Identify key positive themes and significant red flags mentioned across articles and broker notes.
 
 Respond with STRICT JSON only. No other text before or after:
 {{
-  "reaction": "positive" | "strong_positive" | "negative" | "neutral" | "no_coverage",
-  "headline_beat": {{ "eps": beat/strong_beat/miss/unknown, "revenue": beat/strong_beat/miss/unknown }},
-  "headlines_or_snippets": ["<quote 1>", "<quote 2>"],
-  "reason": "<2-3 sentences explaining your decision. Mention specific guidance, expense figures, or bearish/bullish cues if relevant.>"
+  "sentiment": "strong_positive" | "positive" | "mixed" | "negative" | "no_coverage",
+  "eps": "strong_beat" | beat" | "miss" | "other" | "unknown",
+  "revenue": "strong_beat" | "beat" | "miss" | "other" | "unknown",
+  "broker_reactions": "buy" | "strong_buy" | "moderate_buy" | "hold" | "sell" | "other (specify)",
+  "headlines": [
+    "<short positive headline or quote>",
+    "<another positive headline or quote>"
+  ],
+  "red_flags": [
+    "<short negative/red-flag headline or quote>",
+    "<another negative/red-flag headline or quote>"
+  ],
+  "summary": "<2–3 sentences explaining why sentiment is positive/neutral/negative, citing key drivers such as guidance, margins, demand trends, cash flow, or leverage.>"
 }}
 
-If you find no relevant coverage in that window, set reaction to "no_coverage" and reason accordingly."""
+If you find no relevant coverage in that window, set:
+- \"sentiment\": \"no_coverage\",
+- \"eps_result\": \"unknown\",
+- \"revenue_result\": \"unknown\",
+- \"broker_reactions\": \"unknown\"
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -810,7 +828,7 @@ class Edgar(AdvisorBase):
         )
         return None
 
-    def analyse_ex99_llm(self, filing, eps_beat: Optional[str]) -> Dict[str, Optional[object]]:
+    def analyse_ex99_llm(self, filing) -> Dict[str, Optional[object]]:
         """
         Run EX-99.1 LLM (3-ducks labels prompt) on the filing.
 
@@ -930,25 +948,9 @@ class Edgar(AdvisorBase):
 
         return None
 
-    def media_reaction_llm(self, filing, eps_beat: Optional[str]) -> Optional[Dict[str, Optional[object]]]:
+    def media_reaction_llm(self, filing) -> Optional[Dict[str, Optional[object]]]:
         """
         Run media-reaction LLM over business/financial coverage around the filing.
-
-        Returns either:
-          - dict with:
-              {
-                "reaction": "strong_positive" | "positive" | "negative" | "neutral" | "no_coverage" | None,
-                "headline_beat": {
-                  "eps": "weak_beat" | "beat" | "strong_beat" | "miss" | "unknown" | None,
-                  "revenue": "weak_beat" | "beat" | "strong_beat" | "miss" | "unknown" | None,
-                } or None,
-                "headlines_or_snippets": list[str],
-                "reason": str or None,
-              }
-          - None on media-driven hard fail, when:
-              eps_label in {"miss", "unknown"}
-              AND reaction not in {"strong_positive", "positive"}
-              AND revenue label == "miss"
         """
         cik = str(getattr(filing, "cik", "") or "")
         ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
@@ -967,7 +969,7 @@ class Edgar(AdvisorBase):
 
         media_prompt = MEDIA_REACTION_PROMPT_TEMPLATE.format(
             company=company,
-            ticker=ticker,
+            ticker=ticker or "",
             quarter=quarter,
         )
         print("-------")
@@ -990,71 +992,50 @@ class Edgar(AdvisorBase):
         print(parsed)
         print("-------")
 
-        reaction = parsed.get("reaction")
-        hb = parsed.get("headline_beat") if isinstance(parsed.get("headline_beat"), dict) else {}
-        eps_label_llm = hb.get("eps")
-        rev_label = hb.get("revenue")
-        headlines = parsed.get("headlines_or_snippets") or []
-        reason = parsed.get("reason")
+        sentiment = parsed.get("sentiment")
+        eps = parsed.get("eps")
+        revenue = parsed.get("revenue")
+        broker = parsed.get("broker_reactions")
+        headlines = parsed.get("headlines")
+        red_flags = parsed.get("red_flags")
+        summary = parsed.get("summary")
 
-        def _norm_reaction(label: Optional[str]) -> Optional[str]:
-            if not isinstance(label, str):
-                return None
-            label = label.strip().lower()
-            if label in {"strong_positive", "positive", "negative", "neutral", "no_coverage"}:
-                return label
-            return None
-
-        def _norm_beat(label: Optional[str]) -> Optional[str]:
-            if not isinstance(label, str):
-                return "unknown"
-            label = label.strip().lower()
-            if label in {"weak_beat", "beat", "strong_beat", "miss", "unknown"}:
-                return label
-            return "unknown"
-
-        reaction_norm = _norm_reaction(reaction)
-        eps_label = eps_beat if eps_beat is not None else _norm_beat(eps_label_llm)
-        rev_label_norm = _norm_beat(rev_label)
-
-        # Media-driven hard fail:
-        # eps_label in {"miss", "unknown"} AND reaction not in {"strong_positive", "positive"} AND revenue == "miss"
-        if reaction_norm in ["no_coverage", "neutral", "negative"] or eps_label in ["miss", "unknown"]:
+        # Media-driven hard fail or watch:
+        if sentiment in ["no_coverage", "mixed", "negative"] or eps in ["miss", "unknown"] or broker in ["hold" ,"sell", "unknown"]:
             logger.info(
-                "ticker=%s, CIK=%s, accession=%s media LLM: "
-                "(eps=%s, revenue=%s, reaction=%s) -> fail",
-                ticker or "N/A",
-                cik or "N/A",
+                "ticker=%s, accession=%s media LLM: "
+                "(eps=%s, revenue=%s, sentiment=%s, broker=%) -> fail",
+                ticker,
                 accession,
-                eps_label,
-                rev_label_norm,
-                reaction_norm or "N/A",
+                eps,
+                revenue,
+                sentiment or "N/A",
+                broker or "N/A"
             )
-            # No coverage - try again later
-            if reaction_norm == "no_coverage":
+            # No coverage or broker unknown - try again later
+            if sentiment == "no_coverage" or broker == "unknown":
                 self.watch(ticker, explanation=f"{accession}")
             return None
 
         result: Dict[str, Optional[object]] = {
-            "reaction": reaction_norm,
-            "headline_beat": {
-                "eps": eps_label,
-                "revenue": rev_label_norm,
-            },
-            "headlines_or_snippets": headlines if isinstance(headlines, list) else [],
-            "reason": reason if isinstance(reason, str) else None,
+            "sentiment": sentiment,
+            "eps": eps,
+            "revenue": revenue,
+            "broker": broker,
+            "headlines": headlines if isinstance(headlines, list) else [],
+            "red_flags": red_flags if isinstance(red_flags, list) else [],
+            "summary": summary if isinstance(summary, str) else None
         }
 
         logger.info(
-            "ticker=%s, CIK=%s, accession=%s media LLM: model=%s "
-            "reaction=%s eps=%s revenue=%s -> pass",
-            ticker or "N/A",
-            cik or "N/A",
+            "ticker=%s, accession=%s media LLM: "
+            "(eps=%s, revenue=%s, sentiment=%s, broker=%) -> pass",
+            ticker,
             accession,
-            model or "N/A",
-            result["reaction"] or "N/A",
-            eps_label,
-            rev_label_norm,
+            eps,
+            revenue,
+            sentiment or "N/A",
+            broker or "N/A"
         )
 
         return result
@@ -1083,24 +1064,40 @@ class Edgar(AdvisorBase):
             if j_parts:
                 parts.append("EX-99: " + " | ".join(j_parts))
 
-        reason = media.get("reason")
-        if isinstance(reason, str) and reason.strip():
-            parts.append("Media: " + reason.strip())
+        parts.append(f"PAST: {ex99.get('past_performance')}")
+        parts.append(f"GUIDANCE: {ex99.get('guidance')}")
+        parts.append(f"EXPECTATION: {ex99.get('expectation')}")
+        parts.append(f"MARGET: {ex99.get('market_reaction')}")
 
-        headlines = media.get("headlines_or_snippets") or []
+        summary = media.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            parts.append("MEDIA: " + summary.strip())
+
+        parts.append(f"SENTIMENT: {media.get('sentiment')}")
+        parts.append(f"EPS: {media.get('eps')}")
+        parts.append(f"REVENUE: {media.get('revenue')}")
+        parts.append(f"BROKER: {media.get('broker')}")
+
+        headlines = media.get("headlines") or []
         if isinstance(headlines, list) and headlines:
             snippets = [str(h).strip() for h in headlines[:2] if h and str(h).strip()]
             if snippets:
-                parts.append("Headlines: | " + " | ".join(snippets))
+                parts.append("HEADLINES: | " + " | ".join(snippets))
+
+        red_flags = media.get("red_flags") or []
+        if isinstance(red_flags, list) and red_flags:
+            snippets = [str(f).strip() for f in red_flags[:2] if f and str(f).strip()]
+            if snippets:
+                parts.append("RED FLAGS: | " + " | ".join(snippets))
 
         bonuses = advanced.get("bonuses") or []
         penalties = advanced.get("penalties") or []
 
         if bonuses:
-            parts.append("Bonuses: | " + " | ".join(bonuses))
+            parts.append("BONUSES: | " + " | ".join(bonuses))
 
         if penalties:
-            parts.append("Penalties: | " + " | ".join(penalties))
+            parts.append("PENALTIES: | " + " | ".join(penalties))
 
         return " | ".join(filter(None, parts))
 
@@ -1154,34 +1151,41 @@ class Edgar(AdvisorBase):
             score += 0.2
 
         # Media
-        if media['reaction'] == "strong_positive":
+        sentiment = media.get("sentiment")
+        eps = media.get("eps")
+        revenue =  media.get("revenue")
+        broker = media.get("broker")
+
+        if sentiment == "strong_positive":
             bonuses.append("Strong reaction (+0.2)")
             score += 0.2
 
-        # Beats
-        hb = media.get("headline_beat") or {}
-        eps_label = (hb.get("eps") or "").strip().lower() if isinstance(hb.get("eps"), str) else ""
-        rev_label = (hb.get("revenue") or "").strip().lower() if isinstance(hb.get("revenue"), str) else ""
-
-        if eps_label == "strong_beat":
+        if eps == "strong_beat":
             bonuses.append("Strong eps (+0.2)")
             score += 0.2
-        elif eps_label == "weak_beat":
+        elif eps == "weak_beat":
             penalties.append("Weak eps (-0.2)")
             score -= 0.2
 
-        if rev_label == "strong_beat":
+        if revenue == "strong_beat":
             bonuses.append("Strong revenue (+0.1)")
             score += 0.1
-        elif rev_label == "weak_beat":
+        elif revenue == "weak_beat":
             penalties.append("Weak revenue (-0.1)")
             score -= 0.1
-        elif rev_label == "neutral":
+        elif revenue == "neutral":
             penalties.append("Neutral revenue (-0.2)")
             score -= 0.2
-        elif rev_label == "miss":
+        elif revenue == "miss":
             penalties.append("Neutral revenue (-0.3)")
             score -= 0.3
+
+        if broker == "strong_buy":
+            bonuses.append("Strong buy (+0.2)")
+            score += 0.2
+        elif broker == "weak_buy":
+            penalties.append("Weak buy (-0.2)")
+            score -= 0.2
 
         # Valuation
         valuation = self.evaluate_stock(ticker)
@@ -1268,11 +1272,11 @@ class Edgar(AdvisorBase):
             return None
 
         # First AI - anaylase ex99.1 8-K attachment
-        if (ex99 := self.analyse_ex99_llm(filing, eps_beat)) is None:
+        if (ex99 := self.analyse_ex99_llm(filing)) is None:
             return None
         
         # Second AI - media_reaction_llm
-        if (media := self.media_reaction_llm(filing, eps_beat)) is None:
+        if (media := self.media_reaction_llm(filing)) is None:
             return None
 
         score, bonuses, penalties = self.score_results(filing, ex99, media)
@@ -1343,11 +1347,10 @@ class Edgar(AdvisorBase):
             return
 
         """
-        filing1 = find("0001104659-26-028942")
-        filing2 = find("0001104659-26-026708")
-        filing3 = find("0001140361-26-009133")
+        filing1 = find("0001628280-26-019024")
+        filing2 = find("0001628280-26-019020")
 
-        filings = [filing1]
+        filings = [filing1, filing2]
 
         # Filter latest to 8-Ks only
         filings_8k = [f for f in filings if getattr(f, "form", None) == "8-K"]

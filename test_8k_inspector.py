@@ -1016,6 +1016,7 @@ def get_eps_for_report_quarter(ticker: str, report_date: date) -> Optional[Dict]
             print("Alpha Vantage (Note) for %s: %s" % (ticker, data["Note"][:250]))
             return None
         if "Information" in data:
+
             print("Alpha Vantage (Information) for %s: %s" % (ticker, data["Information"][:250]))
             get_actual_eps_from_8k().sleep(10)
             return None

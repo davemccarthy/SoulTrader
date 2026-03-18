@@ -44,23 +44,40 @@ def _search_end_date(anchor: date | None = None):
         return anchor + timedelta(days=1)
     return date.today()
 
-PROMPT_TEMPLATE = """Search the web for business and financial news from {start_date} through {end_date} regarding {ticker}'s earnings.
+PROMPT_TEMPLATE = """Analyze {company} ({ticker}) {quarter} earnings release and, if available, earnings call transcript from the perspective of a professional buy-side equity analyst.
 
-Analyze the gap between "Headline Results" and "Market Reaction."
-- Identify if the company beat/missed analyst consensus for EPS and Revenue.
-- Specifically look for forward-looking guidance, management's tone during the Q&A, and any cited "headwinds" (e.g., rising expenses, interest rates, or segment softness).
-- Specifically look for mentions of interest expense, capital expenditures (CapEx), or operating margins, as these often drive post-earnings sell-offs.
-- Downgrade if you can find at least one bearish reason why the stock might trade down despite the headline beat (e.g., guidance, CapEx, or "priced in" news).
+Search the web for recent business and financial news and analysis about this event.
+
+Use reputable sources such as Bloomberg, Reuters, CNBC, Financial Times, Wall Street Journal, Barron's, MarketWatch, and major broker research (e.g., Goldman Sachs, Morgan Stanley, JPMorgan) where available.
+
+Your tasks:
+1. Assess the overall sentiment of coverage toward the earnings and outlook.
+2. Determine whether the company beat or missed consensus expectations on EPS and Revenue (when such information is available).
+3. Identify key positive themes and significant red flags mentioned across articles and broker notes.
 
 Respond with STRICT JSON only. No other text before or after:
 {{
-  "reaction": "positive" | "negative" | "neutral" | "no_coverage",
-  "headline_beat": {{ "eps": beat/miss/unknown, "revenue": beat/miss/unknown }},
-  "headlines_or_snippets": ["<quote 1>", "<quote 2>"],
-  "reason": "<2-3 sentences explaining your decision. Mention specific guidance, expense figures, or bearish/bullish cues if relevant.>"
+  "sentiment": "strong_positive" | "positive" | "mixed" | "negative",
+  "eps": "strong_beat" | beat" | "miss" | "other" | "unknown",
+  "revenue": "strong_beat" | "beat" | "miss" | "other" | "unknown",
+  "broker_reactions": "buy" | "strong_buy" | "moderate_buy" | "hold" | "sell" | "other",
+  "headlines": [
+    "<short positive headline or quote>",
+    "<another positive headline or quote>"
+  ],
+  "red_flags": [
+    "<short negative/red-flag headline or quote>",
+    "<another negative/red-flag headline or quote>"
+  ],
+  "summary": "<2–3 sentences explaining why sentiment is positive/neutral/negative, citing key drivers such as guidance, margins, demand trends, cash flow, or leverage.>"
 }}
 
-If you find no relevant coverage in that window, set reaction to "no_coverage" and reason accordingly."""
+If you find no relevant coverage in that window, set:
+- \"sentiment\": \"no_coverage\",
+- \"eps_result\": \"unknown\",
+- \"revenue_result\": \"unknown\",
+- \"broker_reactions\": \"unknown\"
+"""
 
 
 def extract_json(text: str):
@@ -139,12 +156,15 @@ def run(ticker: str, anchor_date: date | None = None):
     start_date = _search_start_date(anchor_date)
     end_date = _search_end_date(anchor_date)
     prompt = PROMPT_TEMPLATE.format(
+        company=ticker,
         ticker=ticker,
+        quarter="latest",
         start_date=start_date.isoformat(),
         end_date=end_date.isoformat(),
     )
     print(f"Search window: {start_date} to {end_date} for {ticker}")
     print("Calling Gemini with web search...")
+    print(prompt)
 
     model, result = ask_gemini_with_search(prompt)
     if not result:

@@ -346,20 +346,21 @@ def analyze_discovery(sa, users, advisors):
             # Get advisor weight (normalized)
             advisor_weight = discovery.advisor.weight
             discovery_weight = discovery.weight
+            combined_weight = advisor_weight * discovery_weight
 
             # Calculate allowance with weighting
             allowance = base_allowance
 
-            # Apply advisor weight and risk weight
-            # Exaggerate: if advisor weight > 1.0, multiply by risk.weight; if < 1.0, divide by risk.weight
-            if advisor_weight > Decimal('1.0'):
-                allowance = allowance * (advisor_weight * risk_weight)
+            # Apply combined weight and risk weight
+            # Exaggerate: if combined weight > 1.0, multiply by risk.weight; if < 1.0, divide by risk.weight
+            if combined_weight > Decimal('1.0'):
+                allowance = allowance * (combined_weight * risk_weight)
             else:
-                allowance = allowance * (advisor_weight / risk_weight)
+                allowance = allowance * (combined_weight / risk_weight)
 
             logger.info(
                 f"User {u.username}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "
-                f"(advisor_weight={advisor_weight:.3f}, risk_weight={risk_weight:.3f}, allowance=${allowance:.2f})"
+                f"(Weight={combined_weight:.3f}, risk_weight={risk_weight:.3f}, allowance=${allowance:.2f})"
             )
 
             # Extract first clause from discovery explanation as summary

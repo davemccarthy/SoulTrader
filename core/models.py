@@ -41,21 +41,21 @@ class Profile(models.Model):
         },
         "MODERATE": {
             "min_health": 40.0,  # Above average
-            "advisors": ['Story', 'FDA', 'Insider', 'Polygon'],
+            "advisors": ['Story', 'FDA', 'Insider', 'Polygon','Vunder'],
             "weight": 1.00,
             "stocks": 40
         },
         "AGGRESSIVE": {
             "min_health": 30.0,  # Below average but not bottom
-            "advisors": ['User', 'FDA', 'Insider', 'Story', 'Polygon'],
+            "advisors": ['User', 'FDA', 'Insider', 'Story', 'Polygon','Edgar'],
             "weight": 1.25,
             "stocks": 30
         },
         "EXPERIMENTAL": {
             "min_health": 20.0,
-            "advisors": ['User','Edgar'],
+            "advisors": ['User','Edgar','Vunder'],
             "weight": 1.25,
-            "stocks": 15
+            "stocks": 25
         },
     }
 

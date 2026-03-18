@@ -33,8 +33,8 @@ MIN_PRICE = 8
 MAX_PRICE = 80  # Upper bound for stock price filter
 MIN_VOLUME = 1_000_000  # Minimum volume filter for initial fetch
 MIN_AVG_VOLUME = 2_000_000
-REL_VOLUME_MIN = 0.7  # Relaxed from 0.8 to allow stocks with slightly below-average volume (e.g., NVDL recovery cases)
-REL_VOLUME_MAX = 1.3
+REL_VOLUME_MIN = 0.4   # allow quieter days
+REL_VOLUME_MAX = 1.3   # still block big volume spikes
 LOOKBACK_DAYS = 40
 MIN_RR = 1.8
 # Turn Confirmation Configuration
@@ -63,7 +63,7 @@ STOP_SLIDE_CONFIRM_BARS = 1  # Number of consecutive bars to confirm STOP_SLIDE 
 # Note: EXIT_WAVE_POSITION is deprecated - replaced by multi-signal peak detection algorithm
 # EXPERIMENTAL FILTERS (currently DISABLED - collecting more data for analysis):
 MAX_WAVE_POSITION = -999  # Maximum (most negative) wave_position to accept (filters strong downtrends) - DISABLED
-MIN_CONSISTENCY = 0.0  # Minimum consistency score (filters inconsistent wave patterns) - DISABLED
+MIN_CONSISTENCY = 0.30  # Minimum consistency score (filters inconsistent wave patterns)
 # Note: Set MAX_WAVE_POSITION = -999 to disable wave position filter
 #       Set MIN_CONSISTENCY = 0.0 to disable consistency filter
 
@@ -361,13 +361,15 @@ def build_candidates(reference_date=None, min_price=MIN_PRICE, max_price=MAX_PRI
             
             df_hist = df_hist.sort_values("date").tail(lookback_days)
             avg_volume = df_hist["volume"].mean()
+            rel_volume = today_volume / avg_volume if avg_volume > 0 else 0
+
+            if verbose:
+                print(f"   {ticker}: avg_volume={avg_volume:,.0f}, today_volume={today_volume:,.0f}, rel_volume={rel_volume:.2f}")
             
             if avg_volume < min_avg_volume:
                 if show_diagnostic and verbose:
                     print(f"   {ticker}: ✗ Avg volume {avg_volume:,.0f} < MIN_AVG_VOLUME {min_avg_volume:,}")
                 continue
-            
-            rel_volume = today_volume / avg_volume if avg_volume > 0 else 0
             
             if not (rel_volume_min <= rel_volume <= rel_volume_max):
                 if show_diagnostic and verbose:
@@ -410,148 +412,177 @@ def build_candidates(reference_date=None, min_price=MIN_PRICE, max_price=MAX_PRI
     return df_candidates.sort_values("vol_score", ascending=False).reset_index(drop=True)
 
 
+# Last-cycle trough filter: require wave_position (position in last cycle) in [0, WAVE_POSITION_AT_TROUGH_MAX]
+WAVE_POSITION_AT_TROUGH_MAX = 0.35  # 0 = at last trough, 1 = at last peak; accept only near trough
+# Reject when current bar is at a short-term high (avoids "at trough" when 1M chart shows a peak)
+SHORT_PEAK_WINDOW = 3  # If close is max of last N closes, treat as short-term peak and reject
+
+
 def wavelet_trade_engine(price_series, min_rr=MIN_RR, low_series=None, turn_confirmation_enabled=None):
     """
-    Analyze price series using wavelet analysis to detect cyclical patterns and generate trade signals.
-    
+    Analyze price series using wavelet analysis and last-cycle trough detection.
+
+    Uses dominant cycle from CWT, then identifies the last peak and last trough on smoothed
+    price. "At trough" means current price is near the last trough (position in last cycle
+    between 0 and WAVE_POSITION_AT_TROUGH_MAX). Peaks/troughs use prominence/distance so
+    only meaningful swings are counted.
+
     Args:
         price_series: pandas Series of closing prices
         min_rr: Minimum reward:risk ratio required
         low_series: pandas Series of low prices (optional, needed for turn confirmation)
         turn_confirmation_enabled: If True, require turn confirmation before accepting (default: TURN_CONFIRMATION_ENABLED)
-    
+
     Returns:
         dict with trade analysis results, including 'accepted' boolean flag
     """
     if turn_confirmation_enabled is None:
         turn_confirmation_enabled = TURN_CONFIRMATION_ENABLED
     log = []
-    
+
     if price_series.empty or len(price_series) < 64:
         return {"accepted": False, "reason": "Insufficient data points", "log": ["Need at least 64 data points"]}
-    
+
     # Detrend
     detrended = price_series - price_series.rolling(20, min_periods=1).mean()
-    
+
     # Wavelet transform
     scales = np.arange(2, 64)
     coeffs, _ = pywt.cwt(detrended.values, scales, 'morl')
     power = np.abs(coeffs) ** 2
-    
+
     # Find dominant scale
     avg_power_per_scale = power.mean(axis=1)
     dominant_scale_idx = np.argmax(avg_power_per_scale)
-    dominant_scale = scales[dominant_scale_idx]  # Actual scale value (2-63)
+    dominant_scale = scales[dominant_scale_idx]
     dominant_period = int(dominant_scale)
-    
-    # Use the index to get dominant power (fix for index bug)
+
     dominant_power = power[dominant_scale_idx]
     consistency = float(np.sum(dominant_power > 0.5 * dominant_power.max()) / len(dominant_power))
-    
     log.append(f"Dominant period: {dominant_period} days, consistency: {consistency:.3f}")
-    
-    # Filter: Reject inconsistent wave patterns (can be disabled by setting MIN_CONSISTENCY = 0.0)
+
     if MIN_CONSISTENCY > 0 and consistency < MIN_CONSISTENCY:
         log.append(f"Rejected: consistency={consistency:.3f} < MIN_CONSISTENCY={MIN_CONSISTENCY} (inconsistent pattern)")
         return {"accepted": False, "reason": "Low consistency", "consistency": consistency, "log": log}
-    
-    # Smooth & structure
+
+    # Smooth with half-period
     half_period = max(3, dominant_period // 2)
     smoothed = price_series.rolling(half_period, center=True, min_periods=1).mean()
-    peaks, _ = find_peaks(smoothed)
-    troughs, _ = find_peaks(-smoothed)
-    
+    wave_range_est = float(smoothed.max() - smoothed.min()) if smoothed.max() > smoothed.min() else 0.01
+    prominence = max(wave_range_est * 0.15, 0.01)
+    distance = max(half_period // 2, 2)
+
+    peaks, _ = find_peaks(smoothed, prominence=prominence, distance=distance)
+    troughs, _ = find_peaks(-smoothed, prominence=prominence, distance=distance)
+
+    # Relax if too few peaks/troughs
     if len(peaks) < 2 or len(troughs) < 2:
-        log.append(f"Insufficient peaks ({len(peaks)}) or troughs ({len(troughs)})")
+        prominence_relaxed = max(wave_range_est * 0.08, 0.005)
+        peaks, _ = find_peaks(smoothed, prominence=prominence_relaxed, distance=max(distance // 2, 1))
+        troughs, _ = find_peaks(-smoothed, prominence=prominence_relaxed, distance=max(distance // 2, 1))
+
+    if len(peaks) < 2 or len(troughs) < 2:
+        log.append(f"Insufficient peaks ({len(peaks)}) or troughs ({len(troughs)}) after prominence/distance filter")
         return {"accepted": False, "reason": "Insufficient peaks/troughs", "log": log}
-    
-    avg_peak = float(smoothed.iloc[peaks].mean())
-    avg_trough = float(smoothed.iloc[troughs].mean())
-    wave_range = avg_peak - avg_trough
-    
-    if wave_range <= 0:
-        log.append("Invalid wave range (peak <= trough)")
-        return {"accepted": False, "reason": "Invalid wave range", "log": log}
-    
-    last_trough = float(smoothed.iloc[troughs[-1]])
+
+    last_trough_idx = int(troughs[-1])
+    last_trough = float(smoothed.iloc[last_trough_idx])
+
+    # Last peak before the last trough (start of the down leg we're in)
+    peaks_before_last_trough = peaks[peaks < last_trough_idx]
+    if len(peaks_before_last_trough) == 0:
+        log.append("No peak before last trough (cannot define last cycle)")
+        return {"accepted": False, "reason": "No peak before last trough", "log": log}
+    last_peak_idx = int(peaks_before_last_trough[-1])
+    last_peak = float(smoothed.iloc[last_peak_idx])
+
+    last_cycle_range = last_peak - last_trough
+    if last_cycle_range <= 0:
+        log.append("Invalid last cycle range (peak <= trough)")
+        return {"accepted": False, "reason": "Invalid last cycle range", "log": log}
+
     current_price = float(price_series.iloc[-1])
-    
-    # Wave phase
-    wave_position = (current_price - avg_trough) / wave_range
-    log.append(f"Wave position: {wave_position:.3f} (0=trough, 1=peak)")
-    
-    if wave_position > 0.35:
-        log.append(f"Rejected: wave_position={wave_position:.2f} (too high, want near trough)")
-        return {"accepted": False, "reason": "Bad wave phase", "wave_position": wave_position, "log": log}
-    
-    # Filter: Reject extreme negative wave positions (strong downtrends)
-    # Can be disabled by setting MAX_WAVE_POSITION to a very negative value (e.g., -999)
+
+    # Position in last cycle: 0 = at last trough, 1 = at last peak (we want near 0 = just after trough)
+    wave_position = (current_price - last_trough) / last_cycle_range
+    log.append(f"Last-cycle position: {wave_position:.3f} (0=last trough, 1=last peak)")
+
+    # Trough must be in the past (not the very last bar)
+    if last_trough_idx >= len(price_series) - 1:
+        log.append("Rejected: last trough is at end of series (no confirmed turn)")
+        return {"accepted": False, "reason": "Trough at end of series", "wave_position": round(wave_position, 3), "log": log}
+
+    # Must be at or above last trough (FLEX guard: no valid stop if we're below trough)
+    if current_price < last_trough:
+        log.append(f"Rejected: current price ${current_price:.2f} below last trough ${last_trough:.2f}")
+        return {"accepted": False, "reason": "Price below last trough", "wave_position": round(wave_position, 3), "log": log}
+
+    if wave_position > WAVE_POSITION_AT_TROUGH_MAX:
+        log.append(f"Rejected: wave_position={wave_position:.2f} > {WAVE_POSITION_AT_TROUGH_MAX} (want near trough)")
+        return {"accepted": False, "reason": "Bad wave phase", "wave_position": round(wave_position, 3), "log": log}
+
     if MAX_WAVE_POSITION > -999 and wave_position < MAX_WAVE_POSITION:
-        log.append(f"Rejected: wave_position={wave_position:.3f} < MAX_WAVE_POSITION={MAX_WAVE_POSITION} (too far below avg trough = strong downtrend)")
-        return {"accepted": False, "reason": "Extreme wave position (downtrend)", "wave_position": wave_position, "log": log}
-    
-    # Turn Confirmation Check (ChatGPT's recommendation: least-laggy turn condition)
-    # Confirms seller exhaustion: higher close AND higher low (price has actually turned)
+        log.append(f"Rejected: wave_position={wave_position:.3f} < MAX_WAVE_POSITION={MAX_WAVE_POSITION}")
+        return {"accepted": False, "reason": "Extreme wave position (downtrend)", "wave_position": round(wave_position, 3), "log": log}
+
+    # Reject if at short-term peak (e.g. on 1M we're at a local high, not a trough)
+    if len(price_series) >= SHORT_PEAK_WINDOW:
+        last_n_closes = price_series.iloc[-SHORT_PEAK_WINDOW:]
+        if current_price >= last_n_closes.max():
+            log.append(f"Rejected: at short-term peak (close is max of last {SHORT_PEAK_WINDOW} bars)")
+            return {"accepted": False, "reason": "At short-term peak", "wave_position": round(wave_position, 3), "log": log}
+
+    # Turn confirmation: higher close AND higher low
     if turn_confirmation_enabled and low_series is not None:
         if len(price_series) >= 2 and len(low_series) >= 2:
             current_close = float(price_series.iloc[-1])
             prev_close = float(price_series.iloc[-2])
             current_low = float(low_series.iloc[-1])
             prev_low = float(low_series.iloc[-2])
-            
-            # Turn confirmed: higher close AND higher low (seller exhaustion)
             turn_confirmed = (current_close > prev_close) and (current_low > prev_low)
-            
             if not turn_confirmed:
                 log.append(f"Rejected: Turn not confirmed (close: {current_close:.2f} vs {prev_close:.2f}, low: {current_low:.2f} vs {prev_low:.2f})")
                 return {"accepted": False, "reason": "Turn not confirmed", "log": log}
-            else:
-                log.append(f"Turn confirmed: higher close ({current_close:.2f} > {prev_close:.2f}) and higher low ({current_low:.2f} > {prev_low:.2f})")
+            log.append(f"Turn confirmed: higher close and higher low")
         else:
-            if turn_confirmation_enabled:
-                log.append("Rejected: Insufficient data for turn confirmation (need at least 2 bars)")
-                return {"accepted": False, "reason": "Insufficient data for turn confirmation", "log": log}
-    
-    # Trade levels
+            log.append("Rejected: Insufficient data for turn confirmation (need at least 2 bars)")
+            return {"accepted": False, "reason": "Insufficient data for turn confirmation", "log": log}
+
+    # Trade levels from last cycle
     buy = current_price
-    calculated_stop = last_trough - 0.15 * wave_range
-    
-    # Reject if calculated stop is invalid (at or above buy price - indicates invalid wave pattern)
-    if calculated_stop >= buy:
-        log.append(f"Rejected: Invalid stop calculation (stop ${calculated_stop:.2f} >= buy ${buy:.2f})")
+    stop = last_trough - 0.15 * last_cycle_range
+    if stop >= buy:
+        log.append(f"Rejected: Invalid stop (stop ${stop:.2f} >= buy ${buy:.2f})")
         return {"accepted": False, "reason": "Invalid stop calculation", "log": log}
-    
-    # Use calculated stop for candidate filtering (min stop buffer applied later in backtesting/trading)
-    stop = calculated_stop
-    
-    target = buy + 1.0 * (avg_peak - buy)  # Aim for full avg_peak (diminishing target provides protection)
+
+    # Target: aim for last peak (reward = last_peak - buy)
+    target = buy + (last_peak - buy)
     risk = buy - stop
     reward = target - buy
     rr = reward / risk if risk > 0 else float('nan')
-    
+
     log.append(f"Buy: ${buy:.2f}, Stop: ${stop:.2f}, Target: ${target:.2f}")
     log.append(f"Risk: ${risk:.2f}, Reward: ${reward:.2f}, R:R={rr:.2f}")
-    
+
     if np.isnan(rr) or rr < min_rr:
         log.append(f"Rejected: R:R={rr:.2f} < {min_rr}")
         return {"accepted": False, "reason": "Insufficient R:R", "rr": rr, "log": log}
-    
-    log.append("Accepted: good wave phase and R:R")
-    
+
+    log.append("Accepted: last-cycle trough and R:R")
+
     return {
         "accepted": True,
         "dominant_period_days": dominant_period,
-        "half_period": half_period,  # Smoothing window for rollover detection
+        "half_period": half_period,
         "consistency": round(consistency, 3),
         "wave_position": round(wave_position, 3),
         "buy": round(buy, 2),
         "stop": round(stop, 2),
         "target": round(target, 2),
         "reward_risk": round(rr, 2),
-        # Wave state for exit detection (wave exhaustion signals)
-        "avg_trough": round(avg_trough, 2),
-        "avg_peak": round(avg_peak, 2),
-        "wave_range": round(wave_range, 2),
+        "avg_trough": round(last_trough, 2),
+        "avg_peak": round(last_peak, 2),
+        "wave_range": round(last_cycle_range, 2),
         "log": log
     }
 
