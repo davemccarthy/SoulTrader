@@ -46,6 +46,18 @@ models = [
     "gemini-2.5-flash-lite",
 ]
 
+# Sector/industry weighting list (copied from edgar.py SECTOR_LIST "weight" entries).
+# Kept local to avoid circular imports (edgar.py imports AdvisorBase).
+# Match logic: if industry is None: match when sector_substring in sector OR industry.
+# If industry set: match when both substrings appear.
+HEALTH_BAD_SECTOR_WEIGHT_LIST = (
+    ("consumer cyclical", None),
+    ("real estate", None),
+    ("utilities", None),
+    ("technology", "software"),
+    ("financial services", "insurance"),
+)
+
 class AdvisorBase:
     # Class-level cache for Polygon stock list (shared across all advisor instances)
     _polygon_stocks_cache = None
@@ -640,6 +652,10 @@ class AdvisorBase:
                     'gemini_weight': float(gemini_weight),
                     'gemini_recommendation': gemini_recommendation,
                     'gemini_explanation': gemini_explanation,
+                    'overlay': {
+                        'points': float(score_data.get('overlay_points', 0.0) or 0.0),
+                        'reasons': score_data.get('overlay_reasons', []) or [],
+                    },
                     'health_score': score_data['health_score'],
                     'valuation_score': score_data['valuation_score'],
                     'piotroski': score_data['piotroski'],
@@ -866,6 +882,66 @@ class AdvisorBase:
                 zscore * 0.10              # 10% - Bankruptcy risk
             )
 
+            # --- Deterministic overlays (sector / valuation ratio / range positioning) ---
+            # Keep adjustments small to avoid double-counting what Gemini already considers.
+            overlay_points = 0.0
+            overlay_reasons: List[str] = []
+            try:
+                info_safe = info or {}
+                sector = (info_safe.get("sector") or "").strip().lower()
+                industry = (info_safe.get("industry") or "").strip().lower()
+
+                # Bad sector penalty (weight list)
+                for sector_sub, industry_sub in HEALTH_BAD_SECTOR_WEIGHT_LIST:
+                    if industry_sub is None:
+                        if sector_sub in sector or sector_sub in industry:
+                            overlay_points -= 5.0
+                            overlay_reasons.append(f"bad sector/industry ({sector_sub}) -5")
+                            break
+                    else:
+                        if sector_sub in sector and industry_sub in industry:
+                            overlay_points -= 5.0
+                            overlay_reasons.append(f"bad sector/industry ({sector_sub}/{industry_sub}) -5")
+                            break
+
+                # Valuation ratio using ROE-based notional fair value (evaluate_stock)
+                valuation_ratio = self.evaluate_stock(ticker_symbol=symbol, info=info_safe)
+                if valuation_ratio >= 1.10:
+                    overlay_points -= 5.0
+                    overlay_reasons.append(f"overvalued (ratio {valuation_ratio:.2f}) -5")
+                elif valuation_ratio < 0.90:
+                    overlay_points += 5.0
+                    overlay_reasons.append(f"undervalued (ratio {valuation_ratio:.2f}) +5")
+
+                # 52-week high/low proximity
+                price_now = info_safe.get("regularMarketPrice") or info_safe.get("currentPrice") or price
+                high_52 = info_safe.get("fiftyTwoWeekHigh")
+                low_52 = info_safe.get("fiftyTwoWeekLow")
+                if isinstance(price_now, (int, float)) and price_now > 0:
+                    if isinstance(low_52, (int, float)) and low_52 > 0 and price_now <= low_52 * 1.10:
+                        overlay_points += 3.0
+                        overlay_reasons.append("near 52-week low +3")
+                    if isinstance(high_52, (int, float)) and high_52 > 0 and price_now >= high_52 * 0.90:
+                        overlay_points -= 5.0
+                        overlay_reasons.append("near 52-week high -5")
+
+                    # 2-week high proximity (chasing penalty)
+                    try:
+                        hist = t.history(period="2wk")
+                        if hist is not None and not hist.empty:
+                            high_2w = float(hist["High"].max())
+                            if high_2w > 0 and price_now >= high_2w * 0.95:
+                                overlay_points -= 3.0
+                                overlay_reasons.append("near 2-week high -3")
+                    except Exception:
+                        pass
+
+            except Exception as e:
+                logger.warning("health overlay %s: %s", symbol, e)
+
+            buy_score = float(buy_score) + float(overlay_points)
+            buy_score = float(np.clip(buy_score, 0, 100))
+
             return {
                 "ticker": symbol,
                 "confidence_score": round(buy_score, 1),
@@ -873,6 +949,8 @@ class AdvisorBase:
                 "valuation_score": round(valuation_score, 1),
                 "piotroski": piotroski,
                 "altman_z": altman,
+                "overlay_points": round(overlay_points, 1),
+                "overlay_reasons": overlay_reasons,
                 "ratios": ratios,
                 "valuation": valuation
             }
@@ -891,26 +969,75 @@ class AdvisorBase:
             Dictionary with 'recommendation', 'explanation', and 'gemini_weight' (multiplier)
             or None if Gemini call fails
         """
-        prompt = f"""
-Starting afresh,
+        # Align prompt style with test_consensus_llm buy-gate prompt:
+        # - Deterministic decoding (handled in ask_gemini)
+        # - No web search grounding for stability
+        # - Ground on simple market snapshot (price / 52w / valuation / sector)
+        symbol = (stock.symbol or "").strip().upper()
+        company_name = (stock.company or symbol).strip()
+        try:
+            current_price = float(stock.price)
+        except Exception:
+            current_price = None
 
-Would you recommend buying {stock.symbol} ({stock.company}) @ ${float(stock.price):.2f}?
+        info = {}
+        try:
+            info = yf.Ticker(symbol).info or {}
+        except Exception:
+            info = {}
 
-Considering:
-- Recent news and media coverage
-- Market sentiment
-- Any significant developments
+        def _f(x):
+            try:
+                return float(x) if x is not None else None
+            except Exception:
+                return None
 
-Respond in JSON format:
+        week52_low = _f(info.get("fiftyTwoWeekLow"))
+        week52_high = _f(info.get("fiftyTwoWeekHigh"))
+        pe_trailing = _f(info.get("trailingPE"))
+        pb = _f(info.get("priceToBook"))
+        sector = (info.get("sector") or "Not provided").strip()
+        industry = (info.get("industry") or "Not provided").strip()
+        pe_str = f"{pe_trailing:.2f}" if pe_trailing is not None else "Not provided"
+        pb_str = f"{pb:.2f}" if pb is not None else "Not provided"
+
+        if current_price is None or week52_low is None or week52_high is None:
+            logger.warning(
+                f"Gemini opinion skipped for {symbol}: missing snapshot fields "
+                f"(price={current_price}, 52w_low={week52_low}, 52w_high={week52_high})"
+            )
+            return None
+
+        prompt = f"""You are a financial research assistant. Provide a realistic buy/no-buy recommendation for a publicly traded stock.
+
+- Stock: {symbol}
+- Company Name: {company_name}
+- Current Price: ${current_price:.2f}
+- 52-Week Low: ${week52_low:.2f}, 52-Week High: ${week52_high:.2f}
+- Consider the company’s valuation (P/E, P/B), sector trends, operational performance, and macroeconomic risks.
+- You must choose exactly one recommendation from: STRONG_BUY, BUY, NEUTRAL, AVOID, STRONG_AVOID.
+- This is a buy gate (not a short). Prefer AVOID/STRONG_AVOID when valuation/risk dominates even if the company is profitable.
+- If the current price is within 5–10% of the 52-week high and valuation appears stretched versus typical sector norms, lean NEUTRAL or AVOID unless there is a clear, durable catalyst.
+- Reasoning must mention both positives (e.g., strong earnings, cash flow, stability) and negatives (e.g., high valuation, sector headwinds, declining growth).
+
+Additional context (use if helpful):
+- P/E (trailing): {pe_str}
+- P/B: {pb_str}
+- Sector: {sector}
+- Industry: {industry}
+
+Output a single JSON object only in this format:
+
 {{
-    "recommendation": "STRONG_BUY|BUY|NEUTRAL|AVOID|STRONG_AVOID",
-    "explanation": "Your reasoning based on recent news and sentiment"
+  "symbol": "{symbol}",
+  "recommendation": "STRONG_BUY" | "BUY" | "NEUTRAL" | "AVOID" | "STRONG_AVOID",
+  "explanation": "<2-3 sentences including positives and risks>"
 }}
 
-Thank you
+Respond with only a single valid JSON object, no other text.
 """
-        
-        model, results = self.ask_gemini(prompt, use_search=True)
+
+        model, results = self.ask_gemini(prompt, use_search=False)
         
         if not results:
             return None
@@ -920,11 +1047,11 @@ Thank you
         
         # Map recommendation to gemini_weight multiplier
         weight_mapping = {
-            "STRONG_BUY": 1.5,
-            "BUY": 1.25,
-            "NEUTRAL": 1.0,
-            "AVOID": 0.75,
-            "STRONG_AVOID": 0.5,
+            "STRONG_BUY": 1.25,
+            "BUY": 1.0,
+            "NEUTRAL": 0.75,
+            "AVOID": 0.50,
+            "STRONG_AVOID": 0.00,
         }
         gemini_weight = weight_mapping.get(recommendation, 1.0)  # Default to 1.0 (neutral) if unknown
         
@@ -959,10 +1086,18 @@ Thank you
                     api_key=key,
                     http_options=types.HttpOptions(timeout=int(timeout * 1000)),
                 )
-                config = None
+                # Deterministic decoding to match test_consensus_llm.py.
+                # When use_search=True, attach the search tool; otherwise omit tools.
                 if use_search:
                     config = types.GenerateContentConfig(
-                        tools=[types.Tool(google_search=types.GoogleSearch())]
+                        tools=[types.Tool(google_search=types.GoogleSearch())],
+                        temperature=0.0,
+                        top_p=1.0,
+                    )
+                else:
+                    config = types.GenerateContentConfig(
+                        temperature=0.0,
+                        top_p=1.0,
                     )
                 response = client.models.generate_content(
                     model=model,

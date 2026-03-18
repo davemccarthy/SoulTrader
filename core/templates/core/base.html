@@ -61,11 +61,11 @@
             letter-spacing: 0.02em;
         }
         .logo-line-bottom {
-            font-size: 0.72rem;
-            font-weight: 600;
+            font-size: 0.68rem;
+            font-weight: 900;
             text-transform: uppercase;
             letter-spacing: 0.12em;
-            color: #fbbf24;
+            color: #fbcf34;
         }
         
         .nav {
@@ -978,6 +978,15 @@
             word-wrap: break-word;
         }
 
+        .health-overlay-list {
+            margin: 0.4rem 0 0 1.0rem;
+            padding: 0;
+        }
+
+        .health-overlay-list li {
+            margin: 0.15rem 0;
+        }
+
         .holdings-grid-trades {
             display: grid;
             grid-template-columns: 1fr 1fr 1fr 1fr 1fr 1fr 2fr;
@@ -1730,8 +1739,18 @@
                 const geminiWeight = health.gemini_weight;
                 const geminiRec = health.gemini_rec;
                 const geminiExplanation = health.gemini_explanation;
+                const overlay = health.meta && health.meta.overlay ? health.meta.overlay : null;
+                const overlayPoints = overlay && overlay.points != null ? overlay.points : null;
+                const overlayReasons = overlay && Array.isArray(overlay.reasons) ? overlay.reasons : [];
 
                 const hasGeminiDataForColumns = geminiWeight != null || geminiRec != null;
+                const hasOverlay = overlayPoints != null || overlayReasons.length > 0;
+                const overlayPointsLabel = overlayPoints != null
+                    ? (Number(overlayPoints) >= 0 ? `+${Number(overlayPoints).toFixed(1)}` : `${Number(overlayPoints).toFixed(1)}`)
+                    : null;
+                const overlayReasonsHtml = overlayReasons.length
+                    ? `<ul class="health-overlay-list">${overlayReasons.map((r) => `<li>${escapeHtml(r)}</li>`).join('')}</ul>`
+                    : '';
 
                 return `
                     <div class="health-record" data-health-id="${health.id}">
@@ -1747,6 +1766,13 @@
                                 ${valuationScore != null ? `<div class="health-meta-item holdings-history-text"><span class="health-meta-key">Valuation Score:</span> <span class="health-meta-value">${escapeHtml(valuationScore)}</span></div>` : ''}
                                 ${piotroski != null ? `<div class="health-meta-item holdings-history-text"><span class="health-meta-key">Piotroski:</span> <span class="health-meta-value">${escapeHtml(piotroski.toString())}/4</span></div>` : ''}
                                 ${altmanZ != null ? `<div class="health-meta-item holdings-history-text"><span class="health-meta-key">Altman Z:</span> <span class="health-meta-value">${escapeHtml(altmanZ)}</span></div>` : ''}
+                                ${hasOverlay ? `
+                                    <div class="health-meta-item holdings-history-text">
+                                        <span class="health-meta-key">Overlay:</span>
+                                        <span class="health-meta-value">${overlayPointsLabel != null ? escapeHtml(overlayPointsLabel) : '—'}</span>
+                                        ${overlayReasonsHtml}
+                                    </div>
+                                ` : ''}
                             </div>
                             ${hasGeminiDataForColumns ? `
                             <div class="health-meta-section">
