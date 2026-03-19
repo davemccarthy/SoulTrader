@@ -525,7 +525,7 @@ def holding_history(request, stock_id):
     }
 
     # Discovery data (most recent)
-    discovery = None
+    discovery_payload = None
     sell_instructions = []
     discovery_obj = (
         Discovery.objects
@@ -536,7 +536,7 @@ def holding_history(request, stock_id):
     )
     
     if discovery_obj:
-        discovery = {
+        discovery_payload = {
             'id': discovery_obj.id,
             'advisor': discovery_obj.advisor.name if discovery_obj.advisor else '',
             'advisor_logo': _advisor_logo_url(discovery_obj.advisor),
@@ -555,7 +555,7 @@ def holding_history(request, stock_id):
                     if i + 1 < len(parts):
                         potential_url = parts[i + 1].strip()
                         if potential_url.startswith('http://') or potential_url.startswith('https://'):
-                            discovery['url'] = potential_url
+                            discovery_payload['url'] = potential_url
                             break
         
         # Get sell instructions for this discovery
@@ -627,16 +627,23 @@ def holding_history(request, stock_id):
             
             sell_instructions.append(instruction_data)
 
-    # Health history (all health checks for this stock)
+    # Health history (derive from discovery.health so optional health checks work)
+    # Note: multiple discoveries can point to the same Health row; dedupe by Health.id.
     health_history = []
-    health_checks = (
-        Health.objects
-        .select_related('sa')
-        .filter(stock=stock)
-        .order_by('-created')
+    seen_health_ids = set()
+    discovery_health_checks = (
+        Discovery.objects
+        .select_related('health', 'health__sa')
+        .filter(stock=stock, health__isnull=False)
+        .order_by('-health__created')
     )
-    
-    for health in health_checks:
+
+    for disc_health in discovery_health_checks:
+        health = getattr(disc_health, 'health', None)
+        if not health or health.id in seen_health_ids:
+            continue
+        seen_health_ids.add(health.id)
+
         meta = health.meta or {}
         health_data = {
             'id': health.id,
@@ -711,7 +718,7 @@ def holding_history(request, stock_id):
 
     payload = {
         'heading': heading,
-        'discovery': discovery,
+        'discovery': discovery_payload,
         'health_history': health_history,
         'trades': trades_data,
         'sell_instructions': sell_instructions,

@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # SEC identity (mandatory)
 # ---------------------------------------------------------------------------
-set_identity("David McCarthy david@example.com")
+set_identity("Dave McCarthy dave@klynt.com")
 
 # ---------------------------------------------------------------------------
 # 8-K helpers and constants
@@ -1004,7 +1004,7 @@ class Edgar(AdvisorBase):
         if sentiment in ["no_coverage", "mixed", "negative"] or eps in ["miss", "unknown"] or broker in ["hold" ,"sell", "unknown"]:
             logger.info(
                 "ticker=%s, accession=%s media LLM: "
-                "(eps=%s, revenue=%s, sentiment=%s, broker=%) -> fail",
+                "(eps=%s, revenue=%s, sentiment=%s, broker=%s) -> fail",
                 ticker,
                 accession,
                 eps,
@@ -1029,7 +1029,7 @@ class Edgar(AdvisorBase):
 
         logger.info(
             "ticker=%s, accession=%s media LLM: "
-            "(eps=%s, revenue=%s, sentiment=%s, broker=%) -> pass",
+            "(eps=%s, revenue=%s, sentiment=%s, broker=%s) -> pass",
             ticker,
             accession,
             eps,
@@ -1329,7 +1329,7 @@ class Edgar(AdvisorBase):
         print(explanation)
 
         # Keeper
-        self.discovered(sa, ticker, explanation, sell_instructions, Decimal(advanced["weight"]))
+        self.discovered(sa, ticker, explanation, sell_instructions, weight=Decimal(advanced["weight"]), check_health=False)
         return True
 
     def discover(self, sa):
@@ -1337,7 +1337,6 @@ class Edgar(AdvisorBase):
         logger.info("Fetching latest filings...")
 
         prev_ts = self.get_previous_sa_timestamp(sa)
-        """
         latest = get_latest_filings()
 
         try:
@@ -1347,11 +1346,11 @@ class Edgar(AdvisorBase):
             return
 
         """
-        filing1 = find("0001628280-26-019024")
-        filing2 = find("0001628280-26-019020")
+        filing1 = find("0000832988-26-000054")
+        filing2 = find("0001193125-26-112338")
 
         filings = [filing1, filing2]
-
+        """
         # Filter latest to 8-Ks only
         filings_8k = [f for f in filings if getattr(f, "form", None) == "8-K"]
         if not filings_8k:
@@ -1367,7 +1366,7 @@ class Edgar(AdvisorBase):
                     accession = getattr(filing, "accession_no", None) or getattr(filing, "accession_number", None) or ""
                     logger.warning("Filing %s (filing_time=%s) is before prev SA %s — skipping",
                                    accession, filing_dt, prev_ts)
-                    #continue
+                    continue
 
                 self.analyze_8k(filing, sa)
 

@@ -161,17 +161,6 @@ def analyze_holdings(sa, users, advisors):
                                 if holding.stock.price <= drop_threshold_price:
                                     rebuy_amount = cost_basis * rebuy_pct
 
-                                    health1 = holding.stock.latest_health()
-                                    health2 = advisors[0].health_check(holding.stock,sa)
-
-                                    if health1 is None or health2 is None:
-                                        logger.warning(f"PERCENTAGE_REBUY missing health")
-                                        continue
-
-                                    if health2.score < health1.score:
-                                        logger.warning(f"PERCENTAGE_REBUY failed health")
-                                        continue
-
                                     # Force a REBUY
                                     execute_buy(sa, user, holding.stock, rebuy_amount, f"Rebuying {rebuy_pct*100:.0f}% after drop", True)
                             else:
@@ -322,24 +311,18 @@ def analyze_discovery(sa, users, advisors):
 
         # 3. Base allowance calculation (to be enhanced with different risk methods)
         base_allowance = profile.average_spend()
-        risk_weight = Decimal(str(risk_settings["weight"]))
 
         # 4. Iterate through unique discoveries and calculate allowance per discovery
         for discovery in unique_discoveries:
-            # Get most recent health check for this stock
-            health_check = discovery.stock.latest_health()
-
-            # Skip stocks without health check or with score below threshold
-            if not health_check:
-                logger.warning(f"Discovery {discovery.stock.symbol} by {discovery.advisor.name} has no health check")
-                continue
+            # Get health for this discovery
+            health = discovery.health
 
             min_health = Decimal(str(risk_settings["min_health"]))
 
-            if health_check.score < min_health:
+            if health and health.score < min_health:
                 logger.info(
                     f"User {u.username}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "
-                    f"health check score ({health_check.score}) below threshold ({min_health})"
+                    f"health check score ({health.score}) below threshold ({min_health})"
                 )
                 continue
 
@@ -352,19 +335,18 @@ def analyze_discovery(sa, users, advisors):
             allowance = base_allowance
 
             # Apply combined weight and risk weight
-            # Exaggerate: if combined weight > 1.0, multiply by risk.weight; if < 1.0, divide by risk.weight
             if combined_weight > Decimal('1.0'):
-                allowance = allowance * (combined_weight * risk_weight)
+                allowance = allowance * combined_weight
             else:
-                allowance = allowance * (combined_weight / risk_weight)
+                allowance = allowance * combined_weight
 
             logger.info(
                 f"User {u.username}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "
-                f"(Weight={combined_weight:.3f}, risk_weight={risk_weight:.3f}, allowance=${allowance:.2f})"
+                f"(Weight={combined_weight:.3f} allowance=${allowance:.2f})"
             )
 
             # Extract first clause from discovery explanation as summary
-            explanation = discovery.explanation.split(" | ")[0].strip() if discovery.explanation else f"Stock health score {health_check.score} exceeded minimum score {min_health}"
+            explanation = discovery.explanation.split(" | ")[0].strip()
 
             # Call execute_buy
             execute_buy(sa, u, discovery.stock, allowance, explanation)

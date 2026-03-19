@@ -53,7 +53,7 @@ class Profile(models.Model):
         },
         "EXPERIMENTAL": {
             "min_health": 20.0,
-            "advisors": ['User','Edgar','Vunder'],
+            "advisors": ['User','Edgar','Vunder','Oscilla'],
             "weight": 1.25,
             "stocks": 25
         },
@@ -569,15 +569,6 @@ class Stock(models.Model):
             logger.warning(f"Error checking peak for {self.symbol} (since {since_date}, target ${target_price}): {e}")
             return None
 
-    def latest_health(self):
-        """
-        Get the most recent health check for this stock.
-
-        Returns:
-            Health object or None if no health check exists
-        """
-        return Health.objects.filter(stock=self).order_by('-created').first()
-
 
     def refresh(self):
 
@@ -660,6 +651,7 @@ class Discovery(models.Model):
     stock = models.ForeignKey(Stock, on_delete=models.DO_NOTHING)
     price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     advisor = models.ForeignKey(Advisor, on_delete=models.DO_NOTHING)
+    health = models.ForeignKey(Health, null=True, blank=True, on_delete=models.SET_NULL)
     created = models.DateTimeField(auto_now_add=True)
     weight = models.DecimalField(max_digits=5, decimal_places=2, default=1.0)
     explanation = models.TextField()

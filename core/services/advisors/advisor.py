@@ -377,7 +377,7 @@ class AdvisorBase:
     def analyze(self, sa, stock):
         return
 
-    def discovered(self, sa, symbol, explanation, sell_instructions = None, weight = 1.0):
+    def discovered(self, sa, symbol, explanation, sell_instructions = None, weight = 1.0, check_health = True):
         #-- find stock or create stock
         try:
             stock = Stock.objects.get(symbol=symbol)
@@ -390,22 +390,22 @@ class AdvisorBase:
         # Latest price
         stock.refresh()
 
-        # Always attempt health check (graceful failure - don't block discovery)
-        logger.info(f"Attempting health check for {stock.symbol}...")
-        try:
-            health = self.health_check(stock, sa)
-            if health:
-                logger.info(f"Successfully created health check for {stock.symbol}")
-            else:
-                logger.error(f"Health check returned None for {stock.symbol}")
+        if check_health:
+            # Attempt health check (graceful failure - don't block discovery)
+            logger.info(f"Attempting health check for {stock.symbol}...")
+            try:
+                health = self.health_check(stock, sa)
+                if health:
+                    logger.info(f"Successfully created health check for {stock.symbol}")
+                else:
+                    logger.error(f"Health check returned None for {stock.symbol}")
+                    return None
+
+            except Exception as e:
+                logger.error(f"Health check failed for {stock.symbol} during discovery: {e}", exc_info=True)
                 return None
-
-        except Exception as e:
-            logger.error(f"Health check failed for {stock.symbol} during discovery: {e}", exc_info=True)
-            return None
-
-        # REMOVED: 7-day duplicate discovery check - no longer needed since SA sessions are faster without Polygon
-        # This allows stocks to be re-discovered and bought again if they show strong movement
+        else:
+            health = None
 
         # Create new Discovery record
         discovery = Discovery()
@@ -413,6 +413,7 @@ class AdvisorBase:
         discovery.stock = stock
         discovery.price = stock.price  # NEW: Capture price at discovery time
         discovery.advisor = self.advisor
+        discovery.health = health
         discovery.explanation = explanation
         discovery.weight = weight
         discovery.save()
@@ -1015,7 +1016,7 @@ class AdvisorBase:
 - Current Price: ${current_price:.2f}
 - 52-Week Low: ${week52_low:.2f}, 52-Week High: ${week52_high:.2f}
 - Consider the company’s valuation (P/E, P/B), sector trends, operational performance, and macroeconomic risks.
-- You must choose exactly one recommendation from: STRONG_BUY, BUY, NEUTRAL, AVOID, STRONG_AVOID.
+- You must choose exactly one recommendation from: STRONG_BUY, BUY, NEUTRAL, AVOID.
 - This is a buy gate (not a short). Prefer AVOID/STRONG_AVOID when valuation/risk dominates even if the company is profitable.
 - If the current price is within 5–10% of the 52-week high and valuation appears stretched versus typical sector norms, lean NEUTRAL or AVOID unless there is a clear, durable catalyst.
 - Reasoning must mention both positives (e.g., strong earnings, cash flow, stability) and negatives (e.g., high valuation, sector headwinds, declining growth).
@@ -1030,7 +1031,7 @@ Output a single JSON object only in this format:
 
 {{
   "symbol": "{symbol}",
-  "recommendation": "STRONG_BUY" | "BUY" | "NEUTRAL" | "AVOID" | "STRONG_AVOID",
+  "recommendation": "STRONG_BUY" | "BUY" | "NEUTRAL" | "AVOID",
   "explanation": "<2-3 sentences including positives and risks>"
 }}
 
@@ -1050,8 +1051,7 @@ Respond with only a single valid JSON object, no other text.
             "STRONG_BUY": 1.25,
             "BUY": 1.0,
             "NEUTRAL": 0.75,
-            "AVOID": 0.50,
-            "STRONG_AVOID": 0.00,
+            "AVOID": 0.00,
         }
         gemini_weight = weight_mapping.get(recommendation, 1.0)  # Default to 1.0 (neutral) if unknown
         

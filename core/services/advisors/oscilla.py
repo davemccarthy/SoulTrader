@@ -277,12 +277,10 @@ class Oscilla(AdvisorBase):
         Args:
             sa: SmartAnalysis session
         """
-        # Check if within first hour of market open
-        market_status = self.market_open()
-
-        # Only discovery 1st hour of market open
-        if market_status is None or market_status < 0 or market_status >= 60:
-            logger.info(f"Oscilla discovery skipped: outside first hour window (market_status={market_status})")
+        # Once-per-day guard: if there was a previous SA today, skip entirely
+        prev = self.get_previous_sa_timestamp(sa, username=getattr(sa, "username", None))
+        if prev and prev.date() == sa.started.date():
+            logger.info("Oscilla: already ran for this user today, skipping.")
             return
 
         try:
@@ -436,7 +434,7 @@ class Oscilla(AdvisorBase):
                     # PROFIT_FLAT: val1=range threshold %, val2=evaluation days
                     sell_instructions = [
                         ("PROFIT_TARGET", Decimal('0.10'), None),  # 10% profit on average spend
-                        ("PERCENTAGE_REBUY", Decimal('0.10'), Decimal('0.10')),  # 10% loss, rebuy 10%
+                        ("PERCENTAGE_REBUY", Decimal('0.10'), Decimal('0.20')),  # 10% loss, rebuy 20%
                         ("PROFIT_FLAT", Decimal('0.02'), Decimal('3')),  # Sell if price range within 2% over 3 days
                         ("PROFIT_FLAT", Decimal('0.05'), Decimal('20')),  # Sell if price range within 5% over 20 days
                     ]

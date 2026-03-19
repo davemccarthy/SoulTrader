@@ -467,16 +467,15 @@ Example:
             # Map consensus to weights
         weight_map = {
             "strong buy": 1.25,
-            "buy": 0.8,
+            "buy": 0.1,
         }
 
-
-        # Sell instructions (still simple; can be tuned later)
+        # Sell instructions
         sell_instructions = [
-            ("PERCENTAGE_DIMINISHING", 1.30, 120),
+            ("PERCENTAGE_DIMINISHING", 1.30, 60),
             ("PERCENTAGE_AUGMENTING", 0.85, 120),
             ("PEAKED", 7.0, None),
-            ("DESCENDING_TREND", -0.20, None),
+            ("DESCENDING_TREND", -0.20, None)
         ]
 
         # Final discoveries: only Buy / Strong Buy
@@ -501,7 +500,7 @@ Example:
                 f"{data.get('model')}: {data.get('summary')}"
             )
 
-            self.discovered(sa, symbol, explanation, sell_instructions, weight=weight)
+            self.discovered(sa, symbol, explanation, sell_instructions, weight=weight, check_health=False)
 
 
 register(name="Vunder", python_class="Vunder")
