@@ -1346,8 +1346,8 @@ class Edgar(AdvisorBase):
             return
 
         """
-        filing1 = find("0000832988-26-000054")
-        filing2 = find("0001193125-26-112338")
+        filing1 = find("0001140361-26-010438")
+        filing2 = find("0001628280-26-019813")
 
         filings = [filing1, filing2]
         """

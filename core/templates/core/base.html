@@ -61,7 +61,7 @@
             letter-spacing: 0.02em;
         }
         .logo-line-bottom {
-            font-size: 0.68rem;
+            font-size: 0.75rem;
             font-weight: 900;
             text-transform: uppercase;
             letter-spacing: 0.12em;
@@ -1245,7 +1245,13 @@
     <header class="header">
         <div class="header-content">
             <a href="{% url 'core:home' %}" class="logo">
-                <span class="logo-line-top">SOULTRADER</span>
+                <span class="logo-line-top">
+                    {% if user.is_authenticated %}
+                        SOULTRADER - {% with fund=user.profile_set.first %}{{ fund.name|default:user.username }}{% endwith %}
+                    {% else %}
+                        SOULTRADER
+                    {% endif %}
+                </span>
                 <span class="logo-line-bottom">KLYNT INDUSTRIES</span>
             </a>
 

@@ -276,8 +276,7 @@ def analyze_discovery(sa, users, advisors):
         logger.info(f"Buying ------------- {u.username}")
 
         profile = Profile.objects.get(user=u)
-        risk_settings = Profile.RISK[profile.risk]
-        allowed_advisors = risk_settings.get("advisors", [])
+        allowed_advisors = list(profile.advisors or [])
 
         # 1. Filter discoveries by allowed advisors (if specified)
         discoveries_qs = Discovery.objects.filter(sa=sa)
@@ -309,20 +308,18 @@ def analyze_discovery(sa, users, advisors):
         if not unique_discoveries:
             continue
 
-        # 3. Base allowance calculation (to be enhanced with different risk methods)
-        base_allowance = profile.average_spend()
+        # 3. Base allowance
+        base_allowance = profile.avg_spend
 
         # 4. Iterate through unique discoveries and calculate allowance per discovery
         for discovery in unique_discoveries:
             # Get health for this discovery
             health = discovery.health
 
-            min_health = Decimal(str(risk_settings["min_health"]))
-
-            if health and health.score < min_health:
+            if health and health.score < profile.min_score:
                 logger.info(
                     f"User {u.username}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "
-                    f"health check score ({health.score}) below threshold ({min_health})"
+                    f"health check score ({health.score}) below threshold ({profile.min_score})"
                 )
                 continue
 
@@ -332,13 +329,10 @@ def analyze_discovery(sa, users, advisors):
             combined_weight = advisor_weight * discovery_weight
 
             # Calculate allowance with weighting
-            allowance = base_allowance
-
-            # Apply combined weight and risk weight
             if combined_weight > Decimal('1.0'):
-                allowance = allowance * combined_weight
+                allowance = base_allowance * combined_weight
             else:
-                allowance = allowance * combined_weight
+                allowance = base_allowance * combined_weight
 
             logger.info(
                 f"User {u.username}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "

@@ -18,6 +18,7 @@ Reference your /Users/davidmccarthy/Development/scratch/analysis.py for the stru
 
 from django.db import models
 from django.contrib.auth.models import User
+from django.contrib.postgres.fields import ArrayField
 from django.utils import timezone
 from datetime import timedelta
 from decimal import Decimal
@@ -60,6 +61,12 @@ class Profile(models.Model):
     }
 
     user = models.ForeignKey(User, on_delete=models.DO_NOTHING)
+    name = models.CharField(max_length=120, blank=True, default="")
+    description = models.TextField(blank=True, default="")
+    enabled = models.BooleanField(default=True)
+    avg_spend = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    min_score = models.DecimalField(max_digits=5, decimal_places=1, default=30.0)
+    advisors = ArrayField(models.CharField(max_length=100), default=list, blank=True)
     risk = models.CharField(max_length=20, choices=[(key, key.replace('_', ' ').title()) for key in RISK.keys()], default='MODERATE')
     investment = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('100000.00'))
     cash = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('100000.00'))
