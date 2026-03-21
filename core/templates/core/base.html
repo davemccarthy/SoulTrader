@@ -1247,7 +1247,7 @@
             <a href="{% url 'core:home' %}" class="logo">
                 <span class="logo-line-top">
                     {% if user.is_authenticated %}
-                        SOULTRADER - {% with fund=user.profile_set.first %}{{ fund.name|default:user.username }}{% endwith %}
+                        SOULTRADER - {% if current_fund %}{{ current_fund.name|default:user.username }}{% else %}{{ user.username }}{% endif %}
                     {% else %}
                         SOULTRADER
                     {% endif %}

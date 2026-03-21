@@ -16,6 +16,7 @@ import logging
 import yfinance as yf
 
 from .models import Profile, Holding, Discovery, Trade, Recommendation, SellInstruction, Health, Snapshot
+from .fund_session import get_current_fund, init_fund_session_after_login
 
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ def login_view(request):
         user = authenticate(request, username=username, password=password)
         if user:
             login(request, user)
+            init_fund_session_after_login(request)
             return redirect('core:holdings')
         else:
             messages.error(request, 'Invalid credentials')
@@ -62,6 +64,7 @@ def register(request):
                 # Profile auto-created via signal
                 messages.success(request, 'Account created successfully!')
                 login(request, user)
+                init_fund_session_after_login(request)
                 return redirect('core:holdings')
             else:
                 messages.error(request, 'Username already exists')
@@ -74,18 +77,22 @@ def register(request):
 @login_required
 def holdings(request):
     """Holdings page - displays user's stock holdings"""
-    holdings_list = (
-        Holding.objects
-        .filter(user=request.user)
-        .annotate(
-            latest_trade_sa=Max(
-                'stock__trade__sa_id',
-                filter=Q(stock__trade__user=request.user)
+    fund = get_current_fund(request)
+    if fund is None:
+        holdings_list = []
+    else:
+        holdings_list = (
+            Holding.objects
+            .filter(fund=fund)
+            .annotate(
+                latest_trade_sa=Max(
+                    'stock__trade__sa_id',
+                    filter=Q(stock__trade__fund=fund)
+                )
             )
+            .order_by('-latest_trade_sa', '-id')
+            .select_related('stock', 'stock__advisor')
         )
-        .order_by('-latest_trade_sa', '-id')
-        .select_related('stock', 'stock__advisor')
-    )
     
     # Get all SA IDs for discoveries lookup
     sa_ids = {h.latest_trade_sa for h in holdings_list if h.latest_trade_sa}
@@ -183,12 +190,15 @@ def holdings(request):
     # Aggregate by week when > 14 points to avoid bunched bars
     today = timezone.now().date()
     start_date = today - datetime.timedelta(days=120)
-    snapshots_qs = (
-        Snapshot.objects
-        .filter(user=request.user, date__gte=start_date)
-        .order_by('date')
-    )
-    snapshots_list = list(snapshots_qs)
+    if fund is None:
+        snapshots_list = []
+    else:
+        snapshots_qs = (
+            Snapshot.objects
+            .filter(fund=fund, date__gte=start_date)
+            .order_by('date')
+        )
+        snapshots_list = list(snapshots_qs)
 
     holdings_chart_data = []
     if len(snapshots_list) > 14:
@@ -264,18 +274,20 @@ def _advisor_logo_url(advisor):
 @login_required
 def holding_detail(request, stock_id):
     from django.utils import timezone
-    
+
+    fund = get_current_fund(request)
+    if fund is None:
+        raise Http404("No fund in session")
+
     try:
         holding = (
             Holding.objects
             .select_related('stock')
-            .get(user=request.user, stock_id=stock_id)
+            .get(fund=fund, stock_id=stock_id)
         )
     except Holding.DoesNotExist:
         raise Http404("Holding not found")
 
-    # Get user's profile for risk-based values
-    profile = Profile.objects.get(user=request.user)
     stock = holding.stock
     shares = holding.shares or 0
     avg_price = holding.average_price or Decimal('0')
@@ -292,7 +304,7 @@ def holding_detail(request, stock_id):
 
     trades_qs = list(
         Trade.objects
-        .filter(user=request.user, stock_id=stock_id)
+        .filter(fund=fund, stock_id=stock_id)
         .order_by('-id')
     )
 
@@ -462,12 +474,16 @@ def holding_detail(request, stock_id):
 def holding_history(request, stock_id):
     """Holdings history view - unified view with heading, discovery, health history, and trade history"""
     from django.utils import timezone
-    
+
+    fund = get_current_fund(request)
+    if fund is None:
+        raise Http404("No fund in session")
+
     try:
         holding = (
             Holding.objects
             .select_related('stock')
-            .get(user=request.user, stock_id=stock_id)
+            .get(fund=fund, stock_id=stock_id)
         )
     except Holding.DoesNotExist:
         raise Http404("Holding not found")
@@ -559,7 +575,6 @@ def holding_history(request, stock_id):
                             break
         
         # Get sell instructions for this discovery
-        profile = Profile.objects.get(user=request.user)
         instructions = SellInstruction.objects.filter(discovery=discovery_obj).order_by('id')
         # Create mapping from instruction code to description
         instruction_choices = dict(SellInstruction.choices)
@@ -666,7 +681,7 @@ def holding_history(request, stock_id):
     trades_qs = (
         Trade.objects
         .select_related('sa')
-        .filter(user=request.user, stock_id=stock_id)
+        .filter(fund=fund, stock_id=stock_id)
         .order_by('-created', '-id')
     )
     
@@ -731,12 +746,16 @@ def holding_history(request, stock_id):
 @login_required
 def trades(request):
     """Trades page - summarize executed trades using holdings styling."""
-    trade_qs = (
-        Trade.objects
-        .filter(user=request.user)
-        .select_related('stock', 'stock__advisor', 'sa')
-        .order_by('sa__started', 'id')
-    )
+    fund = get_current_fund(request)
+    if fund is None:
+        trade_qs = Trade.objects.none()
+    else:
+        trade_qs = (
+            Trade.objects
+            .filter(fund=fund)
+            .select_related('stock', 'stock__advisor', 'sa')
+            .order_by('sa__started', 'id')
+        )
 
     # Prefetch discoveries for all trades by (stock_id, sa_id)
     sa_ids = {t.sa_id for t in trade_qs if t.sa_id}
@@ -859,11 +878,14 @@ def trades(request):
     # Build snapshot data for trades stacked bar chart (last 30 days)
     today = timezone.now().date()
     start_date = today - datetime.timedelta(days=30)
-    snapshots_qs = (
-        Snapshot.objects
-        .filter(user=request.user, date__gte=start_date)
-        .order_by('date')
-    )
+    if fund is None:
+        snapshots_qs = Snapshot.objects.none()
+    else:
+        snapshots_qs = (
+            Snapshot.objects
+            .filter(fund=fund, date__gte=start_date)
+            .order_by('date')
+        )
 
     trades_chart_data = []
     for snap in snapshots_qs:
@@ -883,15 +905,8 @@ def trades(request):
 
 @login_required
 def profile(request):
-    """Profile page"""
-    user_profile = request.user.profile_set.first()
-    if not user_profile:
-        user_profile = Profile.objects.create(
-            user=request.user,
-            risk='MODERATE',
-            cash=100000.00,
-            investment=100000.00
-        )
+    """Profile page — shows the session-scoped fund (profile)."""
+    user_profile = get_current_fund(request)
     context = {
         'current_page': 'profile',
         'profile': user_profile,
