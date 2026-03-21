@@ -118,8 +118,7 @@ class Command(BaseCommand):
                     # Force sell (consensus can be None)
                     execute_sell(
                         sa=sa,
-                        user=user,
-                        profile=profile,
+                        fund=profile,
                         holding=holding,
                         explanation=f'{explanation} ({symbol})'
                     )

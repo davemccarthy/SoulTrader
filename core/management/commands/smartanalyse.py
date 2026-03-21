@@ -2,8 +2,7 @@
 Smart Analysis Management Command
 
 Usage:
-    python manage.py smartanalyse <username>
-    python manage.py smartanalyse --all
+    python manage.py smartanalyse <fund>
 """
 from datetime import timedelta
 
@@ -12,7 +11,6 @@ from django.db.models import Sum, F, DecimalField
 
 from core.services import analysis
 from core.models import SmartAnalysis, Advisor, Profile, Snapshot, Holding, Trade
-from django.contrib.auth.models import User
 from django.utils import timezone
 from decimal import Decimal
 
@@ -23,12 +21,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def calculate_trade_pnl_percentages(user, snapshot_date):
+def calculate_trade_pnl_percentages(fund, snapshot_date):
     """
     Calculate Trade P&L percentages for a user.
     
     Args:
-        user: User instance
+        fund: fund instance
         snapshot_date: Date for the snapshot (used to determine yesterday for daily calculation)
     
     Returns:
@@ -37,7 +35,7 @@ def calculate_trade_pnl_percentages(user, snapshot_date):
     # Cumulative: ((proceeds - cost) / cost) * 100
     # For all SELL trades (all-time)
     cumulative_trades = Trade.objects.filter(
-        user=user,
+        fund=fund,
         action='SELL',
         cost__isnull=False
     ).aggregate(
@@ -57,7 +55,7 @@ def calculate_trade_pnl_percentages(user, snapshot_date):
     # For SELL trades from yesterday (previous day's trading)
     yesterday = snapshot_date - timedelta(days=1)
     daily_trades = Trade.objects.filter(
-        user=user,
+        fund=fund,
         action='SELL',
         cost__isnull=False,
         created__date=yesterday
@@ -82,10 +80,10 @@ class Command(BaseCommand):
     
     def add_arguments(self, parser):
         parser.add_argument(
-            'username',
+            'fund',
             nargs='?',
             type=str,
-            help='Username to analyze (optional)'
+            help='Fund to analyze (optional)'
         )
         parser.add_argument(
             '--holdings-only',
@@ -123,22 +121,22 @@ class Command(BaseCommand):
         
         # TODO: Implement based on your analysis.py smart_analyse() function
         # 1. Create SmartAnalysis session
-        # 2. Get users to analyze
+        # 2. Get funds to analyze
         # 3. Run analyse_holdings() if not discovery-only
         # 4. Run analyse_discovery() if not holdings-only
         # 5. Display results
 
-        # Get users
-        users = []
+        # Get funds
+        funds = []
 
-        if options['username']:
+        if options['fund']:
             try:
-                user = User.objects.get(username=options['username'])
-                users.append(user)
-            except User.DoesNotExist:
-                raise CommandError(f'User "{options["username"]}" does not exist')
+                fund = Profile.objects.get(name=options['fund'])
+                funds.append(fund)
+            except Profile.DoesNotExist:
+                raise CommandError(f'Fund "{options["fund"]}" does not exist')
         else:
-            users = list(User.objects.filter(is_active=True, is_superuser=False))
+            funds = list(Profile.objects.filter(enabled=True))
 
         # Session smart analysis
         if not param_resuse:
@@ -149,10 +147,6 @@ class Command(BaseCommand):
             print(sa)
 
         self.stdout.write(f"Starting Smart Analysis ({sa.id}) ...")
-
-        # Tmp: create missing profiles
-        for user in users:
-            Profile.objects.get_or_create(user=user)
 
         # Get advisor classes
         advisors = []
@@ -180,49 +174,45 @@ class Command(BaseCommand):
 
         # Lets go
         if not param_discovery_only:
-            analysis.analyze_holdings(sa, users, advisors)
+            analysis.analyze_holdings(sa, funds)
 
         if not param_holdings_only:
-            analysis.analyze_discovery(sa, users, advisors)
+            analysis.analyze_discovery(sa, funds, advisors)
 
         sa.duration = timezone.now() - sa.started
         # save we all stats from session : users, trades, buys, sells, spend
         sa.save()
         
-        # Update snapshots for all users at the end of SA (after trades execute)
+        # Update snapshots for all funds at the end of SA (after trades execute)
         today = timezone.now().date()
-        for user in users:
-            try:
-                profile = Profile.objects.get(user=user)
-                cash_value = profile.cash or Decimal('0')
-                
-                # Calculate holdings value (refresh prices first to ensure accuracy)
-                holdings_value = Decimal('0')
-                for holding in Holding.objects.filter(user=user).select_related('stock'):
-                    if holding.stock and holding.shares:
-                        # Refresh stock price to get current market value
-                        holding.stock.refresh()
-                        if holding.stock.price:
-                            holdings_value += holding.stock.price * Decimal(holding.shares)
-                
-                # Calculate Trade P&L percentages
-                trade_cumulative, trade_daily = calculate_trade_pnl_percentages(user, today)
-                
-                # Update or create snapshot for today
-                # update_or_create ensures one snapshot per day - created on first SA run, updated on subsequent runs
-                Snapshot.objects.update_or_create(
-                    user=user,
-                    date=today,
-                    defaults={
-                        'cash_value': cash_value,
-                        'holdings_value': holdings_value,
-                        'trade_cumulative': trade_cumulative,
-                        'trade_daily': trade_daily,
-                    }
-                )
-            except Profile.DoesNotExist:
-                # Skip users without profiles
-                continue
+        for fund in funds:
+            cash_value = fund.cash or Decimal('0')
+
+            # Calculate holdings value (refresh prices first to ensure accuracy)
+            holdings_value = Decimal('0')
+            for holding in Holding.objects.filter(fund=fund).select_related('stock'):
+                if holding.stock and holding.shares:
+                    # Refresh stock price to get current market value
+                    holding.stock.refresh()
+                    if holding.stock.price:
+                        holdings_value += holding.stock.price * Decimal(holding.shares)
+
+            # Calculate Trade P&L percentages
+            trade_cumulative, trade_daily = calculate_trade_pnl_percentages(fund, today)
+
+            # Update or create snapshot for today
+            # update_or_create ensures one snapshot per day - created on first SA run, updated on subsequent runs
+            Snapshot.objects.update_or_create(
+                fund=fund,
+                date=today,
+                defaults={
+                    'user': fund.user,  # satisfies NOT NULL on create + keeps row consistent
+                    'cash_value': cash_value,
+                    'holdings_value': holdings_value,
+                    'trade_cumulative': trade_cumulative,
+                    'trade_daily': trade_daily,
+                }
+            )
         
         self.stdout.write(
             self.style.SUCCESS('Smart Analysis complete!')

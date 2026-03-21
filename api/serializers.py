@@ -20,7 +20,7 @@ class HoldingSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Holding
-        fields = ['id', 'stock', 'shares', 'average_price', 'volatile']
+        fields = ['id', 'stock', 'shares', 'average_price']
 
 
 class TradeSerializer(serializers.ModelSerializer):

@@ -7,7 +7,7 @@ from decimal import Decimal
 from datetime import datetime
 from pytz import timezone as tz
 from django.utils import timezone
-from core.models import Stock, Holding, Discovery, Profile, Advisor
+from core.models import Holding, Discovery, Advisor
 from core.services.execution import execute_buy, execute_sell
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ def analyse_target(discovery, holding, target):
     return False
 
 
-def analyze_holdings(sa, users, advisors):
+def analyze_holdings(sa, funds):
     logger.info(f"Analyzing holdings for SA session {sa.id}")
 
     # Check if we're in the last 30 minutes of trading day (3:30 PM ET onwards)
@@ -61,11 +61,10 @@ def analyze_holdings(sa, users, advisors):
         if market_open_time <= current_time < market_close_time:
             end_week = True
 
-    # Iterate thru users
-    for user in users:
-        profile = Profile.objects.get(user=user)
+    # Iterate thru funds
+    for fund in funds:
 
-        for holding in Holding.objects.filter(user=user):
+        for holding in Holding.objects.filter(fund=fund):
 
             # Latest prices
             holding.stock.refresh()
@@ -86,12 +85,12 @@ def analyze_holdings(sa, users, advisors):
                     for instruction in instructions:
                         if instruction.instruction in ['STOP_PRICE', 'STOP_PERCENTAGE']:
                             if instruction.value1 and holding.stock.price < instruction.value1:
-                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} fell to stop-loss of ${instruction.value1:.2f}")
+                                execute_sell(sa, fund, holding, f"{holding.stock.symbol} fell to stop-loss of ${instruction.value1:.2f}")
                                 break
 
                         elif instruction.instruction in ['TARGET_PRICE', 'TARGET_PERCENTAGE']:
                             if analyse_target(discovery, holding, instruction.value1):
-                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} reached target price of ${instruction.value1:.2f}")
+                                execute_sell(sa, fund, holding, f"{holding.stock.symbol} reached target price of ${instruction.value1:.2f}")
                                 break
 
                         elif instruction.instruction in ['TARGET_DIMINISHING', 'PERCENTAGE_DIMINISHING']:
@@ -107,7 +106,7 @@ def analyze_holdings(sa, users, advisors):
                                     current_target = float(buy_price)  # After max_days, target = buy_price (break-even)
 
                                 if analyse_target(discovery, holding, Decimal(str(current_target))):
-                                    execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} downturn detected at diminishing target ${current_target:.2f} (day {days_held}/{max_days})")
+                                    execute_sell(sa, fund, holding, f"{holding.stock.symbol} downturn detected at diminishing target ${current_target:.2f} (day {days_held}/{max_days})")
                                     break
                             else:
                                 logger.warning(f"TARGET_DIMINISHING instruction {instruction.id} missing required fields (value1 or buy_price)")
@@ -117,12 +116,12 @@ def analyze_holdings(sa, users, advisors):
                             # value1 = ratio (e.g., 0.10 for 10% profit)
                             if instruction.value1 and holding.shares > 0:
                                 ratio = Decimal(str(instruction.value1))
-                                base_allowance = profile.average_spend()
+                                base_allowance = fund.avg_spend
                                 target_value = base_allowance * (Decimal('1.0') + ratio)
                                 target_price = target_value / Decimal(str(holding.shares))
                                 
                                 if analyse_target(discovery, holding, target_price):
-                                    execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} reached profit target (target price: ${target_price:.2f})")
+                                    execute_sell(sa, fund, holding, f"{holding.stock.symbol} reached profit target (target price: ${target_price:.2f})")
                                     break
                             else:
                                 logger.warning(f"PROFIT_TARGET instruction {instruction.id} missing required fields (value1 or shares)")
@@ -141,7 +140,7 @@ def analyze_holdings(sa, users, advisors):
                                     current_stop = float(buy_price)  # After max_days, stop = buy_price (break-even)
                                 
                                 if holding.stock.price < Decimal(str(current_stop)):
-                                    execute_sell(sa, user, profile, holding, 
+                                    execute_sell(sa, fund, holding,
                                                 f"{holding.stock.symbol} hit augmenting stop-loss of ${current_stop:.2f} (day {days_held}/{max_days})")
                                     break
                             else:
@@ -162,7 +161,7 @@ def analyze_holdings(sa, users, advisors):
                                     rebuy_amount = cost_basis * rebuy_pct
 
                                     # Force a REBUY
-                                    execute_buy(sa, user, holding.stock, rebuy_amount, f"Rebuying {rebuy_pct*100:.0f}% after drop", True)
+                                    execute_buy(sa, fund, holding.stock, rebuy_amount, f"Rebuying {rebuy_pct*100:.0f}% after drop", True)
                             else:
                                 logger.warning(f"PERCENTAGE_REBUY instruction {instruction.id} missing required fields (value1, value2, or shares)")
 
@@ -204,8 +203,8 @@ def analyze_holdings(sa, users, advisors):
                                                 range_threshold = avg_price * range_threshold_pct
                                                 
                                                 if price_range <= range_threshold:
-                                                    execute_sell(sa, user, profile, holding, f"Flat near {range_threshold_pct:.0f}% over {evaluation_days} days")
-                                                    continue
+                                                    execute_sell(sa, fund, holding, f"Flat near {range_threshold_pct:.0f}% over {evaluation_days} days")
+                                                    break
                                     except Exception as e:
                                         logger.warning(f"Error checking PROFIT_FLAT for {holding.stock.symbol}: {e}")
                                         continue
@@ -215,25 +214,25 @@ def analyze_holdings(sa, users, advisors):
                         elif instruction.instruction == 'AFTER_DAYS':
                             days_held = (timezone.now() - discovery.created).days
                             if instruction.value1 and days_held >= int(instruction.value1):
-                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} after holding for {days_held} days (target: {int(instruction.value1)} days)")
+                                execute_sell(sa, fund, holding, f"{holding.stock.symbol} after holding for {days_held} days (target: {int(instruction.value1)} days)")
                                 break
 
                         elif instruction.instruction == 'DESCENDING_TREND':
                             trend = holding.stock.calc_trend(hours=2)
 
                             if instruction.value1 and trend and trend < instruction.value1:
-                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} descending detected of ${instruction.value1:.2f}")
+                                execute_sell(sa, fund, holding, f"{holding.stock.symbol} descending detected of ${instruction.value1:.2f}")
                                 break
 
                         elif instruction.instruction == 'NOT_TRENDING':
                             trending = holding.stock.is_trending()
                             if trending is False:  # Explicitly False (not None)
-                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} no longer trending (low volume)")
+                                execute_sell(sa, fund, holding, f"{holding.stock.symbol} no longer trending (low volume)")
                                 break
 
                         elif instruction.instruction == 'END_DAY' and end_day:
                             if instruction.value1 and holding.stock.price >= instruction.value1:
-                                execute_sell(sa, user, profile, holding, f"{holding.stock.symbol} end of day sell target: ${instruction.value1:.2f}")
+                                execute_sell(sa, fund, holding, f"{holding.stock.symbol} end of day sell target: ${instruction.value1:.2f}")
                                 break
 
                         elif instruction.instruction == 'END_WEEK' and end_week:
@@ -242,8 +241,7 @@ def analyze_holdings(sa, users, advisors):
                                 days_held = (timezone.now() - holding.created).days
                                 if days_held >= 7:
                                     if instruction.value1 and holding.stock.price >= instruction.value1:
-                                        execute_sell(
-                                            sa, user, profile, holding,
+                                        execute_sell(sa, fund, holding,
                                             f"{holding.stock.symbol} end of week sell target: ${instruction.value1:.2f} (held {days_held} days)"
                                         )
                                         break
@@ -259,11 +257,11 @@ def analyze_holdings(sa, users, advisors):
 
 
 # Discovery new stock
-def analyze_discovery(sa, users, advisors):
+def analyze_discovery(sa, funds, advisors):
     logger.info(f"Analyzing discovery for SA session {sa.id}")
 
     # Clear Polygon cache at start of discovery run to ensure fresh data
-    from core.services.advisors.advisor import AdvisorBase
+    from core.services.advisors.advisor import AdvisorBase # TODO: Review
     AdvisorBase.clear_polygon_cache()
 
     # 1. Look for new stock
@@ -272,11 +270,10 @@ def analyze_discovery(sa, users, advisors):
         a.discover(sa)
 
     # 2. Filter stocks to buy on a per user basis
-    for u in users:
-        logger.info(f"Buying ------------- {u.username}")
+    for fund in funds:
+        logger.info(f"Buying ------------- {fund.name}")
 
-        profile = Profile.objects.get(user=u)
-        allowed_advisors = list(profile.advisors or [])
+        allowed_advisors = list(fund.advisors or [])
 
         # 1. Filter discoveries by allowed advisors (if specified)
         discoveries_qs = Discovery.objects.filter(sa=sa)
@@ -288,7 +285,7 @@ def analyze_discovery(sa, users, advisors):
             if allowed_advisor_objects.exists():
                 discoveries_qs = discoveries_qs.filter(advisor__in=allowed_advisor_objects)
             else:
-                logger.warning(f"User {u.username} ({profile.risk}): No advisors found matching {allowed_advisors}")
+                logger.warning(f"{fund.name}: no matching advisor")
                 continue
 
         # 3. Get filtered discoveries
@@ -309,17 +306,17 @@ def analyze_discovery(sa, users, advisors):
             continue
 
         # 3. Base allowance
-        base_allowance = profile.avg_spend
+        base_allowance = fund.avg_spend
 
         # 4. Iterate through unique discoveries and calculate allowance per discovery
         for discovery in unique_discoveries:
             # Get health for this discovery
             health = discovery.health
 
-            if health and health.score < profile.min_score:
+            if health and health.score < fund.min_score:
                 logger.info(
-                    f"User {u.username}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "
-                    f"health check score ({health.score}) below threshold ({profile.min_score})"
+                    f"User {fund.name}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "
+                    f"health check score ({health.score}) below threshold ({fund.min_score})"
                 )
                 continue
 
@@ -335,7 +332,7 @@ def analyze_discovery(sa, users, advisors):
                 allowance = base_allowance * combined_weight
 
             logger.info(
-                f"User {u.username}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "
+                f"User {fund.name}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "
                 f"(Weight={combined_weight:.3f} allowance=${allowance:.2f})"
             )
 
@@ -343,4 +340,4 @@ def analyze_discovery(sa, users, advisors):
             explanation = discovery.explanation.split(" | ")[0].strip()
 
             # Call execute_buy
-            execute_buy(sa, u, discovery.stock, allowance, explanation)
+            execute_buy(sa, fund, discovery.stock, allowance, explanation)

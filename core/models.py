@@ -601,11 +601,10 @@ class Stock(models.Model):
 # Users stock holdingß
 class Holding(models.Model):
     user = models.ForeignKey(User, on_delete=models.DO_NOTHING)
+    fund = models.ForeignKey(Profile, null=True, blank=True, on_delete=models.DO_NOTHING)
     stock = models.ForeignKey(Stock, on_delete=models.DO_NOTHING)
     shares = models.IntegerField(default=0)
     average_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.0)
-    consensus = models.DecimalField(max_digits=4, decimal_places=2, default=5.0)
-    volatile = models.BooleanField(default=False)  # Your flag!
     created = models.DateTimeField(auto_now_add=True, null=True, blank=True)  # When holding was first created (backfilled from first BUY trade)
 
 
@@ -719,6 +718,7 @@ class Trade(models.Model):
 
     sa = models.ForeignKey(SmartAnalysis, on_delete=models.DO_NOTHING)
     user = models.ForeignKey(User, on_delete=models.DO_NOTHING)
+    fund = models.ForeignKey(Profile, null=True, blank=True, on_delete=models.DO_NOTHING)
     stock = models.ForeignKey(Stock, on_delete=models.DO_NOTHING)
     created = models.DateTimeField(auto_now_add=True)
     consensus = models.ForeignKey(Consensus, null=True, blank=True, on_delete=models.DO_NOTHING)
@@ -733,6 +733,7 @@ class Trade(models.Model):
 class Snapshot(models.Model):
     """Daily snapshot of user's portfolio (cash + holdings value)"""
     user = models.ForeignKey(User, on_delete=models.CASCADE)
+    fund = models.ForeignKey(Profile, null=True, blank=True, on_delete=models.DO_NOTHING)
     created = models.DateTimeField(auto_now_add=True)
     date = models.DateField()  # For easy daily filtering
     cash_value = models.DecimalField(max_digits=10, decimal_places=2)

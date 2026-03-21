@@ -1337,9 +1337,9 @@ class Edgar(AdvisorBase):
         logger.info("Fetching latest filings...")
 
         prev_ts = self.get_previous_sa_timestamp(sa)
-        latest = get_latest_filings()
 
         try:
+            latest = get_latest_filings()
             filings = list(latest)
         except Exception as e:
             logger.warning("❌ Error converting latest filings to list: %s", e)
