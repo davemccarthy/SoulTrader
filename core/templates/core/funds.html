@@ -3,58 +3,130 @@
 {% block title %}Funds - SOULTRADER{% endblock %}
 
 {% block content %}
-<div class="card">
-    <h1 style="color: #667eea; margin-bottom: 0.5rem;">Funds</h1>
-    <p style="color: #6c757d; margin-bottom: 1.25rem; font-size: 0.95rem;">
-        Choose which fund portfolio to use for Holdings, Trades, and the header. More columns (cash, P&amp;L, etc.) can be added later.
-    </p>
+<style>
+    .funds-page-intro {
+        color: #6c757d;
+        margin-bottom: 1.5rem;
+        font-size: 0.95rem;
+    }
+    .funds-dashboard-list {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+    }
+    .fund-card-form {
+        margin: 0;
+    }
+    .fund-card {
+        border-radius: 8px;
+    }
+    .fund-card-hit {
+        display: block;
+        width: 100%;
+        margin: 0;
+        padding: 0.75rem 1.0rem;
+        text-align: left;
+        font: inherit;
+        color: inherit;
+        background: white;
+        border: 1px solid #e9ecef;
+        border-radius: 8px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+        cursor: pointer;
+        transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .fund-card-hit:hover {
+        border-color: #00843D;
+        box-shadow: 0 4px 14px rgba(0, 132, 61, 0.12);
+    }
+    .fund-card-hit:focus {
+        outline: 2px solid #00843D;
+        outline-offset: 2px;
+    }
+    .fund-card-hit--static {
+        cursor: default;
+    }
+    .fund-card-hit--static:hover {
+        border-color: #e9ecef;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+    }
+    .fund-card--current .fund-card-hit--static {
+        border-color: #00843D;
+        box-shadow: 0 2px 12px rgba(0, 132, 61, 0.15);
+    }
+    .fund-card-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+        margin-bottom: 0.35rem;
+    }
+    .fund-card-name {
+        font-size: 1.25rem;
+        font-weight: 700;
+        color: #333;
+    }
+    .fund-card-badge {
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        font-weight: 700;
+        color: #fff;
+        background: #00843D;
+        padding: 0.25rem 0.5rem;
+        border-radius: 4px;
+        letter-spacing: 0.03em;
+    }
+    .fund-card-desc {
+        display: block;
+        font-size: 0.875rem;
+        color: #6c757d;
+        line-height: 1.4;
+        margin-bottom: 1rem;
+    }
+    .fund-card-stats-grid {
+        display: grid;
+        grid-template-columns: repeat(8, minmax(0, 1fr));
+        gap: 0.75rem 0.65rem;
+        align-items: start;
+    }
+    @media (max-width: 1100px) {
+        .fund-card-stats-grid {
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
+    }
+    @media (max-width: 720px) {
+        .fund-card-stats-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+    .fund-card-stat {
+        display: flex;
+        flex-direction: column;
+        text-align: center;
+    }
+    .fund-card-stat-header {
+        font-size: 0.65rem;
+        text-transform: uppercase;
+        color: #6c757d;
+        font-weight: 600;
+        margin-bottom: 0.2rem;
+    }
+    .fund-card-stat-value {
+        font-size: 1.05rem;
+        font-weight: bold;
+        color: #00843D;
+    }
+    .fund-card-stat-value.positive { color: #28a745; }
+    .fund-card-stat-value.negative { color: #dc3545; }
+</style>
 
-    {% if funds %}
-    <div style="overflow-x: auto;">
-        <table class="funds-table" style="width: 100%; border-collapse: collapse; font-size: 0.95rem;">
-            <thead>
-                <tr style="text-align: left; border-bottom: 2px solid #e9ecef;">
-                    <th style="padding: 0.65rem 0.5rem;">Name</th>
-                    <th style="padding: 0.65rem 0.5rem;">Description</th>
-                    <th style="padding: 0.65rem 0.5rem;">Risk</th>
-                    <th style="padding: 0.65rem 0.5rem;">Active</th>
-                    <th style="padding: 0.65rem 0.5rem; width: 1%;">Action</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for fund in funds %}
-                <tr style="border-bottom: 1px solid #f0f0f0;">
-                    <td style="padding: 0.65rem 0.5rem; font-weight: 600;">
-                        {{ fund.name|default:"—" }}
-                    </td>
-                    <td style="padding: 0.65rem 0.5rem; color: #495057; max-width: 24rem;">
-                        {{ fund.description|default:"—"|truncatechars:80 }}
-                    </td>
-                    <td style="padding: 0.65rem 0.5rem; color: #495057;">
-                        {{ fund.get_risk_display }}
-                    </td>
-                    <td style="padding: 0.65rem 0.5rem;">
-                        {% if current_fund_pk == fund.pk %}
-                            <span style="color: #00843D; font-weight: 600;">Current</span>
-                        {% else %}
-                            <span style="color: #adb5bd;">—</span>
-                        {% endif %}
-                    </td>
-                    <td style="padding: 0.65rem 0.5rem;">
-                        {% if current_fund_pk != fund.pk %}
-                        <form method="post" action="{% url 'core:funds' %}" style="display: inline; margin: 0;">
-                            {% csrf_token %}
-                            <input type="hidden" name="fund_id" value="{{ fund.pk }}">
-                            <button type="submit" class="btn" style="padding: 0.4rem 0.9rem; font-size: 0.875rem;">Use this fund</button>
-                        </form>
-                        {% else %}
-                        <span style="color: #6c757d; font-size: 0.875rem;">Selected</span>
-                        {% endif %}
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+<div class="card" style="box-shadow: none; border: none; padding-left: 0; padding-right: 0;">
+
+    {% if fund_rows %}
+    <div class="funds-dashboard-list">
+        {% for row in fund_rows %}
+            {% include 'core/includes/fund_dashboard_card.html' with fund=row.fund dashboard=row.dashboard is_current=row.is_current %}
+        {% endfor %}
     </div>
     {% else %}
     <p style="color: #6c757d;">No enabled funds found.</p>

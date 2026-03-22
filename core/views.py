@@ -17,6 +17,7 @@ import yfinance as yf
 
 from .models import Profile, Holding, Discovery, Trade, Recommendation, SellInstruction, Health, Snapshot
 from .fund_session import get_current_fund, init_fund_session_after_login, set_current_fund
+from .portfolio_metrics import get_portfolio_dashboard_data
 
 
 logger = logging.getLogger(__name__)
@@ -86,9 +87,17 @@ def funds(request):
 
     fund_list = Profile.objects.filter(enabled=True).order_by('id')
     current = get_current_fund(request)
+    fund_rows = [
+        {
+            'fund': f,
+            'dashboard': get_portfolio_dashboard_data(f),
+            'is_current': current is not None and current.pk == f.pk,
+        }
+        for f in fund_list
+    ]
     context = {
         'current_page': 'funds',
-        'funds': fund_list,
+        'fund_rows': fund_rows,
         'current_fund_pk': current.pk if current else None,
     }
     return render(request, 'core/funds.html', context)

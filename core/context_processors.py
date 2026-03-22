@@ -1,10 +1,9 @@
-from django.db.models import Sum
 from decimal import Decimal
 from django.utils import timezone
-from datetime import timedelta
 
 from core.fund_session import get_current_fund
-from core.models import Holding, Trade
+from core.models import Trade
+from core.portfolio_metrics import EMPTY_PORTFOLIO_DASHBOARD, get_portfolio_dashboard_data
 
 
 def get_ticker_messages(request):
@@ -110,81 +109,8 @@ def get_portfolio_widget_data(request):
     """Calculate portfolio widget data for the session-scoped fund."""
     fund = get_current_fund(request)
     if not fund:
-        return {
-            'total_value': 0,
-            'cash': 0,
-            'return_percent': 0,
-            'invested': 0,
-            'holdings_count': 0,
-            'trades_count': 0,
-            'shares_count': 0,
-            'trade_pnl': 0,
-            'holdings_pnl': 0,
-            'return_amount': 0,
-        }
-
-    holdings = Holding.objects.filter(fund=fund)
-    holdings_count = holdings.count()
-    shares_count = holdings.aggregate(total=Sum('shares'))['total'] or 0
-
-    for h in holdings:
-        pass
-        # h.stock.refresh()
-
-    holdings_value = sum(Decimal(str(h.shares)) * h.stock.price for h in holdings)
-    invested = holdings_value
-    total_value = holdings_value + fund.cash
-
-    if fund.investment > 0:
-        return_amount = total_value - fund.investment
-        return_percent = ((total_value - fund.investment) / fund.investment) * 100
-    else:
-        return_amount = Decimal('0.0')
-        return_percent = Decimal('0.0')
-
-    trades_count = Trade.objects.filter(fund=fund).count()
-
-    sell_trades = Trade.objects.filter(fund=fund, action='SELL', cost__isnull=False)
-    trade_pnl = sum(
-        (Decimal(str(trade.price)) - Decimal(str(trade.cost))) * Decimal(trade.shares)
-        for trade in sell_trades
-        if trade.cost
-    )
-
-    trade_cost_basis = sum(
-        Decimal(str(trade.cost)) * Decimal(trade.shares)
-        for trade in sell_trades
-        if trade.cost
-    )
-
-    if trade_cost_basis > 0:
-        trade_pnl_percent = (trade_pnl / trade_cost_basis) * 100
-    else:
-        trade_pnl_percent = Decimal('0.0')
-
-    holdings_cost_basis = sum(
-        (h.average_price or Decimal('0')) * Decimal(str(h.shares))
-        for h in holdings
-    )
-
-    holdings_pnl_raw = holdings_value - holdings_cost_basis
-
-    if holdings_cost_basis > 0:
-        holdings_pnl_pct = (holdings_pnl_raw / holdings_cost_basis) * 100
-    else:
-        holdings_pnl_pct = Decimal('0.0')
-
-    return {
-        'total_value': float(total_value),
-        'cash': float(fund.cash),
-        'return_amount': float(return_amount),
-        'invested': float(invested),
-        'holdings_count': holdings_count,
-        'trades_count': trades_count,
-        'trade_pnl': float(trade_pnl_percent),
-        'holdings_pnl': holdings_pnl_pct,
-        'return_percent': float(return_percent),
-    }
+        return dict(EMPTY_PORTFOLIO_DASHBOARD)
+    return get_portfolio_dashboard_data(fund)
 
 
 def portfolio_widget(request):

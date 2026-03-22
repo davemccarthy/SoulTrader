@@ -1,0 +1,62 @@
+{% comment %}
+  fund, dashboard, is_current — dashboard from get_portfolio_dashboard_data
+{% endcomment %}
+{% if is_current %}
+<div class="fund-card fund-card--current" aria-current="true">
+    <div class="fund-card-hit fund-card-hit--static">
+{% else %}
+<form method="post" action="{% url 'core:funds' %}" class="fund-card-form">
+    {% csrf_token %}
+    <input type="hidden" name="fund_id" value="{{ fund.pk }}">
+    <button type="submit" class="fund-card-hit" aria-label="Switch to fund {{ fund.name|default:'fund' }}">
+{% endif %}
+
+        <span class="fund-card-stats-grid">
+            <span class="fund-card-stat">
+                <span class="fund-card-stat-header">Fund</span>
+                <span class="fund-card-name">{{ fund.name|default:"—" }}</span>
+            </span>
+            <span class="fund-card-stat">
+                <span class="fund-card-stat-header">Wealth</span>
+                <span class="fund-card-stat-value">${{ dashboard.total_value|default:"0"|floatformat:2 }}</span>
+            </span>
+            <span class="fund-card-stat">
+                <span class="fund-card-stat-header">Return</span>
+                <span class="fund-card-stat-value {% if dashboard.return_percent >= 0 %}positive{% else %}negative{% endif %}">
+                    ${{ dashboard.return_amount|default:"0"|floatformat:2 }}
+                </span>
+            </span>
+            <span class="fund-card-stat">
+                <span class="fund-card-stat-header">Cash</span>
+                <span class="fund-card-stat-value">${{ dashboard.cash|default:"0"|floatformat:2 }}</span>
+            </span>
+            <span class="fund-card-stat">
+                <span class="fund-card-stat-header">Holdings</span>
+                <span class="fund-card-stat-value">{{ dashboard.holdings_count|default:"0" }}</span>
+            </span>
+            <span class="fund-card-stat">
+                <span class="fund-card-stat-header">Trade P&amp;L</span>
+                <span class="fund-card-stat-value {% if dashboard.trade_pnl >= 0 %}positive{% else %}negative{% endif %}">
+                    {{ dashboard.trade_pnl|default:"0"|floatformat:2 }}%
+                </span>
+            </span>
+            <span class="fund-card-stat">
+                <span class="fund-card-stat-header">PORTFOLIO P&amp;L</span>
+                <span class="fund-card-stat-value {% if dashboard.holdings_pnl >= 0 %}positive{% else %}negative{% endif %}">
+                    {{ dashboard.holdings_pnl|default:"0"|floatformat:2 }}%
+                </span>
+            </span>
+            <span class="fund-card-stat">
+                <span class="fund-card-stat-header">TOTAL P&amp;L</span>
+                <span class="fund-card-stat-value {% if dashboard.return_percent >= 0 %}positive{% else %}negative{% endif %}">
+                    {{ dashboard.return_percent|default:"0"|floatformat:2 }}%
+                </span>
+            </span>
+        </span>
+{% if is_current %}
+    </div>
+</div>
+{% else %}
+    </button>
+</form>
+{% endif %}
