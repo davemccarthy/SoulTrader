@@ -50,15 +50,23 @@
         .logo {
             display: flex;
             flex-direction: column;
-            align-items: center;
+            align-items: flex-start;
             text-decoration: none;
             color: white;
             line-height: 1.2;
+            width: 18rem;
+            max-width: 42vw;
+            flex-shrink: 0;
+            overflow: hidden;
         }
         .logo-line-top {
             font-size: 1.2rem;
             font-weight: bold;
             letter-spacing: 0.02em;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            width: 100%;
         }
         .logo-line-bottom {
             font-size: 0.75rem;
@@ -66,6 +74,10 @@
             text-transform: uppercase;
             letter-spacing: 0.12em;
             color: #fbcf34;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            width: 100%;
         }
         
         .nav {
@@ -162,6 +174,12 @@
 
         .portfolio-stat-value.negative {
             color: #dc3545;
+        }
+
+        .nav a.nav-disabled {
+            opacity: 0.45;
+            pointer-events: none;
+            cursor: not-allowed;
         }
 
         .main-content {
@@ -1244,10 +1262,14 @@
 <body>
     <header class="header">
         <div class="header-content">
-            <a href="{% url 'core:home' %}" class="logo">
+            <a href="{% if user.is_authenticated %}{% url 'core:funds' %}{% else %}{% url 'core:login' %}{% endif %}" class="logo">
                 <span class="logo-line-top">
                     {% if user.is_authenticated %}
-                        SOULTRADER - {% if current_fund %}{{ current_fund.name|default:user.username }}{% else %}{{ user.username }}{% endif %}
+                        {% if current_fund %}
+                            SOULTRADER - {{ current_fund.name|default:"—" }}
+                        {% else %}
+                            SOULTRADER
+                        {% endif %}
                     {% else %}
                         SOULTRADER
                     {% endif %}
@@ -1258,13 +1280,9 @@
             <nav class="nav">
                 {% if user.is_authenticated %}
                     <a href="{% url 'core:funds' %}" {% if current_page == 'funds' %}class="active"{% endif %}>Funds</a>
-                    <a href="{% url 'core:holdings' %}" {% if current_page == 'holdings' %}class="active"{% endif %}>Holdings</a>
-                    <a href="{% url 'core:trades' %}" {% if current_page == 'trades' %}class="active"{% endif %}>Trades</a>
-                    <a href="{% url 'core:profile' %}" {% if current_page == 'profile' %}class="active"{% endif %}>Profile</a>
-                {% else %}
-                    {% if current_page != 'home' %}
-                        <a href="{% url 'core:home' %}" {% if current_page == 'home' %}class="active"{% endif %}>Home</a>
-                    {% endif %}
+                    <a href="{% url 'core:holdings' %}" class="{% if current_page == 'holdings' %}active {% endif %}{% if not current_fund %}nav-disabled{% endif %}">Holdings</a>
+                    <a href="{% url 'core:trades' %}" class="{% if current_page == 'trades' %}active {% endif %}{% if not current_fund %}nav-disabled{% endif %}">Trades</a>
+                    <a href="{% url 'core:profile' %}" class="{% if current_page == 'profile' %}active {% endif %}{% if not current_fund %}nav-disabled{% endif %}">Profile</a>
                 {% endif %}
             </nav>
 
@@ -1280,7 +1298,7 @@
         </div>
     </header>
 
-    {% if user.is_authenticated %}
+    {% if user.is_authenticated and current_fund %}
     <!-- Stock Ticker -->
     <div class="ticker-container">
         <div class="ticker-text">

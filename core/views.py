@@ -16,7 +16,12 @@ import logging
 import yfinance as yf
 
 from .models import Profile, Holding, Discovery, Trade, Recommendation, SellInstruction, Health, Snapshot
-from .fund_session import get_current_fund, init_fund_session_after_login, set_current_fund
+from .fund_session import (
+    get_current_fund,
+    init_fund_session_after_login,
+    set_current_fund,
+    clear_fund_session,
+)
 from .portfolio_metrics import get_portfolio_dashboard_data
 
 
@@ -24,13 +29,16 @@ logger = logging.getLogger(__name__)
 
 
 def home(request):
-    """Landing page"""
-    context = {'current_page': 'home'}
-    return render(request, 'core/home.html', context)
+    """Root URL: no marketing home — send users to login or Funds."""
+    if request.user.is_authenticated:
+        return redirect('core:funds')
+    return redirect('core:login')
 
 
 def login_view(request):
     """Login page"""
+    if request.user.is_authenticated:
+        return redirect('core:funds')
     if request.method == 'POST':
         username = request.POST.get('username')
         password = request.POST.get('password')
@@ -47,11 +55,13 @@ def login_view(request):
 def logout_view(request):
     """Logout"""
     logout(request)
-    return redirect('core:home')
+    return redirect('core:login')
 
 
 def register(request):
     """Registration page"""
+    if request.user.is_authenticated:
+        return redirect('core:funds')
     if request.method == 'POST':
         username = request.POST.get('username')
         email = request.POST.get('email')
@@ -85,6 +95,9 @@ def funds(request):
         messages.error(request, 'Could not switch to that fund.')
         return redirect('core:funds')
 
+    # GET: always clear active fund — user must choose (or re-choose) a fund
+    clear_fund_session(request)
+
     fund_list = Profile.objects.filter(enabled=True).order_by('id')
     current = get_current_fund(request)
     fund_rows = [
@@ -108,20 +121,20 @@ def holdings(request):
     """Holdings page - displays user's stock holdings"""
     fund = get_current_fund(request)
     if fund is None:
-        holdings_list = []
-    else:
-        holdings_list = (
-            Holding.objects
-            .filter(fund=fund)
-            .annotate(
-                latest_trade_sa=Max(
-                    'stock__trade__sa_id',
-                    filter=Q(stock__trade__fund=fund)
-                )
+        return redirect('core:funds')
+
+    holdings_list = (
+        Holding.objects
+        .filter(fund=fund)
+        .annotate(
+            latest_trade_sa=Max(
+                'stock__trade__sa_id',
+                filter=Q(stock__trade__fund=fund)
             )
-            .order_by('-latest_trade_sa', '-id')
-            .select_related('stock', 'stock__advisor')
         )
+        .order_by('-latest_trade_sa', '-id')
+        .select_related('stock', 'stock__advisor')
+    )
     
     # Get all SA IDs for discoveries lookup
     sa_ids = {h.latest_trade_sa for h in holdings_list if h.latest_trade_sa}
@@ -219,15 +232,12 @@ def holdings(request):
     # Aggregate by week when > 14 points to avoid bunched bars
     today = timezone.now().date()
     start_date = today - datetime.timedelta(days=120)
-    if fund is None:
-        snapshots_list = []
-    else:
-        snapshots_qs = (
-            Snapshot.objects
-            .filter(fund=fund, date__gte=start_date)
-            .order_by('date')
-        )
-        snapshots_list = list(snapshots_qs)
+    snapshots_qs = (
+        Snapshot.objects
+        .filter(fund=fund, date__gte=start_date)
+        .order_by('date')
+    )
+    snapshots_list = list(snapshots_qs)
 
     holdings_chart_data = []
     if len(snapshots_list) > 14:
@@ -306,7 +316,7 @@ def holding_detail(request, stock_id):
 
     fund = get_current_fund(request)
     if fund is None:
-        raise Http404("No fund in session")
+        return JsonResponse({'error': 'Select a fund first.'}, status=403)
 
     try:
         holding = (
@@ -506,7 +516,7 @@ def holding_history(request, stock_id):
 
     fund = get_current_fund(request)
     if fund is None:
-        raise Http404("No fund in session")
+        return JsonResponse({'error': 'Select a fund first.'}, status=403)
 
     try:
         holding = (
@@ -777,14 +787,14 @@ def trades(request):
     """Trades page - summarize executed trades using holdings styling."""
     fund = get_current_fund(request)
     if fund is None:
-        trade_qs = Trade.objects.none()
-    else:
-        trade_qs = (
-            Trade.objects
-            .filter(fund=fund)
-            .select_related('stock', 'stock__advisor', 'sa')
-            .order_by('sa__started', 'id')
-        )
+        return redirect('core:funds')
+
+    trade_qs = (
+        Trade.objects
+        .filter(fund=fund)
+        .select_related('stock', 'stock__advisor', 'sa')
+        .order_by('sa__started', 'id')
+    )
 
     # Prefetch discoveries for all trades by (stock_id, sa_id)
     sa_ids = {t.sa_id for t in trade_qs if t.sa_id}
@@ -907,14 +917,11 @@ def trades(request):
     # Build snapshot data for trades stacked bar chart (last 30 days)
     today = timezone.now().date()
     start_date = today - datetime.timedelta(days=30)
-    if fund is None:
-        snapshots_qs = Snapshot.objects.none()
-    else:
-        snapshots_qs = (
-            Snapshot.objects
-            .filter(fund=fund, date__gte=start_date)
-            .order_by('date')
-        )
+    snapshots_qs = (
+        Snapshot.objects
+        .filter(fund=fund, date__gte=start_date)
+        .order_by('date')
+    )
 
     trades_chart_data = []
     for snap in snapshots_qs:
@@ -936,6 +943,8 @@ def trades(request):
 def profile(request):
     """Profile page — shows the session-scoped fund (profile)."""
     user_profile = get_current_fund(request)
+    if user_profile is None:
+        return redirect('core:funds')
     context = {
         'current_page': 'profile',
         'profile': user_profile,

@@ -1,8 +1,11 @@
 """
 Session-backed current fund (Profile) for UI scope.
 
-Login sets ``request.session[FUND_SESSION_KEY]`` to the first enabled profile's pk.
-Other views read it via ``get_current_fund(request)``.
+``fund_id`` in session:
+  - ``0`` means no fund selected (explicit).
+  - Positive integer: enabled Profile pk.
+
+Login sets ``0``. Visiting the Funds page (GET) resets to ``0``.
 """
 from __future__ import annotations
 
@@ -13,46 +16,39 @@ from django.http import HttpRequest
 from core.models import Profile
 
 FUND_SESSION_KEY = "fund_id"
+NO_FUND_SESSION_VALUE = 0
 
 
 def get_default_fund() -> Optional[Profile]:
-    """First enabled profile by primary key (stable default)."""
+    """First enabled profile by primary key (for management commands / CLI)."""
     return Profile.objects.filter(enabled=True).order_by("id").first()
 
 
 def init_fund_session_after_login(request: HttpRequest) -> None:
-    """Set session fund to the default (first enabled profile). Call after login()."""
-    fund = get_default_fund()
-    if fund is not None:
-        request.session[FUND_SESSION_KEY] = fund.pk
-    elif FUND_SESSION_KEY in request.session:
-        del request.session[FUND_SESSION_KEY]
+    """After login: no fund selected until user picks one on Funds page."""
+    request.session[FUND_SESSION_KEY] = NO_FUND_SESSION_VALUE
 
 
 def get_current_fund(request: HttpRequest) -> Optional[Profile]:
     """
-    Profile for the current UI scope.
+    Active fund for the UI, or None when ``fund_id`` is 0 / missing / invalid.
 
-    Uses session fund id when valid; otherwise falls back to ``get_default_fund()``
-    and stores it in session so navigation stays consistent (e.g. pre-login sessions).
+    Does not auto-select a default fund.
     """
     if not getattr(request, "user", None) or not request.user.is_authenticated:
         return None
 
-    fund_id = request.session.get(FUND_SESSION_KEY)
-    fund = None
-    if fund_id is not None:
-        try:
-            fund = Profile.objects.filter(pk=int(fund_id), enabled=True).first()
-        except (TypeError, ValueError):
-            fund = None
+    raw = request.session.get(FUND_SESSION_KEY)
+    if raw is None:
+        return None
+    try:
+        fid = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if fid == NO_FUND_SESSION_VALUE:
+        return None
 
-    if fund is None:
-        fund = get_default_fund()
-        if fund is not None:
-            request.session[FUND_SESSION_KEY] = fund.pk
-
-    return fund
+    return Profile.objects.filter(pk=fid, enabled=True).first()
 
 
 def set_current_fund(request: HttpRequest, fund_id) -> bool:
@@ -65,8 +61,15 @@ def set_current_fund(request: HttpRequest, fund_id) -> bool:
         pk = int(fund_id)
     except (TypeError, ValueError):
         return False
+    if pk <= NO_FUND_SESSION_VALUE:
+        return False
     fund = Profile.objects.filter(pk=pk, enabled=True).first()
     if fund is None:
         return False
     request.session[FUND_SESSION_KEY] = fund.pk
     return True
+
+
+def clear_fund_session(request: HttpRequest) -> None:
+    """Set session to no active fund (e.g. Funds page GET)."""
+    request.session[FUND_SESSION_KEY] = NO_FUND_SESSION_VALUE
