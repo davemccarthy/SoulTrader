@@ -53,3 +53,20 @@ def get_current_fund(request: HttpRequest) -> Optional[Profile]:
             request.session[FUND_SESSION_KEY] = fund.pk
 
     return fund
+
+
+def set_current_fund(request: HttpRequest, fund_id) -> bool:
+    """
+    Validate fund_id refers to an enabled Profile and set session.
+
+    Returns True if session was updated, False if invalid.
+    """
+    try:
+        pk = int(fund_id)
+    except (TypeError, ValueError):
+        return False
+    fund = Profile.objects.filter(pk=pk, enabled=True).first()
+    if fund is None:
+        return False
+    request.session[FUND_SESSION_KEY] = fund.pk
+    return True

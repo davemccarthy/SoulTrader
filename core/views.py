@@ -16,7 +16,7 @@ import logging
 import yfinance as yf
 
 from .models import Profile, Holding, Discovery, Trade, Recommendation, SellInstruction, Health, Snapshot
-from .fund_session import get_current_fund, init_fund_session_after_login
+from .fund_session import get_current_fund, init_fund_session_after_login, set_current_fund
 
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ def login_view(request):
         if user:
             login(request, user)
             init_fund_session_after_login(request)
-            return redirect('core:holdings')
+            return redirect('core:funds')
         else:
             messages.error(request, 'Invalid credentials')
     return render(request, 'core/login.html', {'current_page': 'login'})
@@ -65,13 +65,33 @@ def register(request):
                 messages.success(request, 'Account created successfully!')
                 login(request, user)
                 init_fund_session_after_login(request)
-                return redirect('core:holdings')
+                return redirect('core:funds')
             else:
                 messages.error(request, 'Username already exists')
         else:
             messages.error(request, 'Passwords do not match')
     
     return render(request, 'core/register.html', {'current_page': 'register'})
+
+
+@login_required
+def funds(request):
+    """List enabled funds and switch session-scoped active fund."""
+    if request.method == 'POST':
+        fund_id = request.POST.get('fund_id')
+        if set_current_fund(request, fund_id):
+            return redirect('core:holdings')
+        messages.error(request, 'Could not switch to that fund.')
+        return redirect('core:funds')
+
+    fund_list = Profile.objects.filter(enabled=True).order_by('id')
+    current = get_current_fund(request)
+    context = {
+        'current_page': 'funds',
+        'funds': fund_list,
+        'current_fund_pk': current.pk if current else None,
+    }
+    return render(request, 'core/funds.html', context)
 
 
 @login_required

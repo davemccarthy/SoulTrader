@@ -1,0 +1,63 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Funds - SOULTRADER{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h1 style="color: #667eea; margin-bottom: 0.5rem;">Funds</h1>
+    <p style="color: #6c757d; margin-bottom: 1.25rem; font-size: 0.95rem;">
+        Choose which fund portfolio to use for Holdings, Trades, and the header. More columns (cash, P&amp;L, etc.) can be added later.
+    </p>
+
+    {% if funds %}
+    <div style="overflow-x: auto;">
+        <table class="funds-table" style="width: 100%; border-collapse: collapse; font-size: 0.95rem;">
+            <thead>
+                <tr style="text-align: left; border-bottom: 2px solid #e9ecef;">
+                    <th style="padding: 0.65rem 0.5rem;">Name</th>
+                    <th style="padding: 0.65rem 0.5rem;">Description</th>
+                    <th style="padding: 0.65rem 0.5rem;">Risk</th>
+                    <th style="padding: 0.65rem 0.5rem;">Active</th>
+                    <th style="padding: 0.65rem 0.5rem; width: 1%;">Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for fund in funds %}
+                <tr style="border-bottom: 1px solid #f0f0f0;">
+                    <td style="padding: 0.65rem 0.5rem; font-weight: 600;">
+                        {{ fund.name|default:"—" }}
+                    </td>
+                    <td style="padding: 0.65rem 0.5rem; color: #495057; max-width: 24rem;">
+                        {{ fund.description|default:"—"|truncatechars:80 }}
+                    </td>
+                    <td style="padding: 0.65rem 0.5rem; color: #495057;">
+                        {{ fund.get_risk_display }}
+                    </td>
+                    <td style="padding: 0.65rem 0.5rem;">
+                        {% if current_fund_pk == fund.pk %}
+                            <span style="color: #00843D; font-weight: 600;">Current</span>
+                        {% else %}
+                            <span style="color: #adb5bd;">—</span>
+                        {% endif %}
+                    </td>
+                    <td style="padding: 0.65rem 0.5rem;">
+                        {% if current_fund_pk != fund.pk %}
+                        <form method="post" action="{% url 'core:funds' %}" style="display: inline; margin: 0;">
+                            {% csrf_token %}
+                            <input type="hidden" name="fund_id" value="{{ fund.pk }}">
+                            <button type="submit" class="btn" style="padding: 0.4rem 0.9rem; font-size: 0.875rem;">Use this fund</button>
+                        </form>
+                        {% else %}
+                        <span style="color: #6c757d; font-size: 0.875rem;">Selected</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p style="color: #6c757d;">No enabled funds found.</p>
+    {% endif %}
+</div>
+{% endblock %}
