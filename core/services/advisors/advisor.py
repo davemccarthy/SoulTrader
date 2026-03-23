@@ -1217,6 +1217,11 @@ Respond with only a single valid JSON object, no other text.
         if recommendation != "BUY" and recommendation != "STRONG_BUY":
             return
 
+        # Skip-all rule: dismiss the entire article when multiple tickers are returned
+        if len(tickers) != 1:
+            logger.info(f"{self.advisor.name} dismissing article: multiple tickers {tickers}")
+            return
+
         # If market not open yet, add to watchlist (will be processed when market opens via news_watch())
         """
         if not is_market_open:
