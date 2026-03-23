@@ -1,14 +1,18 @@
 """
-Portfolio summary numbers for a single fund (Profile).
+Portfolio summary numbers for one fund (Profile) or aggregated across all enabled funds.
 
-Used by the header portfolio widget and the Funds dashboard cards.
+``get_portfolio_dashboard_data(0)`` sums every enabled fund (holdings, cash, trades).
 """
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
+
+from django.db.models import Sum
 
 from core.models import Holding, Profile, Trade
+
+FundArg = Union[Optional[Profile], int]
 
 EMPTY_PORTFOLIO_DASHBOARD: Dict[str, Any] = {
     "total_value": 0.0,
@@ -23,14 +27,89 @@ EMPTY_PORTFOLIO_DASHBOARD: Dict[str, Any] = {
 }
 
 
-def get_portfolio_dashboard_data(fund: Optional[Profile]) -> Dict[str, Any]:
-    """
-    Compute the same metrics as the header portfolio widget for one fund.
+def _dashboard_all_enabled_funds() -> Dict[str, Any]:
+    """Aggregate Wealth / Return / … across every ``Profile`` with ``enabled=True``."""
+    enabled = Profile.objects.filter(enabled=True)
 
-    Returns EMPTY_PORTFOLIO_DASHBOARD when ``fund`` is None.
+    cash_row = enabled.aggregate(s=Sum("cash"))
+    total_cash = cash_row["s"] or Decimal("0")
+
+    inv_row = enabled.aggregate(s=Sum("investment"))
+    total_investment = inv_row["s"] or Decimal("0")
+
+    holdings = Holding.objects.filter(fund__enabled=True).select_related("stock")
+    holdings_count = holdings.count()
+    holdings_value = sum(
+        Decimal(str(h.shares)) * h.stock.price for h in holdings
+    )
+    invested = holdings_value
+    total_value = holdings_value + total_cash
+
+    if total_investment > 0:
+        return_amount = total_value - total_investment
+        return_percent = (return_amount / total_investment) * Decimal("100")
+    else:
+        return_amount = Decimal("0.0")
+        return_percent = Decimal("0.0")
+
+    trades_count = Trade.objects.filter(fund__enabled=True).count()
+
+    sell_trades = Trade.objects.filter(
+        fund__enabled=True, action="SELL", cost__isnull=False
+    )
+    trade_pnl = sum(
+        (Decimal(str(trade.price)) - Decimal(str(trade.cost))) * Decimal(trade.shares)
+        for trade in sell_trades
+        if trade.cost
+    )
+
+    trade_cost_basis = sum(
+        Decimal(str(trade.cost)) * Decimal(trade.shares)
+        for trade in sell_trades
+        if trade.cost
+    )
+
+    if trade_cost_basis > 0:
+        trade_pnl_percent = (trade_pnl / trade_cost_basis) * 100
+    else:
+        trade_pnl_percent = Decimal("0.0")
+
+    holdings_cost_basis = sum(
+        (h.average_price or Decimal("0")) * Decimal(str(h.shares)) for h in holdings
+    )
+
+    holdings_pnl_raw = holdings_value - holdings_cost_basis
+
+    if holdings_cost_basis > 0:
+        holdings_pnl_pct = (holdings_pnl_raw / holdings_cost_basis) * 100
+    else:
+        holdings_pnl_pct = Decimal("0.0")
+
+    return {
+        "total_value": float(total_value),
+        "cash": float(total_cash),
+        "return_amount": float(return_amount),
+        "invested": float(invested),
+        "holdings_count": holdings_count,
+        "trades_count": trades_count,
+        "trade_pnl": float(trade_pnl_percent),
+        "holdings_pnl": float(holdings_pnl_pct),
+        "return_percent": float(return_percent),
+    }
+
+
+def get_portfolio_dashboard_data(fund: FundArg) -> Dict[str, Any]:
+    """
+    Header-style metrics for one fund, or all enabled funds.
+
+    * ``fund`` is a ``Profile`` → that fund only.
+    * ``fund is None`` → empty dashboard.
+    * ``fund == 0`` → aggregate every enabled ``Profile`` (holdings, cash, trades).
     """
     if fund is None:
         return dict(EMPTY_PORTFOLIO_DASHBOARD)
+    if fund == 0:
+        return _dashboard_all_enabled_funds()
 
     holdings = Holding.objects.filter(fund=fund).select_related("stock")
     holdings_count = holdings.count()
@@ -87,6 +166,6 @@ def get_portfolio_dashboard_data(fund: Optional[Profile]) -> Dict[str, Any]:
         "holdings_count": holdings_count,
         "trades_count": trades_count,
         "trade_pnl": float(trade_pnl_percent),
-        "holdings_pnl": holdings_pnl_pct,
+        "holdings_pnl": float(holdings_pnl_pct),
         "return_percent": float(return_percent),
     }

@@ -3,7 +3,7 @@ from django.utils import timezone
 
 from core.fund_session import get_current_fund
 from core.models import Trade
-from core.portfolio_metrics import EMPTY_PORTFOLIO_DASHBOARD, get_portfolio_dashboard_data
+from core.portfolio_metrics import get_portfolio_dashboard_data
 
 
 def get_ticker_messages(request):
@@ -25,8 +25,24 @@ def get_ticker_messages(request):
     today = now.date()
 
     if fund is None:
-        buy_trades = Trade.objects.none()
-        sell_trades = Trade.objects.none()
+        buy_trades = (
+            Trade.objects.filter(
+                fund__enabled=True,
+                action='BUY',
+                created__date=today,
+            )
+            .select_related('stock')
+            .order_by('-created')[:13]
+        )
+        sell_trades = (
+            Trade.objects.filter(
+                fund__enabled=True,
+                action='SELL',
+                created__date=today,
+            )
+            .select_related('stock')
+            .order_by('-created')[:10]
+        )
     else:
         buy_trades = (
             Trade.objects.filter(
@@ -87,6 +103,16 @@ def get_ticker_messages(request):
                         .order_by('created')
                         .first()
                     )
+                else:
+                    buy_trade = (
+                        Trade.objects.filter(
+                            fund__enabled=True,
+                            stock=trade.stock,
+                            action='BUY',
+                        )
+                        .order_by('created')
+                        .first()
+                    )
 
                 if buy_trade and buy_trade.price > 0:
                     pct_change = ((trade.price - buy_trade.price) / buy_trade.price) * 100
@@ -106,11 +132,11 @@ def get_ticker_messages(request):
 
 
 def get_portfolio_widget_data(request):
-    """Calculate portfolio widget data for the session-scoped fund."""
+    """Session fund if selected; otherwise aggregate all enabled funds (``0``)."""
     fund = get_current_fund(request)
-    if not fund:
-        return dict(EMPTY_PORTFOLIO_DASHBOARD)
-    return get_portfolio_dashboard_data(fund)
+    if fund:
+        return get_portfolio_dashboard_data(fund)
+    return get_portfolio_dashboard_data(0)
 
 
 def portfolio_widget(request):
