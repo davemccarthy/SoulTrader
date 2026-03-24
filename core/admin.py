@@ -3,6 +3,7 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.models import User
 from django.contrib.auth.forms import UserCreationForm
 from django import forms
+from django.contrib.postgres.forms import SimpleArrayField
 from django.utils.html import format_html
 from django.db.models import Q
 from core.models import Advisor, Profile, Watchlist
@@ -90,6 +91,39 @@ class UserAdminWithRisk(BaseUserAdmin):
                     'investment': Decimal('100000.00')
                 }
             )
+
+
+class ProfileAdminForm(forms.ModelForm):
+    advisors = SimpleArrayField(
+        forms.CharField(max_length=100),
+        required=False,
+        help_text='Comma-separated advisor names'
+    )
+
+    class Meta:
+        model = Profile
+        exclude = ('risk', 'user')
+
+
+@admin.register(Profile)
+class ProfileAdmin(admin.ModelAdmin):
+    form = ProfileAdminForm
+    readonly_fields = ('id',)
+    list_display = ('id', 'name', 'enabled', 'investment', 'cash')
+    search_fields = ('name', 'description')
+    list_filter = ('enabled',)
+
+    fieldsets = (
+        ('Profile', {'fields': ('id', 'name', 'description', 'enabled')}),
+        ('Strategy', {'fields': ('avg_spend', 'min_score', 'advisors')}),
+        ('Capital', {'fields': ('investment', 'cash')}),
+    )
+
+    def save_model(self, request, obj, form, change):
+        # Keep user hidden in admin: assign creator user for new records.
+        if not obj.user_id:
+            obj.user = request.user
+        super().save_model(request, obj, form, change)
 
 
 @admin.register(Watchlist)
