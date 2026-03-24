@@ -1236,7 +1236,7 @@ Respond with only a single valid JSON object, no other text.
         """
         # Market open - new discoveries (process immediately)
         for ticker in tickers:
-            self.discovered(sa, ticker, f"{model} recommended {recommendation} from reading article. | Article: {title} | {url} | {explanation} ",
+            self.discovered(sa, ticker, f"{model} {recommendation} | Article: {title} | {url} | {explanation} ",
                 sell_instructions, 1.5 if recommendation == "STRONG_BUY" else 1.0)
 
 

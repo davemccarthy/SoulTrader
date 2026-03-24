@@ -21,20 +21,28 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / '.env')
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_list(name: str, default: str = "") -> list[str]:
+    raw = os.getenv(name, default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure--=kt$l1((29o89s-1l*c78q^s7ij1glf4(0e*k#46o_8v_e7iq')
+SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-local-dev-key')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.getenv('DEBUG', 'True') == 'True'
+DEBUG = _env_bool('DEBUG', default=False)
 
-ALLOWED_HOSTS = [
-    '127.0.0.1',
-    '192.168.1.6',
-    'localhost'
-]
+ALLOWED_HOSTS = _env_list('ALLOWED_HOSTS', default='127.0.0.1,localhost,192.168.1.6')
 
 # Application definition
 
@@ -96,11 +104,11 @@ ASGI_APPLICATION = 'config.asgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'soultrader',
-        'USER': 'davidmccarthy',
-        'PASSWORD': 'Dave2880132',
-        'HOST': '127.0.0.1',
-        'PORT': '5432',
+        'NAME': os.getenv('DB_NAME', 'soultrader'),
+        'USER': os.getenv('DB_USER', ''),
+        'PASSWORD': os.getenv('DB_PASSWORD', 'Dave2880132'),
+        'HOST': os.getenv('DB_HOST', '127.0.0.1'),
+        'PORT': os.getenv('DB_PORT', '5432'),
     }
 }
 
@@ -149,7 +157,7 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Polygon news (to go)
-POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "MSVhtqDKV9HyMOdla5UunU2EFs53MweY")
+POLYGON_API_KEY = os.getenv("POLYGON_API_KEY")
 
 # API Keys - Must be set via environment variables (.env file)
 # Never commit API keys to the repository!

@@ -1633,6 +1633,13 @@ def run_latest():
         print(f"❌ Error converting latest filings to list: {e}")
         return
 
+    # Filter to Form 4 only
+    """"
+    filings_4 = [f for f in filings if getattr(f, "form", None) == "4"]
+
+    for f in filings_4:
+        print(f"FORM 4 CIK={getattr(f, 'cik', '')}")
+    """
     # Filter to 8-Ks only
     filings_8k = [f for f in filings if getattr(f, "form", None) == "8-K"]
     if not filings_8k:

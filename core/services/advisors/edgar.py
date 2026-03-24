@@ -1346,8 +1346,8 @@ class Edgar(AdvisorBase):
             return
 
         """
-        filing1 = find("0001140361-26-010438")
-        filing2 = find("0001628280-26-019813")
+        filing1 = find("0001628280-26-020491")
+        filing2 = find("0001193125-26-119844")
 
         filings = [filing1, filing2]
         """
@@ -1366,7 +1366,7 @@ class Edgar(AdvisorBase):
                     accession = getattr(filing, "accession_no", None) or getattr(filing, "accession_number", None) or ""
                     logger.warning("Filing %s (filing_time=%s) is before prev SA %s — skipping",
                                    accession, filing_dt, prev_ts)
-                    continue
+                    #continue
 
                 self.analyze_8k(filing, sa)
 
