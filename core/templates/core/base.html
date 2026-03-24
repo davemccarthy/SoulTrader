@@ -1725,6 +1725,24 @@
                         continue;
                     }
                 }
+
+                // Linkify bare URL segments
+                if (current.match(/^https?:\/\/\S+/i)) {
+                    const safeUrl = escapeHtml(current);
+                    processedSegments.push(`<p><a href="${safeUrl}" target="_blank" rel="noopener">${safeUrl}</a></p>`);
+                    i++;
+                    continue;
+                }
+
+                // Bold leading no-space labels that end with ":" (e.g., EX-99:, PAST:)
+                const labelMatch = current.match(/^([^\s:]+:)\s*(.*)$/);
+                if (labelMatch) {
+                    const safeLabel = escapeHtml(labelMatch[1]);
+                    const safeRemainder = escapeHtml(labelMatch[2] || '');
+                    processedSegments.push(`<p><strong>${safeLabel}</strong>${safeRemainder ? ` ${safeRemainder}` : ''}</p>`);
+                    i++;
+                    continue;
+                }
                 
                 // Regular segment - escape and wrap in <p> tag
                 const escapedSegment = escapeHtml(current);
