@@ -565,6 +565,17 @@ def holding_history(request, stock_id):
         change_percent = float(((current_price / avg_price) * 100 - 100))
 
     # Heading data
+    trend_value = stock.calc_trend()
+    if trend_value is not None:
+        if trend_value > 0:
+            trend_class = 'positive'
+        elif trend_value < 0:
+            trend_class = 'negative'
+        else:
+            trend_class = 'neutral'
+    else:
+        trend_class = 'neutral'
+
     heading = {
         'symbol': stock.symbol,
         'company': stock.company,
@@ -576,6 +587,8 @@ def holding_history(request, stock_id):
         'change_percent': change_percent,
         'price_class': 'positive' if change_percent >= 0 else 'negative',
         'change_class': 'positive' if change_percent >= 0 else 'negative',
+        'trend': float(trend_value) if trend_value is not None else None,
+        'trend_class': trend_class,
         'sector': stock.sector or None,
         'industry': stock.industry or None,
         'exchange': stock.exchange or None,

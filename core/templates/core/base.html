@@ -790,9 +790,34 @@
         }
 
         .holding-heading-info h2 {
-            margin: 0 0 1rem;
-            font-size: 1.5rem;
+            font-size: 1.2rem;
             font-weight: 700;
+        }
+
+        .holding-heading-title-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 1rem;
+            margin: 0 0 1rem;
+            flex-wrap: wrap;
+        }
+
+        .holding-heading-title-row h2 {
+            margin: 0;
+            flex: 1;
+            min-width: 0;
+        }
+
+        .holding-heading-industry {
+            font-size: 0.8125rem;
+            font-weight: 500;
+            color: #475569;
+            text-align: right;
+            max-width: 55%;
+            line-height: 1.35;
+            white-space: normal;
+            overflow-wrap: anywhere;
         }
 
         .holding-heading-chart-wrapper {
@@ -805,9 +830,10 @@
             height: 160px !important;
         }
 
+        /* 10 tracks: Sector spans 2 so Exchange+Sector+…+Change = 10 cells on one row */
         .holding-heading-metrics {
             display: grid;
-            grid-template-columns: 1fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr;
+            grid-template-columns: repeat(10, minmax(0, 1fr));
             gap: 1rem;
         }
 
@@ -815,6 +841,17 @@
             display: flex;
             flex-direction: column;
             gap: 0.25rem;
+        }
+
+        /* Wider cell + softer wrapping so e.g. "Financial Services" stays one line when it fits */
+        .holding-heading-metric--sector {
+            grid-column: span 2;
+            min-width: 0;
+        }
+
+        .holding-heading-metric--sector .holding-heading-value {
+            overflow-wrap: break-word;
+            word-break: normal;
         }
 
         .holding-heading-label {
@@ -827,6 +864,8 @@
         .holding-heading-value {
             font-size: 0.9rem;
             font-weight: 600;
+            white-space: normal;
+            overflow-wrap: anywhere;
         }
 
         .holding-heading-value.positive {
@@ -1493,6 +1532,10 @@
             const industry = heading.industry || '—';
             const exchange = heading.exchange || '—';
             const beta = heading.beta != null ? heading.beta.toFixed(2) : '—';
+            const trend = heading.trend != null ? Number(heading.trend).toFixed(2) + '%' : 'n/a';
+            const trendClass = heading.trend_class || 'neutral';
+            const trendValueClass =
+                trendClass === 'positive' ? 'positive' : (trendClass === 'negative' ? 'negative' : '');
 
             const hasPriceHistory =
                 Array.isArray(priceHistory) && priceHistory.length > 0;
@@ -1510,24 +1553,27 @@
                     <div class="holding-heading-info">
                         ${image ? `<img src="${escapeHtml(image)}" alt="${symbol}" class="holding-heading-logo" onerror="this.style.display='none';">` : ''}
 
-                        <h2>${symbol} · ${company}</h2>
+                        <div class="holding-heading-title-row">
+                            <h2>${symbol} · ${company}</h2>
+                            <span class="holding-heading-industry">${escapeHtml(industry)}</span>
+                        </div>
                         ${chartHtml}
                         <div class="holding-heading-metrics">
                             <div class="holding-heading-metric">
                                 <span class="holding-heading-label">Exchange</span>
                                 <span class="holding-heading-value">${escapeHtml(exchange)}</span>
                             </div>
-                            <div class="holding-heading-metric">
+                            <div class="holding-heading-metric holding-heading-metric--sector">
                                 <span class="holding-heading-label">Sector</span>
                                 <span class="holding-heading-value">${escapeHtml(sector)}</span>
                             </div>
                             <div class="holding-heading-metric">
-                                <span class="holding-heading-label">Industry</span>
-                                <span class="holding-heading-value">${escapeHtml(industry)}</span>
-                            </div>
-                            <div class="holding-heading-metric">
                                 <span class="holding-heading-label">Beta</span>
                                 <span class="holding-heading-value">${beta}</span>
+                            </div>
+                            <div class="holding-heading-metric">
+                                <span class="holding-heading-label">Trend</span>
+                                <span class="holding-heading-value ${trendValueClass}">${trend}</span>
                             </div>
                             <div class="holding-heading-metric">
                                 <span class="holding-heading-label">Avg Price</span>
