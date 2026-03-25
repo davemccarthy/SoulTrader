@@ -55,9 +55,29 @@
                 </span>
             </span>
         </span>
-        <span class="fund-card-desc">
-            {{ fund.description }}
-        </span>
+        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-top: 0.35rem; font-size: 0.75rem; color: #6c757d;">
+            <div style="text-align: left;margin-left: 1.0rem">
+                <span>{{ fund.description|default:"—" }}</span>
+            </div>
+            <div style="text-align: right; display: flex; justify-content: flex-end; gap: 1rem;">
+                <div>
+                    <span style="font-weight: 700; color: #6c757d;">ADVISORS:</span>
+                    <span>{{ fund.advisors|join:", "|default:"—" }}</span>
+                </div>
+                <div>
+                    <span style="font-weight: 700; color: #6c757d;">ESTAB:</span>
+                    <span>{{ dashboard.estab_days|default:"—" }} DAYS</span>
+                </div>
+                <div>
+                    <span style="font-weight: 700; color: #6c757d;">EST ABV:</span>
+                    {% if dashboard.est_abv_percent >= 0 %}
+                        <span style="color: #28a745;">{{ dashboard.est_abv_percent|default:"0"|floatformat:2 }}%</span>
+                    {% else %}
+                        <span style="color: #dc3545;">{{ dashboard.est_abv_percent|default:"0"|floatformat:2 }}%</span>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
 {% if is_current %}
     </div>
 </div>

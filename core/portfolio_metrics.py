@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Any, Dict, Optional, Union
 
 from django.db.models import Sum
+from django.utils import timezone
 
 from core.models import Holding, Profile, Trade
 
@@ -24,6 +25,10 @@ EMPTY_PORTFOLIO_DASHBOARD: Dict[str, Any] = {
     "trades_count": 0,
     "trade_pnl": 0.0,
     "holdings_pnl": 0.0,
+    # "Estimated Annualized Basis" (dummy naming for now):
+    # ABV is an annualized version of current return, based on fund age.
+    "estab_days": 0,
+    "est_abv_percent": 0.0,
 }
 
 
@@ -127,6 +132,18 @@ def get_portfolio_dashboard_data(fund: FundArg) -> Dict[str, Any]:
         return_amount = Decimal("0.0")
         return_percent = Decimal("0.0")
 
+    # Fund age drives EST ABV annualization.
+    # `Profile.created` is nullable, so we defensively handle missing values.
+    if getattr(fund, "created", None):
+        days_active = (timezone.now() - fund.created).days
+    else:
+        days_active = 0
+    days_active = max(days_active, 1)
+
+    # Annualize the current return% over the observed time window.
+    # Linear annualization: return_percent * (365 / days_active).
+    est_abv_percent = (return_percent * (Decimal(365) / Decimal(days_active)))
+
     trades_count = Trade.objects.filter(fund=fund).count()
 
     sell_trades = Trade.objects.filter(fund=fund, action="SELL", cost__isnull=False)
@@ -168,4 +185,6 @@ def get_portfolio_dashboard_data(fund: FundArg) -> Dict[str, Any]:
         "trade_pnl": float(trade_pnl_percent),
         "holdings_pnl": float(holdings_pnl_pct),
         "return_percent": float(return_percent),
+        "estab_days": days_active,
+        "est_abv_percent": float(est_abv_percent),
     }
