@@ -17,6 +17,18 @@
                 <span class="fund-card-name">{{ fund.name|default:"—" }}</span>
             </span>
             <span class="fund-card-stat">
+                <span class="fund-card-stat-header">Spread</span>
+                <span class="fund-card-stat-value fund-card-stat-value--neutral">MEGA</span>
+            </span>
+            <span class="fund-card-stat">
+                <span class="fund-card-stat-header">Risk</span>
+                <span class="fund-card-stat-value fund-card-stat-value--neutral">HIGH</span>
+            </span>
+            <span class="fund-card-stat">
+                <span class="fund-card-stat-header">Holdings</span>
+                <span class="fund-card-stat-value fund-card-stat-value--neutral">{{ dashboard.holdings_count|default:"0" }}</span>
+            </span>
+            <span class="fund-card-stat">
                 <span class="fund-card-stat-header">Wealth</span>
                 <span class="fund-card-stat-value">${{ dashboard.total_value|default:"0"|floatformat:2 }}</span>
             </span>
@@ -29,22 +41,6 @@
             <span class="fund-card-stat">
                 <span class="fund-card-stat-header">Cash</span>
                 <span class="fund-card-stat-value">${{ dashboard.cash|default:"0"|floatformat:2 }}</span>
-            </span>
-            <span class="fund-card-stat">
-                <span class="fund-card-stat-header">Holdings</span>
-                <span class="fund-card-stat-value">{{ dashboard.holdings_count|default:"0" }}</span>
-            </span>
-            <span class="fund-card-stat">
-                <span class="fund-card-stat-header">Trade P&amp;L</span>
-                <span class="fund-card-stat-value {% if dashboard.trade_pnl >= 0 %}positive{% else %}negative{% endif %}">
-                    {{ dashboard.trade_pnl|default:"0"|floatformat:2 }}%
-                </span>
-            </span>
-            <span class="fund-card-stat">
-                <span class="fund-card-stat-header">PORTFOLIO P&amp;L</span>
-                <span class="fund-card-stat-value {% if dashboard.holdings_pnl >= 0 %}positive{% else %}negative{% endif %}">
-                    {{ dashboard.holdings_pnl|default:"0"|floatformat:2 }}%
-                </span>
             </span>
             <span class="fund-card-stat">
                 <span class="fund-card-stat-header">TOTAL P&amp;L</span>
