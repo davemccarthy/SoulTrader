@@ -43,6 +43,12 @@
                 <span class="fund-card-stat-value">${{ dashboard.cash|default:"0"|floatformat:2 }}</span>
             </span>
             <span class="fund-card-stat">
+                <span class="fund-card-stat-header">PORTFOLIO P&amp;L</span>
+                <span class="fund-card-stat-value {% if dashboard.holdings_pnl >= 0 %}positive{% else %}negative{% endif %}">
+                    {{ dashboard.holdings_pnl|default:"0"|floatformat:2 }}%
+                </span>
+            </span>
+            <span class="fund-card-stat">
                 <span class="fund-card-stat-header">TOTAL P&amp;L</span>
                 <span class="fund-card-stat-value {% if dashboard.return_percent >= 0 %}positive{% else %}negative{% endif %}">
                     {{ dashboard.return_percent|default:"0"|floatformat:2 }}%
