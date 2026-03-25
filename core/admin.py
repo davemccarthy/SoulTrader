@@ -108,7 +108,7 @@ class ProfileAdminForm(forms.ModelForm):
 @admin.register(Profile)
 class ProfileAdmin(admin.ModelAdmin):
     form = ProfileAdminForm
-    readonly_fields = ('id',)
+    readonly_fields = ('id', 'created')
     list_display = ('id', 'name', 'enabled', 'investment', 'cash')
     search_fields = ('name', 'description')
     list_filter = ('enabled',)

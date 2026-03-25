@@ -62,6 +62,7 @@ class Profile(models.Model):
 
     user = models.ForeignKey(User, on_delete=models.DO_NOTHING)
     name = models.CharField(max_length=120, blank=True, default="")
+    created = models.DateTimeField(null=True, blank=True, auto_now_add=True)
     description = models.TextField(blank=True, default="")
     enabled = models.BooleanField(default=True)
     avg_spend = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
