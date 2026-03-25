@@ -7,7 +7,7 @@ from decimal import Decimal
 from datetime import datetime
 from pytz import timezone as tz
 from django.utils import timezone
-from core.models import Holding, Discovery, Advisor
+from core.models import Holding, Discovery, Advisor, Profile
 from core.services.execution import execute_buy, execute_sell
 
 logger = logging.getLogger(__name__)
@@ -116,7 +116,8 @@ def analyze_holdings(sa, funds):
                             # value1 = ratio (e.g., 0.10 for 10% profit)
                             if instruction.value1 and holding.shares > 0:
                                 ratio = Decimal(str(instruction.value1))
-                                base_allowance = fund.avg_spend
+                                # Base allowance is derived from the fund's aspirational spread.
+                                base_allowance = fund.average_spend()
                                 target_value = base_allowance * (Decimal('1.0') + ratio)
                                 target_price = target_value / Decimal(str(holding.shares))
                                 
@@ -218,9 +219,15 @@ def analyze_holdings(sa, funds):
                                 break
 
                         elif instruction.instruction == 'DESCENDING_TREND':
+                            # Never sell in loss: only allow descending-trend exits when
+                            # price is at/above the position's buy price.
+                            current_price = holding.stock.price
+                            if buy_price is not None and current_price is not None and current_price < buy_price:
+                                continue
+
                             trend = holding.stock.calc_trend(hours=2)
 
-                            if instruction.value1 and trend and trend < instruction.value1:
+                            if instruction.value1 is not None and trend is not None and trend < instruction.value1:
                                 execute_sell(sa, fund, holding, f"{holding.stock.symbol} descending detected of ${instruction.value1:.2f}")
                                 break
 
@@ -306,17 +313,19 @@ def analyze_discovery(sa, funds, advisors):
             continue
 
         # 3. Base allowance
-        base_allowance = fund.avg_spend
+        # Base allowance is derived from the fund's aspirational spread.
+        base_allowance = fund.average_spend()
 
         # 4. Iterate through unique discoveries and calculate allowance per discovery
         for discovery in unique_discoveries:
             # Get health for this discovery
             health = discovery.health
+            min_score = fund.min_score()
 
-            if health and health.score < fund.min_score:
+            if health and health.score < min_score:
                 logger.info(
                     f"User {fund.name}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "
-                    f"health check score ({health.score}) below threshold ({fund.min_score})"
+                    f"health check score ({health.score}) below threshold ({min_score})"
                 )
                 continue
 

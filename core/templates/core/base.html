@@ -1927,10 +1927,12 @@
                         extraInfo = ` (${inst.days_held} days held, ${remaining} remaining)`;
                     }
                 } else if (inst.instruction === 'DESCENDING_TREND' && inst.value != null) {
-                    valueDisplay = `${(inst.value * 100).toFixed(1)}%`;
+                    // calc_trend() already returns a normalized slope in percent terms.
+                    // DESCENDING_TREND thresholds (e.g., -0.20) are therefore already "%".
+                    valueDisplay = `${inst.value.toFixed(2)}%`;
                     if (inst.current_trend != null) {
                         const diff = inst.current_trend - inst.value;
-                        extraInfo = ` (Current trend: ${(inst.current_trend * 100).toFixed(1)}%, ${diff >= 0 ? '+' : ''}${(diff * 100).toFixed(1)}% from threshold)`;
+                        extraInfo = ` (Current trend: ${inst.current_trend.toFixed(2)}%, ${diff >= 0 ? '+' : ''}${diff.toFixed(2)}% from threshold)`;
                     }
                 } else if (['TARGET_DIMINISHING', 'PERCENTAGE_DIMINISHING'].includes(inst.instruction) && inst.value != null) {
                     valueDisplay = formatCurrency(inst.value);

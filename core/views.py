@@ -414,12 +414,15 @@ def holding_detail(request, stock_id):
                     # DESCENDING_TREND value is a threshold (e.g., -0.20 means sell if trend < -0.20)
                     instruction_data['value'] = float(instruction.value1)
                     instruction_data['status'] = 'pending'  # Status determined during analysis
+                    threshold = float(instruction.value1)
+                    buy_price = float(avg_price) if avg_price else float(discovery.price) if discovery.price else None
+                    in_loss = buy_price is not None and float(current_price) < buy_price
 
-                    trend = holding.stock.calc_trend()
+                    trend = holding.stock.calc_trend(hours=2)
 
                     if trend is not None:
                         instruction_data['current_trend'] = float(trend)
-                        instruction_data['status'] = 'active' if trend < instruction.value1 else 'pending'
+                        instruction_data['status'] = 'active' if (not in_loss and float(trend) < threshold) else 'pending'
                 elif instruction.instruction in ['TARGET_DIMINISHING', 'PERCENTAGE_DIMINISHING'] and instruction.value1:
                     # value1 = original target price, value2 = max_days
                     max_days = int(instruction.value2) if instruction.value2 is not None else 14
@@ -639,10 +642,14 @@ def holding_history(request, stock_id):
                 instruction_data['status'] = 'active' if days_held >= int(instruction.value1) else 'pending'
             elif instruction.instruction == 'DESCENDING_TREND' and instruction.value1 is not None:
                 instruction_data['value'] = float(instruction.value1)
-                trend = stock.calc_trend()
+                threshold = float(instruction.value1)
+                buy_price = float(avg_price) if avg_price else float(discovery_obj.price) if discovery_obj.price else None
+                in_loss = buy_price is not None and float(current_price) < buy_price
+
+                trend = stock.calc_trend(hours=2)
                 if trend is not None:
                     instruction_data['current_trend'] = float(trend)
-                    instruction_data['status'] = 'active' if trend < instruction.value1 else 'pending'
+                    instruction_data['status'] = 'active' if (not in_loss and float(trend) < threshold) else 'pending'
                 else:
                     instruction_data['status'] = 'pending'
             elif instruction.instruction in ['TARGET_DIMINISHING', 'PERCENTAGE_DIMINISHING'] and instruction.value1:

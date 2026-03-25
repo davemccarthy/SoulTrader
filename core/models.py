@@ -32,32 +32,21 @@ import logging
 # Profile / user settings
 class Profile(models.Model):
 
+    # Depicts asperational number of stock in portfolio
+    SPREAD = {
+        "MEGA": 100,
+        "LARGE": 60,
+        "MEDIUM": 40,
+        "SMALL": 20,
+        "MICRO": 10
+    }
+
     # Risky business
     RISK = {
-        "CONSERVATIVE": {
-            "min_health": 50.0,  # Only top ~20% of your scores
-            "advisors": ['Story', 'FDA', 'Insider'],
-            "weight": 1.0,
-            "stocks": 50
-        },
-        "MODERATE": {
-            "min_health": 40.0,  # Above average
-            "advisors": ['Story', 'FDA', 'Insider', 'Polygon','Vunder'],
-            "weight": 1.00,
-            "stocks": 40
-        },
-        "AGGRESSIVE": {
-            "min_health": 30.0,  # Below average but not bottom
-            "advisors": ['User', 'FDA', 'Insider', 'Story', 'Polygon','Edgar'],
-            "weight": 1.25,
-            "stocks": 30
-        },
-        "EXPERIMENTAL": {
-            "min_health": 20.0,
-            "advisors": ['User','Edgar','Vunder','Oscilla'],
-            "weight": 1.25,
-            "stocks": 25
-        },
+        "CONSERVATIVE": 45,
+        "MODERATE": 35,
+        "AGGRESSIVE": 25,
+        "RECKLESS": 10
     }
 
     user = models.ForeignKey(User, on_delete=models.DO_NOTHING)
@@ -65,26 +54,20 @@ class Profile(models.Model):
     created = models.DateTimeField(null=True, blank=True, auto_now_add=True)
     description = models.TextField(blank=True, default="")
     enabled = models.BooleanField(default=True)
-    avg_spend = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    min_score = models.DecimalField(max_digits=5, decimal_places=1, default=30.0)
+    #min_score = models.DecimalField(max_digits=5, decimal_places=1, default=30.0)
     advisors = ArrayField(models.CharField(max_length=100), default=list, blank=True)
-    risk = models.CharField(max_length=20, choices=[(key, key.replace('_', ' ').title()) for key in RISK.keys()], default='MODERATE')
+    risk = models.CharField(max_length=20, choices=[(key, key) for key in RISK.keys()], default='MODERATE')
+    spread = models.CharField(max_length=10, choices=[(key, key) for key in SPREAD.keys()], null=True, blank=True)
     investment = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('100000.00'))
     cash = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('100000.00'))
 
     def average_spend(self):
-        """
-        Calculate average spend (base allowance) per stock based on risk settings.
-        
-        Currently uses investment / number_of_stocks, but can be extended to use
-        wealth or other metrics for higher risk profiles in the future.
-        
-        Returns:
-            Decimal: Average spend per stock
-        """
-        risk_settings = self.RISK.get(self.risk, self.RISK['MODERATE'])
-        num_stocks = Decimal(str(risk_settings['stocks']))
+        num_stocks = Decimal(Profile.SPREAD[self.spread])
         return self.investment / num_stocks
+
+    def min_score(self):
+        min_score = Decimal(Profile.RISK[self.risk])
+        return min_score
 
 
 # External advisor services (pairs with python class)

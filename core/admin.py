@@ -102,7 +102,7 @@ class ProfileAdminForm(forms.ModelForm):
 
     class Meta:
         model = Profile
-        exclude = ('risk', 'user')
+        exclude = ('user',)
 
 
 @admin.register(Profile)
@@ -115,7 +115,7 @@ class ProfileAdmin(admin.ModelAdmin):
 
     fieldsets = (
         ('Profile', {'fields': ('id', 'name', 'description', 'enabled')}),
-        ('Strategy', {'fields': ('avg_spend', 'min_score', 'advisors')}),
+        ('Strategy', {'fields': ('risk', 'spread', 'advisors')}),
         ('Capital', {'fields': ('investment', 'cash')}),
     )
 
