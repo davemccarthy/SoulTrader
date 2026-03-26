@@ -500,7 +500,7 @@ Example:
                 f"{data.get('model')}: {data.get('summary')}"
             )
 
-            self.discovered(sa, symbol, explanation, sell_instructions, weight=weight, check_health=False)
+            self.discovered(sa, symbol, explanation, sell_instructions, weight=weight)
 
 
 register(name="Vunder", python_class="Vunder")

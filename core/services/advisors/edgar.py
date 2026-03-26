@@ -22,6 +22,8 @@ import yfinance as yf
 from django.conf import settings
 from edgar import Company, find, set_identity, get_latest_filings
 from datetime import date, datetime, time as dt_time, timedelta, timezone as dt_timezone
+
+from core.models import Profile, Health
 from core.services.advisors.advisor import AdvisorBase, register
 
 logger = logging.getLogger(__name__)
@@ -1040,7 +1042,7 @@ class Edgar(AdvisorBase):
 
         return result
 
-    def build_explanation(self, filing, advanced: dict) -> str:
+    def build_info(self, filing, advanced: dict) -> dict:
 
         cik = str(getattr(filing, "cik", "") or "")
         accession = (
@@ -1056,50 +1058,50 @@ class Edgar(AdvisorBase):
 
         ex99 = advanced.get("ex99") or {}
         media = advanced.get("media") or {}
-        parts = [f"8-K {accession}: {weight:.2f} | https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude | "]
+        explanation_parts = [f"8-K {accession} {weight:.2f} | https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude | "]
 
         justifications = ex99.get("justifications") or {}
         if isinstance(justifications, dict):
             j_parts = [str(v).strip() for k, v in justifications.items() if v and str(v).strip()]
             if j_parts:
-                parts.append("EX-99: " + " | ".join(j_parts))
-
-        parts.append(f"PAST: {ex99.get('past_performance')}")
-        parts.append(f"GUIDANCE: {ex99.get('guidance')}")
-        parts.append(f"EXPECTATION: {ex99.get('expectation')}")
-        parts.append(f"MARGET: {ex99.get('market_reaction')}")
+                explanation_parts.append("EX-99: " + " | ".join(j_parts))
 
         summary = media.get("summary")
         if isinstance(summary, str) and summary.strip():
-            parts.append("MEDIA: " + summary.strip())
-
-        parts.append(f"SENTIMENT: {media.get('sentiment')}")
-        parts.append(f"EPS: {media.get('eps')}")
-        parts.append(f"REVENUE: {media.get('revenue')}")
-        parts.append(f"BROKER: {media.get('broker')}")
+            explanation_parts.append("MEDIA: " + summary.strip())
 
         headlines = media.get("headlines") or []
         if isinstance(headlines, list) and headlines:
             snippets = [str(h).strip() for h in headlines[:2] if h and str(h).strip()]
             if snippets:
-                parts.append("HEADLINES: | " + " | ".join(snippets))
-
-        red_flags = media.get("red_flags") or []
-        if isinstance(red_flags, list) and red_flags:
-            snippets = [str(f).strip() for f in red_flags[:2] if f and str(f).strip()]
-            if snippets:
-                parts.append("RED FLAGS: | " + " | ".join(snippets))
+                explanation_parts.append("HEADLINES: | " + " | ".join(snippets))
 
         bonuses = advanced.get("bonuses") or []
         penalties = advanced.get("penalties") or []
 
-        if bonuses:
-            parts.append("BONUSES: | " + " | ".join(bonuses))
+        health_meta = {
 
-        if penalties:
-            parts.append("PENALTIES: | " + " | ".join(penalties))
+            "ex99": {
+                "past_performance": ex99.get("past_performance"),
+                "guidance": ex99.get("guidance"),
+                "expectation": ex99.get("expectation"),
+                "market_reaction": ex99.get("market_reaction"),
+                "justifications": ex99.get("justifications") or {},
+            },
+            "media": {
+                "sentiment": media.get("sentiment"),
+                "eps": media.get("eps"),
+                "revenue": media.get("revenue"),
+                "broker": media.get("broker"),
+                "summary": media.get("summary"),
+                "headlines": media.get("headlines") or [],
+                "red_flags": media.get("red_flags") or [],
+            },
+            "bonuses": bonuses,
+            "penalties": penalties,
+        }
+        return {"explanation": explanation_parts, "health_meta": health_meta}
 
-        return " | ".join(filter(None, parts))
 
     def score_results(self, filing, ex99, media):
 
@@ -1281,13 +1283,15 @@ class Edgar(AdvisorBase):
 
         score, bonuses, penalties = self.score_results(filing, ex99, media)
 
-        # Hard-fail on low score
-        if score <= 0:
-            return None
+        # Calculate weight and health
+        weight = score + 0.5
+        base = float(Profile.RISK["MODERATE"])
+        health = base * weight
 
         # Good to go: weight = half / normal / double triage
         return {
-            "weight": score + 0.5,
+            "weight": weight,
+            "health": health,
             "bonuses": bonuses,
             "penalties": penalties,
             "ex99": ex99,
@@ -1324,12 +1328,26 @@ class Edgar(AdvisorBase):
             return False
 
         # Make sense of it all
-        explanation = self.build_explanation(filing, advanced)
+        info = self.build_info(filing, advanced)
 
-        print(explanation)
+        explanation = " | ".join(info["explanation"])
+        health_meta = info["health_meta"]
+
+        if (stock := self.get_stock(ticker)) is None:
+            return False
+
+        # Create health ourselves
+        health_score = Decimal(str(float(advanced["health"]))).quantize(Decimal("0.1"))
+
+        health = Health.objects.create(
+            stock=stock,
+            sa=sa,
+            score=health_score,
+            meta=health_meta,
+        )
 
         # Keeper
-        self.discovered(sa, ticker, explanation, sell_instructions, weight=Decimal(advanced["weight"]), check_health=False)
+        self.discovered(sa, ticker, explanation, sell_instructions, weight=Decimal(advanced["weight"]), health=health)
         return True
 
     def discover(self, sa):
@@ -1346,10 +1364,10 @@ class Edgar(AdvisorBase):
             return
 
         """
-        filing1 = find("0001628280-26-020491")
+        filing1 = find("0000930413-26-000877")
         filing2 = find("0001193125-26-119844")
 
-        filings = [filing1, filing2]
+        filings = [filing1]
         """
         # Filter latest to 8-Ks only
         filings_8k = [f for f in filings if getattr(f, "form", None) == "8-K"]

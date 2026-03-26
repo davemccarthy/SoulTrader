@@ -355,6 +355,20 @@ class AdvisorBase:
         # Passed all filters
         return True
 
+    def get_stock(self, symbol):
+        # -- find stock or create stock
+        try:
+            stock = Stock.objects.get(symbol=symbol)
+        except Stock.DoesNotExist:
+            stock = Stock.create(symbol, self.advisor)
+            if stock is None:
+                return None
+            logger.info(f"{self.advisor.name} created stock {stock.symbol}")
+
+        # Latest price
+        stock.refresh()
+        return stock
+
     def discover(self, sa):
         return
 
@@ -377,20 +391,12 @@ class AdvisorBase:
     def analyze(self, sa, stock):
         return
 
-    def discovered(self, sa, symbol, explanation, sell_instructions = None, weight = 1.0, check_health = True):
-        #-- find stock or create stock
-        try:
-            stock = Stock.objects.get(symbol=symbol)
-        except Stock.DoesNotExist:
-            stock = Stock.create(symbol, self.advisor)
-            if stock is None:
-                return None
-            logger.info(f"{self.advisor.name} created stock {stock.symbol}")
+    def discovered(self, sa, symbol, explanation, sell_instructions = None, weight = 1.0, health = None):
 
-        # Latest price
-        stock.refresh()
+        if (stock := self.get_stock(symbol)) is None:
+            return None
 
-        if check_health:
+        if not health:
             # Attempt health check (graceful failure - don't block discovery)
             logger.info(f"Attempting health check for {stock.symbol}...")
             try:
@@ -404,8 +410,6 @@ class AdvisorBase:
             except Exception as e:
                 logger.error(f"Health check failed for {stock.symbol} during discovery: {e}", exc_info=True)
                 return None
-        else:
-            health = None
 
         # Create new Discovery record
         discovery = Discovery()
