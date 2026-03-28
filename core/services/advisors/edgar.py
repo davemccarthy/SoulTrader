@@ -1051,36 +1051,22 @@ class Edgar(AdvisorBase):
             or ""
         )
 
-        """Build discovery explanation string from advanced result (weight, ex99, media)."""
+        """Build discovery explanation & health from advanced result (weight, ex99, media)."""
         weight = advanced.get("weight")
         if weight is None or not isinstance(weight, (int, float)):
             weight = 1.0
 
         ex99 = advanced.get("ex99") or {}
         media = advanced.get("media") or {}
-        explanation_parts = [f"8-K {accession} {weight:.2f} | https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude | "]
-
-        justifications = ex99.get("justifications") or {}
-        if isinstance(justifications, dict):
-            j_parts = [str(v).strip() for k, v in justifications.items() if v and str(v).strip()]
-            if j_parts:
-                explanation_parts.append("EX-99: " + " | ".join(j_parts))
-
-        summary = media.get("summary")
-        if isinstance(summary, str) and summary.strip():
-            explanation_parts.append("MEDIA: " + summary.strip())
-
-        headlines = media.get("headlines") or []
-        if isinstance(headlines, list) and headlines:
-            snippets = [str(h).strip() for h in headlines[:2] if h and str(h).strip()]
-            if snippets:
-                explanation_parts.append("HEADLINES: | " + " | ".join(snippets))
-
         bonuses = advanced.get("bonuses") or []
         penalties = advanced.get("penalties") or []
 
-        health_meta = {
+        # Explanation info
+        explanation_parts = [f"8-K {accession} {weight:.2f} | https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude "]
 
+        # Health info
+        health_meta = {
+            "render": "edgar",
             "ex99": {
                 "past_performance": ex99.get("past_performance"),
                 "guidance": ex99.get("guidance"),

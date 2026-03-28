@@ -14,12 +14,12 @@ def get_ticker_messages(request):
     # Space before content
     messages = ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '']
 
-    # Welcome message with account age and risk level
-    account_age = (timezone.now() - user.date_joined).days
-    risk_level = fund.risk if fund else 'MODERATE'
-    risk_display = risk_level.capitalize()
-
-    messages.append(f"Welcome {user.username} ({risk_display} - {account_age} days old)")
+    # Welcome/header message based on whether a fund is selected
+    if fund is None:
+        display_name = user.get_full_name().strip() or user.username
+        messages.append(f"Welcome {display_name}")
+    else:
+        messages.append(f"Today's {fund.name} Trading Activity")
 
     now = timezone.now()
     today = now.date()
@@ -64,10 +64,16 @@ def get_ticker_messages(request):
         )
 
     total_trades_today = buy_trades.count() + sell_trades.count()
-    if total_trades_today > 0:
-        messages.append(f"Today's Trading Activity ({total_trades_today} trades)")
+    if fund is not None:
+        if total_trades_today > 0:
+            messages.append(f"{total_trades_today} trades today")
+        else:
+            messages.append("No trades yet today")
     else:
-        messages.append("Today's Trading Activity (no trades yet)")
+        if total_trades_today > 0:
+            messages.append(f"Today's Trading Activity ({total_trades_today} trades)")
+        else:
+            messages.append("Today's Trading Activity (no trades yet)")
 
     if buy_trades.exists():
         messages.append(f"BUYs {buy_trades.count()} stocks")

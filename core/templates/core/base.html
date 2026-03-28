@@ -36,15 +36,22 @@
             color: white;
             padding: 1rem 0;
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            width: 100%;
+            max-width: 100%;
+            box-sizing: border-box;
         }
         
         .header-content {
-            max-width: var(--max-content-width);
+            max-width: min(var(--max-content-width), 100%);
+            width: 100%;
             margin: 0 auto;
             padding: 0 1rem;
             display: flex;
             justify-content: space-between;
             align-items: center;
+            gap: 0.75rem;
+            min-width: 0;
+            box-sizing: border-box;
         }
         
         .logo {
@@ -58,6 +65,7 @@
             max-width: 42vw;
             flex-shrink: 0;
             overflow: hidden;
+            min-width: 0;
         }
         .logo-line-top {
             font-size: 1.2rem;
@@ -82,7 +90,10 @@
         
         .nav {
             display: flex;
-            gap: 1rem;
+            gap: 0.5rem;
+            flex-shrink: 1;
+            min-width: 0;
+            flex-wrap: wrap;
         }
         
         .nav a {
@@ -127,7 +138,42 @@
             display: flex;
             align-items: center;
             gap: 1rem;
+            flex-shrink: 0;
+            min-width: 0;
         }
+
+        /* iOS / narrow: one row of logo + nav + logout is too wide — stack vertically */
+        @media (max-width: 768px) {
+            .header-content {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .logo {
+                max-width: 100%;
+                width: 100%;
+                align-self: flex-start;
+            }
+
+            .nav {
+                justify-content: center;
+                gap: 0.35rem 0.5rem;
+            }
+
+            .nav a {
+                padding: 0.45rem 0.65rem;
+                font-size: 0.875rem;
+            }
+
+            .user-info {
+                flex-wrap: wrap;
+                justify-content: center;
+                align-items: center;
+                width: 100%;
+                gap: 0.5rem;
+            }
+        }
+
         
         /* Portfolio Dashboard Widget */
         .portfolio-widget {
@@ -135,16 +181,22 @@
             border-bottom: 0.5px solid #00843D;
             padding: 0.75rem 0;
             box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            width: 100%;
+            max-width: 100%;
+            box-sizing: border-box;
         }
 
         .portfolio-widget-content {
-            max-width: var(--max-content-width);
+            max-width: min(var(--max-content-width), 100%);
+            width: 100%;
             margin: 0 auto;
             padding: 0 1rem;
             display: grid;
-            grid-template-columns: repeat(8, 1fr);
+            /* minmax(0,1fr) lets columns shrink below content min-width (fixes iOS horizontal overflow) */
+            grid-template-columns: repeat(8, minmax(0, 1fr));
             gap: 1rem;
             align-items: flex-start;
+            min-width: 0;
         }
 
         .portfolio-stat {
@@ -152,6 +204,7 @@
             display: flex;
             flex-direction: column;
             justify-content: flex-start;
+            min-width: 0;
         }
 
         .portfolio-stat-header {
@@ -160,12 +213,35 @@
             color: #6c757d;
             font-weight: 600;
             margin-bottom: 0.15rem;
+            overflow-wrap: break-word;
+            hyphens: auto;
         }
 
         .portfolio-stat-value {
             font-size: 1.2rem;
             font-weight: bold;
             color: #00843D;
+            /* Keep $ / % figures on one line; overflow-wrap:anywhere broke mid-number (e.g. …50.0 / 4) */
+            white-space: nowrap;
+        }
+
+        @media (max-width: 900px) {
+            .portfolio-widget-content {
+                grid-template-columns: repeat(4, minmax(0, 1fr));
+                gap: 0.75rem;
+            }
+        }
+
+        @media (max-width: 540px) {
+            .portfolio-widget-content {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 0.65rem;
+                padding: 0 0.75rem;
+            }
+
+            .portfolio-stat-value {
+                font-size: 1.05rem;
+            }
         }
 
         .portfolio-stat-value.positive {
@@ -1035,6 +1111,12 @@
             word-wrap: break-word;
         }
 
+        .health-meta-divider {
+            margin-top: 1rem;
+            padding-top: 1rem;
+            border-top: 1px solid #e2e8f0;
+        }
+
         .health-overlay-list {
             margin: 0.4rem 0 0 1.0rem;
             padding: 0;
@@ -1327,7 +1409,6 @@
 
             <div class="user-info">
                 {% if user.is_authenticated %}
-                    <span>Welcome, {{ user.username }}!</span>
                     <a href="{% url 'core:logout' %}" class="btn btn-secondary">Logout</a>
                 {% else %}
                     <a href="{% url 'core:login' %}" class="btn">Login</a>
@@ -1397,21 +1478,21 @@
         <div class="portfolio-widget-content">
             <div class="portfolio-stat">
                 <div class="portfolio-stat-header">Wealth</div>
-                <div class="portfolio-stat-value">${{ portfolio_widget.total_value|default:"0"|floatformat:2 }}</div>
+                <div class="portfolio-stat-value">${{ portfolio_widget.total_value|default:"0"|floatformat:"-2" }}</div>
             </div>
             <div class="portfolio-stat">
                 <div class="portfolio-stat-header">Return</div>
                 <div class="portfolio-stat-value {% if portfolio_widget.return_percent >= 0 %}positive{% else %}negative{% endif %}">
-                    ${{ portfolio_widget.return_amount|default:"0"|floatformat:2 }}
+                    ${{ portfolio_widget.return_amount|default:"0"|floatformat:"-2" }}
                 </div>
             </div>
             <div class="portfolio-stat">
                 <div class="portfolio-stat-header">Portfolio</div>
-                <div class="portfolio-stat-value">${{ portfolio_widget.invested|default:"0"|floatformat:2 }}</div>
+                <div class="portfolio-stat-value">${{ portfolio_widget.invested|default:"0"|floatformat:"-2" }}</div>
             </div>
             <div class="portfolio-stat">
                 <div class="portfolio-stat-header">Cash</div>
-                <div class="portfolio-stat-value">${{ portfolio_widget.cash|default:"0"|floatformat:2 }}</div>
+                <div class="portfolio-stat-value">${{ portfolio_widget.cash|default:"0"|floatformat:"-2" }}</div>
             </div>
             <div class="portfolio-stat">
                 <div class="portfolio-stat-header">Holdings</div>
@@ -1420,19 +1501,19 @@
             <div class="portfolio-stat">
                 <div class="portfolio-stat-header">Trade P&L</div>
                 <div class="portfolio-stat-value {% if portfolio_widget.trade_pnl >= 0 %}positive{% else %}negative{% endif %}">
-                    {{ portfolio_widget.trade_pnl|default:"0"|floatformat:2 }}%
+                    {{ portfolio_widget.trade_pnl|default:"0"|floatformat:"-2" }}%
                 </div>
             </div>
             <div class="portfolio-stat">
                 <div class="portfolio-stat-header">PORTFOLIO P&L</div>
                 <div class="portfolio-stat-value {% if portfolio_widget.holdings_pnl >= 0 %}positive{% else %}negative{% endif %}">
-                    {{ portfolio_widget.holdings_pnl|default:"0"|floatformat:2 }}%
+                    {{ portfolio_widget.holdings_pnl|default:"0"|floatformat:"-2" }}%
                 </div>
             </div>
             <div class="portfolio-stat">
                 <div class="portfolio-stat-header">TOTAL P&L</div>
                 <div class="portfolio-stat-value {% if portfolio_widget.return_percent >= 0 %}positive{% else %}negative{% endif %}">
-                    {{ portfolio_widget.return_percent|default:"0"|floatformat:2 }}%
+                    {{ portfolio_widget.return_percent|default:"0"|floatformat:"-2" }}%
                 </div>
             </div>
         </div>
@@ -1817,7 +1898,9 @@
         function renderHealthHistorySection(healthHistory) {
             if (!healthHistory || healthHistory.length === 0) return '';
 
-            const healthRecords = healthHistory.map(health => {
+            const defaultRender = 'advisor';
+
+            function renderAdvisorHealthRecord(health) {
                 const date = formatDate(health.created);
                 const score = health.score != null ? health.score.toFixed(1) : '—';
                 const confidenceScore = health.confidence_score;
@@ -1874,7 +1957,121 @@
                         ${geminiExplanation ? `<div class="health-meta-explanation-full holdings-history-text">${formatGeminiExplanation(geminiExplanation)}</div>` : ''}
                     </div>
                 `;
-            }).join('');
+            }
+
+            function renderEdgarHealthRecord(health) {
+                const meta = health.meta && typeof health.meta === 'object' ? health.meta : {};
+                const ex99 = meta.ex99 && typeof meta.ex99 === 'object' ? meta.ex99 : {};
+                const media = meta.media && typeof meta.media === 'object' ? meta.media : {};
+                const bonuses = Array.isArray(meta.bonuses) ? meta.bonuses : [];
+                const penalties = Array.isArray(meta.penalties) ? meta.penalties : [];
+                const justifications = ex99.justifications && typeof ex99.justifications === 'object' ? ex99.justifications : {};
+
+                const hasEdgarPayload =
+                    !!(ex99 && (Object.keys(ex99).length > 0)) ||
+                    !!(media && (Object.keys(media).length > 0)) ||
+                    bonuses.length > 0 ||
+                    penalties.length > 0;
+
+                if (!hasEdgarPayload) return renderAdvisorHealthRecord(health);
+
+                const date = formatDate(health.created);
+                const score = health.score != null ? health.score.toFixed(1) : '—';
+
+                function titleCaseWords(s) {
+                    return String(s || '')
+                        .replace(/_/g, ' ')
+                        .replace(/\b\w/g, (c) => c.toUpperCase());
+                }
+
+                function renderLongTextBlock(title, text) {
+                    if (!text) return '';
+                    return `
+                        <div class="health-meta-item holdings-history-text">
+                            <strong>${escapeHtml(title)}:</strong> ${escapeHtml(String(text))}
+                        </div>
+                    `;
+                }
+
+                function renderStringList(title, items, maxItems = 6) {
+                    if (!items || !items.length) return '';
+                    const sliced = items.slice(0, maxItems);
+                    return `
+                        <div class="health-meta-item holdings-history-text">
+                            <span class="health-meta-key">${escapeHtml(title)}:</span>
+                            <ul class="health-overlay-list">
+                                ${sliced.map((i) => `<li>${escapeHtml(String(i))}</li>`).join('')}
+                                ${items.length > sliced.length ? `<li>… +${items.length - sliced.length} more</li>` : ''}
+                            </ul>
+                        </div>
+                    `;
+                }
+
+                // Known EDGAR justifications (long form)
+                const justKeys = ['past_performance', 'guidance', 'expectation', 'market_reaction'];
+                const justBlocks = justKeys
+                    .map((k) => renderLongTextBlock(titleCaseWords(k), justifications[k]))
+                    .filter(Boolean)
+                    .join('');
+
+                // Media headline-ish fields
+                const headlines = Array.isArray(media.headlines) ? media.headlines : [];
+                const redFlags = Array.isArray(media.red_flags) ? media.red_flags : [];
+
+                return `
+                    <div class="health-record" data-health-id="${health.id}">
+                        <div class="health-record-header">
+                            <h3 class="holdings-history-title">Health check ${date}</h3>
+                            <div class="health-record-score">Score ${score}</div>
+                        </div>
+                        <div class="health-record-meta health-record-meta-single">
+                            <div class="health-meta-section">
+                                <div class="health-meta-label">EDGAR Ex-99</div>
+                                ${justBlocks || '<div class="health-meta-item holdings-history-text"><span class="health-meta-value">No EX-99 justifications.</span></div>'}
+
+                                <div class="health-meta-item holdings-history-text" style="margin-top: 0.65rem;">
+                                    ${ex99.expectation != null ? `<div><span class="health-meta-key">Expectation:</span> <span class="health-meta-value">${escapeHtml(ex99.expectation)}</span></div>` : ''}
+                                    ${ex99.guidance != null ? `<div><span class="health-meta-key">Guidance:</span> <span class="health-meta-value">${escapeHtml(ex99.guidance)}</span></div>` : ''}
+                                    ${ex99.market_reaction != null ? `<div><span class="health-meta-key">Market Reaction:</span> <span class="health-meta-value">${escapeHtml(ex99.market_reaction)}</span></div>` : ''}
+                                    ${ex99.past_performance != null ? `<div><span class="health-meta-key">Past Performance:</span> <span class="health-meta-value">${escapeHtml(ex99.past_performance)}</span></div>` : ''}
+                                </div>
+                            </div>
+
+                            <div class="health-meta-section health-meta-divider">
+                                <div class="health-meta-label">EDGAR Media</div>
+                                ${media.summary ? `<div class="health-meta-item holdings-history-text">${escapeHtml(String(media.summary))}</div>` : ''}
+
+                                ${media.sentiment != null ? `<div class="health-meta-item holdings-history-text"><span class="health-meta-key">Sentiment:</span> <span class="health-meta-value">${escapeHtml(media.sentiment)}</span></div>` : ''}
+                                ${media.eps != null ? `<div class="health-meta-item holdings-history-text"><span class="health-meta-key">EPS:</span> <span class="health-meta-value">${escapeHtml(media.eps)}</span></div>` : ''}
+                                ${media.revenue != null ? `<div class="health-meta-item holdings-history-text"><span class="health-meta-key">Revenue:</span> <span class="health-meta-value">${escapeHtml(media.revenue)}</span></div>` : ''}
+                                ${media.broker != null ? `<div class="health-meta-item holdings-history-text"><span class="health-meta-key">Broker:</span> <span class="health-meta-value">${escapeHtml(media.broker)}</span></div>` : ''}
+
+                                ${headlines.length ? renderStringList('Headlines', headlines, 4) : ''}
+                                ${redFlags.length ? renderStringList('Red Flags', redFlags, 4) : ''}
+                            </div>
+
+                            <div class="health-meta-section">
+                                ${bonuses.length ? `<div class="health-meta-label">Bonuses</div>${bonuses.length ? renderStringList('Bonuses', bonuses, 6) : ''}` : ''}
+                                ${penalties.length ? `<div class="health-meta-label">Penalties</div>${penalties.length ? renderStringList('Penalties', penalties, 6) : ''}` : ''}
+                                ${!bonuses.length && !penalties.length ? '<div class="health-meta-item holdings-history-text"><span class="health-meta-value">No bonuses/penalties.</span></div>' : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            function renderHealthRecordByType(health) {
+                const meta = health.meta && typeof health.meta === 'object' ? health.meta : {};
+                const renderType = meta.render || defaultRender;
+
+                if (renderType === 'advisor') return renderAdvisorHealthRecord(health);
+                if (renderType === 'edgar') return renderEdgarHealthRecord(health);
+
+                // Fallback to the legacy renderer for unknown types.
+                return renderAdvisorHealthRecord(health);
+            }
+
+            const healthRecords = healthHistory.map((health) => renderHealthRecordByType(health)).join('');
 
             return `<div class="health-history-section">${healthRecords}</div>`;
         }

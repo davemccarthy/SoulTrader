@@ -44,6 +44,11 @@ DEBUG = _env_bool('DEBUG', default=False)
 
 ALLOWED_HOSTS = _env_list('ALLOWED_HOSTS', default='127.0.0.1,localhost,192.168.1.6,78.46.197.225')
 
+CSRF_TRUSTED_ORIGINS = _env_list(
+    "CSRF_TRUSTED_ORIGINS",
+    default="https://klynt.com,https://www.klynt.com",
+)
+
 # Application definition
 
 INSTALLED_APPS = [
