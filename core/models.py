@@ -43,9 +43,9 @@ class Profile(models.Model):
 
     # Risky business
     RISK = {
-        "CONSERVATIVE": 45,
-        "MODERATE": 35,
-        "AGGRESSIVE": 25,
+        "CONSERVATIVE": 40,
+        "MODERATE": 30,
+        "AGGRESSIVE": 20,
         "RECKLESS": 10
     }
 
