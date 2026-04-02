@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 
 FDA_FEED_URL = "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/press-releases/rss.xml"
 PRNEWSWIRE_HEALTH_FEED = "https://www.prnewswire.com/rss/health-latest-news-list.rss"
+# Narrow biotech slice (20 items); health-latest is the same cap but mostly non-biotech noise.
+PRNEWSWIRE_BIOTECH_FEED = "https://www.prnewswire.com/rss/health-latest-news/biotechnology-list.rss"
 BUSINESSWIRE_FEED = "https://www.businesswire.com/portal/site/home/rss/"
 GLOBENEWSWIRE_PHARMA_FEED = "https://www.globenewswire.com/RssFeed/subjectcode/20-Health/feedTitle/GlobeNewswire%20-%20Health"
 ENDPOINTS_FEED = "https://endpts.com/feed/"
@@ -119,6 +121,12 @@ def rrs_prnewswire_health(
     *, limit: int = 25, since: datetime | str | None = None, url: str = PRNEWSWIRE_HEALTH_FEED
 ) -> list[dict[str, str]]:
     return _rrs_fetch(source="prnewswire_health", url=url, limit=limit, since=since)
+
+
+def rrs_prnewswire_biotech(
+    *, limit: int = 25, since: datetime | str | None = None, url: str = PRNEWSWIRE_BIOTECH_FEED
+) -> list[dict[str, str]]:
+    return _rrs_fetch(source="prnewswire_biotech", url=url, limit=limit, since=since)
 
 
 def rrs_businesswire(*, limit: int = 25, since: datetime | str | None = None, url: str = BUSINESSWIRE_FEED) -> list[dict[str, str]]:
@@ -215,32 +223,8 @@ PHARM_SUPPRESS_TERMS = (
     "layoff tracker",
 )
 
-PRN_BIO_ENTITY_CUES = (
-    "therapeutics",
-    "biotech",
-    "biosciences",
-    "pharma",
-    "oncology",
-    "rare disease",
-    "gene therapy",
-    "clinical",
-    "drug",
-    "trial",
-)
-
-PRN_CLINICAL_REG_CUES = (
-    "phase 1",
-    "phase 2",
-    "phase 3",
-    "trial",
-    "topline",
-    "readout",
-    "fda",
-    "nda",
-    "bla",
-    "pdufa",
-    "approval",
-)
+# Same score bar for every feed (no per-RSS bias).
+PHARM_SHORTLIST_SCORE_MIN = 2
 
 PHARM_NEGATIVE_DOMINANT_TERMS = (
     "fails",
@@ -353,14 +337,8 @@ def _is_shortlist_candidate(scored: dict[str, Any]) -> bool:
         return False
 
     title_blob = ((scored.get("title") or "") + " " + (scored.get("summary") or "")).lower()
-    source = (scored.get("source") or "").strip().lower()
 
-    if source == "prnewswire_health":
-        has_entity_cue = any(t in title_blob for t in PRN_BIO_ENTITY_CUES)
-        has_clin_reg_cue = any(t in title_blob for t in PRN_CLINICAL_REG_CUES)
-        if not (has_entity_cue and has_clin_reg_cue):
-            return False
-
+    # High-impact phrases: include regardless of feed source (not RSS-specific).
     hard_triggers = (
         "fda approves",
         "fda nod",
@@ -374,10 +352,7 @@ def _is_shortlist_candidate(scored: dict[str, Any]) -> bool:
     if any(t in title_blob for t in hard_triggers):
         return True
 
-    threshold = 2
-    if source == "prnewswire_health":
-        threshold = 3
-    return int(scored.get("score") or 0) >= threshold
+    return int(scored.get("score") or 0) >= PHARM_SHORTLIST_SCORE_MIN
 
 
 def _dedupe_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -399,12 +374,19 @@ class Pharm(AdvisorBase):
 
     def discover(self, sa):
         logger.info("PHARM phase-1 shortlist run starting")
-        since_dt = datetime.now(UTC) - timedelta(days=7)
+        # Mirror other advisors: use the previous SmartAnalysis start time as the lookback lower bound.
+        # Falls back to a fixed window when there is no previous SA (e.g. standalone runs with an unsaved SmartAnalysis).
+        prev_ts = self.get_previous_sa_timestamp(sa, username=getattr(sa, "username", None))
+        since_dt = _parse_since_utc(prev_ts)
+        if since_dt is None:
+            since_dt = datetime.now(UTC) - timedelta(days=7)
+            logger.info("PHARM no previous SA found; fallback since=%s", since_dt.strftime("%Y-%m-%dT%H:%M:%SZ"))
         since_iso = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         logger.info("PHARM feed window since=%s", since_iso)
         feed_calls: tuple[tuple[str, Any], ...] = (
             ("fda_press_releases", rrs_fda),
             ("prnewswire_health", rrs_prnewswire_health),
+            ("prnewswire_biotech", rrs_prnewswire_biotech),
             ("biospace_fda", rrs_biospace_fda),
             ("biospace_drug_development", rrs_biospace_drug_development),
             ("endpoints", rrs_endpoints),
