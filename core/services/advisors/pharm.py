@@ -264,9 +264,102 @@ TRIAL_CLASS_TERMS = (
     "misses phase 3",
 )
 
-PROMPT_APPROVAL = "PHARM_APPROVAL_PROMPT"
-PROMPT_TRIAL = "PHARM_TRIAL_PROMPT"
-PROMPT_GENERAL = "PHARM_GENERAL_PROMPT"
+# PHARM uses a single base prompt template with 3 task variants (approval/trial/general).
+# We keep short task keys for logging/routing; the actual prompt text is built from TASK_* + BASE template.
+TASK_APPROVAL_KEY = "PHARM_APPROVAL_TASK"
+TASK_TRIAL_KEY = "PHARM_TRIAL_TASK"
+TASK_GENERAL_KEY = "PHARM_GENERAL_TASK"
+
+PHARM_BASE_LLM_PROMPT_TEMPLATE = """You are a biotech equity research analyst.
+
+Task:
+__TASK_TEXT__
+
+INPUT:
+__ARTICLE_JSON__
+
+Return ONLY valid JSON (no markdown, no surrounding quotes).
+OUTPUT JSON SCHEMA (all fields required):
+{
+  "company_name": "string|null",
+  "ticker": "string|null",
+
+  "regulator": "FDA|EMA|MHRA|other|null",
+  "drug_name": "string|null",
+  "indication": "string|null",
+  "approval_type": "full_approval|accelerated_approval|label_expansion|crl|complete_response|other|null",
+
+  "is_significant": true/false,
+  "significance_score": 1-5,
+  "significance_reason": "string",
+
+  "is_surprise": true/false,
+  "surprise_score": 1-5,
+  "surprise_reason": "string",
+
+  "event_outcome": "positive|negative|mixed|unclear",
+  "impact_direction": "bullish|bearish|neutral",
+  "impact_magnitude": 1-5,
+
+  "summary": "1-2 sentence plain-English summary",
+
+  "confidence": 0.0-1.0,
+  "insufficient_event_info": true/false,
+  "ticker_unresolved": true/false
+}
+
+SCORING RULES (be conservative; lean lower when uncertain):
+Significance (impact to company value):
+1 = minor/niche; 3 = meaningful but not transformational; 5 = transformational
+
+Surprise (relative to market expectations):
+1 = fully expected/routine; 3 = some uncertainty; 5 = materially unexpected positive outcome
+
+BOOLEAN CONSISTENCY:
+- is_significant must be true only if significance_score >= 4
+- is_surprise must be true only if surprise_score >= 4
+
+TICKER RULE (reduce hallucinations):
+- Only output a ticker if it is explicitly implied by the provided article content.
+- If the ticker is not reliably present in the provided content, set ticker to null and ticker_unresolved=true.
+
+DIRECTIONALITY RULE (critical):
+- You MUST classify event_outcome and impact_direction from article evidence.
+- Negative clinical/regulatory outcomes (e.g., "failed primary endpoint", "misses phase 3", CRL, clinical hold, bankruptcy)
+  should map to event_outcome="negative" and impact_direction="bearish" unless explicit conflicting evidence is provided.
+- Positive catalyst outcomes (e.g., clear approval wins, strong successful pivotal readouts) should map to
+  event_outcome="positive" and impact_direction="bullish".
+- If mixed, use event_outcome="mixed" and impact_direction="neutral".
+
+EVIDENCE RULE:
+- Base judgments ONLY on the provided INPUT content. Do not use external knowledge.
+
+REASON LIMITS:
+- significance_reason and surprise_reason: max 2 sentences each.
+
+If key event fields are missing, use null and insufficient_event_info=true.
+"""
+
+TASK_APPROVAL_TEXT = """Analyze a pharma/regulatory approval news item and determine:
+1) Whether the approval is significant for the sponsoring company.
+2) Whether the approval is a surprise vs expectations (timing/controversy/delay signals).
+
+In your analysis, focus on regulator context (e.g., FDA/EMA), approval type hints (full vs accelerated vs label expansion), and whether the article implies meaningful commercial impact.
+"""
+
+TASK_TRIAL_TEXT = """Analyze a pharma clinical trial/readout news item (e.g., Phase 1/2/3, topline, readout, first patient dosed) and determine:
+1) Whether the results are significant for the sponsoring company.
+2) Whether the outcome is a surprise vs what the article implies was expected (e.g., delayed review, prior concerns, “misses” vs “positive readout”).
+
+Prioritize explicit efficacy/safety/endpoint language over boilerplate.
+"""
+
+TASK_GENERAL_TEXT = """Analyze a pharma biotech catalyst news item that is NOT clearly an approval and NOT clearly a clinical trial readout (e.g., holds, partnership/commercial milestones, failures, bankruptcies) and determine:
+1) Whether it is significant for the sponsoring company.
+2) Whether the situation is a surprise vs expectations implied by the article language.
+
+Be conservative: if the article sounds like generic business ops, set low scores and insufficient_info=true.
+"""
 
 
 def _score_row(row: dict[str, str]) -> dict[str, Any]:
@@ -311,25 +404,94 @@ def _score_row(row: dict[str, str]) -> dict[str, Any]:
 
 
 def _classify_event(row: dict[str, Any]) -> str:
-    blob = f"{row.get('title') or ''} {row.get('summary') or ''}".lower()
-    approval_hits = sum(1 for term in APPROVAL_CLASS_TERMS if term in blob)
-    trial_hits = sum(1 for term in TRIAL_CLASS_TERMS if term in blob)
-    if approval_hits > trial_hits and approval_hits > 0:
+    title_blob = (row.get("title") or "").lower()
+    summary_blob = (row.get("summary") or "").lower()
+
+    # Title-first negative-risk overrides to avoid misrouting ops/safety stories.
+    title_general_overrides = (
+        "bankruptcy",
+        "clinical hold",
+        "fda refusal",
+        "deaths",
+        "liver injuries",
+        "cancels",
+        "cancelled",
+        "canceled",
+        "layoff",
+        "layoffs",
+        "fund",
+    )
+    if any(term in title_blob for term in title_general_overrides):
+        return "general"
+
+    # Primary classification from title text.
+    title_approval_hits = sum(1 for term in APPROVAL_CLASS_TERMS if term in title_blob)
+    title_trial_hits = sum(1 for term in TRIAL_CLASS_TERMS if term in title_blob)
+    if title_approval_hits > title_trial_hits and title_approval_hits > 0:
         return "approval"
-    if trial_hits > approval_hits and trial_hits > 0:
+    if title_trial_hits > title_approval_hits and title_trial_hits > 0:
         return "trial"
-    if approval_hits > 0 and trial_hits > 0:
-        # Prefer approval when both are present (e.g., "FDA nod after phase 3")
+    if title_approval_hits > 0 and title_trial_hits > 0:
         return "approval"
+
+    # Fallback: use summary only when title is inconclusive.
+    summary_approval_hits = sum(1 for term in APPROVAL_CLASS_TERMS if term in summary_blob)
+    summary_trial_hits = sum(1 for term in TRIAL_CLASS_TERMS if term in summary_blob)
+    if summary_approval_hits > summary_trial_hits and summary_approval_hits > 0:
+        return "approval"
+    if summary_trial_hits > summary_approval_hits and summary_trial_hits > 0:
+        return "trial"
+    if summary_approval_hits > 0 and summary_trial_hits > 0:
+        return "approval"
+
     return "general"
 
 
 def _prompt_for_class(event_class: str) -> str:
     if event_class == "approval":
-        return PROMPT_APPROVAL
+        return TASK_APPROVAL_KEY
     if event_class == "trial":
-        return PROMPT_TRIAL
-    return PROMPT_GENERAL
+        return TASK_TRIAL_KEY
+    return TASK_GENERAL_KEY
+
+
+def _build_pharm_llm_prompt(*, task_key: str, article_json: dict[str, Any]) -> str:
+    """
+    Build the (future) PHARM LLM prompt for a given task key and article input JSON.
+    Note: this function does not call the LLM yet; it only formats the prompt.
+    """
+    if task_key == TASK_APPROVAL_KEY:
+        task_text = TASK_APPROVAL_TEXT
+    elif task_key == TASK_TRIAL_KEY:
+        task_text = TASK_TRIAL_TEXT
+    else:
+        task_text = TASK_GENERAL_TEXT
+
+    # Keep article JSON compact; some feeds have very long descriptions.
+    payload = dict(article_json or {})
+    # Best-effort truncation for long text fields (do not assume exact keys).
+    for k, v in list(payload.items()):
+        if isinstance(v, str) and len(v) > 6000:
+            payload[k] = v[:6000]
+
+    return (
+        PHARM_BASE_LLM_PROMPT_TEMPLATE
+        .replace("__TASK_TEXT__", task_text.strip())
+        .replace("__ARTICLE_JSON__", json_dumps_compact(payload))
+    )
+
+
+def json_dumps_compact(obj: Any) -> str:
+    import json
+
+    # Ensure ASCII for predictable downstream parsing/logs.
+    return json.dumps(obj, ensure_ascii=True, separators=(",", ":"))
+
+
+def json_dumps_pretty(obj: Any) -> str:
+    import json
+
+    return json.dumps(obj, ensure_ascii=True, indent=2, sort_keys=True)
 
 
 def _is_shortlist_candidate(scored: dict[str, Any]) -> bool:
@@ -411,6 +573,29 @@ class Pharm(AdvisorBase):
             row["prompt_key"] = _prompt_for_class(event_class)
         shortlist.sort(key=lambda r: (int(r.get("score") or 0), r.get("published_at") or ""), reverse=True)
 
+        # Temporary debug path: run Gemini on the first shortlisted row only.
+        if shortlist:
+            first = shortlist[0]
+            task_key = str(first.get("prompt_key") or TASK_GENERAL_KEY)
+            article_payload = {
+                "source": first.get("source"),
+                "published_at": first.get("published_at"),
+                "title": first.get("title"),
+                "summary": first.get("summary"),
+                "link": first.get("link"),
+                "event_class": first.get("event_class"),
+                "score": first.get("score"),
+            }
+            prompt = _build_pharm_llm_prompt(task_key=task_key, article_json=article_payload)
+            print("\n--- PHARM GEMINI PROMPT START ---")
+            print(prompt)
+            print("--- PHARM GEMINI PROMPT END ---\n")
+            model, parsed = self.ask_gemini(prompt, timeout=120.0, use_search=False)
+            print("\n--- PHARM GEMINI RESPONSE START ---")
+            print(f"model={model or 'None'}")
+            print(json_dumps_pretty(parsed) if parsed is not None else "null")
+            print("--- PHARM GEMINI RESPONSE END ---\n")
+
         logger.info(
             "PHARM shortlist complete: total=%d unique=%d shortlisted=%d",
             len(all_rows),
@@ -424,7 +609,7 @@ class Pharm(AdvisorBase):
                 len(shortlist),
                 int(row.get("score") or 0),
                 row.get("event_class") or "general",
-                row.get("prompt_key") or PROMPT_GENERAL,
+                row.get("prompt_key") or TASK_GENERAL_KEY,
                 row.get("source") or "",
                 row.get("published_at") or "",
                 row.get("title") or "",
