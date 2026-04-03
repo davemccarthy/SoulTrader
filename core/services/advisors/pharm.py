@@ -7,13 +7,21 @@ Purpose:
 
 Run:
     python manage.py run_pharm
+
+Optional env:
+    PHARM_EVENT_CLASS=approval|trial|general  (default approval) — which shortlist class gets LLM passes
+    PHARM_DEBUG_SHORTLIST_IDX=N               — only process shortlist row N if it matches PHARM_EVENT_CLASS
+
+Rows with heuristic score < 0 are never sent to the LLM (still listed in the final shortlist log).
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 import html
 import logging
+import os
 import re
 from typing import Any
 
@@ -282,7 +290,6 @@ Return ONLY valid JSON (no markdown, no surrounding quotes).
 OUTPUT JSON SCHEMA (all fields required):
 {
   "company_name": "string|null",
-  "ticker": "string|null",
 
   "regulator": "FDA|EMA|MHRA|other|null",
   "drug_name": "string|null",
@@ -304,8 +311,7 @@ OUTPUT JSON SCHEMA (all fields required):
   "summary": "1-2 sentence plain-English summary",
 
   "confidence": 0.0-1.0,
-  "insufficient_event_info": true/false,
-  "ticker_unresolved": true/false
+  "insufficient_event_info": true/false
 }
 
 SCORING RULES (be conservative; lean lower when uncertain):
@@ -318,10 +324,6 @@ Surprise (relative to market expectations):
 BOOLEAN CONSISTENCY:
 - is_significant must be true only if significance_score >= 4
 - is_surprise must be true only if surprise_score >= 4
-
-TICKER RULE (reduce hallucinations):
-- Only output a ticker if it is explicitly implied by the provided article content.
-- If the ticker is not reliably present in the provided content, set ticker to null and ticker_unresolved=true.
 
 DIRECTIONALITY RULE (critical):
 - You MUST classify event_outcome and impact_direction from article evidence.
@@ -360,6 +362,269 @@ TASK_GENERAL_TEXT = """Analyze a pharma biotech catalyst news item that is NOT c
 
 Be conservative: if the article sounds like generic business ops, set low scores and insufficient_info=true.
 """
+
+# Expected keys from PHARM_BASE_LLM_PROMPT_TEMPLATE (all must be present on the parsed dict).
+PHARM_LLM_OUTPUT_KEYS: frozenset[str] = frozenset(
+    {
+        "company_name",
+        "regulator",
+        "drug_name",
+        "indication",
+        "approval_type",
+        "is_significant",
+        "significance_score",
+        "significance_reason",
+        "is_surprise",
+        "surprise_score",
+        "surprise_reason",
+        "event_outcome",
+        "impact_direction",
+        "impact_magnitude",
+        "summary",
+        "confidence",
+        "insufficient_event_info",
+    }
+)
+
+PHARM_LLM_REGULATOR_VALUES = frozenset({"FDA", "EMA", "MHRA", "other"})
+PHARM_LLM_APPROVAL_TYPE_VALUES = frozenset(
+    {
+        "full_approval",
+        "accelerated_approval",
+        "label_expansion",
+        "crl",
+        "complete_response",
+        "other",
+    }
+)
+PHARM_LLM_EVENT_OUTCOME_VALUES = frozenset({"positive", "negative", "mixed", "unclear"})
+PHARM_LLM_IMPACT_DIRECTION_VALUES = frozenset({"bullish", "bearish", "neutral"})
+
+
+def _pharm_llm_hard_failures(parsed: Any) -> list[str]:
+    """
+    Structural / consistency checks on Ollama/Gemini JSON. Empty list => OK for downstream use.
+    """
+    out: list[str] = []
+    if parsed is None:
+        return ["parsed JSON is null (model returned nothing or parse failed)"]
+    if not isinstance(parsed, dict):
+        return [f"parsed JSON must be an object, got {type(parsed).__name__}"]
+
+    missing = sorted(PHARM_LLM_OUTPUT_KEYS - parsed.keys())
+    if missing:
+        out.append(f"missing keys: {', '.join(missing)}")
+
+    extra = sorted(parsed.keys() - PHARM_LLM_OUTPUT_KEYS)
+    if extra:
+        out.append(f"unexpected keys: {', '.join(extra)}")
+
+    def _nullable_str(v: Any, field: str) -> None:
+        if v is None:
+            return
+        if not isinstance(v, str):
+            out.append(f"{field} must be string or null, got {type(v).__name__}")
+
+    for key in (
+        "company_name",
+        "regulator",
+        "drug_name",
+        "indication",
+        "approval_type",
+        "significance_reason",
+        "surprise_reason",
+        "summary",
+    ):
+        _nullable_str(parsed.get(key), key)
+
+    for key in ("is_significant", "is_surprise", "insufficient_event_info"):
+        v = parsed.get(key)
+        if not isinstance(v, bool):
+            out.append(f"{key} must be boolean, got {type(v).__name__}")
+
+    def _score_1_5(v: Any, field: str) -> int | None:
+        if isinstance(v, bool) or v is None:
+            out.append(f"{field} must be integer 1-5, got {type(v).__name__}")
+            return None
+        if isinstance(v, float) and v.is_integer():
+            v = int(v)
+        if not isinstance(v, int):
+            out.append(f"{field} must be integer 1-5, got {type(v).__name__}")
+            return None
+        if v < 1 or v > 5:
+            out.append(f"{field} must be between 1 and 5, got {v}")
+            return None
+        return v
+
+    sig = _score_1_5(parsed.get("significance_score"), "significance_score")
+    sur = _score_1_5(parsed.get("surprise_score"), "surprise_score")
+    mag = _score_1_5(parsed.get("impact_magnitude"), "impact_magnitude")
+
+    conf = parsed.get("confidence")
+    if isinstance(conf, bool):
+        out.append("confidence must be number 0.0-1.0, got bool")
+    elif conf is None:
+        out.append("confidence must be number 0.0-1.0, got null")
+    else:
+        try:
+            cf = float(conf)
+        except (TypeError, ValueError):
+            out.append(f"confidence must be number 0.0-1.0, got {type(conf).__name__}")
+        else:
+            if cf < 0.0 or cf > 1.0:
+                out.append(f"confidence must be between 0.0 and 1.0, got {cf}")
+
+    reg = parsed.get("regulator")
+    if reg is not None and (not isinstance(reg, str) or reg not in PHARM_LLM_REGULATOR_VALUES):
+        out.append(f"regulator must be null or one of {sorted(PHARM_LLM_REGULATOR_VALUES)}, got {reg!r}")
+
+    ap = parsed.get("approval_type")
+    if ap is not None and (not isinstance(ap, str) or ap not in PHARM_LLM_APPROVAL_TYPE_VALUES):
+        out.append(
+            f"approval_type must be null or one of {sorted(PHARM_LLM_APPROVAL_TYPE_VALUES)}, got {ap!r}"
+        )
+
+    eo = parsed.get("event_outcome")
+    if not isinstance(eo, str) or eo not in PHARM_LLM_EVENT_OUTCOME_VALUES:
+        out.append(
+            f"event_outcome must be one of {sorted(PHARM_LLM_EVENT_OUTCOME_VALUES)}, got {eo!r}"
+        )
+
+    imp = parsed.get("impact_direction")
+    if not isinstance(imp, str) or imp not in PHARM_LLM_IMPACT_DIRECTION_VALUES:
+        out.append(
+            f"impact_direction must be one of {sorted(PHARM_LLM_IMPACT_DIRECTION_VALUES)}, got {imp!r}"
+        )
+
+    # Boolean vs score consistency (prompt contract).
+    if sig is not None and isinstance(parsed.get("is_significant"), bool):
+        want_sig = sig >= 4
+        if parsed["is_significant"] != want_sig:
+            out.append(
+                f"is_significant ({parsed['is_significant']}) inconsistent with significance_score ({sig}); "
+                f"expected is_significant={want_sig}"
+            )
+    if sur is not None and isinstance(parsed.get("is_surprise"), bool):
+        want_sur = sur >= 4
+        if parsed["is_surprise"] != want_sur:
+            out.append(
+                f"is_surprise ({parsed['is_surprise']}) inconsistent with surprise_score ({sur}); "
+                f"expected is_surprise={want_sur}"
+            )
+
+    # Outcome/direction pairing is enforced in _pharm_first_discovery_gate_fail (business gate), not here,
+    # so e.g. positive+bearish logs as "impact_direction is bearish -> fail" instead of PHARM_JSON_INVALID.
+
+    return out
+
+
+def _pharm_first_discovery_gate_fail(parsed: dict[str, Any]) -> str | None:
+    """
+    First-fail-wins business gate:
+    discovery only when all-green:
+      event_outcome=positive, impact_direction=bullish, is_significant=true, is_surprise=true
+    """
+    company = parsed.get("company_name")
+    drug_name = parsed.get("drug_name")
+    company_txt = company.strip() if isinstance(company, str) and company.strip() else "unknown"
+    drug_txt = drug_name.strip() if isinstance(drug_name, str) and drug_name.strip() else "unknown"
+
+    if parsed.get("event_outcome") == "negative":
+        return f"company={company_txt}, drug_name={drug_txt}, event_outcome is negative -> fail"
+    if parsed.get("impact_direction") == "bearish":
+        return f"company={company_txt}, drug_name={drug_txt}, impact_direction is bearish -> fail"
+    if parsed.get("is_significant") is False:
+        return f"company={company_txt}, drug_name={drug_txt}, is_significant is false -> fail"
+    if parsed.get("is_surprise") is False:
+        return f"company={company_txt}, drug_name={drug_txt}, is_surprise is false -> fail"
+
+    if parsed.get("event_outcome") != "positive":
+        return f"company={company_txt}, drug_name={drug_txt}, event_outcome is not positive -> fail"
+    if parsed.get("impact_direction") != "bullish":
+        return f"company={company_txt}, drug_name={drug_txt}, impact_direction is not bullish -> fail"
+    if parsed.get("is_significant") is not True:
+        return f"company={company_txt}, drug_name={drug_txt}, is_significant is not true -> fail"
+    if parsed.get("is_surprise") is not True:
+        return f"company={company_txt}, drug_name={drug_txt}, is_surprise is not true -> fail"
+
+    return None
+
+
+def _pharm_discovery_headline(parsed: dict[str, Any], event_class: str) -> str:
+    """First line for UI tables: {company}'s {drug} {event_class} (drug omitted if missing)."""
+    company = parsed.get("company_name")
+    drug = parsed.get("drug_name")
+    c = company.strip() if isinstance(company, str) and company.strip() else "Unknown"
+    d = drug.strip() if isinstance(drug, str) and drug.strip() else ""
+    ec = (event_class or "general").strip().lower()
+    if d:
+        return f"{c}'s {d} {ec}"
+    return f"{c}'s {ec}"
+
+
+def _pharm_discovery_detail_paragraph(parsed: dict[str, Any]) -> str:
+    """Single paragraph: summary, significance_reason, surprise_reason (non-empty parts only)."""
+    pieces: list[str] = []
+    for key in ("summary", "significance_reason", "surprise_reason"):
+        raw = parsed.get(key)
+        if not isinstance(raw, str):
+            continue
+        s = raw.strip()
+        if not s:
+            continue
+        while s.endswith("."):
+            s = s[:-1].rstrip()
+        if s:
+            pieces.append(s)
+    if not pieces:
+        return ""
+    return ". ".join(pieces) + "."
+
+
+# LLM fields appended to Discovery.explanation after headline + narrative (fixed order for UI).
+PHARM_EXPLANATION_METADATA_KEYS: tuple[str, ...] = (
+    "drug_name",
+    "confidence",
+    "event_outcome",
+    "impact_direction",
+    "impact_magnitude",
+    "indication",
+    "insufficient_event_info",
+    "is_significant",
+    "is_surprise",
+    "regulator",
+    "significance_score",
+    "surprise_score",
+)
+
+
+def _pharm_format_explanation_field_value(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        s = f"{value:.6f}".rstrip("0").rstrip(".")
+        return s or "0"
+    if isinstance(value, int):
+        return str(value)
+    return str(value)
+
+
+def _pharm_discovery_metadata_lines(parsed: dict[str, Any]) -> str:
+    lines = [f"{key}: {_pharm_format_explanation_field_value(parsed.get(key))}" for key in PHARM_EXPLANATION_METADATA_KEYS]
+    return "\n".join(lines)
+
+
+def _pharm_build_discovery_explanation(parsed: dict[str, Any], event_class: str) -> str:
+    headline = _pharm_discovery_headline(parsed, event_class)
+    detail = _pharm_discovery_detail_paragraph(parsed)
+    meta = _pharm_discovery_metadata_lines(parsed)
+    parts: list[str] = [headline]
+    if detail:
+        parts.append(detail)
+    parts.append(meta)
+    return "\n\n".join(parts)
 
 
 def _score_row(row: dict[str, str]) -> dict[str, Any]:
@@ -488,12 +753,6 @@ def json_dumps_compact(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=True, separators=(",", ":"))
 
 
-def json_dumps_pretty(obj: Any) -> str:
-    import json
-
-    return json.dumps(obj, ensure_ascii=True, indent=2, sort_keys=True)
-
-
 def _is_shortlist_candidate(scored: dict[str, Any]) -> bool:
     if bool(scored.get("suppressed")):
         return False
@@ -573,28 +832,150 @@ class Pharm(AdvisorBase):
             row["prompt_key"] = _prompt_for_class(event_class)
         shortlist.sort(key=lambda r: (int(r.get("score") or 0), r.get("published_at") or ""), reverse=True)
 
-        # Temporary debug path: run Gemini on the first shortlisted row only.
-        if shortlist:
-            first = shortlist[0]
-            task_key = str(first.get("prompt_key") or TASK_GENERAL_KEY)
+        event_class_filter = os.getenv("PHARM_EVENT_CLASS", "approval").strip().lower()
+        if event_class_filter not in ("approval", "trial", "general"):
+            logger.warning("PHARM invalid PHARM_EVENT_CLASS=%r; using approval", event_class_filter)
+            event_class_filter = "approval"
+        task_default_for_class = {
+            "approval": TASK_APPROVAL_KEY,
+            "trial": TASK_TRIAL_KEY,
+            "general": TASK_GENERAL_KEY,
+        }[event_class_filter]
+
+        class_match_rows = [
+            (shortlist_idx, row)
+            for shortlist_idx, row in enumerate(shortlist, start=1)
+            if row.get("event_class") == event_class_filter
+        ]
+        neg_score_skipped = sum(
+            1 for _, row in class_match_rows if int(row.get("score") or 0) < 0
+        )
+        if neg_score_skipped:
+            logger.info(
+                "PHARM skip LLM for %d %s shortlist row(s) with score < 0",
+                neg_score_skipped,
+                event_class_filter,
+            )
+        llm_shortlist = [
+            (shortlist_idx, row)
+            for shortlist_idx, row in class_match_rows
+            if int(row.get("score") or 0) >= 0
+        ]
+        target_shortlist_idx_raw = os.getenv("PHARM_DEBUG_SHORTLIST_IDX", "").strip()
+        if target_shortlist_idx_raw:
+            try:
+                target_shortlist_idx = int(target_shortlist_idx_raw)
+            except ValueError:
+                target_shortlist_idx = None
+                logger.warning("PHARM invalid PHARM_DEBUG_SHORTLIST_IDX=%r (must be integer)", target_shortlist_idx_raw)
+            if target_shortlist_idx is not None:
+                llm_shortlist = [
+                    (shortlist_idx, row)
+                    for shortlist_idx, row in llm_shortlist
+                    if shortlist_idx == target_shortlist_idx
+                ]
+                logger.info(
+                    "PHARM debug filter active: PHARM_DEBUG_SHORTLIST_IDX=%d "
+                    "PHARM_EVENT_CLASS=%s (matches=%d)",
+                    target_shortlist_idx,
+                    event_class_filter,
+                    len(llm_shortlist),
+                )
+        if llm_shortlist:
+            logger.info(
+                "PHARM processing %s candidates: count=%d",
+                event_class_filter,
+                len(llm_shortlist),
+            )
+
+        for idx, (shortlist_idx, candidate) in enumerate(llm_shortlist, start=1):
+            logger.info(
+                "PHARM %s candidate %d/%d (shortlist %d/%d) | %s | %s",
+                event_class_filter,
+                idx,
+                len(llm_shortlist),
+                shortlist_idx,
+                len(shortlist),
+                candidate.get("published_at") or "",
+                candidate.get("title") or "",
+            )
+            task_key = str(candidate.get("prompt_key") or task_default_for_class)
             article_payload = {
-                "source": first.get("source"),
-                "published_at": first.get("published_at"),
-                "title": first.get("title"),
-                "summary": first.get("summary"),
-                "link": first.get("link"),
-                "event_class": first.get("event_class"),
-                "score": first.get("score"),
+                "source": candidate.get("source"),
+                "published_at": candidate.get("published_at"),
+                "title": candidate.get("title"),
+                "summary": candidate.get("summary"),
+                "link": candidate.get("link"),
+                "event_class": candidate.get("event_class"),
+                "score": candidate.get("score"),
             }
             prompt = _build_pharm_llm_prompt(task_key=task_key, article_json=article_payload)
-            print("\n--- PHARM GEMINI PROMPT START ---")
-            print(prompt)
-            print("--- PHARM GEMINI PROMPT END ---\n")
-            model, parsed = self.ask_gemini(prompt, timeout=120.0, use_search=False)
-            print("\n--- PHARM GEMINI RESPONSE START ---")
-            print(f"model={model or 'None'}")
-            print(json_dumps_pretty(parsed) if parsed is not None else "null")
-            print("--- PHARM GEMINI RESPONSE END ---\n")
+            _model, parsed = self.ask_ollama(prompt)
+
+            hard_fails = _pharm_llm_hard_failures(parsed)
+            if hard_fails:
+                for reason in hard_fails:
+                    logger.info("PHARM_JSON_INVALID: %s", reason)
+                continue
+
+            business_fail = _pharm_first_discovery_gate_fail(parsed)
+            if business_fail:
+                logger.info(business_fail)
+                continue
+
+            # Deterministic company -> ticker resolution (shared with FDA advisor).
+            company_name = (parsed or {}).get("company_name") if isinstance(parsed, dict) else None
+            if isinstance(company_name, str):
+                company_name = company_name.strip() or None
+            else:
+                company_name = None
+
+            resolved_ticker = None
+            if company_name:
+                try:
+                    # Reuse existing deterministic resolver used by FDA advisor.
+                    from core.services.advisors.fda import match_company_to_symbol
+
+                    resolved_ticker, _ = match_company_to_symbol(company_name)
+                except Exception as exc:
+                    logger.warning("PHARM ticker resolution failed for %r: %s", company_name, exc)
+
+            if not resolved_ticker:
+                logger.info("PHARM skip discovery: no ticker for company_name=%r", company_name)
+                continue
+
+            if not self.allow_discovery(resolved_ticker, period=24):
+                logger.info("PHARM skip discovery: allow_discovery false for %s", resolved_ticker)
+                continue
+
+            row_event_class = str(candidate.get("event_class") or "general")
+            explanation = _pharm_build_discovery_explanation(parsed, row_event_class)
+
+            try:
+                cw = float(parsed.get("confidence"))
+            except (TypeError, ValueError):
+                cw = 1.0
+            cw = min(max(cw, 0.0), 1.0)
+            weight = Decimal(f"{cw:.2f}")
+
+            sell_instructions = [
+                ("PERCENTAGE_DIMINISHING", 1.30, 7),
+                ("STOP_PERCENTAGE", 0.98, None),
+                ("DESCENDING_TREND", -0.20, None),
+                ("NOT_TRENDING", None, None),
+            ]
+
+            stock = self.discovered(
+                sa,
+                resolved_ticker,
+                explanation,
+                sell_instructions,
+                weight=weight,
+            )
+            if stock:
+                logger.info("PHARM discovered %s (%s)", resolved_ticker, row_event_class)
+            else:
+                logger.warning("PHARM discovered() returned None for %s", resolved_ticker)
 
         logger.info(
             "PHARM shortlist complete: total=%d unique=%d shortlisted=%d",
@@ -602,18 +983,6 @@ class Pharm(AdvisorBase):
             len(unique_rows),
             len(shortlist),
         )
-        for idx, row in enumerate(shortlist, start=1):
-            logger.info(
-                "[%d/%d] score=%+d | class=%s | prompt=%s | %s | %s | %s",
-                idx,
-                len(shortlist),
-                int(row.get("score") or 0),
-                row.get("event_class") or "general",
-                row.get("prompt_key") or TASK_GENERAL_KEY,
-                row.get("source") or "",
-                row.get("published_at") or "",
-                row.get("title") or "",
-            )
         return
 
 
