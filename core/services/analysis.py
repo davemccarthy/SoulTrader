@@ -18,7 +18,7 @@ def analyse_target(discovery, holding, target, sentiment):
     current = holding.stock.price
     buy_price = holding.average_price if holding.average_price else discovery.price
 
-    target = Decimal(float(target) * sentiment)
+    target = Decimal(str(target)) * sentiment
 
     # Case 1: Targets should only trigger sells at a profit, not at a loss
     if current < buy_price:
