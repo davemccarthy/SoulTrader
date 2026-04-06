@@ -736,9 +736,10 @@ class Snapshot(models.Model):
     trade_daily = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0'))
     
     class Meta:
-        unique_together = [['user', 'date']]  # One snapshot per user per day
+        # One snapshot per fund per day (funds are the portfolio scope; user is denormalized).
+        unique_together = [['fund', 'date']]
         indexes = [
-            models.Index(fields=['user', '-date']),  # For efficient querying
+            models.Index(fields=['user', '-date']),
         ]
 
 
