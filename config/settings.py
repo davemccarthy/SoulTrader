@@ -171,6 +171,8 @@ GEMINI_KEY = os.getenv("GEMINI_KEY") or os.getenv("GEMINI_API_KEY")
 
 OPENFIGI_API_KEY = os.getenv("OPENFIGI_API_KEY")  # Optional, for symbol lookups
 
+OPENFDA_API_KEY = os.getenv("OPENFDA_API_KEY")  # Optional; raises OpenFDA daily limit (see open.fda.gov/apis/authentication/)
+
 # Logging Configuration
 LOGGING = {
     'version': 1,

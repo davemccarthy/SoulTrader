@@ -103,19 +103,25 @@ class ProfileAdminForm(forms.ModelForm):
     class Meta:
         model = Profile
         exclude = ('user',)
+        help_texts = {
+            'sentiment': (
+                'Buy/sell sizing and target behavior. Presets map to multipliers in Profile.SENTIMENT; '
+                'AUTO is placeholder until liquidity-based calculation is wired.'
+            ),
+        }
 
 
 @admin.register(Profile)
 class ProfileAdmin(admin.ModelAdmin):
     form = ProfileAdminForm
     readonly_fields = ('id', 'created')
-    list_display = ('id', 'name', 'enabled', 'investment', 'cash')
+    list_display = ('id', 'name', 'enabled', 'sentiment', 'investment', 'cash')
     search_fields = ('name', 'description')
-    list_filter = ('enabled',)
+    list_filter = ('enabled', 'sentiment')
 
     fieldsets = (
         ('Profile', {'fields': ('id', 'name', 'description', 'enabled')}),
-        ('Strategy', {'fields': ('risk', 'spread', 'advisors')}),
+        ('Strategy', {'fields': ('risk', 'spread', 'sentiment', 'advisors')}),
         ('Capital', {'fields': ('investment', 'cash')}),
     )
 

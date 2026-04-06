@@ -1,14 +1,17 @@
 
+import base64
 import logging
 import os
 import time
 import json
 import re
+from pathlib import Path
 import numpy as np
 import yfinance as yf
 from google import genai
 from google.genai import types
 import pandas as pd
+import requests
 from datetime import datetime, timedelta
 from django.db.models import F, ExpressionWrapper, DateTimeField, Func
 from django.db.models.functions import Cast
@@ -1143,6 +1146,95 @@ Respond with only a single valid JSON object, no other text.
         logger.error(f"All Gemini models exhausted for {self.advisor.name}")
         return None, None
 
+    def ask_ollama(self, prompt, *, model: str = "qwen3:8b", timeout: float = 300.0):
+        """
+        Call Ollama /api/generate over HTTP with Basic Auth.
+
+        Environment (via os.getenv, e.g. from .env): OLLAMA_HOST, OLLAMA_USERNAME,
+        OLLAMA_PASSWORD.
+
+        Defaults: model qwen3:8b, timeout 300 seconds (override per call as needed).
+
+        When OLLAMA_PROMPT_LOG is not 0/false/off/no, appends each prompt and raw
+        response to ollama.txt under settings.BASE_DIR for review (set
+        OLLAMA_PROMPT_LOG=0 to disable).
+
+        Returns (model, parsed_dict) like ask_gemini, or (None, None) on failure.
+        Does not support web search grounding; use ask_gemini for that.
+        """
+        host = (os.getenv("OLLAMA_HOST") or "").strip().rstrip("/")
+        username = os.getenv("OLLAMA_USERNAME") or ""
+        password = os.getenv("OLLAMA_PASSWORD") or ""
+
+        if not host or not username or not password:
+            logger.warning(
+                f"ask_ollama: missing OLLAMA_HOST, OLLAMA_USERNAME, or OLLAMA_PASSWORD "
+                f"for {self.advisor.name}"
+            )
+            return None, None
+
+        credentials = f"{username}:{password}"
+        token = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
+        headers = {
+            "Authorization": f"Basic {token}",
+            "Content-Type": "application/json",
+        }
+        payload = {"model": model, "prompt": prompt, "stream": False}
+        url = f"{host}/api/generate"
+
+        try:
+            logger.info(f"{self.advisor.name} ask_ollama model={model}")
+            response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else "?"
+            snippet = (
+                (exc.response.text[:500] + "...")
+                if exc.response is not None and len(exc.response.text) > 500
+                else (exc.response.text if exc.response is not None else "")
+            )
+            logger.warning(
+                f"ask_ollama HTTP {status} for {self.advisor.name}: {snippet}"
+            )
+            return None, None
+        except requests.RequestException as exc:
+            logger.warning(f"ask_ollama request error for {self.advisor.name}: {exc}")
+            return None, None
+
+        try:
+            data = response.json()
+        except ValueError:
+            logger.warning(f"ask_ollama: invalid JSON body for {self.advisor.name}")
+            return None, None
+
+        response_text = data.get("response")
+        if not response_text:
+            logger.warning(f"ask_ollama: empty or missing 'response' for {self.advisor.name}")
+            return None, None
+
+        log_flag = (os.getenv("OLLAMA_PROMPT_LOG") or "1").strip().lower()
+        if log_flag not in ("0", "false", "no", "off"):
+            try:
+                log_path = Path(settings.BASE_DIR) / "ollama.txt"
+                stamp = datetime.now().isoformat(timespec="seconds")
+                block = (
+                    f"========== {stamp} advisor={self.advisor.name} model={model} ==========\n"
+                    f"--- PROMPT ---\n{prompt}\n"
+                    f"--- RESPONSE ---\n{response_text}\n\n"
+                )
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(block)
+            except OSError as exc:
+                logger.warning(f"ask_ollama: could not append ollama.txt: {exc}")
+
+        results = self._extract_json(response_text)
+        if not results:
+            logger.warning(f"ask_ollama: cannot parse JSON for {self.advisor.name}")
+            return None, None
+
+        time.sleep(1)
+        return model, results
+
     def news_flash(self, sa, title, url):
 
         # Check if market is open
@@ -1163,7 +1255,7 @@ Respond with only a single valid JSON object, no other text.
         
         for phrase in filter_phrases:
             if phrase in title_lower:
-                logger.info(f"{self.advisor.name} filtering article (skipping Gemini): {title[:80]}")
+                logger.info(f"{self.advisor.name} filtering article (skipping LLM): {title[:80]}")
                 return
 
         # Check if this article has already been processed by this advisor
@@ -1205,7 +1297,7 @@ Respond with only a single valid JSON object, no other text.
         ]
 
         # Ask AI for opinion
-        model, results = self.ask_gemini(prompt)
+        model, results = self.ask_ollama(prompt)
 
         if not results:
             return

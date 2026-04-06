@@ -13,10 +13,12 @@ from core.services.execution import execute_buy, execute_sell
 logger = logging.getLogger(__name__)
 
 
-def analyse_target(discovery, holding, target):
+def analyse_target(discovery, holding, target, sentiment):
     stock = holding.stock
     current = holding.stock.price
     buy_price = holding.average_price if holding.average_price else discovery.price
+
+    target = Decimal(float(target) * sentiment)
 
     # Case 1: Targets should only trigger sells at a profit, not at a loss
     if current < buy_price:
@@ -64,6 +66,8 @@ def analyze_holdings(sa, funds):
     # Iterate thru funds
     for fund in funds:
 
+        sentiment = Decimal(str(Profile.SENTIMENT[fund.sentiment]))
+
         for holding in Holding.objects.filter(fund=fund):
 
             # Latest prices
@@ -89,7 +93,7 @@ def analyze_holdings(sa, funds):
                                 break
 
                         elif instruction.instruction in ['TARGET_PRICE', 'TARGET_PERCENTAGE']:
-                            if analyse_target(discovery, holding, instruction.value1):
+                            if analyse_target(discovery, holding, instruction.value1, sentiment):
                                 execute_sell(sa, fund, holding, f"{holding.stock.symbol} reached target price of ${instruction.value1:.2f}")
                                 break
 
@@ -105,7 +109,7 @@ def analyze_holdings(sa, funds):
                                 else:
                                     current_target = float(buy_price)  # After max_days, target = buy_price (break-even)
 
-                                if analyse_target(discovery, holding, Decimal(str(current_target))):
+                                if analyse_target(discovery, holding, Decimal(str(current_target)), sentiment):
                                     execute_sell(sa, fund, holding, f"{holding.stock.symbol} downturn detected at diminishing target ${current_target:.2f} (day {days_held}/{max_days})")
                                     break
                             else:
@@ -121,7 +125,7 @@ def analyze_holdings(sa, funds):
                                 target_value = base_allowance * (Decimal('1.0') + ratio)
                                 target_price = target_value / Decimal(str(holding.shares))
                                 
-                                if analyse_target(discovery, holding, target_price):
+                                if analyse_target(discovery, holding, target_price, sentiment):
                                     execute_sell(sa, fund, holding, f"{holding.stock.symbol} reached profit target (target price: ${target_price:.2f})")
                                     break
                             else:
@@ -280,6 +284,7 @@ def analyze_discovery(sa, funds, advisors):
     for fund in funds:
         logger.info(f"Buying ------------- {fund.name}")
 
+        sentiment = Decimal(str(Profile.SENTIMENT[fund.sentiment]))
         allowed_advisors = list(fund.advisors or [])
 
         # 1. Filter discoveries by allowed advisors (if specified)
@@ -321,8 +326,12 @@ def analyze_discovery(sa, funds, advisors):
             # Get health for this discovery
             health = discovery.health
             min_score = fund.min_score()
+            health_score = health.score
 
-            if health and health.score < min_score:
+            # Factor in sentiment
+            health_score *= Decimal(str(sentiment))
+
+            if health and health_score < min_score:
                 logger.info(
                     f"User {fund.name}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "
                     f"health check score ({health.score}) below threshold ({min_score})"
@@ -339,6 +348,9 @@ def analyze_discovery(sa, funds, advisors):
                 allowance = base_allowance * combined_weight
             else:
                 allowance = base_allowance * combined_weight
+
+            # Factor in sentiment
+            allowance *= sentiment
 
             logger.info(
                 f"User {fund.name}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "

@@ -490,7 +490,7 @@ def validate_symbol_with_yfinance(symbol, company_name=None):
         if not (info.get("symbol") or info.get("longName") or info.get("shortName")):
             return False
         
-        # If company name provided, try to match it
+        # If company name provided, require a meaningful name match.
         if company_name:
             company_upper = company_name.upper()
             yf_name = (info.get("longName") or info.get("shortName") or "").upper()
@@ -499,7 +499,7 @@ def validate_symbol_with_yfinance(symbol, company_name=None):
             # Check if key word appears in yfinance name or vice versa
             if key_word and (key_word in yf_name or yf_name.split()[0] in company_upper):
                 return True
-            # If no match, still return True if symbol is valid (company name matching is best-effort)
+            return False
         
         return True
     except Exception:

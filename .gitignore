@@ -37,6 +37,7 @@ Thumbs.db
 # Project specific
 logs/*.log
 !logs/.gitkeep
+.cache/
 
 # Data files (not required in repository)
 *.csv

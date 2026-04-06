@@ -14,6 +14,7 @@ _LAZY_MODULES = frozenset(
         "story",
         "fda",
         "pharm",
+        "bizfeed",
         "insider",
         "user",
         "intraday",

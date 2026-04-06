@@ -49,15 +49,25 @@ class Profile(models.Model):
         "RECKLESS": 10
     }
 
+    # But / sell sentiment
+    SENTIMENT = {
+        "STRONG_BULL": 1.4,
+        "BULL": 1.2,
+        "STAG": 1.0,
+        "AUTO": 1.0,
+        "BEAR": 0.8,
+        "STRONG_BEAR": 0.6
+    }
+
     user = models.ForeignKey(User, on_delete=models.DO_NOTHING)
     name = models.CharField(max_length=120, blank=True, default="")
     created = models.DateTimeField(null=True, blank=True, auto_now_add=True)
     description = models.TextField(blank=True, default="")
     enabled = models.BooleanField(default=True)
-    #min_score = models.DecimalField(max_digits=5, decimal_places=1, default=30.0)
     advisors = ArrayField(models.CharField(max_length=100), default=list, blank=True)
     risk = models.CharField(max_length=20, choices=[(key, key) for key in RISK.keys()], default='MODERATE')
     spread = models.CharField(max_length=10, choices=[(key, key) for key in SPREAD.keys()], null=True, blank=True)
+    sentiment = models.CharField(max_length=16, choices=[(key, key) for key in SENTIMENT.keys()], null=False, default='AUTO')
     investment = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('100000.00'))
     cash = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('100000.00'))
 
