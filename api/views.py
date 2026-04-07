@@ -2,7 +2,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from .serializers import HoldingSerializer, TradeSerializer, ProfileSerializer, UserSerializer
-from core.models import Profile
+from core.models import Profile, Holding, Trade
 from core.portfolio_metrics import get_portfolio_dashboard_data
 
 
@@ -18,7 +18,12 @@ def get_current_user(request):
 @permission_classes([IsAuthenticated])
 def get_holdings(request):
     """Get user holdings"""
-    holdings = request.user.holding_set.all()
+    fund_id = request.query_params.get('fund_id')
+    if fund_id:
+        # Match web behavior: holdings are scoped by selected fund.
+        holdings = Holding.objects.filter(fund_id=fund_id)
+    else:
+        holdings = request.user.holding_set.all()
     serializer = HoldingSerializer(holdings, many=True)
     return Response(serializer.data)
 
@@ -27,7 +32,13 @@ def get_holdings(request):
 @permission_classes([IsAuthenticated])
 def get_trades(request):
     """Get user trades (read-only - system is 100% automated)"""
-    trades = request.user.trade_set.all().order_by('-id')[:50]
+    fund_id = request.query_params.get('fund_id')
+    if fund_id:
+        # Match web behavior: trades are scoped by selected fund.
+        trades = Trade.objects.filter(fund_id=fund_id)
+    else:
+        trades = request.user.trade_set.all()
+    trades = trades.order_by('-id')[:50]
     serializer = TradeSerializer(trades, many=True)
     return Response(serializer.data)
 
