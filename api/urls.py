@@ -9,7 +9,10 @@ urlpatterns = [
     path('auth/login/', TokenObtainPairView.as_view(), name='token_obtain'),
     path('auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('auth/user/', views.get_current_user, name='current_user'),
-    
+
+    # Funds
+    path('funds/', views.get_funds, name='funds'),
+
     # Holdings
     path('holdings/', views.get_holdings, name='holdings'),
     

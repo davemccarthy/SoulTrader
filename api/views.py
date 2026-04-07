@@ -2,6 +2,8 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from .serializers import HoldingSerializer, TradeSerializer, ProfileSerializer, UserSerializer
+from core.models import Profile
+from core.portfolio_metrics import get_portfolio_dashboard_data
 
 
 @api_view(['GET'])
@@ -28,6 +30,27 @@ def get_trades(request):
     trades = request.user.trade_set.all().order_by('-id')[:50]
     serializer = TradeSerializer(trades, many=True)
     return Response(serializer.data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_funds(request):
+    """Get enabled funds with dashboard metrics (matches web Funds page intent)."""
+    funds = Profile.objects.filter(enabled=True).order_by('id')
+    payload = []
+
+    for fund in funds:
+        dashboard = get_portfolio_dashboard_data(fund)
+        payload.append({
+            'id': fund.id,
+            'name': fund.name,
+            'spread': fund.spread,
+            'risk': fund.risk,
+            'advisors': fund.advisors,
+            'dashboard': dashboard,
+        })
+
+    return Response(payload)
 
 
 @api_view(['GET'])
