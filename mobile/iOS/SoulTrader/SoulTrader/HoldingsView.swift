@@ -11,7 +11,12 @@ struct HoldingsView: View {
                     .padding(.top, 6)
             }
 
-            Group {
+            List {
+                WealthChartCard(points: viewModel.selectedFundHistory)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 6, bottom: 8, trailing: 6))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+
                 if viewModel.holdings.isEmpty {
                     VStack(spacing: 8) {
                         Text("No holdings to show.")
@@ -21,10 +26,13 @@ struct HoldingsView: View {
                             .font(.footnote)
                             .foregroundStyle(Theme.secondaryText)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                    .padding()
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 24)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
                 } else {
-                    List(viewModel.holdings) { holding in
+                    ForEach(viewModel.holdings) { holding in
                         HStack(spacing: 12) {
                             imageTickerPair(symbol: holding.stock.symbol)
                             middleCompanyInvestmentPair(holding: holding)
@@ -37,11 +45,11 @@ struct HoldingsView: View {
                         .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
                         .listRowBackground(Color.clear)
                     }
-                    .scrollContentBackground(.hidden)
-                    .scrollIndicators(.hidden)
-                    .background(Theme.appBackground)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .scrollIndicators(.hidden)
+            .background(Theme.appBackground)
         }
         .background(Theme.appBackground)
         .toolbar(.hidden, for: .navigationBar)
@@ -52,17 +60,16 @@ struct HoldingsView: View {
             AsyncImage(url: URL(string: "https://images.financialmodelingprep.com/symbol/\(symbol).png")) { image in
                 image.resizable().scaledToFit()
             } placeholder: {
-                RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.15))
+                RoundedRectangle(cornerRadius: 5).fill(Color.gray.opacity(0.15))
             }
-            .frame(width: 34, height: 34)
+            .frame(width: 26, height: 26)
 
             Text(symbol)
-                .font(.caption)
-                .fontWeight(.bold)
+                .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(Theme.valuePrimary)
                 .lineLimit(1)
         }
-        .frame(width: 56, alignment: .leading)
+        .frame(width: 50, alignment: .leading)
     }
 
     private func middleCompanyInvestmentPair(holding: HoldingResponse) -> some View {
