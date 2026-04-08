@@ -1,0 +1,619 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		871F04332F84F61A00039EE2 /* SoulTraderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 871F04322F84F61A00039EE2 /* SoulTraderApp.swift */; };
+		871F04352F84F61A00039EE2 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 871F04342F84F61A00039EE2 /* ContentView.swift */; };
+		A10000112F84F61A00039EE2 /* AppCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000102F84F61A00039EE2 /* AppCore.swift */; };
+		A10000132F84F61A00039EE2 /* AppHeaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000122F84F61A00039EE2 /* AppHeaderView.swift */; };
+		A10000152F84F61A00039EE2 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000142F84F61A00039EE2 /* LoginView.swift */; };
+		A10000172F84F61A00039EE2 /* FundsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000162F84F61A00039EE2 /* FundsView.swift */; };
+		A10000192F84F61A00039EE2 /* HoldingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000182F84F61A00039EE2 /* HoldingsView.swift */; };
+		A100001B2F84F61A00039EE2 /* TradesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100001A2F84F61A00039EE2 /* TradesView.swift */; };
+		A100001D2F84F61A00039EE2 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100001C2F84F61A00039EE2 /* Theme.swift */; };
+		871F04372F84F61C00039EE2 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 871F04362F84F61C00039EE2 /* Assets.xcassets */; };
+		871F043A2F84F61C00039EE2 /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 871F04392F84F61C00039EE2 /* Preview Assets.xcassets */; };
+		871F04442F84F61D00039EE2 /* SoulTraderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 871F04432F84F61D00039EE2 /* SoulTraderTests.swift */; };
+		871F044E2F84F61D00039EE2 /* SoulTraderUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 871F044D2F84F61D00039EE2 /* SoulTraderUITests.swift */; };
+		871F04502F84F61D00039EE2 /* SoulTraderUITestsLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 871F044F2F84F61D00039EE2 /* SoulTraderUITestsLaunchTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		871F04402F84F61D00039EE2 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 871F04272F84F61A00039EE2 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 871F042E2F84F61A00039EE2;
+			remoteInfo = SoulTrader;
+		};
+		871F044A2F84F61D00039EE2 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 871F04272F84F61A00039EE2 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 871F042E2F84F61A00039EE2;
+			remoteInfo = SoulTrader;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		871F042F2F84F61A00039EE2 /* SoulTrader.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SoulTrader.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		871F04322F84F61A00039EE2 /* SoulTraderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoulTraderApp.swift; sourceTree = "<group>"; };
+		871F04342F84F61A00039EE2 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A10000102F84F61A00039EE2 /* AppCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCore.swift; sourceTree = "<group>"; };
+		A10000122F84F61A00039EE2 /* AppHeaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppHeaderView.swift; sourceTree = "<group>"; };
+		A10000142F84F61A00039EE2 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
+		A10000162F84F61A00039EE2 /* FundsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FundsView.swift; sourceTree = "<group>"; };
+		A10000182F84F61A00039EE2 /* HoldingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoldingsView.swift; sourceTree = "<group>"; };
+		A100001A2F84F61A00039EE2 /* TradesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TradesView.swift; sourceTree = "<group>"; };
+		A100001C2F84F61A00039EE2 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		871F04362F84F61C00039EE2 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		871F04392F84F61C00039EE2 /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
+		871F043F2F84F61D00039EE2 /* SoulTraderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SoulTraderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		871F04432F84F61D00039EE2 /* SoulTraderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoulTraderTests.swift; sourceTree = "<group>"; };
+		871F04492F84F61D00039EE2 /* SoulTraderUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SoulTraderUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		871F044D2F84F61D00039EE2 /* SoulTraderUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoulTraderUITests.swift; sourceTree = "<group>"; };
+		871F044F2F84F61D00039EE2 /* SoulTraderUITestsLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoulTraderUITestsLaunchTests.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		871F042C2F84F61A00039EE2 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		871F043C2F84F61D00039EE2 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		871F04462F84F61D00039EE2 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		871F04262F84F61A00039EE2 = {
+			isa = PBXGroup;
+			children = (
+				871F04312F84F61A00039EE2 /* SoulTrader */,
+				871F04422F84F61D00039EE2 /* SoulTraderTests */,
+				871F044C2F84F61D00039EE2 /* SoulTraderUITests */,
+				871F04302F84F61A00039EE2 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		871F04302F84F61A00039EE2 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				871F042F2F84F61A00039EE2 /* SoulTrader.app */,
+				871F043F2F84F61D00039EE2 /* SoulTraderTests.xctest */,
+				871F04492F84F61D00039EE2 /* SoulTraderUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		871F04312F84F61A00039EE2 /* SoulTrader */ = {
+			isa = PBXGroup;
+			children = (
+				871F04322F84F61A00039EE2 /* SoulTraderApp.swift */,
+				871F04342F84F61A00039EE2 /* ContentView.swift */,
+				A10000102F84F61A00039EE2 /* AppCore.swift */,
+				A10000122F84F61A00039EE2 /* AppHeaderView.swift */,
+				A10000142F84F61A00039EE2 /* LoginView.swift */,
+				A10000162F84F61A00039EE2 /* FundsView.swift */,
+				A10000182F84F61A00039EE2 /* HoldingsView.swift */,
+				A100001A2F84F61A00039EE2 /* TradesView.swift */,
+				A100001C2F84F61A00039EE2 /* Theme.swift */,
+				871F04362F84F61C00039EE2 /* Assets.xcassets */,
+				871F04382F84F61C00039EE2 /* Preview Content */,
+			);
+			path = SoulTrader;
+			sourceTree = "<group>";
+		};
+		871F04382F84F61C00039EE2 /* Preview Content */ = {
+			isa = PBXGroup;
+			children = (
+				871F04392F84F61C00039EE2 /* Preview Assets.xcassets */,
+			);
+			path = "Preview Content";
+			sourceTree = "<group>";
+		};
+		871F04422F84F61D00039EE2 /* SoulTraderTests */ = {
+			isa = PBXGroup;
+			children = (
+				871F04432F84F61D00039EE2 /* SoulTraderTests.swift */,
+			);
+			path = SoulTraderTests;
+			sourceTree = "<group>";
+		};
+		871F044C2F84F61D00039EE2 /* SoulTraderUITests */ = {
+			isa = PBXGroup;
+			children = (
+				871F044D2F84F61D00039EE2 /* SoulTraderUITests.swift */,
+				871F044F2F84F61D00039EE2 /* SoulTraderUITestsLaunchTests.swift */,
+			);
+			path = SoulTraderUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		871F042E2F84F61A00039EE2 /* SoulTrader */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 871F04532F84F61D00039EE2 /* Build configuration list for PBXNativeTarget "SoulTrader" */;
+			buildPhases = (
+				871F042B2F84F61A00039EE2 /* Sources */,
+				871F042C2F84F61A00039EE2 /* Frameworks */,
+				871F042D2F84F61A00039EE2 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SoulTrader;
+			productName = SoulTrader;
+			productReference = 871F042F2F84F61A00039EE2 /* SoulTrader.app */;
+			productType = "com.apple.product-type.application";
+		};
+		871F043E2F84F61D00039EE2 /* SoulTraderTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 871F04562F84F61D00039EE2 /* Build configuration list for PBXNativeTarget "SoulTraderTests" */;
+			buildPhases = (
+				871F043B2F84F61D00039EE2 /* Sources */,
+				871F043C2F84F61D00039EE2 /* Frameworks */,
+				871F043D2F84F61D00039EE2 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				871F04412F84F61D00039EE2 /* PBXTargetDependency */,
+			);
+			name = SoulTraderTests;
+			productName = SoulTraderTests;
+			productReference = 871F043F2F84F61D00039EE2 /* SoulTraderTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		871F04482F84F61D00039EE2 /* SoulTraderUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 871F04592F84F61D00039EE2 /* Build configuration list for PBXNativeTarget "SoulTraderUITests" */;
+			buildPhases = (
+				871F04452F84F61D00039EE2 /* Sources */,
+				871F04462F84F61D00039EE2 /* Frameworks */,
+				871F04472F84F61D00039EE2 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				871F044B2F84F61D00039EE2 /* PBXTargetDependency */,
+			);
+			name = SoulTraderUITests;
+			productName = SoulTraderUITests;
+			productReference = 871F04492F84F61D00039EE2 /* SoulTraderUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		871F04272F84F61A00039EE2 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					871F042E2F84F61A00039EE2 = {
+						CreatedOnToolsVersion = 15.0.1;
+					};
+					871F043E2F84F61D00039EE2 = {
+						CreatedOnToolsVersion = 15.0.1;
+						TestTargetID = 871F042E2F84F61A00039EE2;
+					};
+					871F04482F84F61D00039EE2 = {
+						CreatedOnToolsVersion = 15.0.1;
+						TestTargetID = 871F042E2F84F61A00039EE2;
+					};
+				};
+			};
+			buildConfigurationList = 871F042A2F84F61A00039EE2 /* Build configuration list for PBXProject "SoulTrader" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 871F04262F84F61A00039EE2;
+			productRefGroup = 871F04302F84F61A00039EE2 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				871F042E2F84F61A00039EE2 /* SoulTrader */,
+				871F043E2F84F61D00039EE2 /* SoulTraderTests */,
+				871F04482F84F61D00039EE2 /* SoulTraderUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		871F042D2F84F61A00039EE2 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				871F043A2F84F61C00039EE2 /* Preview Assets.xcassets in Resources */,
+				871F04372F84F61C00039EE2 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		871F043D2F84F61D00039EE2 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		871F04472F84F61D00039EE2 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		871F042B2F84F61A00039EE2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A100001D2F84F61A00039EE2 /* Theme.swift in Sources */,
+				A100001B2F84F61A00039EE2 /* TradesView.swift in Sources */,
+				A10000192F84F61A00039EE2 /* HoldingsView.swift in Sources */,
+				A10000172F84F61A00039EE2 /* FundsView.swift in Sources */,
+				A10000152F84F61A00039EE2 /* LoginView.swift in Sources */,
+				A10000132F84F61A00039EE2 /* AppHeaderView.swift in Sources */,
+				A10000112F84F61A00039EE2 /* AppCore.swift in Sources */,
+				871F04352F84F61A00039EE2 /* ContentView.swift in Sources */,
+				871F04332F84F61A00039EE2 /* SoulTraderApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		871F043B2F84F61D00039EE2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				871F04442F84F61D00039EE2 /* SoulTraderTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		871F04452F84F61D00039EE2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				871F044E2F84F61D00039EE2 /* SoulTraderUITests.swift in Sources */,
+				871F04502F84F61D00039EE2 /* SoulTraderUITestsLaunchTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		871F04412F84F61D00039EE2 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 871F042E2F84F61A00039EE2 /* SoulTrader */;
+			targetProxy = 871F04402F84F61D00039EE2 /* PBXContainerItemProxy */;
+		};
+		871F044B2F84F61D00039EE2 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 871F042E2F84F61A00039EE2 /* SoulTrader */;
+			targetProxy = 871F044A2F84F61D00039EE2 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		871F04512F84F61D00039EE2 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		871F04522F84F61D00039EE2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		871F04542F84F61D00039EE2 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_ASSET_PATHS = "\"SoulTrader/Preview Content\"";
+				DEVELOPMENT_TEAM = 99RY7DMR6A;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.klynt.SoulTrader;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		871F04552F84F61D00039EE2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_ASSET_PATHS = "\"SoulTrader/Preview Content\"";
+				DEVELOPMENT_TEAM = 99RY7DMR6A;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.klynt.SoulTrader;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		871F04572F84F61D00039EE2 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 99RY7DMR6A;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.klynt.SoulTraderTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/SoulTrader.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/SoulTrader";
+			};
+			name = Debug;
+		};
+		871F04582F84F61D00039EE2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 99RY7DMR6A;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.klynt.SoulTraderTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/SoulTrader.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/SoulTrader";
+			};
+			name = Release;
+		};
+		871F045A2F84F61D00039EE2 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 99RY7DMR6A;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.klynt.SoulTraderUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = SoulTrader;
+			};
+			name = Debug;
+		};
+		871F045B2F84F61D00039EE2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 99RY7DMR6A;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.klynt.SoulTraderUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = SoulTrader;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		871F042A2F84F61A00039EE2 /* Build configuration list for PBXProject "SoulTrader" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				871F04512F84F61D00039EE2 /* Debug */,
+				871F04522F84F61D00039EE2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		871F04532F84F61D00039EE2 /* Build configuration list for PBXNativeTarget "SoulTrader" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				871F04542F84F61D00039EE2 /* Debug */,
+				871F04552F84F61D00039EE2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		871F04562F84F61D00039EE2 /* Build configuration list for PBXNativeTarget "SoulTraderTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				871F04572F84F61D00039EE2 /* Debug */,
+				871F04582F84F61D00039EE2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		871F04592F84F61D00039EE2 /* Build configuration list for PBXNativeTarget "SoulTraderUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				871F045A2F84F61D00039EE2 /* Debug */,
+				871F045B2F84F61D00039EE2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 871F04272F84F61A00039EE2 /* Project object */;
+}
