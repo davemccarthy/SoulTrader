@@ -1,8 +1,12 @@
+from datetime import timedelta
+
+from django.db.models import Sum
+from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from .serializers import HoldingSerializer, TradeSerializer, ProfileSerializer, UserSerializer
-from core.models import Profile, Holding, Trade
+from core.models import Profile, Holding, Trade, Snapshot
 from core.portfolio_metrics import get_portfolio_dashboard_data
 
 
@@ -69,6 +73,69 @@ def get_funds(request):
 def get_dashboard(request):
     """Get aggregate dashboard metrics across all enabled funds."""
     return Response(get_portfolio_dashboard_data(0))
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_dashboard_history(request):
+    """
+    Snapshot wealth series for charting.
+    - global scope: /api/dashboard/history/?days=90
+    - fund scope:   /api/dashboard/history/?fund_id=26&days=90
+    """
+    days = int(request.query_params.get('days', 90) or 90)
+    days = max(7, min(days, 3650))
+    start_date = timezone.localdate() - timedelta(days=days - 1)
+    fund_id = request.query_params.get('fund_id')
+
+    if fund_id:
+        snapshots = Snapshot.objects.filter(
+            fund_id=fund_id,
+            date__gte=start_date,
+        ).order_by('date')
+        points = [
+            {
+                'date': snap.date.isoformat(),
+                'wealth': float((snap.cash_value or 0) + (snap.holdings_value or 0)),
+                'cash': float(snap.cash_value or 0),
+                'holdings': float(snap.holdings_value or 0),
+            }
+            for snap in snapshots
+        ]
+    else:
+        date_rows = (
+            Snapshot.objects
+            .filter(fund__enabled=True, date__gte=start_date)
+            .values('date')
+            .annotate(
+                cash=Sum('cash_value'),
+                holdings=Sum('holdings_value'),
+            )
+            .order_by('date')
+        )
+        points = [
+            {
+                'date': row['date'].isoformat(),
+                'wealth': float((row['cash'] or 0) + (row['holdings'] or 0)),
+                'cash': float(row['cash'] or 0),
+                'holdings': float(row['holdings'] or 0),
+            }
+            for row in date_rows
+        ]
+
+    change_percent = 0.0
+    if len(points) >= 2:
+        first = points[0]['wealth']
+        last = points[-1]['wealth']
+        if first > 0:
+            change_percent = ((last - first) / first) * 100.0
+
+    return Response({
+        'points': points,
+        'change_percent': change_percent,
+        'days': days,
+        'scope': 'fund' if fund_id else 'global',
+    })
 
 
 @api_view(['GET'])
