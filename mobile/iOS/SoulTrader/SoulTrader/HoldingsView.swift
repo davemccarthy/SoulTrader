@@ -4,35 +4,43 @@ struct HoldingsView: View {
     @ObservedObject var viewModel: AuthViewModel
 
     var body: some View {
-        Group {
-            if viewModel.holdings.isEmpty {
-                VStack(spacing: 8) {
-                    Text("No holdings to show.")
-                        .font(.headline)
-                        .foregroundStyle(.white)
-                    Text("Select a fund with holdings on the FUNDS tab.")
-                        .font(.footnote)
-                        .foregroundStyle(Theme.secondaryText)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                .padding()
-            } else {
-                List(viewModel.holdings) { holding in
-                    HStack(spacing: 12) {
-                        imageTickerPair(symbol: holding.stock.symbol)
-                        middleCompanyInvestmentPair(holding: holding)
-                        Spacer()
-                        pricePnlPair(holding: holding)
-                    }
-                    .padding(.vertical, 4)
+        VStack(spacing: 8) {
+            if let fund = viewModel.selectedFund {
+                FundSummaryCard(fund: fund)
                     .padding(.horizontal, 6)
-                    .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
-                    .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
-                    .listRowBackground(Color.clear)
+                    .padding(.top, 6)
+            }
+
+            Group {
+                if viewModel.holdings.isEmpty {
+                    VStack(spacing: 8) {
+                        Text("No holdings to show.")
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                        Text("Select a fund with holdings on the FUNDS tab.")
+                            .font(.footnote)
+                            .foregroundStyle(Theme.secondaryText)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    .padding()
+                } else {
+                    List(viewModel.holdings) { holding in
+                        HStack(spacing: 12) {
+                            imageTickerPair(symbol: holding.stock.symbol)
+                            middleCompanyInvestmentPair(holding: holding)
+                            Spacer()
+                            pricePnlPair(holding: holding)
+                        }
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 6)
+                        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+                        .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
+                        .listRowBackground(Color.clear)
+                    }
+                    .scrollContentBackground(.hidden)
+                    .scrollIndicators(.hidden)
+                    .background(Theme.appBackground)
                 }
-                .scrollContentBackground(.hidden)
-                .scrollIndicators(.hidden)
-                .background(Theme.appBackground)
             }
         }
         .background(Theme.appBackground)

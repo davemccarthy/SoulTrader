@@ -25,6 +25,7 @@ struct FundDashboardResponse: Decodable {
     let returnAmount: Double
     let cash: Double
     let holdingsCount: Int
+    let tradePnl: Double
     let holdingsPnl: Double
     let returnPercent: Double
     let estAbvPercent: Double
@@ -36,6 +37,7 @@ struct FundDashboardResponse: Decodable {
         case returnAmount = "return_amount"
         case cash
         case holdingsCount = "holdings_count"
+        case tradePnl = "trade_pnl"
         case holdingsPnl = "holdings_pnl"
         case returnPercent = "return_percent"
         case estAbvPercent = "est_abv_percent"
@@ -51,6 +53,20 @@ struct FundResponse: Decodable, Identifiable {
     let risk: String
     let advisors: [String]
     let dashboard: FundDashboardResponse
+}
+
+struct GlobalDashboardResponse: Decodable {
+    let totalValue: Double
+    let holdingsPnl: Double
+    let returnPercent: Double
+    let todayPercent: Double
+
+    private enum CodingKeys: String, CodingKey {
+        case totalValue = "total_value"
+        case holdingsPnl = "holdings_pnl"
+        case returnPercent = "return_percent"
+        case todayPercent = "today_percent"
+    }
 }
 
 struct StockInfo: Decodable {
@@ -179,6 +195,16 @@ struct APIClient {
         return try JSONDecoder().decode([FundResponse].self, from: data)
     }
 
+    func fetchGlobalDashboard(accessToken: String) async throws -> GlobalDashboardResponse {
+        let url = endpoint("dashboard/")
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(GlobalDashboardResponse.self, from: data)
+    }
+
     func fetchHoldings(accessToken: String, fundId: Int?) async throws -> [HoldingResponse] {
         let base = endpoint("holdings/")
         var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
@@ -222,6 +248,7 @@ final class AuthViewModel: ObservableObject {
     @Published var funds: [FundResponse] = []
     @Published var holdings: [HoldingResponse] = []
     @Published var trades: [TradeResponse] = []
+    @Published var globalDashboard: GlobalDashboardResponse?
     @Published var isLoading = false
     @Published var statusMessage: String?
 
@@ -234,6 +261,7 @@ final class AuthViewModel: ObservableObject {
     var isAuthenticated: Bool { tokenStore.getAccessToken() != nil }
     var hasSelectedFund: Bool { selectedFundId != nil }
     var selectedFundName: String? { funds.first(where: { $0.id == selectedFundId })?.name }
+    var selectedFund: FundResponse? { funds.first(where: { $0.id == selectedFundId }) }
 
     var headerTitle: String {
         switch selectedTab {
@@ -271,10 +299,12 @@ final class AuthViewModel: ObservableObject {
             guard let access = tokenStore.getAccessToken() else { throw APIError.missingToken }
             async let userTask = apiClient.fetchCurrentUser(accessToken: access)
             async let fundsTask = apiClient.fetchFunds(accessToken: access)
+            async let dashboardTask = apiClient.fetchGlobalDashboard(accessToken: access)
             async let holdingsTask = apiClient.fetchHoldings(accessToken: access, fundId: selectedFundId)
             async let tradesTask = apiClient.fetchTrades(accessToken: access, fundId: selectedFundId)
             currentUser = try await userTask
             funds = try await fundsTask
+            globalDashboard = try await dashboardTask
             holdings = try await holdingsTask
             trades = try await tradesTask
             statusMessage = "Data refreshed."
@@ -290,6 +320,7 @@ final class AuthViewModel: ObservableObject {
         funds = []
         holdings = []
         trades = []
+        globalDashboard = nil
         username = ""
         password = ""
         selectedTab = .funds
@@ -303,6 +334,106 @@ final class AuthViewModel: ObservableObject {
     }
 
     func clearSelectedFund() { selectedFundId = nil }
+}
+
+struct FundSummaryCard: View {
+    let fund: FundResponse
+
+    var body: some View {
+        HStack(spacing: 8) {
+            pair(title: "WEALTH", value: formatCurrency(fund.dashboard.totalValue), alignment: .leading)
+            pair(title: "PORTFOLIO", value: formatPercent(fund.dashboard.holdingsPnl), color: percentColor(fund.dashboard.holdingsPnl), alignment: .trailing)
+            pair(title: "TODAY", value: formatPercent(fund.dashboard.todayPercent), color: percentColor(fund.dashboard.todayPercent), alignment: .trailing)
+            pair(title: "P&L", value: formatPercent(fund.dashboard.returnPercent), color: percentColor(fund.dashboard.returnPercent), alignment: .trailing)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
+        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func pair(title: String, value: String, color: Color = Theme.valuePrimary, alignment: Alignment) -> some View {
+        VStack(alignment: alignment == .leading ? .leading : .trailing, spacing: 2) {
+            Text(title)
+                .font(.caption2)
+                .fontWeight(.semibold)
+                .foregroundStyle(Theme.labelAccent)
+            Text(value)
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .foregroundStyle(color)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: alignment)
+    }
+
+    private func formatCurrency(_ value: Double) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.maximumFractionDigits = 2
+        return formatter.string(from: NSNumber(value: value)) ?? "$0.00"
+    }
+
+    private func formatPercent(_ value: Double) -> String {
+        let normalized = abs(value) < 0.005 ? 0.0 : value
+        return String(format: "%.2f%%", normalized)
+    }
+
+    private func percentColor(_ value: Double) -> Color {
+        let normalized = abs(value) < 0.005 ? 0.0 : value
+        if normalized > 0 { return .green }
+        if normalized < 0 { return .red }
+        return Theme.valuePrimary
+    }
+}
+
+struct GlobalSummaryCard: View {
+    let dashboard: GlobalDashboardResponse
+
+    var body: some View {
+        HStack(spacing: 8) {
+            pair(title: "WEALTH", value: formatCurrency(dashboard.totalValue), alignment: .leading)
+            pair(title: "PORTFOLIO", value: formatPercent(dashboard.holdingsPnl), color: percentColor(dashboard.holdingsPnl), alignment: .trailing)
+            pair(title: "TODAY", value: formatPercent(dashboard.todayPercent), color: percentColor(dashboard.todayPercent), alignment: .trailing)
+            pair(title: "P&L", value: formatPercent(dashboard.returnPercent), color: percentColor(dashboard.returnPercent), alignment: .trailing)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
+        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func pair(title: String, value: String, color: Color = Theme.valuePrimary, alignment: Alignment) -> some View {
+        VStack(alignment: alignment == .leading ? .leading : .trailing, spacing: 2) {
+            Text(title)
+                .font(.caption2)
+                .fontWeight(.semibold)
+                .foregroundStyle(Theme.labelAccent)
+            Text(value)
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .foregroundStyle(color)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: alignment)
+    }
+
+    private func formatCurrency(_ value: Double) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.maximumFractionDigits = 2
+        return formatter.string(from: NSNumber(value: value)) ?? "$0.00"
+    }
+
+    private func formatPercent(_ value: Double) -> String {
+        let normalized = abs(value) < 0.005 ? 0.0 : value
+        return String(format: "%.2f%%", normalized)
+    }
+
+    private func percentColor(_ value: Double) -> Color {
+        let normalized = abs(value) < 0.005 ? 0.0 : value
+        if normalized > 0 { return .green }
+        if normalized < 0 { return .red }
+        return Theme.valuePrimary
+    }
 }
 
 func configureTabBarAppearance() {

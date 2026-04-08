@@ -4,72 +4,81 @@ struct FundsView: View {
     @ObservedObject var viewModel: AuthViewModel
 
     var body: some View {
-        List(viewModel.funds) { fund in
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .top, spacing: 0) {
-                    metricPair(
-                        title: "FUND",
-                        value: fund.name.isEmpty ? "Unnamed" : fund.name,
-                        alignment: .leading,
-                        isFlexible: false
-                    )
-                    .frame(width: 64, alignment: .leading)
-
-                    metricPair(
-                        title: "WEALTH",
-                        value: formatCurrency(fund.dashboard.totalValue),
-                        alignment: .leading
-                    )
-                    .frame(width: 128, alignment: .leading)
-
-                    metricPair(
-                        title: "PORTFOLIO",
-                        value: formatPercent(fund.dashboard.holdingsPnl),
-                        color: percentColor(fund.dashboard.holdingsPnl),
-                        alignment: .trailing
-                    )
-
-                    metricPair(
-                        title: "P&L",
-                        value: formatPercent(fund.dashboard.returnPercent),
-                        color: percentColor(fund.dashboard.returnPercent),
-                        alignment: .trailing
-                    )
-                }
-
-                HStack(spacing: 10) {
-                    Text("\(fund.dashboard.estabDays) days")
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(Theme.valuePrimary)
-                    Spacer()
-                    miniPair(
-                        title: "ABV:",
-                        value: formatPercent(fund.dashboard.estAbvPercent),
-                        color: percentColor(fund.dashboard.estAbvPercent)
-                    )
-                    miniPair(
-                        title: "TODAY:",
-                        value: formatPercent(fund.dashboard.todayPercent),
-                        color: percentColor(fund.dashboard.todayPercent)
-                    )
-                }
+        VStack(spacing: 8) {
+            if let dashboard = viewModel.globalDashboard {
+                GlobalSummaryCard(dashboard: dashboard)
+                    .padding(.horizontal, 6)
+                    .padding(.top, 6)
             }
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                Task { await viewModel.selectFund(fund.id) }
+
+            List(viewModel.funds) { fund in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .top, spacing: 0) {
+                        metricPair(
+                            title: "FUND",
+                            value: fund.name.isEmpty ? "Unnamed" : fund.name,
+                            alignment: .leading,
+                            isFlexible: false
+                        )
+                        .frame(width: 64, alignment: .leading)
+
+                        metricPair(
+                            title: "WEALTH",
+                            value: formatCurrency(fund.dashboard.totalValue),
+                            alignment: .leading
+                        )
+                        .frame(width: 128, alignment: .leading)
+
+                        metricPair(
+                            title: "PORTFOLIO",
+                            value: formatPercent(fund.dashboard.holdingsPnl),
+                            color: percentColor(fund.dashboard.holdingsPnl),
+                            alignment: .trailing
+                        )
+
+                        metricPair(
+                            title: "P&L",
+                            value: formatPercent(fund.dashboard.returnPercent),
+                            color: percentColor(fund.dashboard.returnPercent),
+                            alignment: .trailing
+                        )
+                    }
+
+                    HStack(spacing: 10) {
+                        Text("\(fund.dashboard.estabDays) days")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(Theme.valuePrimary)
+                        Spacer()
+                        miniPair(
+                            title: "ABV:",
+                            value: formatPercent(fund.dashboard.estAbvPercent),
+                            color: percentColor(fund.dashboard.estAbvPercent)
+                        )
+                        miniPair(
+                            title: "TODAY:",
+                            value: formatPercent(fund.dashboard.todayPercent),
+                            color: percentColor(fund.dashboard.todayPercent)
+                        )
+                    }
+                }
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    Task { await viewModel.selectFund(fund.id) }
+                }
+                .background(
+                    viewModel.selectedFundId == fund.id
+                        ? Color.green.opacity(0.08)
+                        : Color.clear
+                )
+                .listRowBackground(Theme.rowBackground)
+                .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
             }
-            .background(
-                viewModel.selectedFundId == fund.id
-                    ? Color.green.opacity(0.08)
-                    : Color.clear
-            )
-            .listRowBackground(Theme.rowBackground)
-            .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
+            .scrollContentBackground(.hidden)
+            .scrollIndicators(.hidden)
+            .background(Theme.appBackground)
         }
-        .scrollContentBackground(.hidden)
-        .scrollIndicators(.hidden)
         .background(Theme.appBackground)
         .toolbar(.hidden, for: .navigationBar)
     }

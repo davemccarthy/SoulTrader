@@ -91,6 +91,34 @@ def _dashboard_all_enabled_funds() -> Dict[str, Any]:
     else:
         holdings_pnl_pct = Decimal("0.0")
 
+    latest_dates = list(
+        Snapshot.objects
+        .filter(fund__enabled=True)
+        .order_by("-date")
+        .values_list("date", flat=True)
+        .distinct()[:2]
+    )
+    today_percent = Decimal("0.0")
+    if len(latest_dates) == 2:
+        latest_agg = Snapshot.objects.filter(
+            fund__enabled=True,
+            date=latest_dates[0],
+        ).aggregate(
+            cash=Sum("cash_value"),
+            holdings=Sum("holdings_value"),
+        )
+        previous_agg = Snapshot.objects.filter(
+            fund__enabled=True,
+            date=latest_dates[1],
+        ).aggregate(
+            cash=Sum("cash_value"),
+            holdings=Sum("holdings_value"),
+        )
+        latest_total = (latest_agg["cash"] or Decimal("0")) + (latest_agg["holdings"] or Decimal("0"))
+        previous_total = (previous_agg["cash"] or Decimal("0")) + (previous_agg["holdings"] or Decimal("0"))
+        if previous_total > 0:
+            today_percent = ((latest_total - previous_total) / previous_total) * Decimal("100")
+
     return {
         "total_value": float(total_value),
         "cash": float(total_cash),
@@ -101,7 +129,7 @@ def _dashboard_all_enabled_funds() -> Dict[str, Any]:
         "trade_pnl": float(trade_pnl_percent),
         "holdings_pnl": float(holdings_pnl_pct),
         "return_percent": float(return_percent),
-        "today_percent": 0.0,
+        "today_percent": float(today_percent),
     }
 
 

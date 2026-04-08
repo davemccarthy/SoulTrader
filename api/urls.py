@@ -12,6 +12,7 @@ urlpatterns = [
 
     # Funds
     path('funds/', views.get_funds, name='funds'),
+    path('dashboard/', views.get_dashboard, name='dashboard'),
 
     # Holdings
     path('holdings/', views.get_holdings, name='holdings'),

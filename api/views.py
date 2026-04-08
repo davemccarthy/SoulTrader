@@ -66,6 +66,13 @@ def get_funds(request):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+def get_dashboard(request):
+    """Get aggregate dashboard metrics across all enabled funds."""
+    return Response(get_portfolio_dashboard_data(0))
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def get_profile(request):
     """Get user profile"""
     from core.models import Profile

@@ -4,35 +4,43 @@ struct TradesView: View {
     @ObservedObject var viewModel: AuthViewModel
 
     var body: some View {
-        Group {
-            if viewModel.trades.isEmpty {
-                VStack(spacing: 8) {
-                    Text("No trades to show.")
-                        .font(.headline)
-                        .foregroundStyle(.white)
-                    Text("Select a fund to view its trade history.")
-                        .font(.footnote)
-                        .foregroundStyle(Theme.secondaryText)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                .padding()
-            } else {
-                List(viewModel.trades) { trade in
-                    HStack(spacing: 12) {
-                        imageTickerPair(symbol: trade.stock.symbol)
-                        middleCompanySharesPair(trade: trade)
-                        Spacer()
-                        rightAmountActionPair(trade: trade)
-                    }
-                    .padding(.vertical, 4)
+        VStack(spacing: 8) {
+            if let fund = viewModel.selectedFund {
+                FundSummaryCard(fund: fund)
                     .padding(.horizontal, 6)
-                    .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
-                    .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
-                    .listRowBackground(Color.clear)
+                    .padding(.top, 6)
+            }
+
+            Group {
+                if viewModel.trades.isEmpty {
+                    VStack(spacing: 8) {
+                        Text("No trades to show.")
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                        Text("Select a fund to view its trade history.")
+                            .font(.footnote)
+                            .foregroundStyle(Theme.secondaryText)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    .padding()
+                } else {
+                    List(viewModel.trades) { trade in
+                        HStack(spacing: 12) {
+                            imageTickerPair(symbol: trade.stock.symbol)
+                            middleCompanySharesPair(trade: trade)
+                            Spacer()
+                            rightAmountActionPair(trade: trade)
+                        }
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 6)
+                        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+                        .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
+                        .listRowBackground(Color.clear)
+                    }
+                    .scrollContentBackground(.hidden)
+                    .scrollIndicators(.hidden)
+                    .background(Theme.appBackground)
                 }
-                .scrollContentBackground(.hidden)
-                .scrollIndicators(.hidden)
-                .background(Theme.appBackground)
             }
         }
         .background(Theme.appBackground)
