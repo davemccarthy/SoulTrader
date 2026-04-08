@@ -25,27 +25,34 @@ struct FundsView: View {
                     metricPair(
                         title: "PORTFOLIO",
                         value: formatPercent(fund.dashboard.holdingsPnl),
-                        color: fund.dashboard.holdingsPnl >= 0 ? .green : .red,
+                        color: percentColor(fund.dashboard.holdingsPnl),
                         alignment: .trailing
                     )
 
                     metricPair(
                         title: "P&L",
                         value: formatPercent(fund.dashboard.returnPercent),
-                        color: fund.dashboard.returnPercent >= 0 ? .green : .red,
+                        color: percentColor(fund.dashboard.returnPercent),
                         alignment: .trailing
                     )
                 }
 
                 HStack(spacing: 10) {
-                    miniPair(title: "DUR:", value: "\(fund.dashboard.estabDays) days")
+                    Text("\(fund.dashboard.estabDays) days")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(Theme.valuePrimary)
                     Spacer()
                     miniPair(
-                        title: "EST ABV:",
+                        title: "ABV:",
                         value: formatPercent(fund.dashboard.estAbvPercent),
-                        color: fund.dashboard.estAbvPercent >= 0 ? .green : .red
+                        color: percentColor(fund.dashboard.estAbvPercent)
                     )
-                    miniPair(title: "TODAY:", value: "0.00%")
+                    miniPair(
+                        title: "TODAY:",
+                        value: formatPercent(fund.dashboard.todayPercent),
+                        color: percentColor(fund.dashboard.todayPercent)
+                    )
                 }
             }
             .padding(.vertical, 4)
@@ -112,6 +119,18 @@ struct FundsView: View {
     }
 
     private func formatPercent(_ value: Double) -> String {
-        String(format: "%.2f%%", value)
+        let normalized = normalizedPercent(value)
+        return String(format: "%.2f%%", normalized)
+    }
+
+    private func percentColor(_ value: Double) -> Color {
+        let normalized = normalizedPercent(value)
+        if normalized > 0 { return .green }
+        if normalized < 0 { return .red }
+        return Theme.valuePrimary
+    }
+
+    private func normalizedPercent(_ value: Double) -> Double {
+        abs(value) < 0.005 ? 0.0 : value
     }
 }

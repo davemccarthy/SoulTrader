@@ -128,7 +128,9 @@ struct TradesView: View {
             return "Today"
         }
         if calendar.isDateInYesterday(date) {
-            return "Yesterday"
+            let weekdayFormatter = DateFormatter()
+            weekdayFormatter.dateFormat = "EEEE"
+            return weekdayFormatter.string(from: date)
         }
 
         let now = Date()

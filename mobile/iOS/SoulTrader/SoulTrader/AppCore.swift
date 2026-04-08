@@ -29,6 +29,7 @@ struct FundDashboardResponse: Decodable {
     let returnPercent: Double
     let estAbvPercent: Double
     let estabDays: Int
+    let todayPercent: Double
 
     private enum CodingKeys: String, CodingKey {
         case totalValue = "total_value"
@@ -39,6 +40,7 @@ struct FundDashboardResponse: Decodable {
         case returnPercent = "return_percent"
         case estAbvPercent = "est_abv_percent"
         case estabDays = "estab_days"
+        case todayPercent = "today_percent"
     }
 }
 

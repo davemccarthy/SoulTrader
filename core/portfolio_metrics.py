@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional, Union
 from django.db.models import Sum
 from django.utils import timezone
 
-from core.models import Holding, Profile, Trade
+from core.models import Holding, Profile, Trade, Snapshot
 
 FundArg = Union[Optional[Profile], int]
 
@@ -29,6 +29,7 @@ EMPTY_PORTFOLIO_DASHBOARD: Dict[str, Any] = {
     # ABV is an annualized version of current return, based on fund age.
     "estab_days": 0,
     "est_abv_percent": 0.0,
+    "today_percent": 0.0,
 }
 
 
@@ -100,7 +101,30 @@ def _dashboard_all_enabled_funds() -> Dict[str, Any]:
         "trade_pnl": float(trade_pnl_percent),
         "holdings_pnl": float(holdings_pnl_pct),
         "return_percent": float(return_percent),
+        "today_percent": 0.0,
     }
+
+
+def _compute_today_percent_for_fund(fund: Profile) -> Decimal:
+    """Snapshot-based day-over-day percent change for one fund."""
+    latest_two = list(
+        Snapshot.objects
+        .filter(fund=fund)
+        .order_by("-date", "-created")[:2]
+    )
+    if len(latest_two) < 2:
+        return Decimal("0.0")
+
+    latest = latest_two[0]
+    previous = latest_two[1]
+
+    latest_total = (latest.cash_value or Decimal("0")) + (latest.holdings_value or Decimal("0"))
+    previous_total = (previous.cash_value or Decimal("0")) + (previous.holdings_value or Decimal("0"))
+
+    if previous_total <= 0:
+        return Decimal("0.0")
+
+    return ((latest_total - previous_total) / previous_total) * Decimal("100")
 
 
 def get_portfolio_dashboard_data(fund: FundArg) -> Dict[str, Any]:
@@ -175,6 +199,8 @@ def get_portfolio_dashboard_data(fund: FundArg) -> Dict[str, Any]:
     else:
         holdings_pnl_pct = Decimal("0.0")
 
+    today_percent = _compute_today_percent_for_fund(fund)
+
     return {
         "total_value": float(total_value),
         "cash": float(fund.cash),
@@ -187,4 +213,5 @@ def get_portfolio_dashboard_data(fund: FundArg) -> Dict[str, Any]:
         "return_percent": float(return_percent),
         "estab_days": days_active,
         "est_abv_percent": float(est_abv_percent),
+        "today_percent": float(today_percent),
     }
