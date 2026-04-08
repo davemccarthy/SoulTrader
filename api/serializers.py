@@ -28,7 +28,7 @@ class TradeSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Trade
-        fields = ['id', 'stock', 'action', 'price', 'shares', 'sa']
+        fields = ['id', 'stock', 'action', 'price', 'shares', 'sa', 'created']
 
 
 class ProfileSerializer(serializers.ModelSerializer):

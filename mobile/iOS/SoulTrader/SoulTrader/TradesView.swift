@@ -58,7 +58,8 @@ struct TradesView: View {
     }
 
     private func middleCompanySharesPair(trade: TradeResponse) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+        let datePrefix = tradeDatePrefix(from: trade.created)
+        return VStack(alignment: .leading, spacing: 3) {
             Text(trade.stock.company ?? trade.stock.symbol)
                 .font(.subheadline)
                 .fontWeight(.semibold)
@@ -66,7 +67,7 @@ struct TradesView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
 
-            Text("\(trade.shares) shares @ \(formatCurrency(decimal(from: trade.price)))")
+            Text("\(datePrefix) - \(trade.shares) shares @ \(formatCurrency(decimal(from: trade.price)))")
                 .font(.caption)
                 .fontWeight(.semibold)
                 .foregroundStyle(Theme.valuePrimary)
@@ -110,5 +111,36 @@ struct TradesView: View {
         formatter.numberStyle = .currency
         formatter.maximumFractionDigits = 2
         return formatter.string(from: NSDecimalNumber(decimal: value)) ?? "$0.00"
+    }
+
+    private func tradeDatePrefix(from isoString: String?) -> String {
+        guard let isoString else { return "Date" }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let parsedWithFractions = formatter.date(from: isoString)
+        if parsedWithFractions == nil {
+            formatter.formatOptions = [.withInternetDateTime]
+        }
+        guard let date = parsedWithFractions ?? formatter.date(from: isoString) else { return "Date" }
+
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) {
+            return "Today"
+        }
+        if calendar.isDateInYesterday(date) {
+            return "Yesterday"
+        }
+
+        let now = Date()
+        if let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: now)).day,
+           days >= 0, days <= 5 {
+            let weekdayFormatter = DateFormatter()
+            weekdayFormatter.dateFormat = "EEEE"
+            return weekdayFormatter.string(from: date)
+        }
+
+        let shortFormatter = DateFormatter()
+        shortFormatter.dateFormat = "MMM d"
+        return shortFormatter.string(from: date)
     }
 }

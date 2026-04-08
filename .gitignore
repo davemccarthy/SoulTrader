@@ -31,6 +31,12 @@ db.sqlite3-journal
 *.swo
 *~
 
+# Xcode user-specific files
+*.xcuserstate
+*.xcuserdata/
+*.xccheckout
+*.xcscmblueprint
+
 # OS
 .DS_Store
 Thumbs.db

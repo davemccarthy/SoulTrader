@@ -7,6 +7,11 @@ struct LoginView: View {
         NavigationStack {
             Form {
                 Section("Login") {
+                    Picker("Host", selection: $viewModel.selectedHost) {
+                        ForEach(APIEnvironment.HostOption.allCases) { host in
+                            Text(host.rawValue).tag(host)
+                        }
+                    }
                     TextField("Username", text: $viewModel.username)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()

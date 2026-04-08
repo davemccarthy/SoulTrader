@@ -78,6 +78,7 @@ struct TradeResponse: Decodable, Identifiable {
     let price: String
     let shares: Int
     let sa: Int?
+    let created: String?
 }
 
 struct LoginRequest: Encodable {
@@ -86,7 +87,21 @@ struct LoginRequest: Encodable {
 }
 
 struct APIEnvironment {
-    static let baseURL = URL(string: "http://192.168.1.6:8000/api/")!
+    enum HostOption: String, CaseIterable, Identifiable {
+        case local = "192.168.1.6:8000"
+        case klynt = "klynt.com"
+
+        var id: String { rawValue }
+
+        var baseURL: URL {
+            switch self {
+            case .local:
+                return URL(string: "http://192.168.1.6:8000/api/")!
+            case .klynt:
+                return URL(string: "https://klynt.com/api/")!
+            }
+        }
+    }
 }
 
 struct TokenStore {
@@ -198,6 +213,7 @@ struct APIClient {
 final class AuthViewModel: ObservableObject {
     @Published var username = ""
     @Published var password = ""
+    @Published var selectedHost: APIEnvironment.HostOption = .local
     @Published var selectedTab: AppTab = .funds
     @Published var selectedFundId: Int?
     @Published var currentUser: UserProfile?
@@ -208,7 +224,10 @@ final class AuthViewModel: ObservableObject {
     @Published var statusMessage: String?
 
     private let tokenStore = TokenStore()
-    private let apiClient = APIClient(baseURL: APIEnvironment.baseURL)
+
+    private var apiClient: APIClient {
+        APIClient(baseURL: selectedHost.baseURL)
+    }
 
     var isAuthenticated: Bool { tokenStore.getAccessToken() != nil }
     var hasSelectedFund: Bool { selectedFundId != nil }
