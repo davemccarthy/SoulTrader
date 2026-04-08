@@ -13,7 +13,6 @@ urlpatterns = [
     # Funds
     path('funds/', views.get_funds, name='funds'),
     path('dashboard/', views.get_dashboard, name='dashboard'),
-    path('dashboard/history/', views.get_dashboard_history, name='dashboard_history'),
 
     # Holdings
     path('holdings/', views.get_holdings, name='holdings'),

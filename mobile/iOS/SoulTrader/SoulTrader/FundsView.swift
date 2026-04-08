@@ -11,15 +11,9 @@ struct FundsView: View {
                     .padding(.top, 6)
             }
 
-            List {
-                WealthChartCard(points: viewModel.globalHistory)
-                    .listRowInsets(EdgeInsets(top: 4, leading: 6, bottom: 8, trailing: 6))
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-
-                ForEach(viewModel.funds) { fund in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(alignment: .top, spacing: 0) {
+            List(viewModel.funds) { fund in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .top, spacing: 0) {
                         metricPair(
                             title: "FUND",
                             value: fund.name.isEmpty ? "Unnamed" : fund.name,
@@ -48,9 +42,9 @@ struct FundsView: View {
                             color: percentColor(fund.dashboard.returnPercent),
                             alignment: .trailing
                         )
-                        }
+                    }
 
-                        HStack(spacing: 10) {
+                    HStack(spacing: 10) {
                         Text("\(fund.dashboard.estabDays) days")
                             .font(.caption)
                             .fontWeight(.semibold)
@@ -66,21 +60,20 @@ struct FundsView: View {
                             value: formatPercent(fund.dashboard.todayPercent),
                             color: percentColor(fund.dashboard.todayPercent)
                         )
-                        }
                     }
-                    .padding(.vertical, 4)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        Task { await viewModel.selectFund(fund.id) }
-                    }
-                    .background(
-                        viewModel.selectedFundId == fund.id
-                            ? Color.green.opacity(0.08)
-                            : Color.clear
-                    )
-                    .listRowBackground(Theme.rowBackground)
-                    .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
                 }
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    Task { await viewModel.selectFund(fund.id) }
+                }
+                .background(
+                    viewModel.selectedFundId == fund.id
+                        ? Color.green.opacity(0.08)
+                        : Color.clear
+                )
+                .listRowBackground(Theme.rowBackground)
+                .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
             }
             .scrollContentBackground(.hidden)
             .scrollIndicators(.hidden)
@@ -130,10 +123,8 @@ struct FundsView: View {
     private func formatCurrency(_ value: Double) -> String {
         let formatter = NumberFormatter()
         formatter.numberStyle = .currency
-        formatter.minimumFractionDigits = 0
-        formatter.maximumFractionDigits = 0
-        formatter.roundingMode = .halfUp
-        return formatter.string(from: NSNumber(value: value)) ?? "$0"
+        formatter.maximumFractionDigits = 2
+        return formatter.string(from: NSNumber(value: value)) ?? "$0.00"
     }
 
     private func formatPercent(_ value: Double) -> String {

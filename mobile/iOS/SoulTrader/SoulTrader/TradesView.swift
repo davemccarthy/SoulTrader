@@ -11,12 +11,7 @@ struct TradesView: View {
                     .padding(.top, 6)
             }
 
-            List {
-                WealthChartCard(points: viewModel.selectedFundHistory)
-                    .listRowInsets(EdgeInsets(top: 4, leading: 6, bottom: 8, trailing: 6))
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-
+            Group {
                 if viewModel.trades.isEmpty {
                     VStack(spacing: 8) {
                         Text("No trades to show.")
@@ -26,13 +21,10 @@ struct TradesView: View {
                             .font(.footnote)
                             .foregroundStyle(Theme.secondaryText)
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 24)
-                    .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    .padding()
                 } else {
-                    ForEach(viewModel.trades) { trade in
+                    List(viewModel.trades) { trade in
                         HStack(spacing: 12) {
                             imageTickerPair(symbol: trade.stock.symbol)
                             middleCompanySharesPair(trade: trade)
@@ -45,11 +37,11 @@ struct TradesView: View {
                         .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
                         .listRowBackground(Color.clear)
                     }
+                    .scrollContentBackground(.hidden)
+                    .scrollIndicators(.hidden)
+                    .background(Theme.appBackground)
                 }
             }
-            .scrollContentBackground(.hidden)
-            .scrollIndicators(.hidden)
-            .background(Theme.appBackground)
         }
         .background(Theme.appBackground)
         .toolbar(.hidden, for: .navigationBar)
@@ -60,16 +52,17 @@ struct TradesView: View {
             AsyncImage(url: URL(string: "https://images.financialmodelingprep.com/symbol/\(symbol).png")) { image in
                 image.resizable().scaledToFit()
             } placeholder: {
-                RoundedRectangle(cornerRadius: 5).fill(Color.gray.opacity(0.15))
+                RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.15))
             }
-            .frame(width: 26, height: 26)
+            .frame(width: 34, height: 34)
 
             Text(symbol)
-                .font(.system(size: 11, weight: .bold))
+                .font(.caption)
+                .fontWeight(.bold)
                 .foregroundStyle(Theme.valuePrimary)
                 .lineLimit(1)
         }
-        .frame(width: 50, alignment: .leading)
+        .frame(width: 56, alignment: .leading)
     }
 
     private func middleCompanySharesPair(trade: TradeResponse) -> some View {
@@ -82,7 +75,7 @@ struct TradesView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
 
-            Text("\(datePrefix) - \(trade.shares) @ \(formatCurrency(decimal(from: trade.price)))")
+            Text("\(datePrefix) - \(trade.shares) shares @ \(formatCurrency(decimal(from: trade.price)))")
                 .font(.caption)
                 .fontWeight(.semibold)
                 .foregroundStyle(Theme.valuePrimary)

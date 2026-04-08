@@ -1,6 +1,5 @@
 import SwiftUI
 import UIKit
-import Charts
 
 let appBackground = Theme.appBackground
 
@@ -68,29 +67,6 @@ struct GlobalDashboardResponse: Decodable {
         case returnPercent = "return_percent"
         case todayPercent = "today_percent"
     }
-}
-
-struct DashboardHistoryPointResponse: Decodable {
-    let date: String
-    let wealth: Double
-    let cash: Double
-    let holdings: Double
-}
-
-struct DashboardHistoryResponse: Decodable {
-    let points: [DashboardHistoryPointResponse]
-    let changePercent: Double
-
-    private enum CodingKeys: String, CodingKey {
-        case points
-        case changePercent = "change_percent"
-    }
-}
-
-struct WealthChartPoint: Identifiable {
-    let id: String
-    let date: Date
-    let wealth: Double
 }
 
 struct StockInfo: Decodable {
@@ -229,22 +205,6 @@ struct APIClient {
         return try JSONDecoder().decode(GlobalDashboardResponse.self, from: data)
     }
 
-    func fetchDashboardHistory(accessToken: String, fundId: Int?, days: Int = 90) async throws -> DashboardHistoryResponse {
-        let base = endpoint("dashboard/history/")
-        var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
-        var items = [URLQueryItem(name: "days", value: String(days))]
-        if let fundId {
-            items.append(URLQueryItem(name: "fund_id", value: String(fundId)))
-        }
-        components.queryItems = items
-        var request = URLRequest(url: components.url!)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await session.data(for: request)
-        try validate(response: response, data: data)
-        return try JSONDecoder().decode(DashboardHistoryResponse.self, from: data)
-    }
-
     func fetchHoldings(accessToken: String, fundId: Int?) async throws -> [HoldingResponse] {
         let base = endpoint("holdings/")
         var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
@@ -289,8 +249,6 @@ final class AuthViewModel: ObservableObject {
     @Published var holdings: [HoldingResponse] = []
     @Published var trades: [TradeResponse] = []
     @Published var globalDashboard: GlobalDashboardResponse?
-    @Published var globalHistory: [WealthChartPoint] = []
-    @Published var selectedFundHistory: [WealthChartPoint] = []
     @Published var isLoading = false
     @Published var statusMessage: String?
 
@@ -304,7 +262,6 @@ final class AuthViewModel: ObservableObject {
     var hasSelectedFund: Bool { selectedFundId != nil }
     var selectedFundName: String? { funds.first(where: { $0.id == selectedFundId })?.name }
     var selectedFund: FundResponse? { funds.first(where: { $0.id == selectedFundId }) }
-    var activeHistory: [WealthChartPoint] { selectedTab == .funds ? globalHistory : selectedFundHistory }
 
     var headerTitle: String {
         switch selectedTab {
@@ -342,32 +299,14 @@ final class AuthViewModel: ObservableObject {
             guard let access = tokenStore.getAccessToken() else { throw APIError.missingToken }
             async let userTask = apiClient.fetchCurrentUser(accessToken: access)
             async let fundsTask = apiClient.fetchFunds(accessToken: access)
+            async let dashboardTask = apiClient.fetchGlobalDashboard(accessToken: access)
             async let holdingsTask = apiClient.fetchHoldings(accessToken: access, fundId: selectedFundId)
             async let tradesTask = apiClient.fetchTrades(accessToken: access, fundId: selectedFundId)
             currentUser = try await userTask
             funds = try await fundsTask
+            globalDashboard = try await dashboardTask
             holdings = try await holdingsTask
             trades = try await tradesTask
-
-            // Nice-to-have endpoints: never block core list data if unavailable.
-            if let dashboard = try? await apiClient.fetchGlobalDashboard(accessToken: access) {
-                globalDashboard = dashboard
-            } else {
-                globalDashboard = nil
-            }
-
-            if let history = try? await apiClient.fetchDashboardHistory(accessToken: access, fundId: nil) {
-                globalHistory = mapHistoryPoints(history.points)
-            } else {
-                globalHistory = []
-            }
-
-            if let fundId = selectedFundId,
-               let history = try? await apiClient.fetchDashboardHistory(accessToken: access, fundId: fundId) {
-                selectedFundHistory = mapHistoryPoints(history.points)
-            } else {
-                selectedFundHistory = []
-            }
             statusMessage = "Data refreshed."
         } catch {
             statusMessage = error.localizedDescription
@@ -382,8 +321,6 @@ final class AuthViewModel: ObservableObject {
         holdings = []
         trades = []
         globalDashboard = nil
-        globalHistory = []
-        selectedFundHistory = []
         username = ""
         password = ""
         selectedTab = .funds
@@ -397,17 +334,6 @@ final class AuthViewModel: ObservableObject {
     }
 
     func clearSelectedFund() { selectedFundId = nil }
-
-    private func mapHistoryPoints(_ raw: [DashboardHistoryPointResponse]) -> [WealthChartPoint] {
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return raw.compactMap { point in
-            guard let date = formatter.date(from: point.date) else { return nil }
-            return WealthChartPoint(id: point.date, date: date, wealth: point.wealth)
-        }
-    }
 }
 
 struct FundSummaryCard: View {
@@ -443,10 +369,8 @@ struct FundSummaryCard: View {
     private func formatCurrency(_ value: Double) -> String {
         let formatter = NumberFormatter()
         formatter.numberStyle = .currency
-        formatter.minimumFractionDigits = 0
-        formatter.maximumFractionDigits = 0
-        formatter.roundingMode = .halfUp
-        return formatter.string(from: NSNumber(value: value)) ?? "$0"
+        formatter.maximumFractionDigits = 2
+        return formatter.string(from: NSNumber(value: value)) ?? "$0.00"
     }
 
     private func formatPercent(_ value: Double) -> String {
@@ -495,10 +419,8 @@ struct GlobalSummaryCard: View {
     private func formatCurrency(_ value: Double) -> String {
         let formatter = NumberFormatter()
         formatter.numberStyle = .currency
-        formatter.minimumFractionDigits = 0
-        formatter.maximumFractionDigits = 0
-        formatter.roundingMode = .halfUp
-        return formatter.string(from: NSNumber(value: value)) ?? "$0"
+        formatter.maximumFractionDigits = 2
+        return formatter.string(from: NSNumber(value: value)) ?? "$0.00"
     }
 
     private func formatPercent(_ value: Double) -> String {
@@ -511,92 +433,6 @@ struct GlobalSummaryCard: View {
         if normalized > 0 { return .green }
         if normalized < 0 { return .red }
         return Theme.valuePrimary
-    }
-}
-
-struct WealthChartCard: View {
-    let points: [WealthChartPoint]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if points.count >= 2 {
-                Chart(points) { point in
-                    AreaMark(
-                        x: .value("Date", point.date),
-                        y: .value("Wealth", point.wealth)
-                    )
-                    .foregroundStyle(
-                        .linearGradient(
-                            colors: [Color.green.opacity(0.25), Color.clear],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-
-                    LineMark(
-                        x: .value("Date", point.date),
-                        y: .value("Wealth", point.wealth)
-                    )
-                    .interpolationMethod(.catmullRom)
-                    .foregroundStyle(.green)
-                    .lineStyle(StrokeStyle(lineWidth: 2))
-                }
-                .chartYScale(domain: yDomain.lower...yDomain.upper)
-                .chartXAxis(.hidden)
-                .chartYAxis {
-                    AxisMarks(position: .leading) { value in
-                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
-                            .foregroundStyle(Color.white.opacity(0.15))
-                        AxisValueLabel {
-                            if let val = value.as(Double.self) {
-                                Text(shortCurrency(val))
-                                    .font(.caption2)
-                                    .foregroundStyle(Theme.secondaryText)
-                            }
-                        }
-                    }
-                }
-                .frame(height: 120)
-            } else {
-                Text("No snapshot history yet.")
-                    .font(.caption)
-                    .foregroundStyle(Theme.secondaryText)
-                    .frame(maxWidth: .infinity, minHeight: 80, alignment: .center)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 10)
-        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
-    }
-
-    private func shortCurrency(_ value: Double) -> String {
-        if value >= 1_000_000 {
-            return String(format: "$%.1fM", value / 1_000_000)
-        }
-        if value >= 1_000 {
-            return String(format: "$%.0fK", value / 1_000)
-        }
-        return String(format: "$%.0f", value)
-    }
-
-    private var yDomain: (lower: Double, upper: Double) {
-        let values = points.map(\.wealth)
-        guard let minValue = values.min(), let maxValue = values.max() else {
-            return (0, 5_000)
-        }
-
-        let step = 5_000.0
-        var lower = floor(minValue / step) * step
-        var upper = ceil(maxValue / step) * step
-
-        if lower == upper {
-            lower -= step
-            upper += step
-        }
-        if lower < 0 {
-            lower = 0
-        }
-        return (lower, upper)
     }
 }
 
