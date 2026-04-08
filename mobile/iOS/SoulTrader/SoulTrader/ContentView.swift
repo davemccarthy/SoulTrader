@@ -276,7 +276,7 @@ private struct LoginRequest: Encodable {
 
 private struct APIEnvironment {
     // For iOS Simulator use localhost; for physical device use your machine IP.
-    static let baseURL = URL(string: "http://127.0.0.1:8000/api/")!
+    static let baseURL = URL(string: "http://192.168.1.6:8000/api/")!
 }
 
 private struct TokenStore {
@@ -632,6 +632,7 @@ private struct FundsView: View {
                     : Color.clear
             )
             .listRowBackground(Color.black)
+            .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
         }
         .scrollContentBackground(.hidden)
         .scrollIndicators(.hidden)
@@ -710,13 +711,14 @@ private struct HoldingsView: View {
                 List(viewModel.holdings) { holding in
                     HStack(spacing: 12) {
                         imageTickerPair(symbol: holding.stock.symbol)
+                        middleCompanyInvestmentPair(holding: holding)
                         Spacer()
                         pricePnlPair(holding: holding)
                     }
                     .padding(.vertical, 4)
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, 6)
                     .background(Color.black, in: RoundedRectangle(cornerRadius: 10))
-                    .listRowInsets(EdgeInsets(top: 4, leading: 10, bottom: 4, trailing: 10))
+                    .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
                     .listRowBackground(Color.clear)
                 }
                 .scrollContentBackground(.hidden)
@@ -749,6 +751,27 @@ private struct HoldingsView: View {
         .frame(width: 56, alignment: .leading)
     }
 
+    private func middleCompanyInvestmentPair(holding: HoldingResponse) -> some View {
+        let avgDecimal = decimal(from: holding.averagePrice) ?? 0
+        let sharesDecimal = Decimal(holding.shares)
+        let investment = sharesDecimal * avgDecimal
+
+        return VStack(alignment: .leading, spacing: 3) {
+            Text(holding.stock.company ?? holding.stock.symbol)
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .foregroundStyle(Color(red: 0.96, green: 0.96, blue: 0.96))
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Text(formatCurrency(investment))
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundStyle(Color(red: 0.96, green: 0.96, blue: 0.96))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private func pricePnlPair(holding: HoldingResponse) -> some View {
         let priceDecimal = decimal(from: holding.stock.price)
         let avgDecimal = decimal(from: holding.averagePrice)
@@ -760,31 +783,20 @@ private struct HoldingsView: View {
             return Color(red: 0.96, green: 0.96, blue: 0.96)
         }()
 
-        return HStack(spacing: 18) {
-            holdingMetricPair(
-                title: "PRICE",
-                value: formatCurrency(priceDecimal),
-                color: Color(red: 0.96, green: 0.96, blue: 0.96)
-            )
-            holdingMetricPair(
-                title: "P & L",
-                value: formatPercent(pnlPercent),
-                color: pnlColor
-            )
-        }
-    }
+        return VStack(alignment: .trailing, spacing: 2) {
+            Text(formatCurrency(priceDecimal))
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .foregroundStyle(Color(red: 0.96, green: 0.96, blue: 0.96))
+                .lineLimit(1)
 
-    private func holdingMetricPair(title: String, value: String, color: Color) -> some View {
-        VStack(alignment: .trailing, spacing: 2) {
-            Text(title)
-                .font(.caption2)
+            Text(formatPercent(pnlPercent))
+                .font(.caption)
                 .fontWeight(.semibold)
-                .foregroundStyle(Color(red: 0.96, green: 0.84, blue: 0.50))
-            Text(value)
-                .font(.headline)
-                .fontWeight(.semibold)
-                .foregroundStyle(color)
+                .foregroundStyle(pnlColor)
+                .lineLimit(1)
         }
+        .frame(minWidth: 62, alignment: .trailing)
     }
 
     private func decimal(from text: String?) -> Decimal? {
