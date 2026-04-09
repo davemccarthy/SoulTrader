@@ -2,61 +2,75 @@ import SwiftUI
 
 struct HoldingsView: View {
     @ObservedObject var viewModel: AuthViewModel
+    @State private var path = NavigationPath()
 
     var body: some View {
-        VStack(spacing: 8) {
-            if let fund = viewModel.selectedFund {
-                FundSummaryCard(fund: fund)
-                    .padding(.horizontal, 6)
-                    .padding(.top, 6)
-            }
+        NavigationStack(path: $path) {
+            VStack(spacing: 8) {
+                if let fund = viewModel.selectedFund {
+                    FundSummaryCard(fund: fund)
+                        .padding(.horizontal, 6)
+                        .padding(.top, 6)
+                }
 
-            List {
-                WealthChartCard(points: viewModel.selectedFundHistory)
-                    .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 8, trailing: 6))
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-
-                if viewModel.holdings.isEmpty {
-                    VStack(spacing: 8) {
-                        Text("No holdings to show.")
-                            .font(.headline)
-                            .foregroundStyle(.white)
-                        Text("Select a fund with holdings on the FUNDS tab.")
-                            .font(.footnote)
-                            .foregroundStyle(Theme.secondaryText)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 24)
-                    .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-                } else {
-                    ForEach(viewModel.holdings) { holding in
-                        NavigationLink(destination: HoldingDetailView(holding: holding, baseURL: viewModel.selectedHost.baseURL, viewModel: viewModel)) {
-                            HStack(spacing: 12) {
-                                imageTickerPair(symbol: holding.stock.symbol)
-                                middleCompanyInvestmentPair(holding: holding)
-                                Spacer()
-                                pricePnlPair(holding: holding)
-                            }
-                            .padding(.vertical, 4)
-                            .padding(.horizontal, 6)
-                            .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
-                        }
-                        .buttonStyle(.plain)
-                        .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
+                List {
+                    WealthChartCard(points: viewModel.selectedFundHistory)
+                        .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 8, trailing: 6))
                         .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+
+                    if viewModel.holdings.isEmpty {
+                        VStack(spacing: 8) {
+                            Text("No holdings to show.")
+                                .font(.headline)
+                                .foregroundStyle(.white)
+                            Text("Select a fund with holdings on the FUNDS tab.")
+                                .font(.footnote)
+                                .foregroundStyle(Theme.secondaryText)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 24)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                    } else {
+                        ForEach(viewModel.holdings) { holding in
+                            Button {
+                                path.append(holding.id)
+                            } label: {
+                                HStack(spacing: 12) {
+                                    imageTickerPair(symbol: holding.stock.symbol)
+                                    middleCompanyInvestmentPair(holding: holding)
+                                    Spacer()
+                                    pricePnlPair(holding: holding)
+                                }
+                                .padding(.vertical, 4)
+                                .padding(.horizontal, 6)
+                                .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+                            }
+                            .buttonStyle(.plain)
+                            .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
+                            .listRowBackground(Color.clear)
+                        }
                     }
                 }
+                .scrollContentBackground(.hidden)
+                .scrollIndicators(.hidden)
+                .contentMargins(.top, 0, for: .scrollContent)
+                .background(Theme.appBackground)
             }
-            .scrollContentBackground(.hidden)
-            .scrollIndicators(.hidden)
-            .contentMargins(.top, 0, for: .scrollContent)
             .background(Theme.appBackground)
+            .toolbar(.hidden, for: .navigationBar)
+            .navigationDestination(for: Int.self) { holdingId in
+                if let holding = viewModel.holdings.first(where: { $0.id == holdingId }) {
+                    HoldingDetailView(holding: holding, baseURL: viewModel.selectedHost.baseURL, viewModel: viewModel)
+                } else {
+                    Text("This holding is no longer available.")
+                        .foregroundStyle(Theme.secondaryText)
+                        .padding()
+                }
+            }
         }
-        .background(Theme.appBackground)
-        .toolbar(.hidden, for: .navigationBar)
     }
 
     private func imageTickerPair(symbol: String) -> some View {
@@ -188,17 +202,21 @@ struct HoldingDetailView: View {
                     .padding(.horizontal, 10)
                     .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
             } else {
-                ForEach(healthHistory) { record in
-                    healthRecordCard(record)
+                ForEach(Array(healthHistory.enumerated()), id: \.element.id) { index, record in
+                    healthRecordCard(
+                        record,
+                        checkNumber: healthHistory.count > 1 ? index + 1 : nil
+                    )
                 }
             }
         }
     }
 
-    private func healthRecordCard(_ record: HealthHistoryRecord) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private func healthRecordCard(_ record: HealthHistoryRecord, checkNumber: Int?) -> some View {
+        let checkTitle = checkNumber.map { "Health check #\($0)" } ?? "Health check"
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Health check")
+                Text(checkTitle)
                     .font(.subheadline)
                     .fontWeight(.semibold)
                     .foregroundStyle(Theme.labelAccent)
@@ -437,7 +455,7 @@ struct HoldingDetailView: View {
                 )
                 Spacer()
             }
-            .padding(.top, 8)
+            .padding(.top, 10.4)
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)

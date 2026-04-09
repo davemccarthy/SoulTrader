@@ -37,7 +37,7 @@ struct ContentView: View {
                                 .tabItem { Label("FUNDS", systemImage: "dollarsign.circle") }
                                 .tag(AppTab.funds)
 
-                            NavigationStack { HoldingsView(viewModel: viewModel) }
+                            HoldingsView(viewModel: viewModel)
                                 .background(appBackground)
                                 .tabItem { Label("HOLDINGS", systemImage: "chart.pie") }
                                 .tag(AppTab.holdings)
