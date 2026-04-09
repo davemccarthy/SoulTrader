@@ -875,7 +875,7 @@ class Edgar(AdvisorBase):
             return result_dict
 
         prompt = FOUR_DUCKS_PROMPT_LABELS.replace("<<<EX99_1_TEXT>>>", text.strip())
-        model, parsed = self.ask_gemini(prompt, timeout=120.0)
+        model, parsed = self.ask_ollama(prompt)
         if not parsed:
             logger.info(
                 "ticker=%s, CIK=%s, accession=%s EX99 LLM: no result from Gemini",
@@ -978,7 +978,7 @@ class Edgar(AdvisorBase):
         print(media_prompt)
         print("-------")
 
-        model, parsed = self.ask_gemini(media_prompt, timeout=120.0, use_search=True)
+        model, parsed = self.ask_ollama(media_prompt)
         if not parsed or not isinstance(parsed, dict):
             logger.info(
                 "ticker=%s, CIK=%s, accession=%s media LLM: no result from Gemini",
@@ -1286,14 +1286,6 @@ class Edgar(AdvisorBase):
 
     def analyze_8k(self, filing, sa) -> bool:
 
-        sell_instructions = [
-            ("PERCENTAGE_DIMINISHING", 1.20, 14),
-            ("PERCENTAGE_AUGMENTING", 0.90, 14),
-            ("PEAKED", 7.0, None),
-            ("PROFIT_FLAT", 0.5, 4),
-            ("DESCENDING_TREND", -0.20, None),
-        ]
-
         cik = str(getattr(filing, "cik", "") or "")
         ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
 
@@ -1324,6 +1316,8 @@ class Edgar(AdvisorBase):
 
         # Create health ourselves
         health_score = Decimal(str(float(advanced["health"]))).quantize(Decimal("0.1"))
+        weight = Decimal(advanced["weight"])
+        target = 1.20
 
         health = Health.objects.create(
             stock=stock,
@@ -1332,8 +1326,22 @@ class Edgar(AdvisorBase):
             meta=health_meta,
         )
 
+        # Calculate target
+        if weight < 1.0:
+            target = 1.10
+        elif weight >= 1.3:
+            target = 1.30
+
+        sell_instructions = [
+            ("PERCENTAGE_DIMINISHING", target, 14),
+            ("PERCENTAGE_AUGMENTING", 0.90, 14),
+            ("PEAKED", 7.0, None),
+            ("PROFIT_FLAT", 0.5, 4),
+            ("DESCENDING_TREND", -0.20, None),
+        ]
+
         # Keeper
-        self.discovered(sa, ticker, explanation, sell_instructions, weight=Decimal(advanced["weight"]), health=health)
+        self.discovered(sa, ticker, explanation, sell_instructions, weight=weight, health=health)
         return True
 
     def discover(self, sa):
