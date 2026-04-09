@@ -96,6 +96,7 @@ struct WealthChartPoint: Identifiable {
 struct StockInfo: Decodable {
     let symbol: String
     let company: String?
+    let industry: String?
     let price: String?
 }
 
