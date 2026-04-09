@@ -13,7 +13,7 @@ struct HoldingsView: View {
 
             List {
                 WealthChartCard(points: viewModel.selectedFundHistory)
-                    .listRowInsets(EdgeInsets(top: 4, leading: 6, bottom: 8, trailing: 6))
+                    .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 8, trailing: 6))
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
 
@@ -49,6 +49,7 @@ struct HoldingsView: View {
             }
             .scrollContentBackground(.hidden)
             .scrollIndicators(.hidden)
+            .contentMargins(.top, 0, for: .scrollContent)
             .background(Theme.appBackground)
         }
         .background(Theme.appBackground)

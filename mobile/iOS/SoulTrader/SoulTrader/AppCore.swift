@@ -541,10 +541,10 @@ struct WealthChartCard: View {
                     .foregroundStyle(.green)
                     .lineStyle(StrokeStyle(lineWidth: 2))
                 }
-                .chartYScale(domain: yDomain.lower...yDomain.upper)
+                .chartYScale(domain: yScale.lower...yScale.upper)
                 .chartXAxis(.hidden)
                 .chartYAxis {
-                    AxisMarks(position: .leading) { value in
+                    AxisMarks(position: .leading, values: .stride(by: yScale.step)) { value in
                         AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
                             .foregroundStyle(Color.white.opacity(0.15))
                         AxisValueLabel {
@@ -579,24 +579,41 @@ struct WealthChartCard: View {
         return String(format: "$%.0f", value)
     }
 
-    private var yDomain: (lower: Double, upper: Double) {
+    private var yScale: (lower: Double, upper: Double, step: Double) {
         let values = points.map(\.wealth)
         guard let minValue = values.min(), let maxValue = values.max() else {
-            return (0, 5_000)
+            return (0, 5_000, 5_000)
         }
 
-        let step = 5_000.0
-        var lower = floor(minValue / step) * step
-        var upper = ceil(maxValue / step) * step
+        let range = maxValue - minValue
+        let step = gradientStep(for: range)
+        let padding = max(step * 0.2, 1_000)
+        var lower = floor((minValue - padding) / step) * step
+        var upper = ceil((maxValue + padding) / step) * step
 
         if lower == upper {
-            lower -= step
             upper += step
         }
         if lower < 0 {
             lower = 0
         }
-        return (lower, upper)
+        return (lower, upper, step)
+    }
+
+    // Match axis/grid stride to visible wealth range.
+    private func gradientStep(for range: Double) -> Double {
+        switch range {
+        case ..<10_000:
+            return 5_000
+        case ..<30_000:
+            return 10_000
+        case ..<80_000:
+            return 20_000
+        case ..<200_000:
+            return 50_000
+        default:
+            return 100_000
+        }
     }
 }
 
