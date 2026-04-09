@@ -1290,7 +1290,7 @@ Respond with only a single valid JSON object, no other text.
 
         # Pass sell instructions to discovery
         sell_instructions = [
-            ("PERCENTAGE_DIMINISHING", 1.50, 7),
+            ("PERCENTAGE_DIMINISHING", 1.20, 7),
             ("PERCENTAGE_AUGMENTING", 0.95, 21),
             ('DESCENDING_TREND', -0.20, None),
             ('NOT_TRENDING', None, None)
