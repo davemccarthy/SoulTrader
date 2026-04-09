@@ -12,15 +12,15 @@ class UserSerializer(serializers.ModelSerializer):
 class StockSerializer(serializers.ModelSerializer):
     class Meta:
         model = Stock
-        fields = ['symbol', 'company', 'industry', 'exchange', 'price', 'updated']
+        fields = ['symbol', 'company', 'industry', 'sector', 'exchange', 'price', 'updated']
 
 
 class HoldingSerializer(serializers.ModelSerializer):
     stock = StockSerializer(read_only=True)
-    
+
     class Meta:
         model = Holding
-        fields = ['id', 'stock', 'shares', 'average_price']
+        fields = ['id', 'stock_id', 'stock', 'shares', 'average_price']
 
 
 class TradeSerializer(serializers.ModelSerializer):

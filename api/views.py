@@ -1,12 +1,15 @@
 from datetime import timedelta
 
-from django.db.models import Sum
+from django.db.models import Sum, Max
+from django.templatetags.static import static
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from .serializers import HoldingSerializer, TradeSerializer, ProfileSerializer, UserSerializer
-from core.models import Profile, Holding, Trade, Snapshot
+from django.http import Http404
+
+from core.models import Profile, Holding, Trade, Snapshot, Discovery
 from core.portfolio_metrics import get_portfolio_dashboard_data
 
 
@@ -25,11 +28,136 @@ def get_holdings(request):
     fund_id = request.query_params.get('fund_id')
     if fund_id:
         # Match web behavior: holdings are scoped by selected fund.
-        holdings = Holding.objects.filter(fund_id=fund_id)
+        holdings_qs = Holding.objects.filter(fund_id=fund_id)
     else:
-        holdings = request.user.holding_set.all()
+        holdings_qs = request.user.holding_set.all()
+
+    holdings = list(holdings_qs.select_related('stock', 'stock__advisor'))
     serializer = HoldingSerializer(holdings, many=True)
-    return Response(serializer.data)
+    payload = serializer.data
+
+    stock_ids = [holding.stock_id for holding in holdings]
+    latest_sa_by_stock = {}
+    if stock_ids:
+        trade_qs = Trade.objects.filter(stock_id__in=stock_ids)
+        if fund_id:
+            trade_qs = trade_qs.filter(fund_id=fund_id)
+        else:
+            trade_qs = trade_qs.filter(user=request.user)
+        latest_sa_rows = trade_qs.values('stock_id').annotate(latest_sa=Max('sa_id'))
+        latest_sa_by_stock = {row['stock_id']: row['latest_sa'] for row in latest_sa_rows if row['latest_sa']}
+
+    discovery_map = {}
+    if latest_sa_by_stock:
+        sa_ids = list(set(latest_sa_by_stock.values()))
+        discoveries = (
+            Discovery.objects
+            .select_related('advisor')
+            .filter(stock_id__in=stock_ids, sa_id__in=sa_ids)
+        )
+        for discovery in discoveries:
+            key = (discovery.stock_id, discovery.sa_id)
+            if key not in discovery_map:
+                discovery_map[key] = discovery
+
+    for item, holding in zip(payload, holdings):
+        latest_sa = latest_sa_by_stock.get(holding.stock_id)
+        discovery = discovery_map.get((holding.stock_id, latest_sa)) if latest_sa else None
+        if discovery:
+            item['discovery_name'] = discovery.advisor.name if discovery.advisor else ""
+            item['discovery_logo'] = _advisor_logo_url(discovery.advisor)
+            item['discovery_comment'] = _discovery_comment(discovery.explanation)
+            item['discovery_explanation'] = discovery.explanation or ""
+        else:
+            fallback_advisor = getattr(holding.stock, 'advisor', None)
+            item['discovery_name'] = fallback_advisor.name if fallback_advisor else ""
+            item['discovery_logo'] = _advisor_logo_url(fallback_advisor)
+            item['discovery_comment'] = None
+            item['discovery_explanation'] = ""
+
+    return Response(payload)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_holding_health_history(request, stock_id: int):
+    """
+    Health checks for a single holding's stock, scoped by fund (matches web holding_history).
+    Query: fund_id (required when using fund-scoped holdings).
+    """
+    fund_id = request.query_params.get('fund_id')
+    if not fund_id:
+        return Response({'error': 'fund_id is required.'}, status=400)
+
+    # Match get_holdings when fund_id is set: scope by fund only, not user.
+    # (Many deployments use fund-scoped rows where user may differ from JWT user.)
+    if not Holding.objects.filter(fund_id=fund_id, stock_id=stock_id).exists():
+        raise Http404('Holding not found')
+
+    health_history = []
+    seen_health_ids = set()
+    discovery_health_checks = (
+        Discovery.objects
+        .select_related('health', 'health__sa')
+        .filter(stock_id=stock_id, health__isnull=False)
+        .order_by('-health__created')
+    )
+
+    for disc_health in discovery_health_checks:
+        health = getattr(disc_health, 'health', None)
+        if not health or health.id in seen_health_ids:
+            continue
+        seen_health_ids.add(health.id)
+
+        meta = health.meta or {}
+        overlay = meta.get('overlay') if isinstance(meta.get('overlay'), dict) else {}
+        health_history.append({
+            'id': health.id,
+            'score': float(health.score),
+            'created': health.created.isoformat() if health.created else None,
+            'meta': meta,
+            'confidence_score': meta.get('confidence_score'),
+            'health_score': meta.get('health_score'),
+            'valuation_score': meta.get('valuation_score'),
+            'piotroski': meta.get('piotroski'),
+            'altman_z': meta.get('altman_z'),
+            'gemini_weight': meta.get('gemini_weight'),
+            'gemini_rec': meta.get('gemini_recommendation'),
+            'gemini_explanation': meta.get('gemini_explanation'),
+            'overlay_points': overlay.get('points'),
+            'overlay_reasons': overlay.get('reasons') if isinstance(overlay.get('reasons'), list) else [],
+        })
+
+    return Response({'health_history': health_history})
+
+
+def _advisor_logo_url(advisor):
+    if not advisor:
+        return None
+    python_class = getattr(advisor, 'python_class', None)
+    if not python_class:
+        return None
+    return static(f"core/advisors/{python_class.lower()}.png")
+
+
+def _discovery_comment(explanation: str | None):
+    if not explanation:
+        return None
+    normalized = " ".join(explanation.split()).strip()
+    if not normalized:
+        return None
+    segments = [segment.strip() for segment in normalized.split("|") if segment.strip()]
+    for segment in segments:
+        lower = segment.lower()
+        if segment.startswith("http://") or segment.startswith("https://"):
+            continue
+        if lower.startswith("article:"):
+            title = segment.split(":", 1)[1].strip()
+            if title:
+                return title
+            continue
+        return segment
+    return None
 
 
 @api_view(['GET'])

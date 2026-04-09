@@ -97,20 +97,142 @@ struct StockInfo: Decodable {
     let symbol: String
     let company: String?
     let industry: String?
+    let sector: String?
+    let exchange: String?
     let price: String?
 }
 
 struct HoldingResponse: Decodable, Identifiable {
     let id: Int
+    let stockId: Int
     let stock: StockInfo
     let shares: Int
     let averagePrice: String
+    let discoveryName: String?
+    let discoveryLogo: String?
+    let discoveryComment: String?
+    let discoveryExplanation: String?
 
     private enum CodingKeys: String, CodingKey {
         case id
+        case stockId = "stock_id"
         case stock
         case shares
         case averagePrice = "average_price"
+        case discoveryName = "discovery_name"
+        case discoveryLogo = "discovery_logo"
+        case discoveryComment = "discovery_comment"
+        case discoveryExplanation = "discovery_explanation"
+    }
+}
+
+// MARK: - Holding health history (matches web holding_history health_history)
+
+struct HoldingHealthHistoryResponse: Decodable {
+    let healthHistory: [HealthHistoryRecord]
+
+    private enum CodingKeys: String, CodingKey {
+        case healthHistory = "health_history"
+    }
+}
+
+struct HealthHistoryRecord: Decodable, Identifiable {
+    let id: Int
+    let score: Double
+    let created: String?
+    let meta: HealthMetaPayload?
+    let confidenceScore: HealthScalar?
+    let healthScore: HealthScalar?
+    let valuationScore: HealthScalar?
+    let piotroski: HealthScalar?
+    let altmanZ: HealthScalar?
+    let geminiWeight: HealthScalar?
+    let geminiRec: HealthScalar?
+    let geminiExplanation: HealthScalar?
+    let overlayPoints: Double?
+    let overlayReasons: [String]
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case score
+        case created
+        case meta
+        case confidenceScore = "confidence_score"
+        case healthScore = "health_score"
+        case valuationScore = "valuation_score"
+        case piotroski
+        case altmanZ = "altman_z"
+        case geminiWeight = "gemini_weight"
+        case geminiRec = "gemini_rec"
+        case geminiExplanation = "gemini_explanation"
+        case overlayPoints = "overlay_points"
+        case overlayReasons = "overlay_reasons"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int.self, forKey: .id)
+        score = try c.decode(Double.self, forKey: .score)
+        created = try c.decodeIfPresent(String.self, forKey: .created)
+        meta = try c.decodeIfPresent(HealthMetaPayload.self, forKey: .meta)
+        confidenceScore = try c.decodeIfPresent(HealthScalar.self, forKey: .confidenceScore)
+        healthScore = try c.decodeIfPresent(HealthScalar.self, forKey: .healthScore)
+        valuationScore = try c.decodeIfPresent(HealthScalar.self, forKey: .valuationScore)
+        piotroski = try c.decodeIfPresent(HealthScalar.self, forKey: .piotroski)
+        altmanZ = try c.decodeIfPresent(HealthScalar.self, forKey: .altmanZ)
+        geminiWeight = try c.decodeIfPresent(HealthScalar.self, forKey: .geminiWeight)
+        geminiRec = try c.decodeIfPresent(HealthScalar.self, forKey: .geminiRec)
+        geminiExplanation = try c.decodeIfPresent(HealthScalar.self, forKey: .geminiExplanation)
+        if let pts = try? c.decode(Double.self, forKey: .overlayPoints) {
+            overlayPoints = pts
+        } else if let pts = try? c.decode(String.self, forKey: .overlayPoints), let d = Double(pts) {
+            overlayPoints = d
+        } else {
+            overlayPoints = nil
+        }
+        overlayReasons = try c.decodeIfPresent([String].self, forKey: .overlayReasons) ?? []
+    }
+
+    var renderKind: String {
+        (meta?.render ?? "advisor").lowercased()
+    }
+}
+
+struct HealthMetaPayload: Decodable {
+    let render: String?
+    let media: HealthMediaPayload?
+}
+
+struct HealthMediaPayload: Decodable {
+    let summary: String?
+}
+
+struct HealthScalar: Decodable {
+    let display: String
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if try c.decodeNil() {
+            display = "—"
+            return
+        }
+        if let s = try? c.decode(String.self) {
+            display = s
+            return
+        }
+        if let i = try? c.decode(Int.self) {
+            display = String(i)
+            return
+        }
+        if let d = try? c.decode(Double.self) {
+            display = d.truncatingRemainder(dividingBy: 1) == 0 ? String(format: "%.0f", d) : String(format: "%.2f", d)
+            return
+        }
+        if let b = try? c.decode(Bool.self) {
+            display = b ? "Yes" : "No"
+            return
+        }
+        display = "—"
     }
 }
 
@@ -258,6 +380,18 @@ struct APIClient {
         return try JSONDecoder().decode([HoldingResponse].self, from: data)
     }
 
+    func fetchHoldingHealthHistory(accessToken: String, fundId: Int, stockId: Int) async throws -> HoldingHealthHistoryResponse {
+        let path = "holdings/\(stockId)/health_history/"
+        var components = URLComponents(url: endpoint(path), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "fund_id", value: String(fundId))]
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(HoldingHealthHistoryResponse.self, from: data)
+    }
+
     func fetchTrades(accessToken: String, fundId: Int?) async throws -> [TradeResponse] {
         let base = endpoint("trades/")
         var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
@@ -372,6 +506,21 @@ final class AuthViewModel: ObservableObject {
             statusMessage = "Data refreshed."
         } catch {
             statusMessage = error.localizedDescription
+        }
+    }
+
+    func loadHoldingHealthHistory(stockId: Int) async -> [HealthHistoryRecord] {
+        guard let access = tokenStore.getAccessToken(),
+              let fundId = selectedFundId else { return [] }
+        do {
+            let response = try await apiClient.fetchHoldingHealthHistory(
+                accessToken: access,
+                fundId: fundId,
+                stockId: stockId
+            )
+            return response.healthHistory
+        } catch {
+            return []
         }
     }
 

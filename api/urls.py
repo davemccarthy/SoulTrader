@@ -17,6 +17,7 @@ urlpatterns = [
 
     # Holdings
     path('holdings/', views.get_holdings, name='holdings'),
+    path('holdings/<int:stock_id>/health_history/', views.get_holding_health_history, name='holding_health_history'),
     
     # Trades (read-only - system is 100% automated)
     path('trades/', views.get_trades, name='trades'),
