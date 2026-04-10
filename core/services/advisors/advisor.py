@@ -1179,17 +1179,7 @@ Respond with only a single valid JSON object, no other text.
             "Authorization": f"Basic {token}",
             "Content-Type": "application/json",
         }
-        payload = {
-            "model": model,
-            "prompt": prompt,
-            "stream": False,
-            # Force machine-readable output for downstream JSON parsing.
-            "format": "json",
-            "options": {
-                # Prefer deterministic formatting for strict schema prompts.
-                "temperature": 0,
-            },
-        }
+        payload = {"model": model, "prompt": prompt, "stream": False}
         url = f"{host}/api/generate"
 
         try:
