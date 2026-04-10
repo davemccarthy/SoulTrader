@@ -56,6 +56,7 @@ struct HoldingsView: View {
                 }
                 .scrollContentBackground(.hidden)
                 .scrollIndicators(.hidden)
+                .contentMargins(.horizontal, 0, for: .scrollContent)
                 .contentMargins(.top, 0, for: .scrollContent)
                 .background(Theme.appBackground)
             }

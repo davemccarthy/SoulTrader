@@ -3,7 +3,7 @@ import SwiftUI
 enum Theme {
     // Base surfaces
     static let appBackground = Color.black
-    static let rowBackground = Color.black
+    static let rowBackground = Color(red: 0.18, green: 0.18, blue: 0.20)
 
     // Brand accents
     static let brandHeaderStart = Color(red: 0.0, green: 0.52, blue: 0.24)

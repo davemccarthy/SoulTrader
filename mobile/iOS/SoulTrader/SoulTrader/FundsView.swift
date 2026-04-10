@@ -69,6 +69,7 @@ struct FundsView: View {
                         }
                     }
                     .padding(.vertical, 4)
+                    .padding(.horizontal, 6)
                     .contentShape(Rectangle())
                     .onTapGesture {
                         Task { await viewModel.selectFund(fund.id) }
@@ -76,14 +77,17 @@ struct FundsView: View {
                     .background(
                         viewModel.selectedFundId == fund.id
                             ? Color.green.opacity(0.08)
-                            : Color.clear
+                            : Theme.rowBackground,
+                        in: RoundedRectangle(cornerRadius: 10)
                     )
-                    .listRowBackground(Theme.rowBackground)
                     .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
                 }
             }
             .scrollContentBackground(.hidden)
             .scrollIndicators(.hidden)
+            .contentMargins(.horizontal, 0, for: .scrollContent)
             .contentMargins(.top, 0, for: .scrollContent)
             .background(Theme.appBackground)
         }
