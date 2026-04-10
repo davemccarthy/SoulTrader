@@ -579,14 +579,6 @@ class Edgar(AdvisorBase):
 
         filing_text = (filing.text() or "").lower() if hasattr(filing, "text") else ""
 
-        # Prefer the formal earnings announcement item over loose keyword heuristics.
-        has_item_202 = (
-            "item 2.02" in filing_text
-            or "results of operations and financial condition" in filing_text
-        )
-        if not has_item_202:
-            return _fail("no item 2.02 / results of operations and financial condition")
-
         # Filter 2: red/green flags
         exhibit_99_text = _get_ex99_text(filing)
         combined_text = (filing_text + " " + (exhibit_99_text or "")).lower()
@@ -978,7 +970,7 @@ class Edgar(AdvisorBase):
         print(media_prompt)
         print("-------")
 
-        model, parsed = self.ask_ollama(media_prompt)
+        model, parsed = self.ask_gemini(media_prompt, timeout=120.0, use_search=True)
         if not parsed or not isinstance(parsed, dict):
             logger.info(
                 "ticker=%s, CIK=%s, accession=%s media LLM: no result from Gemini",
@@ -1349,7 +1341,7 @@ class Edgar(AdvisorBase):
         logger.info("Fetching latest filings...")
 
         prev_ts = self.get_previous_sa_timestamp(sa)
-
+        """
         try:
             latest = get_latest_filings()
             filings = list(latest)
@@ -1358,11 +1350,11 @@ class Edgar(AdvisorBase):
             return
 
         """
-        filing1 = find("0000856982-26-000018")
+        filing1 = find("0001193125-26-149823")
         filing2 = find("0000783325-26-000040")
 
         filings = [filing1]
-        """
+
         # Filter latest to 8-Ks only
         filings_8k = [f for f in filings if getattr(f, "form", None) == "8-K"]
         if not filings_8k:
@@ -1378,7 +1370,7 @@ class Edgar(AdvisorBase):
                     accession = getattr(filing, "accession_no", None) or getattr(filing, "accession_number", None) or ""
                     logger.warning("Filing %s (filing_time=%s) is before prev SA %s — skipping",
                                    accession, filing_dt, prev_ts)
-                    continue
+                    #continue
 
                 self.analyze_8k(filing, sa)
 
