@@ -867,7 +867,7 @@ class Edgar(AdvisorBase):
             return result_dict
 
         prompt = FOUR_DUCKS_PROMPT_LABELS.replace("<<<EX99_1_TEXT>>>", text.strip())
-        model, parsed = self.ask_ollama(prompt)
+        model, parsed = self.ask_gemini(prompt)
         if not parsed:
             logger.info(
                 "ticker=%s, CIK=%s, accession=%s EX99 LLM: no result from Gemini",
@@ -995,7 +995,7 @@ class Edgar(AdvisorBase):
         summary = parsed.get("summary")
 
         # Media-driven hard fail or watch:
-        if sentiment in ["no_coverage", "mixed", "negative"] or eps in ["miss", "unknown"] or broker in ["hold" ,"sell", "unknown"]:
+        if sentiment in ["no_coverage", "mixed", "negative"] or eps in ["miss"] or broker in ["hold" ,"sell", "unknown"]:
             logger.info(
                 "ticker=%s, accession=%s media LLM: "
                 "(eps=%s, revenue=%s, sentiment=%s, broker=%s) -> fail",
@@ -1113,13 +1113,13 @@ class Edgar(AdvisorBase):
             score += 0.1
         elif past_perform == "neutral":
             penalties.append("Neutral past (-0.1)")
-            score -= 0.1
+            score -= 0.0
 
         if expectation == "strong_positive":
-            bonuses.append("Strong expectation (+0.1)")
-            score += 0.1
+            bonuses.append("Strong expectation (+0.2)")
+            score += 0.2
         elif expectation == "neutral":
-            penalties.append("Neutral expectation (-0.1)")
+            penalties.append("Neutral expectation (-0.2)")
             score -= 0.2
 
         if guidance == "strong_positive":
@@ -1143,19 +1143,19 @@ class Edgar(AdvisorBase):
         if eps == "strong_beat":
             bonuses.append("Strong eps (+0.2)")
             score += 0.2
-        elif eps == "weak_beat":
-            penalties.append("Weak eps (-0.2)")
-            score -= 0.2
+        elif eps in ["weak_beat","unknown"]:
+            penalties.append("Weak or unknown eps (-0.1)")
+            score -= 0.1
 
         if revenue == "strong_beat":
-            bonuses.append("Strong revenue (+0.1)")
-            score += 0.1
+            bonuses.append("Strong revenue (+0.2)")
+            score += 0.2
         elif revenue == "weak_beat":
-            penalties.append("Weak revenue (-0.1)")
-            score -= 0.1
+            penalties.append("Weak revenue (-0.0)")
+            score -= 0.0
         elif revenue == "neutral":
-            penalties.append("Neutral revenue (-0.2)")
-            score -= 0.2
+            penalties.append("Neutral revenue (-0.1)")
+            score -= 0.1
         elif revenue == "miss":
             penalties.append("Neutral revenue (-0.3)")
             score -= 0.3
@@ -1164,18 +1164,18 @@ class Edgar(AdvisorBase):
             bonuses.append("Strong buy (+0.2)")
             score += 0.2
         elif broker == "weak_buy":
-            penalties.append("Weak buy (-0.2)")
-            score -= 0.2
+            penalties.append("Weak buy (-0.1)")
+            score -= 0.1
 
         # Valuation
         valuation = self.evaluate_stock(ticker)
 
         if valuation >= 1.10:
-            penalties.append("Overvalued (-0.2)")
-            score -= 0.2
+            penalties.append("Overvalued (-0.15)")
+            score -= 0.15
         elif valuation < 0.90:
-            bonuses.append("Undervalued (+0.2)")
-            score += 0.2
+            bonuses.append("Undervalued (+0.15)")
+            score += 0.15
 
         # Sector (BAD_SECTOR / WATCH -0.2) and 52-week high/low
         try:
@@ -1262,7 +1262,7 @@ class Edgar(AdvisorBase):
         score, bonuses, penalties = self.score_results(filing, ex99, media)
 
         # Calculate weight and health
-        weight = score + 0.5
+        weight = score + 1.0
         base = float(Profile.RISK["MODERATE"])
         health = base * weight
 
@@ -1341,7 +1341,7 @@ class Edgar(AdvisorBase):
         logger.info("Fetching latest filings...")
 
         prev_ts = self.get_previous_sa_timestamp(sa)
-        """
+
         try:
             latest = get_latest_filings()
             filings = list(latest)
@@ -1354,7 +1354,7 @@ class Edgar(AdvisorBase):
         filing2 = find("0000783325-26-000040")
 
         filings = [filing1]
-
+        """
         # Filter latest to 8-Ks only
         filings_8k = [f for f in filings if getattr(f, "form", None) == "8-K"]
         if not filings_8k:
@@ -1370,7 +1370,7 @@ class Edgar(AdvisorBase):
                     accession = getattr(filing, "accession_no", None) or getattr(filing, "accession_number", None) or ""
                     logger.warning("Filing %s (filing_time=%s) is before prev SA %s — skipping",
                                    accession, filing_dt, prev_ts)
-                    #continue
+                    continue
 
                 self.analyze_8k(filing, sa)
 
