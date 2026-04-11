@@ -18,14 +18,18 @@ Rows with heuristic score < 0 are never sent to the LLM (still listed in the fin
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 import html
 import logging
 import os
 import re
 from typing import Any
 
-from core.services.advisors.advisor import AdvisorBase, register
+from core.services.advisors.advisor import (
+    AdvisorBase,
+    FEED_DISCOVERY_COMPOSITE_MIN,
+    feed_discovery_weight_from_parsed,
+    register,
+)
 
 try:
     import feedparser
@@ -325,6 +329,9 @@ BOOLEAN CONSISTENCY:
 - is_significant must be true only if significance_score >= 4
 - is_surprise must be true only if surprise_score >= 4
 
+DISCOVERY (downstream): A stock is discovered only when event_outcome="positive" AND impact_direction="bullish".
+Significance/surprise scores (and booleans) inform Discovery weight with tape position, not the hard gate.
+
 DIRECTIONALITY RULE (critical):
 - You MUST classify event_outcome and impact_direction from article evidence.
 - Negative clinical/regulatory outcomes (e.g., "failed primary endpoint", "misses phase 3", CRL, clinical hold, bankruptcy)
@@ -519,11 +526,7 @@ def _pharm_llm_hard_failures(parsed: Any) -> list[str]:
 
 
 def _pharm_first_discovery_gate_fail(parsed: dict[str, Any]) -> str | None:
-    """
-    First-fail-wins business gate:
-    discovery only when all-green:
-      event_outcome=positive, impact_direction=bullish, is_significant=true, is_surprise=true
-    """
+    """Hard gate: positive outcome and bullish direction (scores feed weight, not this gate)."""
     company = parsed.get("company_name")
     drug_name = parsed.get("drug_name")
     company_txt = company.strip() if isinstance(company, str) and company.strip() else "unknown"
@@ -533,19 +536,11 @@ def _pharm_first_discovery_gate_fail(parsed: dict[str, Any]) -> str | None:
         return f"company={company_txt}, drug_name={drug_txt}, event_outcome is negative -> fail"
     if parsed.get("impact_direction") == "bearish":
         return f"company={company_txt}, drug_name={drug_txt}, impact_direction is bearish -> fail"
-    if parsed.get("is_significant") is False:
-        return f"company={company_txt}, drug_name={drug_txt}, is_significant is false -> fail"
-    if parsed.get("is_surprise") is False:
-        return f"company={company_txt}, drug_name={drug_txt}, is_surprise is false -> fail"
 
     if parsed.get("event_outcome") != "positive":
         return f"company={company_txt}, drug_name={drug_txt}, event_outcome is not positive -> fail"
     if parsed.get("impact_direction") != "bullish":
         return f"company={company_txt}, drug_name={drug_txt}, impact_direction is not bullish -> fail"
-    if parsed.get("is_significant") is not True:
-        return f"company={company_txt}, drug_name={drug_txt}, is_significant is not true -> fail"
-    if parsed.get("is_surprise") is not True:
-        return f"company={company_txt}, drug_name={drug_txt}, is_surprise is not true -> fail"
 
     return None
 
@@ -948,15 +943,20 @@ class Pharm(AdvisorBase):
                 logger.info("PHARM skip discovery: allow_discovery false for %s", resolved_ticker)
                 continue
 
+            weight, raw_comp, wdetail = feed_discovery_weight_from_parsed(parsed, resolved_ticker)
+            if weight is None:
+                logger.info(
+                    "PHARM skip discovery: composite raw=%s < %s | %s | %s",
+                    raw_comp,
+                    FEED_DISCOVERY_COMPOSITE_MIN,
+                    resolved_ticker,
+                    wdetail,
+                )
+                continue
+            logger.info("PHARM discovery weight | %s | %s -> weight=%s", resolved_ticker, wdetail, weight)
+
             row_event_class = str(candidate.get("event_class") or "general")
             explanation = _pharm_build_discovery_explanation(parsed, row_event_class)
-
-            try:
-                cw = float(parsed.get("confidence"))
-            except (TypeError, ValueError):
-                cw = 1.0
-            cw = min(max(cw, 0.0), 1.0)
-            weight = Decimal(f"{cw:.2f}")
 
             sell_instructions = [
                 ("PERCENTAGE_DIMINISHING", 1.30, 7),

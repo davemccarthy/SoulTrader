@@ -37,7 +37,7 @@ struct FundsView: View {
 
                         metricPair(
                             title: "PORTFOLIO",
-                            value: formatPercent(fund.dashboard.holdingsPnl),
+                            value: formatCurrency(fund.dashboard.holdingsMarketValue),
                             color: percentColor(fund.dashboard.holdingsPnl),
                             alignment: .trailing
                         )

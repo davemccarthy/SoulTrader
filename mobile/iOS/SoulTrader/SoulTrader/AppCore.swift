@@ -58,15 +58,29 @@ struct FundResponse: Decodable, Identifiable {
 
 struct GlobalDashboardResponse: Decodable {
     let totalValue: Double
+    let cash: Double
     let holdingsPnl: Double
     let returnPercent: Double
     let todayPercent: Double
 
     private enum CodingKeys: String, CodingKey {
         case totalValue = "total_value"
+        case cash
         case holdingsPnl = "holdings_pnl"
         case returnPercent = "return_percent"
         case todayPercent = "today_percent"
+    }
+
+    /// Market value of stock positions (excludes cash); matches fund dashboard `total_value - cash`.
+    var holdingsMarketValue: Double {
+        max(0, totalValue - cash)
+    }
+}
+
+extension FundDashboardResponse {
+    /// Market value of stock positions (excludes cash).
+    var holdingsMarketValue: Double {
+        max(0, totalValue - cash)
     }
 }
 
@@ -566,7 +580,7 @@ struct FundSummaryCard: View {
     var body: some View {
         HStack(spacing: 8) {
             pair(title: "WEALTH", value: formatCurrency(fund.dashboard.totalValue), alignment: .leading)
-            pair(title: "PORTFOLIO", value: formatPercent(fund.dashboard.holdingsPnl), color: percentColor(fund.dashboard.holdingsPnl), alignment: .trailing)
+            pair(title: "PORTFOLIO", value: formatCurrency(fund.dashboard.holdingsMarketValue), color: percentColor(fund.dashboard.holdingsPnl), alignment: .trailing)
             pair(title: "TODAY", value: formatPercent(fund.dashboard.todayPercent), color: percentColor(fund.dashboard.todayPercent), alignment: .trailing)
             pair(title: "P&L", value: formatPercent(fund.dashboard.returnPercent), color: percentColor(fund.dashboard.returnPercent), alignment: .trailing)
         }
@@ -618,7 +632,7 @@ struct GlobalSummaryCard: View {
     var body: some View {
         HStack(spacing: 8) {
             pair(title: "WEALTH", value: formatCurrency(dashboard.totalValue), alignment: .leading)
-            pair(title: "PORTFOLIO", value: formatPercent(dashboard.holdingsPnl), color: percentColor(dashboard.holdingsPnl), alignment: .trailing)
+            pair(title: "PORTFOLIO", value: formatCurrency(dashboard.holdingsMarketValue), color: percentColor(dashboard.holdingsPnl), alignment: .trailing)
             pair(title: "TODAY", value: formatPercent(dashboard.todayPercent), color: percentColor(dashboard.todayPercent), alignment: .trailing)
             pair(title: "P&L", value: formatPercent(dashboard.returnPercent), color: percentColor(dashboard.returnPercent), alignment: .trailing)
         }
@@ -706,7 +720,11 @@ struct WealthChartCard: View {
                         }
                     }
                 }
-                .frame(height: 120)
+                .chartPlotStyle { plot in
+                    plot.clipShape(Rectangle())
+                }
+                .frame(maxWidth: .infinity, minHeight: 120, maxHeight: 120, alignment: .center)
+                .clipped()
             } else {
                 Text("No snapshot history yet.")
                     .font(.caption)
@@ -717,6 +735,7 @@ struct WealthChartCard: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 10)
         .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     private func shortCurrency(_ value: Double) -> String {

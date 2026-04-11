@@ -18,9 +18,126 @@ from django.db.models.functions import Cast
 from core.models import Stock, Discovery, Recommendation, Advisor
 from django.conf import settings
 from decimal import Decimal
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# --- LLM feed advisors (BIZFEED / PHARM): tape bands match _get_buy_score overlays + edgar.score_results ---
+_TAPE_NEAR_52W_LOW_MULT = 1.10
+_TAPE_NEAR_52W_HIGH_MULT = 0.90
+_TAPE_NEAR_2W_LOW_MULT = 1.10
+_TAPE_NEAR_2W_HIGH_MULT = 0.95
+
+# Integer bumps summed with significance_score + surprise_score (each 1–5), then scaled to Discovery.weight.
+_TAPE_LOW_BUMP = 2
+_TAPE_HIGH_BUMP = -1
+_TAPE_NEITHER_BUMP = 1
+
+# Minimum raw composite (sig + sur + tape52 + tape2w) before creating a Discovery.
+FEED_DISCOVERY_COMPOSITE_MIN = 5
+FEED_DISCOVERY_WEIGHT_MULT = Decimal("0.10")
+
+
+def _feed_llm_int_1_5(value: Any) -> Optional[int]:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if isinstance(value, int) and 1 <= value <= 5:
+        return value
+    try:
+        n = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return n if 1 <= n <= 5 else None
+
+
+def tape_position_discovery_terms(symbol: str) -> Tuple[int, int, List[str]]:
+    """
+    Map price vs 52-week and 2-week ranges to small integer terms for discovery ranking.
+    Uses the same near-low / near-high bands as buy-score overlay in _get_buy_score.
+
+    Returns:
+        (term_52w, term_2w, reasons) where each term is _TAPE_LOW_BUMP, _TAPE_HIGH_BUMP, or _TAPE_NEITHER_BUMP.
+    """
+    reasons: List[str] = []
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return _TAPE_NEITHER_BUMP, _TAPE_NEITHER_BUMP, ["tape: empty symbol"]
+
+    t52 = _TAPE_NEITHER_BUMP
+    t2w = _TAPE_NEITHER_BUMP
+
+    try:
+        t = yf.Ticker(sym)
+        info = t.info or {}
+        price_now = info.get("regularMarketPrice") or info.get("currentPrice") or info.get("previousClose")
+        low_52 = info.get("fiftyTwoWeekLow")
+        high_52 = info.get("fiftyTwoWeekHigh")
+
+        if isinstance(price_now, (int, float)) and price_now > 0:
+            if isinstance(low_52, (int, float)) and low_52 > 0 and price_now <= low_52 * _TAPE_NEAR_52W_LOW_MULT:
+                t52 = _TAPE_LOW_BUMP
+                reasons.append("tape52: near 52w low")
+            elif isinstance(high_52, (int, float)) and high_52 > 0 and price_now >= high_52 * _TAPE_NEAR_52W_HIGH_MULT:
+                t52 = _TAPE_HIGH_BUMP
+                reasons.append("tape52: near 52w high")
+            else:
+                reasons.append("tape52: mid range")
+
+            try:
+                hist = t.history(period="2wk")
+                if hist is not None and not hist.empty:
+                    low_2w = float(hist["Low"].min())
+                    high_2w = float(hist["High"].max())
+                    if low_2w > 0 and price_now <= low_2w * _TAPE_NEAR_2W_LOW_MULT:
+                        t2w = _TAPE_LOW_BUMP
+                        reasons.append("tape2w: near 2w low")
+                    elif high_2w > 0 and price_now >= high_2w * _TAPE_NEAR_2W_HIGH_MULT:
+                        t2w = _TAPE_HIGH_BUMP
+                        reasons.append("tape2w: near 2w high")
+                    else:
+                        reasons.append("tape2w: mid range")
+                else:
+                    reasons.append("tape2w: no history")
+            except Exception as exc:
+                reasons.append(f"tape2w: error {exc.__class__.__name__}")
+        else:
+            reasons.append("tape: missing price")
+    except Exception as exc:
+        reasons.append(f"tape: error {exc.__class__.__name__}")
+
+    return t52, t2w, reasons
+
+
+def feed_discovery_weight_from_parsed(
+    parsed: Dict[str, Any],
+    symbol: str,
+) -> Tuple[Optional[Decimal], int, str]:
+    """
+    Discovery.weight = FEED_DISCOVERY_WEIGHT_MULT * (sig + sur + tape_52 + tape_2w).
+    Returns (weight_or_none, raw_composite, log_summary).
+    If raw_composite < FEED_DISCOVERY_COMPOSITE_MIN, weight is None (caller skips discovery).
+    """
+    sig = _feed_llm_int_1_5(parsed.get("significance_score"))
+    sur = _feed_llm_int_1_5(parsed.get("surprise_score"))
+    if sig is None:
+        sig = 3
+    if sur is None:
+        sur = 3
+
+    t52, t2w, tape_rs = tape_position_discovery_terms(symbol)
+    raw = int(sig) + int(sur) + int(t52) + int(t2w)
+    summary = (
+        f"sig={sig} sur={sur} tape52={t52} tape2w={t2w} raw={raw} "
+        f"({'; '.join(tape_rs)})"
+    )
+
+    if raw < FEED_DISCOVERY_COMPOSITE_MIN:
+        return None, raw, summary
+
+    w = (Decimal(raw) * FEED_DISCOVERY_WEIGHT_MULT).quantize(Decimal("0.01"))
+    return w, raw, summary
 
 
 def _get_gemini_keys() -> List[Optional[str]]:

@@ -10,7 +10,8 @@ Purpose:
 - Uncategorized rows are dismissed from the catalyst path but still sampled in logs so
   you can spot missing keywords.
 - All tagged catalyst rows are sent to Ollama each run (optional BIZFEED_LLM_MAX cap). LLM output includes
-  PHARM-style significance/surprise; a Discovery is created only after the all-green gate plus listing + allow_discovery.
+  PHARM-style significance/surprise; a Discovery is created after positive+bullish gate, composite score floor,
+  national listing, allow_discovery, and a passing health_check (same pattern as PHARM).
 - With no previous SmartAnalysis timestamp, the feed window defaults to the last 1 day.
 
 Run:
@@ -48,12 +49,16 @@ import re
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 from typing import Any
 from urllib.parse import urlparse
 
 from core.models import NATIONAL_EXCHANGES
-from core.services.advisors.advisor import AdvisorBase, register
+from core.services.advisors.advisor import (
+    AdvisorBase,
+    FEED_DISCOVERY_COMPOSITE_MIN,
+    feed_discovery_weight_from_parsed,
+    register,
+)
 from core.services.advisors.pharm import _entry_datetime_utc, _parse_since_utc, json_dumps_compact
 
 try:
@@ -355,9 +360,10 @@ SIGNIFICANCE / SURPRISE (PHARM-aligned; evidence from article only):
 - significance_score: 1 = minor/routine; 3 = meaningful for value; 5 = highly consequential for equity value.
 - surprise_score: 1 = fully expected or priced in per article cues; 3 = some uncertainty; 5 = materially unexpected vs expectations implied in the text (timing, size, reversal).
 
-DISCOVERY GATE (downstream — same bar as PHARM for actionable picks):
-- A Discovery is recorded only when ALL hold: event_outcome="positive", impact_direction="bullish", is_significant=true, is_surprise=true.
-- Do not force these labels. The DEFAULT STANCE above still applies: most wires should fail this gate. Only set all four when the article explicitly supports each.
+DISCOVERY GATE (downstream — hard requirements for actionable picks):
+- A Discovery is recorded only when event_outcome="positive" AND impact_direction="bullish".
+- significance_score, surprise_score, and is_significant / is_surprise are used for ranking/weighting downstream, not as hard gates.
+- Do not force positive/bullish. The DEFAULT STANCE above still applies: most wires should fail the hard gate.
 
 PRIMARY_CATALYST:
 - Prefer primary_catalyst equal to INPUT.primary_category. Only override if the article clearly contradicts that label; mention the mismatch in summary.
@@ -436,7 +442,7 @@ def _bizfeed_score_as_int_1_5(value: Any) -> int | None:
 def _bizfeed_align_score_booleans(out: dict[str, Any]) -> None:
     """
     Ollama often sets is_* wrong vs 1–5 scores. PHARM rules: true iff score >= 4.
-    Overwrite booleans from scores when the score is valid so validation matches the gate.
+    Overwrite booleans from scores when the score is valid so JSON validation stays consistent.
     """
     pairs = (
         ("materiality_score", "is_material"),
@@ -620,10 +626,7 @@ def _bizfeed_llm_hard_failures(parsed: Any) -> list[str]:
 
 
 def _bizfeed_discovery_gate_fail(parsed: dict[str, Any]) -> str | None:
-    """
-    PHARM-aligned business gate: discovery only when all-green —
-    positive + bullish + significant + surprise.
-    """
+    """Hard gate: positive outcome and bullish direction only (scores feed weight, not this gate)."""
     company = parsed.get("company_name")
     company_txt = company.strip() if isinstance(company, str) and company.strip() else "unknown"
 
@@ -631,19 +634,11 @@ def _bizfeed_discovery_gate_fail(parsed: dict[str, Any]) -> str | None:
         return f"company={company_txt}, event_outcome is negative -> gate fail"
     if parsed.get("impact_direction") == "bearish":
         return f"company={company_txt}, impact_direction is bearish -> gate fail"
-    if parsed.get("is_significant") is False:
-        return f"company={company_txt}, is_significant is false -> gate fail"
-    if parsed.get("is_surprise") is False:
-        return f"company={company_txt}, is_surprise is false -> gate fail"
 
     if parsed.get("event_outcome") != "positive":
         return f"company={company_txt}, event_outcome is not positive -> gate fail"
     if parsed.get("impact_direction") != "bullish":
         return f"company={company_txt}, impact_direction is not bullish -> gate fail"
-    if parsed.get("is_significant") is not True:
-        return f"company={company_txt}, is_significant is not true -> gate fail"
-    if parsed.get("is_surprise") is not True:
-        return f"company={company_txt}, is_surprise is not true -> gate fail"
 
     return None
 
@@ -1219,6 +1214,18 @@ class Bizfeed(AdvisorBase):
                 logger.info("BIZFEED skip discovery: allow_discovery false for %s", listed_sym)
                 continue
 
+            weight, raw_comp, wdetail = feed_discovery_weight_from_parsed(parsed, listed_sym)
+            if weight is None:
+                logger.info(
+                    "BIZFEED skip discovery: composite raw=%s < %s | %s | %s",
+                    raw_comp,
+                    FEED_DISCOVERY_COMPOSITE_MIN,
+                    listed_sym,
+                    wdetail,
+                )
+                continue
+            logger.info("BIZFEED discovery weight | %s | %s -> weight=%s", listed_sym, wdetail, weight)
+
             explanation = _bizfeed_build_discovery_explanation(
                 parsed,
                 primary_category=primary,
@@ -1226,12 +1233,6 @@ class Bizfeed(AdvisorBase):
                 resolved_symbol=listed_sym,
                 yahoo_exchange=listed_ex or "",
             )
-            try:
-                cw = float(parsed.get("confidence"))
-            except (TypeError, ValueError):
-                cw = 1.0
-            cw = min(max(cw, 0.0), 1.0)
-            weight = Decimal(f"{cw:.2f}")
 
             sell_instructions = [
                 ("PERCENTAGE_DIMINISHING", 1.30, 7),

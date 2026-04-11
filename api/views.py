@@ -1,6 +1,6 @@
 from datetime import timedelta
 
-from django.db.models import Sum, Max
+from django.db.models import F, Max, Sum
 from django.templatetags.static import static
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
@@ -27,12 +27,17 @@ def get_holdings(request):
     """Get user holdings"""
     fund_id = request.query_params.get('fund_id')
     if fund_id:
-        # Match web behavior: holdings are scoped by selected fund.
         holdings_qs = Holding.objects.filter(fund_id=fund_id)
     else:
         holdings_qs = request.user.holding_set.all()
 
-    holdings = list(holdings_qs.select_related('stock', 'stock__advisor'))
+    # Newest holdings first: created (when set), then id. nulls_last so legacy rows
+    # without created don't float above recent ones on PostgreSQL.
+    holdings_qs = holdings_qs.order_by(
+        F('created').desc(nulls_last=True),
+        '-id',
+    ).select_related('stock', 'stock__advisor')
+    holdings = list(holdings_qs)
     serializer = HoldingSerializer(holdings, many=True)
     payload = serializer.data
 
