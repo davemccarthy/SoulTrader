@@ -256,6 +256,9 @@ struct TradeResponse: Decodable, Identifiable {
     let action: String
     let price: String
     let shares: Int
+    /// Average cost basis at time of SELL; null for BUY rows.
+    let cost: String?
+    let explanation: String?
     let sa: Int?
     let created: String?
 }

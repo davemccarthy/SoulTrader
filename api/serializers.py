@@ -25,10 +25,10 @@ class HoldingSerializer(serializers.ModelSerializer):
 
 class TradeSerializer(serializers.ModelSerializer):
     stock = StockSerializer(read_only=True)
-    
+
     class Meta:
         model = Trade
-        fields = ['id', 'stock', 'action', 'price', 'shares', 'sa', 'created']
+        fields = ['id', 'stock', 'action', 'price', 'shares', 'cost', 'explanation', 'sa', 'created']
 
 
 class ProfileSerializer(serializers.ModelSerializer):

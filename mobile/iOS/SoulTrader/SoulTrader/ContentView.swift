@@ -43,7 +43,7 @@ struct ContentView: View {
                                 .tag(AppTab.holdings)
                                 .disabled(viewModel.selectedTab == .funds || !viewModel.hasSelectedFund)
 
-                            NavigationStack { TradesView(viewModel: viewModel) }
+                            TradesView(viewModel: viewModel)
                                 .background(appBackground)
                                 .tabItem { Label("TRADES", systemImage: "arrow.left.arrow.right") }
                                 .tag(AppTab.trades)
