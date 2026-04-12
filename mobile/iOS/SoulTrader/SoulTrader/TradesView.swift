@@ -189,11 +189,31 @@ struct TradeDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var sharePricePoints: [StockPriceChartPoint] = []
 
+    private var tradeExecutionChartDate: Date? {
+        guard let isoString = trade.created, !isoString.isEmpty else { return nil }
+        let withFraction = ISO8601DateFormatter()
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        return withFraction.date(from: isoString) ?? plain.date(from: isoString)
+    }
+
+    private var tradeExecutionPriceDouble: Double? {
+        let s = trade.price
+        guard !s.isEmpty, let d = Decimal(string: s) else { return nil }
+        return NSDecimalNumber(decimal: d).doubleValue
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 10) {
                 headerCard
-                SharePriceChartCard(symbol: trade.stock.symbol, points: sharePricePoints)
+                SharePriceChartCard(
+                    symbol: trade.stock.symbol,
+                    points: sharePricePoints,
+                    tradeAt: tradeExecutionChartDate,
+                    tradePrice: tradeExecutionPriceDouble
+                )
                 tradeExplanationSection
             }
             .padding(.horizontal, 6)

@@ -622,9 +622,11 @@ final class AuthViewModel: ObservableObject {
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
+        let cal = Calendar.current
         return raw.compactMap { point in
             guard let date = formatter.date(from: point.date) else { return nil }
-            return StockPriceChartPoint(id: point.date, date: date, close: point.close)
+            let day = cal.startOfDay(for: date)
+            return StockPriceChartPoint(id: point.date, date: day, close: point.close)
         }
     }
 }
@@ -845,6 +847,15 @@ struct WealthChartCard: View {
 struct SharePriceChartCard: View {
     let symbol: String
     let points: [StockPriceChartPoint]
+    /// Execution time (full timestamp); X is drawn at start of that local calendar day to match daily bars.
+    let tradeAt: Date?
+    let tradePrice: Double?
+
+    /// Align marker with the daily close series (exchange-local day).
+    private var tradeMarkerX: Date? {
+        guard let t = tradeAt else { return nil }
+        return Calendar.current.startOfDay(for: t)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -860,26 +871,44 @@ struct SharePriceChartCard: View {
             }
 
             if points.count >= 2 {
-                Chart(points) { point in
-                    AreaMark(
-                        x: .value("Date", point.date),
-                        y: .value("Close", point.close)
-                    )
-                    .foregroundStyle(
-                        .linearGradient(
-                            colors: [Color.green.opacity(0.25), Color.clear],
-                            startPoint: .top,
-                            endPoint: .bottom
+                Chart {
+                    ForEach(points) { point in
+                        AreaMark(
+                            x: .value("Date", point.date),
+                            y: .value("Close", point.close)
                         )
-                    )
+                        .foregroundStyle(
+                            .linearGradient(
+                                colors: [Color.green.opacity(0.25), Color.clear],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
 
-                    LineMark(
-                        x: .value("Date", point.date),
-                        y: .value("Close", point.close)
-                    )
-                    .interpolationMethod(.catmullRom)
-                    .foregroundStyle(.green)
-                    .lineStyle(StrokeStyle(lineWidth: 2))
+                        LineMark(
+                            x: .value("Date", point.date),
+                            y: .value("Close", point.close)
+                        )
+                        .interpolationMethod(.catmullRom)
+                        .foregroundStyle(.green)
+                        .lineStyle(StrokeStyle(lineWidth: 2))
+                    }
+
+                    if let tx = tradeMarkerX, let py = tradePrice {
+                        RuleMark(x: .value("Trade day", tx))
+                            .foregroundStyle(Color.white.opacity(0.28))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+
+                        PointMark(
+                            x: .value("Trade", tx),
+                            y: .value("Trade", py)
+                        )
+                        .symbol(.circle)
+                        .symbolSize(70)
+                        .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
+                        .accessibilityLabel("Trade at \(formattedTradeMarkerPrice(py)) on \(formattedTradeMarkerDay(tx))")
+                    }
                 }
                 .chartXScale(domain: xDomain)
                 .chartYScale(domain: yDomain)
@@ -931,19 +960,38 @@ struct SharePriceChartCard: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    /// Tight X domain on actual data (avoids leading/trailing empty band from automatic scale).
+    private func formattedTradeMarkerPrice(_ price: Double) -> String {
+        if price >= 100 { return String(format: "$%.0f", price) }
+        if price >= 10 { return String(format: "$%.2f", price) }
+        return String(format: "$%.2f", price)
+    }
+
+    private func formattedTradeMarkerDay(_ day: Date) -> String {
+        let df = DateFormatter()
+        df.locale = .current
+        df.setLocalizedDateFormatFromTemplate("MMM d")
+        return df.string(from: day)
+    }
+
+    /// Tight X domain on data; expands if the trade falls outside the history window.
     private var xDomain: ClosedRange<Date> {
         guard let first = points.map(\.date).min(), let last = points.map(\.date).max() else {
             let n = Date()
             return n...n
         }
-        if first >= last {
-            if let end = Calendar.current.date(byAdding: .second, value: 1, to: first) {
-                return first...end
-            }
-            return first...last
+        var a = first
+        var b = last
+        if let tx = tradeMarkerX {
+            if tx < a { a = tx }
+            if tx > b { b = tx }
         }
-        return first...last
+        if a >= b {
+            if let end = Calendar.current.date(byAdding: .second, value: 1, to: a) {
+                return a...end
+            }
+            return a...b
+        }
+        return a...b
     }
 
     /// Day stride so we get ~4–5 ticks across the visible range (no `AxisMarkValues.explicit` on older Charts).
@@ -988,7 +1036,10 @@ struct SharePriceChartCard: View {
     }
 
     private var yDomain: ClosedRange<Double> {
-        let values = points.map(\.close)
+        var values = points.map(\.close)
+        if let p = tradePrice {
+            values.append(p)
+        }
         guard let minValue = values.min(), let maxValue = values.max() else {
             return 0...100
         }
