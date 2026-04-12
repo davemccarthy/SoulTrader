@@ -15,6 +15,9 @@ urlpatterns = [
     path('dashboard/', views.get_dashboard, name='dashboard'),
     path('dashboard/history/', views.get_dashboard_history, name='dashboard_history'),
 
+    # Stock chart (yfinance; matches web holding_history price series)
+    path('stocks/price_history/', views.get_stock_price_history, name='stock_price_history'),
+
     # Holdings
     path('holdings/', views.get_holdings, name='holdings'),
     path('holdings/<int:stock_id>/health_history/', views.get_holding_health_history, name='holding_health_history'),

@@ -107,6 +107,22 @@ struct WealthChartPoint: Identifiable {
     let wealth: Double
 }
 
+struct StockPriceHistoryPointResponse: Decodable {
+    let date: String
+    let close: Double
+}
+
+struct StockPriceHistoryResponse: Decodable {
+    let symbol: String
+    let points: [StockPriceHistoryPointResponse]
+}
+
+struct StockPriceChartPoint: Identifiable {
+    let id: String
+    let date: Date
+    let close: Double
+}
+
 struct StockInfo: Decodable {
     let symbol: String
     let company: String?
@@ -385,6 +401,20 @@ struct APIClient {
         return try JSONDecoder().decode(DashboardHistoryResponse.self, from: data)
     }
 
+    func fetchStockPriceHistory(accessToken: String, symbol: String, period: String = "2mo") async throws -> StockPriceHistoryResponse {
+        var components = URLComponents(url: endpoint("stocks/price_history/"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "symbol", value: symbol),
+            URLQueryItem(name: "period", value: period),
+        ]
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(StockPriceHistoryResponse.self, from: data)
+    }
+
     func fetchHoldings(accessToken: String, fundId: Int?) async throws -> [HoldingResponse] {
         let base = endpoint("holdings/")
         var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
@@ -565,6 +595,17 @@ final class AuthViewModel: ObservableObject {
 
     func clearSelectedFund() { selectedFundId = nil }
 
+    /// Daily closes for trade detail chart (web `holding_history` parity).
+    func fetchTradeSymbolPriceHistory(symbol: String) async -> [StockPriceChartPoint] {
+        guard let access = tokenStore.getAccessToken() else { return [] }
+        do {
+            let response = try await apiClient.fetchStockPriceHistory(accessToken: access, symbol: symbol)
+            return mapStockPriceHistoryPoints(response.points)
+        } catch {
+            return []
+        }
+    }
+
     private func mapHistoryPoints(_ raw: [DashboardHistoryPointResponse]) -> [WealthChartPoint] {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
@@ -573,6 +614,17 @@ final class AuthViewModel: ObservableObject {
         return raw.compactMap { point in
             guard let date = formatter.date(from: point.date) else { return nil }
             return WealthChartPoint(id: point.date, date: date, wealth: point.wealth)
+        }
+    }
+
+    private func mapStockPriceHistoryPoints(_ raw: [StockPriceHistoryPointResponse]) -> [StockPriceChartPoint] {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return raw.compactMap { point in
+            guard let date = formatter.date(from: point.date) else { return nil }
+            return StockPriceChartPoint(id: point.date, date: date, close: point.close)
         }
     }
 }
@@ -786,6 +838,172 @@ struct WealthChartCard: View {
         default:
             return 100_000
         }
+    }
+}
+
+/// Share price over time (trade detail); Y axis is per-share close, not portfolio wealth.
+struct SharePriceChartCard: View {
+    let symbol: String
+    let points: [StockPriceChartPoint]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Share price")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Theme.labelAccent)
+                Spacer()
+                Text("\(symbol) · daily")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.secondaryText)
+            }
+
+            if points.count >= 2 {
+                Chart(points) { point in
+                    AreaMark(
+                        x: .value("Date", point.date),
+                        y: .value("Close", point.close)
+                    )
+                    .foregroundStyle(
+                        .linearGradient(
+                            colors: [Color.green.opacity(0.25), Color.clear],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+
+                    LineMark(
+                        x: .value("Date", point.date),
+                        y: .value("Close", point.close)
+                    )
+                    .interpolationMethod(.catmullRom)
+                    .foregroundStyle(.green)
+                    .lineStyle(StrokeStyle(lineWidth: 2))
+                }
+                .chartXScale(domain: xDomain)
+                .chartYScale(domain: yDomain)
+                .chartXAxis {
+                    AxisMarks(values: .stride(by: .day, count: xAxisDayStride, calendar: .current)) { value in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                            .foregroundStyle(Color.white.opacity(0.12))
+                        AxisValueLabel(centered: true) {
+                            if let date = value.as(Date.self) {
+                                Text(formatXAxisDate(date))
+                                    .font(.caption2)
+                                    .foregroundStyle(Theme.secondaryText)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.65)
+                            }
+                        }
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                            .foregroundStyle(Color.white.opacity(0.15))
+                        AxisValueLabel {
+                            if let val = value.as(Double.self) {
+                                Text(formatPriceAxis(val))
+                                    .font(.caption2)
+                                    .foregroundStyle(Theme.secondaryText)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
+                            }
+                        }
+                    }
+                }
+                .chartPlotStyle { plot in
+                    plot.clipShape(Rectangle())
+                }
+                .frame(maxWidth: .infinity, minHeight: 132, maxHeight: 148, alignment: .center)
+                .clipped()
+            } else {
+                Text("No price history yet.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.secondaryText)
+                    .frame(maxWidth: .infinity, minHeight: 80, alignment: .center)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
+        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// Tight X domain on actual data (avoids leading/trailing empty band from automatic scale).
+    private var xDomain: ClosedRange<Date> {
+        guard let first = points.map(\.date).min(), let last = points.map(\.date).max() else {
+            let n = Date()
+            return n...n
+        }
+        if first >= last {
+            if let end = Calendar.current.date(byAdding: .second, value: 1, to: first) {
+                return first...end
+            }
+            return first...last
+        }
+        return first...last
+    }
+
+    /// Day stride so we get ~4–5 ticks across the visible range (no `AxisMarkValues.explicit` on older Charts).
+    private var xAxisDayStride: Int {
+        let span = max(1, xSpanDays)
+        return max(1, min(120, span / 4))
+    }
+
+    private var xSpanDays: Int {
+        let first = xDomain.lowerBound
+        let last = xDomain.upperBound
+        return Calendar.current.dateComponents([.day], from: first, to: last).day ?? 0
+    }
+
+    private func formatXAxisDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = .current
+        if xSpanDays > 400 {
+            formatter.setLocalizedDateFormatFromTemplate("MMM yy")
+        } else {
+            formatter.setLocalizedDateFormatFromTemplate("MMM d")
+        }
+        return formatter.string(from: date)
+    }
+
+    /// Short labels so a capped tick count (~4) stays readable on a narrow Y axis.
+    private func formatPriceAxis(_ value: Double) -> String {
+        let v = abs(value)
+        if v >= 1_000 {
+            return String(format: "$%.2fK", value / 1_000)
+        }
+        if v >= 100 {
+            return String(format: "$%.0f", value)
+        }
+        if v >= 10 {
+            return String(format: "$%.1f", value)
+        }
+        if v >= 1 {
+            return String(format: "$%.2f", value)
+        }
+        return String(format: "$%.3f", value)
+    }
+
+    private var yDomain: ClosedRange<Double> {
+        let values = points.map(\.close)
+        guard let minValue = values.min(), let maxValue = values.max() else {
+            return 0...100
+        }
+
+        let range = maxValue - minValue
+        let padding = max(range * 0.08, max(range * 0.02, 0.01))
+        var lower = minValue - padding
+        var upper = maxValue + padding
+        if lower < 0 {
+            lower = 0
+        }
+        if lower >= upper {
+            upper = lower + max(lower * 0.02, 0.01)
+        }
+        return lower...upper
     }
 }
 

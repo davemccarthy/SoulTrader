@@ -1,3 +1,4 @@
+import logging
 from datetime import timedelta
 
 from django.db.models import F, Max, Sum
@@ -11,6 +12,15 @@ from django.http import Http404
 
 from core.models import Profile, Holding, Trade, Snapshot, Discovery
 from core.portfolio_metrics import get_portfolio_dashboard_data
+
+logger = logging.getLogger(__name__)
+
+_ALLOWED_YF_PERIODS = frozenset({
+    '1d', '5d', '1mo', '2mo', '3mo', '6mo', '1y', '2y', '5y', '10y', 'ytd', 'max',
+})
+_ALLOWED_YF_INTERVALS = frozenset({
+    '1m', '2m', '5m', '15m', '30m', '60m', '90m', '1h', '1d', '5d', '1wk', '1mo', '3mo',
+})
 
 
 @api_view(['GET'])
@@ -268,6 +278,54 @@ def get_dashboard_history(request):
         'change_percent': change_percent,
         'days': days,
         'scope': 'fund' if fund_id else 'global',
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_stock_price_history(request):
+    """
+    Daily close history for a symbol via yfinance (same approach as web holding_history).
+    GET /api/stocks/price_history/?symbol=AAPL&period=2mo&interval=1d
+    """
+    symbol = (request.query_params.get('symbol') or '').strip().upper()
+    if not symbol or len(symbol) > 20:
+        return Response({'error': 'valid symbol is required'}, status=400)
+
+    period = (request.query_params.get('period') or '2mo').strip().lower()
+    interval = (request.query_params.get('interval') or '1d').strip().lower()
+    if period not in _ALLOWED_YF_PERIODS:
+        period = '2mo'
+    if interval not in _ALLOWED_YF_INTERVALS:
+        interval = '1d'
+
+    points = []
+    try:
+        import yfinance as yf
+
+        hist = yf.Ticker(symbol).history(period=period, interval=interval)
+        if not hist.empty and 'Close' in hist.columns:
+            for ts, row in hist.iterrows():
+                close = row.get('Close')
+                if close is None:
+                    continue
+                try:
+                    close_value = float(close)
+                except (TypeError, ValueError):
+                    continue
+                try:
+                    day = ts.date().isoformat()
+                except AttributeError:
+                    continue
+                points.append({'date': day, 'close': close_value})
+    except Exception as e:
+        logger.warning('stock price history failed for %s: %s', symbol, e)
+
+    return Response({
+        'symbol': symbol,
+        'period': period,
+        'interval': interval,
+        'points': points,
     })
 
 

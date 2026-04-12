@@ -64,7 +64,7 @@ struct TradesView: View {
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: Int.self) { tradeId in
                 if let trade = viewModel.trades.first(where: { $0.id == tradeId }) {
-                    TradeDetailView(trade: trade)
+                    TradeDetailView(trade: trade, viewModel: viewModel)
                 } else {
                     Text("This trade is no longer available.")
                         .foregroundStyle(Theme.secondaryText)
@@ -185,12 +185,16 @@ struct TradesView: View {
 
 struct TradeDetailView: View {
     let trade: TradeResponse
+    @ObservedObject var viewModel: AuthViewModel
     @Environment(\.dismiss) private var dismiss
+    @State private var sharePricePoints: [StockPriceChartPoint] = []
 
     var body: some View {
         ScrollView {
             VStack(spacing: 10) {
                 headerCard
+                SharePriceChartCard(symbol: trade.stock.symbol, points: sharePricePoints)
+                tradeExplanationSection
             }
             .padding(.horizontal, 6)
             .padding(.top, 6)
@@ -199,6 +203,36 @@ struct TradeDetailView: View {
         .background(Theme.appBackground)
         .navigationTitle("")
         .navigationBarBackButtonHidden(true)
+        .task(id: trade.id) {
+            sharePricePoints = await viewModel.fetchTradeSymbolPriceHistory(symbol: trade.stock.symbol)
+        }
+    }
+
+    private var trimmedTradeExplanation: String? {
+        let t = (trade.explanation ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : t
+    }
+
+    @ViewBuilder
+    private var tradeExplanationSection: some View {
+        if let text = trimmedTradeExplanation {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Explanation")
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Theme.labelAccent)
+                Text(text)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                    .foregroundStyle(Theme.valuePrimary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.vertical, 10)
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+        }
     }
 
     private var headerCard: some View {
