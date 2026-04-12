@@ -1,7 +1,6 @@
 from django.shortcuts import render, redirect
 from django.contrib.auth import login, authenticate, logout
 from django.contrib.auth.decorators import login_required
-from django.contrib.auth.models import User
 from django.contrib import messages
 from django.db.models import F, Q, Case, When, Value, CharField, Max
 from django.http import JsonResponse, Http404
@@ -56,33 +55,6 @@ def logout_view(request):
     """Logout"""
     logout(request)
     return redirect('core:login')
-
-
-def register(request):
-    """Registration page"""
-    if request.user.is_authenticated:
-        return redirect('core:funds')
-    if request.method == 'POST':
-        username = request.POST.get('username')
-        email = request.POST.get('email')
-        password1 = request.POST.get('password1')
-        password2 = request.POST.get('password2')
-        risk = request.POST.get('risk', 'MODERATE')
-        
-        if password1 == password2:
-            if not User.objects.filter(username=username).exists():
-                user = User.objects.create_user(username=username, email=email, password=password1)
-                # Profile auto-created via signal
-                messages.success(request, 'Account created successfully!')
-                login(request, user)
-                init_fund_session_after_login(request)
-                return redirect('core:funds')
-            else:
-                messages.error(request, 'Username already exists')
-        else:
-            messages.error(request, 'Passwords do not match')
-    
-    return render(request, 'core/register.html', {'current_page': 'register'})
 
 
 @login_required
