@@ -612,14 +612,26 @@ def _pharm_discovery_metadata_lines(parsed: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _pharm_build_discovery_explanation(parsed: dict[str, Any], event_class: str) -> str:
+def _pharm_brief_trade_summary(listed_ticker: str, event_class: str) -> str:
+    """
+    One-line summary for Trade.explanation (analyze_discovery uses split(' | ')[0]).
+    Keep short; full headline + narrative live in the body after ' | '.
+    """
+    sym = (listed_ticker or "").strip().upper()[:12] or "?"
+    ec = (event_class or "general").strip().lower()[:32]
+    return f"{sym} · PHARM {ec}"
+
+
+def _pharm_build_discovery_explanation(
+    parsed: dict[str, Any], event_class: str, *, listed_ticker: str
+) -> str:
     headline = _pharm_discovery_headline(parsed, event_class)
     detail = _pharm_discovery_detail_paragraph(parsed)
     meta = _pharm_discovery_metadata_lines(parsed)
-    trade_lead = discovery_trade_explanation_lead(headline)
-    body_parts: list[str] = []
-    if trade_lead != headline:
-        body_parts.append(headline)
+    trade_lead = discovery_trade_explanation_lead(
+        _pharm_brief_trade_summary(listed_ticker, event_class)
+    )
+    body_parts: list[str] = [headline]
     if detail:
         body_parts.append(detail)
     body_parts.append(meta)
@@ -961,7 +973,9 @@ class Pharm(AdvisorBase):
             logger.info("PHARM discovery weight | %s | %s -> weight=%s", resolved_ticker, wdetail, weight)
 
             row_event_class = str(candidate.get("event_class") or "general")
-            explanation = _pharm_build_discovery_explanation(parsed, row_event_class)
+            explanation = _pharm_build_discovery_explanation(
+                parsed, row_event_class, listed_ticker=resolved_ticker
+            )
 
             sell_instructions = [
                 ("PERCENTAGE_DIMINISHING", 1.30, 7),
