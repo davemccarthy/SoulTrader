@@ -876,7 +876,6 @@ class Edgar(AdvisorBase):
                 accession,
             )
             # No LLM - try again later
-            self.watch(ticker, explanation=f"{accession}")
             return result_dict
 
         # Map label strings (negative | neutral | positive | strong_positive)
@@ -970,7 +969,8 @@ class Edgar(AdvisorBase):
         print(media_prompt)
         print("-------")
 
-        model, parsed = self.ask_gemini(media_prompt, timeout=120.0, use_search=True)
+        #model, parsed = self.ask_gemini(media_prompt, timeout=120.0, use_search=True)
+        model, parsed = self.ask_ollama(media_prompt)
         if not parsed or not isinstance(parsed, dict):
             logger.info(
                 "ticker=%s, CIK=%s, accession=%s media LLM: no result from Gemini",
@@ -1006,9 +1006,6 @@ class Edgar(AdvisorBase):
                 sentiment or "N/A",
                 broker or "N/A"
             )
-            # No coverage or broker unknown - try again later
-            if sentiment == "no_coverage" or broker == "unknown":
-                self.watch(ticker, explanation=f"{accession}")
             return None
 
         result: Dict[str, Optional[object]] = {
@@ -1355,6 +1352,25 @@ class Edgar(AdvisorBase):
 
         filings = [filing1]
         """
+
+        # Filter latest to Form-4s only
+        filings_f4 = [f for f in filings if getattr(f, "form", None) == "4"]
+
+        logger.info("Found %d FORM-4 filings found.",len(filings_f4))
+
+        for filing in filings_f4:
+            try:
+                filing_dt = _filing_datetime(filing)
+                if prev_ts is not None and filing_dt is not None and filing_dt < prev_ts:
+                    accession = getattr(filing, "accession_no", None) or getattr(filing, "accession_number", None) or ""
+                    logger.warning("Filing F-4 %s (filing_time=%s) is before prev SA %s — skipping",
+                                   accession, filing_dt, prev_ts)
+                    continue
+
+                #TODO: analyse_f4()
+            except Exception as e:
+                logger.error("⚠️ Error inspecting filing: %s", e)
+
         # Filter latest to 8-Ks only
         filings_8k = [f for f in filings if getattr(f, "form", None) == "8-K"]
         if not filings_8k:
@@ -1368,25 +1384,9 @@ class Edgar(AdvisorBase):
                 filing_dt = _filing_datetime(filing)
                 if prev_ts is not None and filing_dt is not None and filing_dt < prev_ts:
                     accession = getattr(filing, "accession_no", None) or getattr(filing, "accession_number", None) or ""
-                    logger.warning("Filing %s (filing_time=%s) is before prev SA %s — skipping",
+                    logger.warning("Filing 8-K %s (filing_time=%s) is before prev SA %s — skipping",
                                    accession, filing_dt, prev_ts)
                     continue
-
-                self.analyze_8k(filing, sa)
-
-            except Exception as e:
-                logger.error("⚠️ Error inspecting filing: %s", e)
-
-        # Filter wathced 8-Ks
-        watched_8ks = self.watchlist()
-
-        logger.info("Found %d 8-K watched filings.", len(watched_8ks))
-
-        for item in watched_8ks:
-            try:
-                filing = find(item.explanation)
-                item.status = "Excluded"
-                item.save()
 
                 self.analyze_8k(filing, sa)
 
