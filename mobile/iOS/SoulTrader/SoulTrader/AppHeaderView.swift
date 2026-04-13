@@ -23,8 +23,13 @@ struct AppHeaderView: View {
                     .foregroundStyle(.white)
             }
             .padding(.trailing, 10)
-            Button("Logout", role: .destructive) {
-                viewModel.logout()
+            Button(viewModel.hasSelectedFund ? "Funds" : "Logout", role: viewModel.hasSelectedFund ? nil : .destructive) {
+                if viewModel.hasSelectedFund {
+                    viewModel.selectedTab = .funds
+                    viewModel.clearSelectedFund()
+                } else {
+                    viewModel.logout()
+                }
             }
             .font(.subheadline)
             .foregroundStyle(.white)

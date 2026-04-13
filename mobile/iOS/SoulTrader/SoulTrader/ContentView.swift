@@ -7,20 +7,18 @@ struct ContentView: View {
         configureTabBarAppearance()
     }
 
-    private var guardedTabSelection: Binding<AppTab> {
+    private var fundSessionTabSelection: Binding<AppTab> {
         Binding(
-            get: { viewModel.selectedTab },
+            get: {
+                if viewModel.selectedTab == .trades { return .trades }
+                return .holdings
+            },
             set: { newTab in
-                if newTab == .funds {
-                    viewModel.selectedTab = .funds
-                    viewModel.clearSelectedFund()
-                    return
-                }
                 guard viewModel.hasSelectedFund else {
                     viewModel.selectedTab = .funds
                     return
                 }
-                viewModel.selectedTab = newTab
+                viewModel.selectedTab = (newTab == .trades) ? .trades : .holdings
             }
         )
     }
@@ -31,35 +29,34 @@ struct ContentView: View {
                 if viewModel.isAuthenticated {
                     VStack(spacing: 0) {
                         AppHeaderView(viewModel: viewModel)
-                        TabView(selection: guardedTabSelection) {
-                            NavigationStack { FundsView(viewModel: viewModel) }
-                                .background(appBackground)
-                                .tabItem { Label("FUNDS", systemImage: "dollarsign.circle") }
-                                .tag(AppTab.funds)
+                        if viewModel.hasSelectedFund {
+                            TabView(selection: fundSessionTabSelection) {
+                                HoldingsView(viewModel: viewModel)
+                                    .background(appBackground)
+                                    .tabItem { Label("HOLDINGS", systemImage: "chart.pie") }
+                                    .tag(AppTab.holdings)
 
-                            HoldingsView(viewModel: viewModel)
-                                .background(appBackground)
-                                .tabItem { Label("HOLDINGS", systemImage: "chart.pie") }
-                                .tag(AppTab.holdings)
-                                .disabled(viewModel.selectedTab == .funds || !viewModel.hasSelectedFund)
-
-                            TradesView(viewModel: viewModel)
-                                .background(appBackground)
-                                .tabItem { Label("TRADES", systemImage: "arrow.left.arrow.right") }
-                                .tag(AppTab.trades)
-                                .disabled(viewModel.selectedTab == .funds || !viewModel.hasSelectedFund)
-                        }
-                        .background(appBackground)
-                        .onChange(of: viewModel.selectedTab) { _, newTab in
-                            if newTab == .funds { viewModel.clearSelectedFund() }
-                        }
-                        .onChange(of: viewModel.selectedFundId) { _, newFundId in
-                            if newFundId == nil && viewModel.selectedTab != .funds {
-                                viewModel.selectedTab = .funds
+                                TradesView(viewModel: viewModel)
+                                    .background(appBackground)
+                                    .tabItem { Label("TRADES", systemImage: "arrow.left.arrow.right") }
+                                    .tag(AppTab.trades)
                             }
+                            .background(appBackground)
+                        } else {
+                            NavigationStack {
+                                FundsView(viewModel: viewModel)
+                            }
+                            .background(appBackground)
                         }
                     }
                     .background(appBackground)
+                    .onChange(of: viewModel.selectedFundId) { _, newFundId in
+                        if newFundId == nil {
+                            viewModel.selectedTab = .funds
+                        } else if viewModel.selectedTab == .funds {
+                            viewModel.selectedTab = .holdings
+                        }
+                    }
                 } else {
                     LoginView(viewModel: viewModel)
                 }
