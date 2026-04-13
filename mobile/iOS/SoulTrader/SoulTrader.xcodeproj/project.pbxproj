@@ -16,6 +16,7 @@
 		A10000192F84F61A00039EE2 /* HoldingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000182F84F61A00039EE2 /* HoldingsView.swift */; };
 		A100001B2F84F61A00039EE2 /* TradesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100001A2F84F61A00039EE2 /* TradesView.swift */; };
 		A100001D2F84F61A00039EE2 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100001C2F84F61A00039EE2 /* Theme.swift */; };
+		A100001F2F84F61A00039EE2 /* BrandHeaderTitleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100001E2F84F61A00039EE2 /* BrandHeaderTitleView.swift */; };
 		871F04372F84F61C00039EE2 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 871F04362F84F61C00039EE2 /* Assets.xcassets */; };
 		871F043A2F84F61C00039EE2 /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 871F04392F84F61C00039EE2 /* Preview Assets.xcassets */; };
 		871F04442F84F61D00039EE2 /* SoulTraderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 871F04432F84F61D00039EE2 /* SoulTraderTests.swift */; };
@@ -51,6 +52,7 @@
 		A10000182F84F61A00039EE2 /* HoldingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoldingsView.swift; sourceTree = "<group>"; };
 		A100001A2F84F61A00039EE2 /* TradesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TradesView.swift; sourceTree = "<group>"; };
 		A100001C2F84F61A00039EE2 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		A100001E2F84F61A00039EE2 /* BrandHeaderTitleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrandHeaderTitleView.swift; sourceTree = "<group>"; };
 		871F04362F84F61C00039EE2 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		871F04392F84F61C00039EE2 /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
 		871F043F2F84F61D00039EE2 /* SoulTraderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SoulTraderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -117,6 +119,7 @@
 				A10000182F84F61A00039EE2 /* HoldingsView.swift */,
 				A100001A2F84F61A00039EE2 /* TradesView.swift */,
 				A100001C2F84F61A00039EE2 /* Theme.swift */,
+				A100001E2F84F61A00039EE2 /* BrandHeaderTitleView.swift */,
 				871F04362F84F61C00039EE2 /* Assets.xcassets */,
 				871F04382F84F61C00039EE2 /* Preview Content */,
 			);
@@ -282,6 +285,7 @@
 				A100001B2F84F61A00039EE2 /* TradesView.swift in Sources */,
 				A10000192F84F61A00039EE2 /* HoldingsView.swift in Sources */,
 				A10000172F84F61A00039EE2 /* FundsView.swift in Sources */,
+				A100001F2F84F61A00039EE2 /* BrandHeaderTitleView.swift in Sources */,
 				A10000152F84F61A00039EE2 /* LoginView.swift in Sources */,
 				A10000132F84F61A00039EE2 /* AppHeaderView.swift in Sources */,
 				A10000112F84F61A00039EE2 /* AppCore.swift in Sources */,

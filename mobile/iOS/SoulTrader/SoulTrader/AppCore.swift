@@ -477,6 +477,15 @@ final class AuthViewModel: ObservableObject {
     @Published var statusMessage: String?
 
     private let tokenStore = TokenStore()
+    private enum RememberedLoginKeys {
+        static let username = "remembered_login_username"
+        static let password = "remembered_login_password"
+        static let host = "remembered_login_host"
+    }
+
+    init() {
+        loadRememberedLoginInputs()
+    }
 
     private var apiClient: APIClient {
         APIClient(baseURL: selectedHost.baseURL)
@@ -508,7 +517,7 @@ final class AuthViewModel: ObservableObject {
         do {
             let token = try await apiClient.login(username: username, password: password)
             tokenStore.save(access: token.access, refresh: token.refresh)
-            password = ""
+            saveRememberedLoginInputs()
             selectedTab = .funds
             statusMessage = "Login successful."
             await refreshAll()
@@ -581,8 +590,6 @@ final class AuthViewModel: ObservableObject {
         globalDashboard = nil
         globalHistory = []
         selectedFundHistory = []
-        username = ""
-        password = ""
         selectedTab = .funds
         statusMessage = "Logged out."
     }
@@ -627,6 +634,23 @@ final class AuthViewModel: ObservableObject {
             guard let date = formatter.date(from: point.date) else { return nil }
             let day = cal.startOfDay(for: date)
             return StockPriceChartPoint(id: point.date, date: day, close: point.close)
+        }
+    }
+
+    private func saveRememberedLoginInputs() {
+        let defaults = UserDefaults.standard
+        defaults.set(username, forKey: RememberedLoginKeys.username)
+        defaults.set(password, forKey: RememberedLoginKeys.password)
+        defaults.set(selectedHost.rawValue, forKey: RememberedLoginKeys.host)
+    }
+
+    private func loadRememberedLoginInputs() {
+        let defaults = UserDefaults.standard
+        username = defaults.string(forKey: RememberedLoginKeys.username) ?? ""
+        password = defaults.string(forKey: RememberedLoginKeys.password) ?? ""
+        if let hostRaw = defaults.string(forKey: RememberedLoginKeys.host),
+           let host = APIEnvironment.HostOption(rawValue: hostRaw) {
+            selectedHost = host
         }
     }
 }

@@ -5,16 +5,7 @@ struct AppHeaderView: View {
 
     var body: some View {
         HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(viewModel.headerTitle)
-                    .font(.headline)
-                    .fontWeight(.bold)
-                    .foregroundStyle(.white)
-                Text("KLYNT INDUSTRIES")
-                    .font(.caption2)
-                    .fontWeight(.black)
-                    .foregroundStyle(Theme.brandSubtitle)
-            }
+            BrandHeaderTitleView(title: viewModel.headerTitle)
             Spacer()
             Button {
                 Task { await viewModel.refreshAll() }

@@ -316,7 +316,7 @@ struct TradeDetailView: View {
             return [
                 ("BUY", formatCurrency(px), Theme.valuePrimary),
                 ("CURRENT", formatCurrency(current), Theme.valuePrimary),
-                ("VALUE", formatCurrency(positionValue), Theme.valuePrimary),
+                ("COST", formatCurrency(positionValue), Theme.valuePrimary),
                 ("SHRS", String(trade.shares), Theme.valuePrimary),
                 ("P&L %", formatPercent(pnl), percentColor(for: pnl)),
             ]
