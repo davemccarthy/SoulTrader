@@ -978,8 +978,6 @@ class Edgar(AdvisorBase):
                 cik or "N/A",
                 accession,
             )
-            # No LLM - try again later
-            self.watch(ticker, explanation=f"{accession}")
             return None
 
         print("-------")
