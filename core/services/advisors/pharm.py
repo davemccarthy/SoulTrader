@@ -27,6 +27,7 @@ from typing import Any
 from core.services.advisors.advisor import (
     AdvisorBase,
     FEED_DISCOVERY_COMPOSITE_MIN,
+    discovery_trade_explanation_lead,
     feed_discovery_weight_from_parsed,
     register,
 )
@@ -615,11 +616,15 @@ def _pharm_build_discovery_explanation(parsed: dict[str, Any], event_class: str)
     headline = _pharm_discovery_headline(parsed, event_class)
     detail = _pharm_discovery_detail_paragraph(parsed)
     meta = _pharm_discovery_metadata_lines(parsed)
-    parts: list[str] = [headline]
+    trade_lead = discovery_trade_explanation_lead(headline)
+    body_parts: list[str] = []
+    if trade_lead != headline:
+        body_parts.append(headline)
     if detail:
-        parts.append(detail)
-    parts.append(meta)
-    return "\n\n".join(parts)
+        body_parts.append(detail)
+    body_parts.append(meta)
+    body = "\n\n".join(body_parts)
+    return f"{trade_lead} | {body}"
 
 
 def _score_row(row: dict[str, str]) -> dict[str, Any]:

@@ -37,6 +37,20 @@ _TAPE_NEITHER_BUMP = 1
 FEED_DISCOVERY_COMPOSITE_MIN = 5
 FEED_DISCOVERY_WEIGHT_MULT = Decimal("0.10")
 
+# analyze_discovery uses explanation.split(" | ")[0] for Trade.explanation (varchar 256).
+DISCOVERY_TRADE_EXPLANATION_LEAD_MAX_LEN = 256
+
+
+def discovery_trade_explanation_lead(headline: str) -> str:
+    """First segment for Trade.explanation; must fit Trade.explanation max length."""
+    h = headline.strip()
+    cap = DISCOVERY_TRADE_EXPLANATION_LEAD_MAX_LEN
+    if len(h) <= cap:
+        return h
+    if cap <= 3:
+        return h[:cap]
+    return h[: cap - 3] + "..."
+
 
 def _feed_llm_int_1_5(value: Any) -> Optional[int]:
     if isinstance(value, bool) or value is None:
