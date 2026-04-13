@@ -170,11 +170,18 @@ struct HoldingDetailView: View {
     @ObservedObject var viewModel: AuthViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var healthHistory: [HealthHistoryRecord] = []
+    @State private var sharePricePoints: [StockPriceChartPoint] = []
 
     var body: some View {
         ScrollView {
             VStack(spacing: 10) {
                 headerCard
+                SharePriceChartCard(
+                    symbol: holding.stock.symbol,
+                    points: sharePricePoints,
+                    tradeAt: nil,
+                    tradePrice: nil
+                )
                 discoveryCard
                 secondaryMetaCard
                 healthSection
@@ -186,8 +193,11 @@ struct HoldingDetailView: View {
         .background(Theme.appBackground)
         .navigationTitle("")
         .navigationBarBackButtonHidden(true)
-        .task {
-            healthHistory = await viewModel.loadHoldingHealthHistory(stockId: holding.stockId)
+        .task(id: holding.id) {
+            async let health = viewModel.loadHoldingHealthHistory(stockId: holding.stockId)
+            async let prices = viewModel.fetchTradeSymbolPriceHistory(symbol: holding.stock.symbol)
+            healthHistory = await health
+            sharePricePoints = await prices
         }
     }
 
