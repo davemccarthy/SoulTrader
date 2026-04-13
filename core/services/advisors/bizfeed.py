@@ -109,6 +109,10 @@ _DEFAULT_LIMIT_PER_FEED = 50
 _LOG_ROW_SAMPLE = 60
 _LOG_UNCATEGORIZED_SAMPLE = 25
 
+# `core.services.analysis.analyze_discovery` uses `explanation.split(" | ")[0]` for Trade.explanation
+# (CharField max_length=256). Lead with a short summary before ` | `, then full narrative + meta.
+BIZFEED_TRADE_EXPLANATION_MAX_LEN = 256
+
 # Catalyst buckets (substring match on title + summary, lowercased). Order = reporting priority.
 BIZFEED_CATEGORY_ORDER: tuple[str, ...] = (
     "earnings",
@@ -700,6 +704,17 @@ def _bizfeed_format_explanation_value(value: Any) -> str:
     return str(value)
 
 
+def _bizfeed_trade_summary_prefix(headline: str) -> str:
+    """First segment for Trade.explanation; must fit Trade.explanation varchar(256)."""
+    h = headline.strip()
+    cap = BIZFEED_TRADE_EXPLANATION_MAX_LEN
+    if len(h) <= cap:
+        return h
+    if cap <= 3:
+        return h[:cap]
+    return h[: cap - 3] + "..."
+
+
 def _bizfeed_build_discovery_explanation(
     parsed: dict[str, Any],
     *,
@@ -712,6 +727,7 @@ def _bizfeed_build_discovery_explanation(
     c = company.strip() if isinstance(company, str) and company.strip() else "Unknown"
     pc = (primary_category or "catalyst").strip().lower()
     headline = f"{c} ({resolved_symbol}) — BIZFEED {pc}"
+    trade_lead = _bizfeed_trade_summary_prefix(headline)
 
     pieces: list[str] = []
     for key in ("summary", "materiality_reason", "significance_reason", "surprise_reason"):
@@ -750,7 +766,13 @@ def _bizfeed_build_discovery_explanation(
         "ticker_symbol",
     ):
         meta.append(f"{key}: {_bizfeed_format_explanation_value(parsed.get(key))}")
-    return "\n\n".join([headline, paragraph, "\n".join(meta)])
+    meta_block = "\n".join(meta)
+    # " | " separates trade summary (short) from body; analysis uses split(" | ")[0] for BUY trades.
+    if trade_lead == headline:
+        body = f"{paragraph}\n\n{meta_block}"
+    else:
+        body = f"{headline}\n\n{paragraph}\n\n{meta_block}"
+    return f"{trade_lead} | {body}"
 
 
 def resolve_bizfeed_listed_symbol(
