@@ -712,7 +712,7 @@ def _bizfeed_build_discovery_explanation(
     company = parsed.get("company_name")
     c = company.strip() if isinstance(company, str) and company.strip() else "Unknown"
     pc = (primary_category or "catalyst").strip().lower()
-    headline = f"{c} ({resolved_symbol}) — BIZFEED {pc}"
+    headline = f"BIZFEED {pc} - {c}"
     trade_lead = discovery_trade_explanation_lead(headline)
 
     pieces: list[str] = []

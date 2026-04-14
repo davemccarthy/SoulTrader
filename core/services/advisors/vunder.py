@@ -494,7 +494,7 @@ Example:
             weight = base_weight  # * confidence  # if you later want to include it
 
             explanation = (
-                f"LLM {consensus} - confidence: {confidence} | "
+                f"Under-valued {consensus} - confidence: {confidence} | "
                 f"Quant: price={row['price']}, ratio_to_low={row['ratio_to_low']} | "
                 f"valuation_ratio={row['valuation_ratio']}, total_score={row['total_score']} | "
                 f"{data.get('model')}: {data.get('summary')}"

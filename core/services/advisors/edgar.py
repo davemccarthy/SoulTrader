@@ -1798,12 +1798,6 @@ class Edgar(AdvisorBase):
                             or getattr(filing, "accession_number", None)
                             or ""
                         )
-                        logger.warning(
-                            "Filing F-4 %s (filing_time=%s) is before prev SA %s — skipping",
-                            accession,
-                            filing_dt,
-                            prev_ts,
-                        )
                         continue
                     filtered_f4.append(filing)
                 except Exception as e:

@@ -554,7 +554,7 @@ def _pharm_discovery_headline(parsed: dict[str, Any], event_class: str) -> str:
     d = drug.strip() if isinstance(drug, str) and drug.strip() else ""
     ec = (event_class or "general").strip().lower()
     if d:
-        return f"{c}'s {d} {ec}"
+        return f"Pharm {c}'s {d} {ec}"
     return f"{c}'s {ec}"
 
 

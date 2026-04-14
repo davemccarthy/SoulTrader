@@ -667,7 +667,7 @@ def calculate_confidence_score(approval):
 
 def build_discovery_explanation(approval, score):
     parts = [
-        f"{approval.get('drug_name')} approval score: {score:.2f}",
+        f"FDA approval {approval.get('drug_name')} {score:.2f}",
         f"{approval.get('company')} received {approval.get('status')}",
     ]
 

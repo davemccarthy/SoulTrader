@@ -769,7 +769,7 @@ class Insider(AdvisorBase):
                     date_info += f" (+{len(dates)-3} more)"
                 
                 explanation = (
-                    f"{len(purchases_list)} purchase(s) score: {avg_score:.2f} | "
+                    f"Insider {len(purchases_list)} purchase(s) score: {avg_score:.2f} | "
                     f"{total_qty:,} shares @ ${avg_price:.2f} avg = ${total_value:,.0f} | "
                     f"Insiders: {title_info} | Dates: {date_info}"
                 )

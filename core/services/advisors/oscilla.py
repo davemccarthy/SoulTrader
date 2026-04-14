@@ -422,7 +422,7 @@ class Oscilla(AdvisorBase):
                     
                     # Create discovery with sell instructions
                     explanation = (
-                        f"Wavelet pattern detected: period={wave_result['dominant_period_days']}d | "
+                        f"Oscilla wavelet: period={wave_result['dominant_period_days']}d | "
                         f"R:R={wave_result['reward_risk']:.2f} | "
                         f"consistency={wave_result['consistency']:.3f} | "
                         f"wave_pos={wave_result['wave_position']:.3f}"
