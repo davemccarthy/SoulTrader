@@ -51,7 +51,7 @@ struct FundsView: View {
                         }
 
                         HStack(spacing: 10) {
-                        Text("\(fund.dashboard.estabDays) days")
+                        Text("\(fund.dashboard.holdingsCount) stocks")
                             .font(.caption)
                             .fontWeight(.semibold)
                             .foregroundStyle(Theme.valuePrimary)
