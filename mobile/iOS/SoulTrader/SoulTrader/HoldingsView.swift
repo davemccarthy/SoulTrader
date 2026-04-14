@@ -19,6 +19,13 @@ struct HoldingsView: View {
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
 
+                    if let fund = viewModel.selectedFund {
+                        FundSecondarySummaryCard(fund: fund)
+                            .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 8, trailing: 6))
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                    }
+
                     if viewModel.holdings.isEmpty {
                         VStack(spacing: 8) {
                             Text("No holdings to show.")

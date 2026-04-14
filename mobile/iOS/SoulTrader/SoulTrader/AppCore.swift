@@ -655,34 +655,74 @@ final class AuthViewModel: ObservableObject {
     }
 }
 
-struct FundSummaryCard: View {
-    let fund: FundResponse
+private enum SummaryMetricAlignment {
+    case leading
+    case trailing
+}
+
+private struct SummaryMetricItem {
+    let title: String
+    let value: String
+    let color: Color
+    let alignment: SummaryMetricAlignment
+}
+
+private struct SummaryMetricCard: View {
+    let items: [SummaryMetricItem]
 
     var body: some View {
         HStack(spacing: 8) {
-            pair(title: "WEALTH", value: formatCurrency(fund.dashboard.totalValue), alignment: .leading)
-            pair(title: "PORTFOLIO", value: formatCurrency(fund.dashboard.holdingsMarketValue), color: percentColor(fund.dashboard.holdingsPnl), alignment: .trailing)
-            pair(title: "TODAY", value: formatPercent(fund.dashboard.todayPercent), color: percentColor(fund.dashboard.todayPercent), alignment: .trailing)
-            pair(title: "P&L", value: formatPercent(fund.dashboard.returnPercent), color: percentColor(fund.dashboard.returnPercent), alignment: .trailing)
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                VStack(alignment: item.alignment == .leading ? .leading : .trailing, spacing: 2) {
+                    Text(item.title)
+                        .font(.caption2)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(Theme.labelAccent)
+                    Text(item.value)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(item.color)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: item.alignment == .leading ? .leading : .trailing)
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 10)
         .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
     }
+}
 
-    private func pair(title: String, value: String, color: Color = Theme.valuePrimary, alignment: Alignment) -> some View {
-        VStack(alignment: alignment == .leading ? .leading : .trailing, spacing: 2) {
-            Text(title)
-                .font(.caption2)
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.labelAccent)
-            Text(value)
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundStyle(color)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: alignment)
+struct FundSummaryCard: View {
+    let fund: FundResponse
+
+    var body: some View {
+        SummaryMetricCard(items: [
+            SummaryMetricItem(
+                title: "WEALTH",
+                value: formatCurrency(fund.dashboard.totalValue),
+                color: Theme.valuePrimary,
+                alignment: .leading
+            ),
+            SummaryMetricItem(
+                title: "PORTFOLIO",
+                value: formatCurrency(fund.dashboard.holdingsMarketValue),
+                color: percentColor(fund.dashboard.holdingsPnl),
+                alignment: .trailing
+            ),
+            SummaryMetricItem(
+                title: "CASH",
+                value: formatCurrency(fund.dashboard.cash),
+                color: Theme.valuePrimary,
+                alignment: .trailing
+            ),
+            SummaryMetricItem(
+                title: "P&L",
+                value: formatPercent(fund.dashboard.returnPercent),
+                color: percentColor(fund.dashboard.returnPercent),
+                alignment: .trailing
+            ),
+        ])
     }
 
     private func formatCurrency(_ value: Double) -> String {
@@ -707,34 +747,96 @@ struct FundSummaryCard: View {
     }
 }
 
+struct FundSecondarySummaryCard: View {
+    let fund: FundResponse
+
+    var body: some View {
+        SummaryMetricCard(items: [
+            SummaryMetricItem(
+                title: "TODAY",
+                value: formatPercent(fund.dashboard.todayPercent),
+                color: percentColor(fund.dashboard.todayPercent),
+                alignment: .leading
+            ),
+            SummaryMetricItem(
+                title: "RETURN",
+                value: formatCurrency(fund.dashboard.returnAmount),
+                color: amountColor(fund.dashboard.returnAmount),
+                alignment: .trailing
+            ),
+            SummaryMetricItem(
+                title: "EST ABV",
+                value: formatPercent(fund.dashboard.estAbvPercent),
+                color: percentColor(fund.dashboard.estAbvPercent),
+                alignment: .trailing
+            ),
+            SummaryMetricItem(
+                title: "STOCKS",
+                value: String(fund.dashboard.holdingsCount),
+                color: Theme.valuePrimary,
+                alignment: .trailing
+            ),
+        ])
+    }
+
+    private func formatCurrency(_ value: Double) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = 0
+        formatter.roundingMode = .halfUp
+        return formatter.string(from: NSNumber(value: value)) ?? "$0"
+    }
+
+    private func formatPercent(_ value: Double) -> String {
+        let normalized = abs(value) < 0.005 ? 0.0 : value
+        return String(format: "%.2f%%", normalized)
+    }
+
+    private func percentColor(_ value: Double) -> Color {
+        let normalized = abs(value) < 0.005 ? 0.0 : value
+        if normalized > 0 { return .green }
+        if normalized < 0 { return .red }
+        return Theme.valuePrimary
+    }
+
+    private func amountColor(_ value: Double) -> Color {
+        if value > 0 { return .green }
+        if value < 0 { return .red }
+        return Theme.valuePrimary
+    }
+}
+
 struct GlobalSummaryCard: View {
     let dashboard: GlobalDashboardResponse
 
     var body: some View {
-        HStack(spacing: 8) {
-            pair(title: "WEALTH", value: formatCurrency(dashboard.totalValue), alignment: .leading)
-            pair(title: "PORTFOLIO", value: formatCurrency(dashboard.holdingsMarketValue), color: percentColor(dashboard.holdingsPnl), alignment: .trailing)
-            pair(title: "TODAY", value: formatPercent(dashboard.todayPercent), color: percentColor(dashboard.todayPercent), alignment: .trailing)
-            pair(title: "P&L", value: formatPercent(dashboard.returnPercent), color: percentColor(dashboard.returnPercent), alignment: .trailing)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 10)
-        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
-    }
-
-    private func pair(title: String, value: String, color: Color = Theme.valuePrimary, alignment: Alignment) -> some View {
-        VStack(alignment: alignment == .leading ? .leading : .trailing, spacing: 2) {
-            Text(title)
-                .font(.caption2)
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.labelAccent)
-            Text(value)
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundStyle(color)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: alignment)
+        SummaryMetricCard(items: [
+            SummaryMetricItem(
+                title: "WEALTH",
+                value: formatCurrency(dashboard.totalValue),
+                color: Theme.valuePrimary,
+                alignment: .leading
+            ),
+            SummaryMetricItem(
+                title: "PORTFOLIO",
+                value: formatCurrency(dashboard.holdingsMarketValue),
+                color: percentColor(dashboard.holdingsPnl),
+                alignment: .trailing
+            ),
+            SummaryMetricItem(
+                title: "TODAY",
+                value: formatPercent(dashboard.todayPercent),
+                color: percentColor(dashboard.todayPercent),
+                alignment: .trailing
+            ),
+            SummaryMetricItem(
+                title: "P&L",
+                value: formatPercent(dashboard.returnPercent),
+                color: percentColor(dashboard.returnPercent),
+                alignment: .trailing
+            ),
+        ])
     }
 
     private func formatCurrency(_ value: Double) -> String {
