@@ -115,14 +115,21 @@ struct TradesView: View {
         let priceDecimal = decimal(from: trade.price) ?? 0
         let total = Decimal(trade.shares) * priceDecimal
         let isBuy = trade.action.uppercased() == "BUY"
-        let signedTotal = "\(isBuy ? "-" : "+")\(formatCurrency(total))"
         let actionColor: Color = isBuy ? .green : .red
+        let amountColor: Color = {
+            guard !isBuy else { return Theme.valuePrimary }
+            guard let cost = decimal(from: trade.cost), cost != 0 else { return Theme.valuePrimary }
+            let pnlPerShare = priceDecimal - cost
+            if pnlPerShare > 0 { return .green }
+            if pnlPerShare < 0 { return .red }
+            return Theme.valuePrimary
+        }()
 
         return VStack(alignment: .trailing, spacing: 2) {
-            Text(signedTotal)
+            Text(formatCurrency(total))
                 .font(.subheadline)
                 .fontWeight(.semibold)
-                .foregroundStyle(Theme.valuePrimary)
+                .foregroundStyle(amountColor)
                 .lineLimit(1)
 
             Text(trade.action.uppercased())
