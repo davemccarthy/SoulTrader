@@ -895,7 +895,7 @@ Your tasks:
 Respond with STRICT JSON only. No other text before or after:
 {{
   "sentiment": "strong_positive" | "positive" | "mixed" | "negative" | "no_coverage",
-  "eps": "strong_beat" | beat" | "miss" | "other" | "unknown",
+  "eps": "strong_beat" | "beat" | "miss" | "other" | "unknown",
   "revenue": "strong_beat" | "beat" | "miss" | "other" | "unknown",
   "broker_reactions": "buy" | "strong_buy" | "moderate_buy" | "hold" | "sell" | "other (specify)",
   "headlines": [
@@ -1352,8 +1352,8 @@ class Edgar(AdvisorBase):
         print(media_prompt)
         print("-------")
 
-        #model, parsed = self.ask_gemini(media_prompt, timeout=120.0, use_search=True)
-        model, parsed = self.ask_ollama(media_prompt)
+        model, parsed = self.ask_gemini(media_prompt, timeout=120.0, use_search=True)
+        #model, parsed = self.ask_ollama(media_prompt)
         if not parsed or not isinstance(parsed, dict):
             logger.info(
                 "ticker=%s, CIK=%s, accession=%s media LLM: no result from Gemini",
