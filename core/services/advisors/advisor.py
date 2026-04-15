@@ -1376,17 +1376,6 @@ Respond with only a single valid JSON object, no other text.
         }
         payload = {"model": model, "prompt": prompt, "stream": False}
         url = f"{host}/api/generate"
-        log_flag = (os.getenv("OLLAMA_PROMPT_LOG") or "1").strip().lower()
-
-        def _append_ollama_log_block(block: str) -> None:
-            if log_flag in ("0", "false", "no", "off"):
-                return
-            try:
-                log_path = Path(settings.BASE_DIR) / "ollama.txt"
-                with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(block)
-            except OSError as exc:
-                logger.warning(f"ask_ollama: could not append ollama.txt: {exc}")
 
         try:
             logger.info(f"{self.advisor.name} ask_ollama model={model}")
@@ -1407,48 +1396,35 @@ Respond with only a single valid JSON object, no other text.
             logger.warning(f"ask_ollama request error for {self.advisor.name}: {exc}")
             return None, None
 
-        raw_body = response.text or ""
         try:
             data = response.json()
         except ValueError:
             logger.warning(f"ask_ollama: invalid JSON body for {self.advisor.name}")
-            snippet = (raw_body[:1000] + "...") if len(raw_body) > 1000 else raw_body
-            _append_ollama_log_block(
-                f"========== {datetime.now().isoformat(timespec='seconds')} advisor={self.advisor.name} model={model} ==========\n"
-                f"--- PROMPT ---\n{prompt}\n"
-                f"--- RAW_HTTP_BODY (invalid JSON) ---\n{snippet}\n\n"
-            )
             return None, None
 
         response_text = data.get("response")
         if not response_text:
-            keys = sorted(data.keys()) if isinstance(data, dict) else []
-            logger.warning(
-                f"ask_ollama: empty or missing 'response' for {self.advisor.name} "
-                f"(keys={keys})"
-            )
-            raw_snippet = (raw_body[:1000] + "...") if len(raw_body) > 1000 else raw_body
-            _append_ollama_log_block(
-                f"========== {datetime.now().isoformat(timespec='seconds')} advisor={self.advisor.name} model={model} ==========\n"
-                f"--- PROMPT ---\n{prompt}\n"
-                f"--- RAW_HTTP_BODY (missing response) ---\n{raw_snippet}\n\n"
-            )
+            logger.warning(f"ask_ollama: empty or missing 'response' for {self.advisor.name}")
             return None, None
 
-        _append_ollama_log_block(
-            f"========== {datetime.now().isoformat(timespec='seconds')} advisor={self.advisor.name} model={model} ==========\n"
-            f"--- PROMPT ---\n{prompt}\n"
-            f"--- RESPONSE ---\n{response_text}\n\n"
-        )
+        log_flag = (os.getenv("OLLAMA_PROMPT_LOG") or "1").strip().lower()
+        if log_flag not in ("0", "false", "no", "off"):
+            try:
+                log_path = Path(settings.BASE_DIR) / "ollama.txt"
+                stamp = datetime.now().isoformat(timespec="seconds")
+                block = (
+                    f"========== {stamp} advisor={self.advisor.name} model={model} ==========\n"
+                    f"--- PROMPT ---\n{prompt}\n"
+                    f"--- RESPONSE ---\n{response_text}\n\n"
+                )
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(block)
+            except OSError as exc:
+                logger.warning(f"ask_ollama: could not append ollama.txt: {exc}")
 
         results = self._extract_json(response_text)
         if not results:
             logger.warning(f"ask_ollama: cannot parse JSON for {self.advisor.name}")
-            _append_ollama_log_block(
-                f"========== {datetime.now().isoformat(timespec='seconds')} advisor={self.advisor.name} model={model} ==========\n"
-                f"--- PROMPT ---\n{prompt}\n"
-                f"--- RESPONSE (parse failed) ---\n{response_text}\n\n"
-            )
             return None, None
 
         time.sleep(1)
