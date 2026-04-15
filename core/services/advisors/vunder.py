@@ -46,6 +46,7 @@ MAX_LLM_CANDIDATES = 10     # max candidates to send to LLM per run
 
 
 class Vunder(AdvisorBase):
+    PROCESS_CUTOFF_HOUR_UTC = 9
 
     # ---------
     # Core helpers
@@ -427,16 +428,22 @@ Example:
     # ---------
 
     def discover(self, sa):
-        # Once-per-day guard: if there was a previous SA today, skip entirely
-        prev = self.get_previous_sa_timestamp(sa, username=getattr(sa, "username", None))
-        if prev and prev.date() == sa.started.date():
-            logger.info("Vunder: already ran for this user today, skipping.")
+        target_date = AdvisorBase.get_last_trading_day()
+        if not target_date:
+            logger.info("Vunder: no valid target market date")
+            return
+
+        if not self.should_process_market_date_once(
+            target_date=target_date,
+            cutoff_hour_utc=self.PROCESS_CUTOFF_HOUR_UTC,
+        ):
             return
 
         # Pre-LLM long list
         df_long = self._build_quant_long_list(sa)
         if df_long is None or df_long.empty:
             logger.info("Vunder: no quant candidates found")
+            self.mark_market_date_processed(target_date)
             return
 
         # Limit to top N by total_score
@@ -501,6 +508,8 @@ Example:
             )
 
             self.discovered(sa, symbol, explanation, sell_instructions, weight=weight)
+
+        self.mark_market_date_processed(target_date)
 
 
 register(name="Vunder", python_class="Vunder")

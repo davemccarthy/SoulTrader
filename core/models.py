@@ -87,6 +87,7 @@ class Advisor(models.Model):
     enabled = models.BooleanField(default=True)
     endpoint = models.CharField(max_length=500, default="")
     key = models.CharField(max_length=255, default="")
+    blob = models.TextField(blank=True, default="")
     weight = models.DecimalField(max_digits=5, decimal_places=2, default=1.0)  # Win rate
 
     def is_enabled(self):

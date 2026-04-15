@@ -12,11 +12,12 @@ from google import genai
 from google.genai import types
 import pandas as pd
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 from django.db.models import F, ExpressionWrapper, DateTimeField, Func
 from django.db.models.functions import Cast
 from core.models import Stock, Discovery, Recommendation, Advisor
 from django.conf import settings
+from django.utils import timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -200,6 +201,69 @@ class AdvisorBase:
         self.advisor = advisor
         self.gemini_model = 0
         self._gemini_key_index = 0
+
+    def _advisor_blob_state(self) -> Dict[str, Any]:
+        """Parse Advisor.blob as a dict; return empty dict on blank/invalid data."""
+        raw = (self.advisor.blob or "").strip()
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception as exc:
+            logger.warning("%s blob parse failed: %s", self.advisor.name, exc)
+        return {}
+
+    def _save_advisor_blob_state(self, state: Dict[str, Any]) -> None:
+        """Persist advisor blob state as compact JSON."""
+        self.advisor.blob = json.dumps(state, separators=(",", ":"), sort_keys=True)
+        self.advisor.save(update_fields=["blob"])
+
+    def should_process_market_date_once(self, *, target_date: str, cutoff_hour_utc: int) -> bool:
+        """
+        True if advisor should process a market date now.
+        Rules:
+        - only after `cutoff_hour_utc` on that date (UTC)
+        - skip if advisor.blob.last_processed_date already equals target_date
+        """
+        if not target_date:
+            return False
+
+        try:
+            target_dt = datetime.strptime(target_date, "%Y-%m-%d")
+        except ValueError:
+            logger.warning("%s invalid target_date format: %r", self.advisor.name, target_date)
+            return False
+
+        cutoff_dt_utc = target_dt.replace(
+            hour=int(cutoff_hour_utc), minute=0, second=0, microsecond=0, tzinfo=dt_timezone.utc
+        )
+        now_utc = timezone.now().astimezone(dt_timezone.utc)
+        if now_utc < cutoff_dt_utc:
+            logger.info(
+                "%s skip: before UTC cutoff (now=%s cutoff=%s target_date=%s)",
+                self.advisor.name,
+                now_utc.isoformat(timespec="seconds"),
+                cutoff_dt_utc.isoformat(timespec="seconds"),
+                target_date,
+            )
+            return False
+
+        state = self._advisor_blob_state()
+        last_processed_date = (state.get("last_processed_date") or "").strip()
+        if last_processed_date == target_date:
+            logger.info("%s skip: already processed target_date=%s", self.advisor.name, target_date)
+            return False
+
+        return True
+
+    def mark_market_date_processed(self, target_date: str) -> None:
+        """Record successful processing for a market date in advisor.blob."""
+        state = self._advisor_blob_state()
+        state["last_processed_date"] = target_date
+        state["last_processed_at"] = timezone.now().isoformat(timespec="seconds")
+        self._save_advisor_blob_state(state)
 
     def market_open(self):
         """
@@ -1312,6 +1376,17 @@ Respond with only a single valid JSON object, no other text.
         }
         payload = {"model": model, "prompt": prompt, "stream": False}
         url = f"{host}/api/generate"
+        log_flag = (os.getenv("OLLAMA_PROMPT_LOG") or "1").strip().lower()
+
+        def _append_ollama_log_block(block: str) -> None:
+            if log_flag in ("0", "false", "no", "off"):
+                return
+            try:
+                log_path = Path(settings.BASE_DIR) / "ollama.txt"
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(block)
+            except OSError as exc:
+                logger.warning(f"ask_ollama: could not append ollama.txt: {exc}")
 
         try:
             logger.info(f"{self.advisor.name} ask_ollama model={model}")
@@ -1332,35 +1407,48 @@ Respond with only a single valid JSON object, no other text.
             logger.warning(f"ask_ollama request error for {self.advisor.name}: {exc}")
             return None, None
 
+        raw_body = response.text or ""
         try:
             data = response.json()
         except ValueError:
             logger.warning(f"ask_ollama: invalid JSON body for {self.advisor.name}")
+            snippet = (raw_body[:1000] + "...") if len(raw_body) > 1000 else raw_body
+            _append_ollama_log_block(
+                f"========== {datetime.now().isoformat(timespec='seconds')} advisor={self.advisor.name} model={model} ==========\n"
+                f"--- PROMPT ---\n{prompt}\n"
+                f"--- RAW_HTTP_BODY (invalid JSON) ---\n{snippet}\n\n"
+            )
             return None, None
 
         response_text = data.get("response")
         if not response_text:
-            logger.warning(f"ask_ollama: empty or missing 'response' for {self.advisor.name}")
+            keys = sorted(data.keys()) if isinstance(data, dict) else []
+            logger.warning(
+                f"ask_ollama: empty or missing 'response' for {self.advisor.name} "
+                f"(keys={keys})"
+            )
+            raw_snippet = (raw_body[:1000] + "...") if len(raw_body) > 1000 else raw_body
+            _append_ollama_log_block(
+                f"========== {datetime.now().isoformat(timespec='seconds')} advisor={self.advisor.name} model={model} ==========\n"
+                f"--- PROMPT ---\n{prompt}\n"
+                f"--- RAW_HTTP_BODY (missing response) ---\n{raw_snippet}\n\n"
+            )
             return None, None
 
-        log_flag = (os.getenv("OLLAMA_PROMPT_LOG") or "1").strip().lower()
-        if log_flag not in ("0", "false", "no", "off"):
-            try:
-                log_path = Path(settings.BASE_DIR) / "ollama.txt"
-                stamp = datetime.now().isoformat(timespec="seconds")
-                block = (
-                    f"========== {stamp} advisor={self.advisor.name} model={model} ==========\n"
-                    f"--- PROMPT ---\n{prompt}\n"
-                    f"--- RESPONSE ---\n{response_text}\n\n"
-                )
-                with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(block)
-            except OSError as exc:
-                logger.warning(f"ask_ollama: could not append ollama.txt: {exc}")
+        _append_ollama_log_block(
+            f"========== {datetime.now().isoformat(timespec='seconds')} advisor={self.advisor.name} model={model} ==========\n"
+            f"--- PROMPT ---\n{prompt}\n"
+            f"--- RESPONSE ---\n{response_text}\n\n"
+        )
 
         results = self._extract_json(response_text)
         if not results:
             logger.warning(f"ask_ollama: cannot parse JSON for {self.advisor.name}")
+            _append_ollama_log_block(
+                f"========== {datetime.now().isoformat(timespec='seconds')} advisor={self.advisor.name} model={model} ==========\n"
+                f"--- PROMPT ---\n{prompt}\n"
+                f"--- RESPONSE (parse failed) ---\n{response_text}\n\n"
+            )
             return None, None
 
         time.sleep(1)

@@ -266,6 +266,7 @@ class Oscilla(AdvisorBase):
     
     Uses wavelet analysis to detect cyclical patterns and identify optimal entry points.
     """
+    PROCESS_CUTOFF_HOUR_UTC = 8
 
     def discover(self, sa):
         """
@@ -277,18 +278,18 @@ class Oscilla(AdvisorBase):
         Args:
             sa: SmartAnalysis session
         """
-        # Once-per-day guard: if there was a previous SA today, skip entirely
-        prev = self.get_previous_sa_timestamp(sa, username=getattr(sa, "username", None))
-        if prev and prev.date() == sa.started.date():
-            logger.info("Oscilla: already ran for this user today, skipping.")
-            return
-
         try:
             # Get reference date (last trading day) - calculate FIRST
             last_trading_date = AdvisorBase.get_last_trading_day()
             
             if not last_trading_date:
                 logger.warning("Oscilla: No valid trading date available")
+                return
+
+            if not self.should_process_market_date_once(
+                target_date=last_trading_date,
+                cutoff_hour_utc=self.PROCESS_CUTOFF_HOUR_UTC,
+            ):
                 return
             
             logger.info(f"Oscilla: Using reference date: {last_trading_date}")
@@ -304,6 +305,7 @@ class Oscilla(AdvisorBase):
             
             if df_stocks.empty:
                 logger.info("Oscilla: No stocks found from Polygon")
+                self.mark_market_date_processed(last_trading_date)
                 return
             
             # Limit to MAX_STOCKS if set (for testing/comparison)
@@ -457,6 +459,7 @@ class Oscilla(AdvisorBase):
                 f"wave_position={filtered_wave_position}, not_us={filtered_not_us}, "
                 f"not_profitable={filtered_not_profitable}, errors={filtered_error}"
             )
+            self.mark_market_date_processed(last_trading_date)
             
         except Exception as e:
             logger.error(f"Oscilla: Error in discovery: {e}", exc_info=True)
