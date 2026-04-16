@@ -567,13 +567,12 @@ struct HoldingDetailView: View {
         var result = AttributedString()
         for (idx, piece) in pieces.enumerated() {
             if idx > 0 {
-                let prev = pieces[idx - 1]
-                let paragraphBreak = discoveryExplanationPieceIsLink(prev) || discoveryExplanationPieceIsLink(piece)
-                result.append(AttributedString(paragraphBreak ? "\n\n" : "\n"))
+                // Keep each `|` segment visually separate on mobile.
+                result.append(AttributedString("\n\n"))
             }
             switch piece {
             case .plain(let s):
-                result.append(AttributedString(s))
+                result.append(styledDiscoveryPlainSegment(s))
             case .articleLink(let title, let url):
                 var linkText = AttributedString(title)
                 linkText.link = url
@@ -587,11 +586,27 @@ struct HoldingDetailView: View {
         return result
     }
 
-    private func discoveryExplanationPieceIsLink(_ piece: DiscoveryExplanationPiece) -> Bool {
-        switch piece {
-        case .plain: return false
-        case .articleLink, .bareURL: return true
+    /// Promote plain `label: value` segments to `LABEL: value` with emphasized label.
+    private func styledDiscoveryPlainSegment(_ segment: String) -> AttributedString {
+        let trimmed = segment.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let regex = try? NSRegularExpression(pattern: #"^([A-Za-z][A-Za-z ]*):\s*(.*)$"#),
+              let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
+              let labelRange = Range(match.range(at: 1), in: trimmed),
+              let valueRange = Range(match.range(at: 2), in: trimmed) else {
+            return AttributedString(trimmed)
         }
+
+        let label = String(trimmed[labelRange]).uppercased()
+        let value = String(trimmed[valueRange])
+
+        var attributed = AttributedString()
+        var labelText = AttributedString("\(label):")
+        labelText.inlinePresentationIntent = .stronglyEmphasized
+        attributed.append(labelText)
+        if !value.isEmpty {
+            attributed.append(AttributedString(" \(value)"))
+        }
+        return attributed
     }
 
     private enum DiscoveryExplanationPiece {
