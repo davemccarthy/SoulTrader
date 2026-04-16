@@ -16,7 +16,7 @@ def _default_user_sell_instructions(stock):
         ("STOP_PERCENTAGE", Decimal("0.90"), None),   # Stop loss at 90% of discovery price
         ("TARGET_DIMINISHING", target_price, 10),     # Take profit at 120% diminishing over 14 days
         ("PEAKED", Decimal("7.0"), None),             # Sell when down 5% from peak since purchase
-        ("PROFIT_FLAT", Decimal("0.5"), 4),           # Profit hovering around 5% for 5 days
+        ("PROFIT_FLAT", Decimal("0.5"), 14),           # Profit hovering around 5% for 5 days
     ]
 
 

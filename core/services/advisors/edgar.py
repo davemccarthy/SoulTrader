@@ -1706,7 +1706,7 @@ class Edgar(AdvisorBase):
             ("PERCENTAGE_DIMINISHING", target, 14),
             ("PERCENTAGE_AUGMENTING", 0.90, 14),
             ("PEAKED", 7.0, None),
-            ("PROFIT_FLAT", 0.5, 4),
+            ("PROFIT_FLAT", 0.5, 14),
             ("DESCENDING_TREND", -0.20, None),
         ]
 

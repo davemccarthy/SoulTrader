@@ -623,20 +623,53 @@ def _pharm_brief_trade_summary(listed_ticker: str, event_class: str) -> str:
 
 
 def _pharm_build_discovery_explanation(
-    parsed: dict[str, Any], event_class: str, *, listed_ticker: str
+    parsed: dict[str, Any], event_class: str, *, listed_ticker: str, article_link: str
 ) -> str:
     headline = _pharm_discovery_headline(parsed, event_class)
-    detail = _pharm_discovery_detail_paragraph(parsed)
-    meta = _pharm_discovery_metadata_lines(parsed)
-    trade_lead = discovery_trade_explanation_lead(
-        _pharm_brief_trade_summary(listed_ticker, event_class)
+    article_title = discovery_trade_explanation_lead(f"Article: {headline}")
+
+    def _clean_sentence(value: Any, *, max_len: int = 180) -> str | None:
+        if not isinstance(value, str):
+            return None
+        t = value.strip()
+        if not t:
+            return None
+        while t.endswith("."):
+            t = t[:-1].rstrip()
+        if not t:
+            return None
+        if len(t) > max_len:
+            t = t[: max_len - 3].rstrip() + "..."
+        return t
+
+    parts: list[str] = [article_title]
+    if article_link:
+        parts.append(article_link)
+    parts.append(f"headline: {headline}")
+
+    for key, label in (
+        ("summary", "summary"),
+        ("significance_reason", "significance"),
+        ("surprise_reason", "surprise"),
+    ):
+        cleaned = _clean_sentence(parsed.get(key))
+        if cleaned:
+            parts.append(f"{label}: {cleaned}")
+
+    scores = (
+        "scores: "
+        f"outcome={_pharm_format_explanation_field_value(parsed.get('event_outcome'))} "
+        f"dir={_pharm_format_explanation_field_value(parsed.get('impact_direction'))} "
+        f"mag={_pharm_format_explanation_field_value(parsed.get('impact_magnitude'))} "
+        f"sig={_pharm_format_explanation_field_value(parsed.get('significance_score'))} "
+        f"sur={_pharm_format_explanation_field_value(parsed.get('surprise_score'))} "
+        f"conf={_pharm_format_explanation_field_value(parsed.get('confidence'))} "
+        f"drug={_pharm_format_explanation_field_value(parsed.get('drug_name'))} "
+        f"reg={_pharm_format_explanation_field_value(parsed.get('regulator'))} "
+        f"ticker={listed_ticker}"
     )
-    body_parts: list[str] = [headline]
-    if detail:
-        body_parts.append(detail)
-    body_parts.append(meta)
-    body = "\n\n".join(body_parts)
-    return f"{trade_lead} | {body}"
+    parts.append(scores)
+    return " | ".join(parts)
 
 
 def _score_row(row: dict[str, str]) -> dict[str, Any]:
@@ -974,7 +1007,10 @@ class Pharm(AdvisorBase):
 
             row_event_class = str(candidate.get("event_class") or "general")
             explanation = _pharm_build_discovery_explanation(
-                parsed, row_event_class, listed_ticker=resolved_ticker
+                parsed,
+                row_event_class,
+                listed_ticker=resolved_ticker,
+                article_link=(candidate.get("link") or "").strip(),
             )
 
             sell_instructions = [

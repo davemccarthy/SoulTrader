@@ -715,50 +715,55 @@ def _bizfeed_build_discovery_explanation(
     headline = f"BIZFEED {pc} - {c}"
     trade_lead = discovery_trade_explanation_lead(headline)
 
-    pieces: list[str] = []
-    for key in ("summary", "materiality_reason", "significance_reason", "surprise_reason"):
-        raw = parsed.get(key)
-        if isinstance(raw, str) and raw.strip():
-            t = raw.strip().rstrip()
-            while t.endswith("."):
-                t = t[:-1].rstrip()
-            if t:
-                pieces.append(t)
-    facts = parsed.get("catalyst_facts")
-    if isinstance(facts, str) and facts.strip():
-        t = facts.strip().rstrip(".")
-        if t:
-            pieces.append(t)
-    paragraph = ". ".join(pieces) + "." if pieces else "No narrative summary."
+    def _clean_sentence(value: Any, *, max_len: int = 180) -> str | None:
+        if not isinstance(value, str):
+            return None
+        t = value.strip()
+        if not t:
+            return None
+        while t.endswith("."):
+            t = t[:-1].rstrip()
+        if not t:
+            return None
+        if len(t) > max_len:
+            t = t[: max_len - 3].rstrip() + "..."
+        return t
 
-    meta: list[str] = []
+    segments: list[str] = []
     if article_link:
-        meta.append(f"link: {article_link}")
-    meta.append(f"resolved_symbol: {resolved_symbol}")
-    meta.append(f"yahoo_exchange: {yahoo_exchange}")
-    for key in (
-        "event_outcome",
-        "impact_direction",
-        "impact_magnitude",
-        "materiality_score",
-        "is_material",
-        "significance_score",
-        "is_significant",
-        "surprise_score",
-        "is_surprise",
-        "confidence",
-        "insufficient_event_info",
-        "primary_catalyst",
-        "ticker_symbol",
-    ):
-        meta.append(f"{key}: {_bizfeed_format_explanation_value(parsed.get(key))}")
-    meta_block = "\n".join(meta)
-    # " | " separates trade summary (short) from body; analysis uses split(" | ")[0] for BUY trades.
-    if trade_lead == headline:
-        body = f"{paragraph}\n\n{meta_block}"
+        segments.append(discovery_trade_explanation_lead(f"Article: {headline}"))
+        segments.append(article_link)
     else:
-        body = f"{headline}\n\n{paragraph}\n\n{meta_block}"
-    return f"{trade_lead} | {body}"
+        segments.append(trade_lead)
+    if trade_lead != headline:
+        segments.append(f"headline: {headline}")
+
+    field_specs: tuple[tuple[str, str], ...] = (
+        ("summary", "summary"),
+        ("materiality_reason", "materiality"),
+        ("significance_reason", "significance"),
+        ("surprise_reason", "surprise"),
+        ("catalyst_facts", "facts"),
+    )
+    for key, label in field_specs:
+        cleaned = _clean_sentence(parsed.get(key))
+        if cleaned:
+            segments.append(f"{label}: {cleaned}")
+
+    scores = (
+        "scores: "
+        f"outcome={_bizfeed_format_explanation_value(parsed.get('event_outcome'))} "
+        f"dir={_bizfeed_format_explanation_value(parsed.get('impact_direction'))} "
+        f"mag={_bizfeed_format_explanation_value(parsed.get('impact_magnitude'))} "
+        f"sig={_bizfeed_format_explanation_value(parsed.get('significance_score'))} "
+        f"sur={_bizfeed_format_explanation_value(parsed.get('surprise_score'))} "
+        f"conf={_bizfeed_format_explanation_value(parsed.get('confidence'))} "
+        f"ticker={_bizfeed_format_explanation_value(parsed.get('ticker_symbol'))} "
+        f"resolved={resolved_symbol} "
+        f"exchange={yahoo_exchange}"
+    )
+    segments.append(scores)
+    return " | ".join(segments)
 
 
 def resolve_bizfeed_listed_symbol(
