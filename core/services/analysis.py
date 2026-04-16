@@ -18,14 +18,14 @@ def analyse_target(discovery, holding, target, sentiment):
     current = holding.stock.price
     buy_price = holding.average_price if holding.average_price else discovery.price
 
-    target = Decimal(str(target)) * sentiment
+    target = buy_price + (Decimal(str(target)) - buy_price) * sentiment
 
     # Case 1: Targets should only trigger sells at a profit, not at a loss
     if current < buy_price:
         return False
 
     # Case 2: Price >= target and downturn detected (down pullback_pct from peak since purchase; intraday today, daily history)
-    if current >= target and stock.downturned(discovery.created, pullback_pct=5.0):
+    if current >= target and stock.downturned(discovery.created, pullback_pct=5.0 * float(sentiment)):
         return True
 
     # Case 3: Price < target but previously peaked at/above target (protect gains)

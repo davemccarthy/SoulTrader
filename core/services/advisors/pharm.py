@@ -1015,7 +1015,7 @@ class Pharm(AdvisorBase):
 
             sell_instructions = [
                 ("PERCENTAGE_DIMINISHING", 1.30, 7),
-                ("STOP_PERCENTAGE", 0.98, None),
+                ("PERCENTAGE_AUGMENTING", 0.90, 20),
                 ("DESCENDING_TREND", -0.20, None),
                 ("NOT_TRENDING", None, None),
             ]
