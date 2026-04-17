@@ -12,6 +12,50 @@ from core.services.execution import execute_buy, execute_sell
 
 logger = logging.getLogger(__name__)
 
+def factor_sentiment(fund: Profile) -> Decimal:
+    """
+    Resolve fund sentiment to a scalar.
+    - Manual presets: map via Profile.SENTIMENT (float values).
+    - AUTO: derive from cash / wealth thresholds.
+    Always returns a Decimal.
+    """
+
+    sentiment_key = fund.sentiment or "AUTO"
+    if sentiment_key != "AUTO":
+        return Decimal(Profile.SENTIMENT.get(sentiment_key, 1.0))
+
+    cash_value = fund.cash or Decimal("0")
+    holdings_value = Decimal("0")
+    for holding in Holding.objects.filter(fund=fund).select_related("stock"):
+        if holding.stock and holding.stock.price and holding.shares:
+            holdings_value += Decimal(str(holding.stock.price)) * Decimal(str(holding.shares))
+
+    wealth = cash_value + holdings_value
+    if wealth <= 0:
+        logger.warning(
+            f"{fund.name}: AUTO sentiment fallback to STAG (wealth <= 0). "
+            f"cash={cash_value}, holdings={holdings_value}"
+        )
+        return Decimal(1.0)
+
+    cash_ratio = float(cash_value / wealth)
+    if cash_ratio < 0.25:
+        sentiment = 0.6
+        band = "STRONG_BEAR"
+    elif cash_ratio < 0.50:
+        sentiment = 0.8
+        band = "BEAR"
+    else:
+        sentiment = 1.0
+        band = "STAG"
+
+    if sentiment < 1.0:
+        logger.info(
+            f"{fund.name}: AUTO sentiment {band} ({sentiment:.2f}) "
+            f"cash_ratio={cash_ratio:.3f}, cash={cash_value}, holdings={holdings_value}, wealth={wealth}"
+        )
+
+    return Decimal(str(sentiment))
 
 def analyse_target(discovery, holding, target, sentiment):
     stock = holding.stock
@@ -66,7 +110,7 @@ def analyze_holdings(sa, funds):
     # Iterate thru funds
     for fund in funds:
 
-        sentiment = Decimal(str(Profile.SENTIMENT[fund.sentiment]))
+        sentiment = factor_sentiment(fund)
 
         for holding in Holding.objects.filter(fund=fund):
 
@@ -284,7 +328,7 @@ def analyze_discovery(sa, funds, advisors):
     for fund in funds:
         logger.info(f"Buying ------------- {fund.name}")
 
-        sentiment = Decimal(str(Profile.SENTIMENT[fund.sentiment]))
+        sentiment = factor_sentiment(fund)
         allowed_advisors = list(fund.advisors or [])
 
         # 1. Filter discoveries by allowed advisors (if specified)
@@ -334,7 +378,7 @@ def analyze_discovery(sa, funds, advisors):
             if health and health_score < min_score:
                 logger.info(
                     f"User {fund.name}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "
-                    f"health check score ({health.score}) below threshold ({min_score})"
+                    f"health check score ({health_score}) below threshold ({min_score})"
                 )
                 continue
 

@@ -51,12 +51,12 @@ class Profile(models.Model):
 
     # But / sell sentiment
     SENTIMENT = {
-        "STRONG_BULL": 1.4,
-        "BULL": 1.2,
+        "STRONG_BULL": 1.2,
+        "BULL": 1.1,
         "STAG": 1.0,
         "AUTO": 1.0,
-        "BEAR": 0.8,
-        "STRONG_BEAR": 0.6
+        "BEAR": 0.9,
+        "STRONG_BEAR": 0.8
     }
 
     user = models.ForeignKey(User, on_delete=models.DO_NOTHING)
