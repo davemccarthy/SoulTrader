@@ -1250,8 +1250,8 @@ class Edgar(AdvisorBase):
             return result_dict
 
         prompt = FOUR_DUCKS_PROMPT_LABELS.replace("<<<EX99_1_TEXT>>>", text.strip())
-        #model, parsed = self.ask_gemini(prompt)
-        model, parsed = self.ask_ollama(prompt)
+        model, parsed = self.ask_gemini(prompt)
+        
         if not parsed:
             logger.info(
                 "ticker=%s, CIK=%s, accession=%s EX99 LLM: no result from Gemini",
