@@ -40,14 +40,13 @@ def factor_sentiment(fund: Profile) -> Decimal:
 
     cash_ratio = float(cash_value / wealth)
     if cash_ratio < 0.25:
-        sentiment = 0.6
         band = "STRONG_BEAR"
     elif cash_ratio < 0.50:
-        sentiment = 0.8
         band = "BEAR"
     else:
-        sentiment = 1.0
         band = "STAG"
+
+    sentiment = Profile.SENTIMENT[band]
 
     if sentiment < 1.0:
         logger.info(
