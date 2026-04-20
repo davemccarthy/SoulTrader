@@ -9,8 +9,10 @@ from pytz import timezone as tz
 from django.utils import timezone
 from core.models import Holding, Discovery, Advisor, Profile
 from core.services.execution import execute_buy, execute_sell
+from core.services.llm.gemini import ask_gemini as llm_ask_gemini
 
 logger = logging.getLogger(__name__)
+DT_EXIT_CONFIDENCE_MIN = 0.70
 
 def factor_sentiment(fund: Profile) -> Decimal:
     """
@@ -78,8 +80,196 @@ def analyse_target(discovery, holding, target, sentiment):
     return False
 
 
+def _build_drop_prompt(context_block: str) -> str:
+    return f"""
+You are a live risk triage assistant for equity positions.
+
+A descending-trend alert has triggered for the tickers below after a recent price drop.
+Decide whether each position should be exited NOW due to a materially negative, very recent catalyst.
+
+Source quality policy:
+- Primary sources (highest trust): Reuters, Bloomberg, Dow Jones Newswires
+- Secondary source: Benzinga
+- Give most weight to primary sources.
+- Use Benzinga alone only if the catalyst is clear and material.
+- If credible recent evidence is missing or ambiguous, choose HOLD with lower confidence.
+
+What qualifies for EXIT:
+- A recent catalyst likely to impair near-term value materially, such as:
+  earnings/guidance miss, major downgrade cluster, regulatory/legal action,
+  financing/liquidity stress, or thesis-breaking company-specific news.
+- The catalyst should plausibly explain the drop and suggest continued downside asymmetry.
+
+What qualifies for HOLD:
+- No credible material catalyst found in trusted sources, or
+- Evidence appears stale, minor, speculative, or already absorbed.
+
+Output requirements:
+- For each ticker, return:
+  - action: "EXIT" or "HOLD" only
+  - confidence: number 0.0–1.0
+  - reason: one concise sentence (max 25 words) naming the key catalyst/risk or lack of credible evidence
+  - sources_used: array of source names you relied on (from Reuters/Bloomberg/Dow Jones Newswires/Benzinga; empty if none)
+
+Rules:
+- No prose outside JSON.
+- If uncertain, default to HOLD with lower confidence.
+
+Context:
+{context_block}
+
+Return ONLY a single JSON object in this exact shape:
+{{
+  "TICKER": {{
+    "action": "EXIT|HOLD",
+    "confidence": 0.00,
+    "reason": "short reason",
+    "sources_used": ["Reuters", "Bloomberg"]
+  }}
+}}
+"""
+
+
+def analyse_drop(sa, dropped_stocks):
+    """
+    Evaluate DT-triggered holdings via LLM and execute sells for EXIT decisions.
+    """
+    if not dropped_stocks:
+        return
+
+    # Deduplicate symbols for one batched LLM call, while preserving first-seen context.
+    contexts_by_symbol = {}
+    for item in dropped_stocks:
+        holding = item["holding"]
+        symbol = holding.stock.symbol.upper()
+        if symbol in contexts_by_symbol:
+            continue
+
+        current_price = holding.stock.price or Decimal("0")
+        buy_price = item.get("buy_price") or Decimal("0")
+        pnl_pct = None
+        if buy_price and buy_price > 0:
+            pnl_pct = (Decimal(str(current_price)) - Decimal(str(buy_price))) / Decimal(str(buy_price)) * Decimal("100")
+
+        trend = item.get("trend")
+        threshold = item.get("threshold")
+        company = (holding.stock.company or "").strip() or "unknown"
+        fund = item["fund"]
+        line = (
+            f"  {symbol}: {company!r}, ${float(current_price):.2f}; "
+            f"fund={fund.name!r}; trend={float(trend):.4f} < threshold={float(threshold):.4f}"
+        )
+        if pnl_pct is not None:
+            line += (
+                f"; buy_price=${float(buy_price):.2f}; "
+                f"pnl_pct={float(pnl_pct):.2f}%"
+            )
+        contexts_by_symbol[symbol] = line
+
+    context_block = "\n".join(contexts_by_symbol[s] for s in sorted(contexts_by_symbol.keys()))
+    prompt = _build_drop_prompt(context_block)
+
+    model, results, _next_model_idx, _next_key_idx = llm_ask_gemini(
+        prompt=prompt,
+        advisor_name="analyse_drop",
+        gemini_model_index=0,
+        gemini_key_index=0,
+        timeout=120.0,
+        use_search=True,
+    )
+
+    if not results or not isinstance(results, dict):
+        logger.warning("analyse_drop: no usable JSON response from Gemini")
+        return
+
+    exit_by_symbol = {}
+    for symbol in contexts_by_symbol.keys():
+        data = results.get(symbol) or results.get(symbol.upper()) or results.get(symbol.lower())
+        if not isinstance(data, dict):
+            logger.info("analyse_drop: %s missing/invalid decision payload", symbol)
+            continue
+
+        action = (data.get("action") or "").strip().upper()
+        raw_conf = data.get("confidence")
+        try:
+            confidence = float(raw_conf) if raw_conf is not None else 0.0
+        except (TypeError, ValueError):
+            confidence = 0.0
+        confidence = max(0.0, min(1.0, confidence))
+        reason = (data.get("reason") or "").strip()
+        sources = data.get("sources_used") if isinstance(data.get("sources_used"), list) else []
+
+        logger.info(
+            "analyse_drop decision %s: action=%s confidence=%.2f sources=%s reason=%s",
+            symbol,
+            action or "N/A",
+            confidence,
+            ",".join(sources) if sources else "-",
+            reason or "-",
+        )
+
+        if action == "EXIT" and confidence >= DT_EXIT_CONFIDENCE_MIN:
+            exit_by_symbol[symbol] = {
+                "confidence": confidence,
+                "reason": reason,
+                "sources_used": sources,
+            }
+            logger.info(
+                "analyse_drop qualified EXIT %s (confidence %.2f >= %.2f)",
+                symbol,
+                confidence,
+                DT_EXIT_CONFIDENCE_MIN,
+            )
+        else:
+            logger.info(
+                "analyse_drop HOLD/skip %s (action=%s, confidence=%.2f, threshold=%.2f)",
+                symbol,
+                action or "N/A",
+                confidence,
+                DT_EXIT_CONFIDENCE_MIN,
+            )
+
+    if not exit_by_symbol:
+        logger.info("analyse_drop: no EXIT actions above confidence threshold (model=%s)", model)
+        return
+
+    logger.info(
+        "analyse_drop: exiting %s symbols from %s DT candidates (model=%s)",
+        len(exit_by_symbol),
+        len(dropped_stocks),
+        model,
+    )
+
+    for item in dropped_stocks:
+        holding = item["holding"]
+        fund = item["fund"]
+        symbol = holding.stock.symbol.upper()
+        decision = exit_by_symbol.get(symbol)
+        if not decision:
+            continue
+        if not holding.pk or holding.shares <= 0:
+            continue
+
+        reason = decision["reason"] or "Recent material downside catalyst after descending trend."
+        conf = decision["confidence"]
+        logger.info(
+            "analyse_drop executing SELL %s fund=%s holding_id=%s conf=%.2f",
+            symbol,
+            fund.name,
+            holding.id,
+            conf,
+        )
+        execute_sell(
+            sa,
+            fund,
+            holding,
+            reason[:240],
+        )
+
+
 def analyze_holdings(sa, funds):
     logger.info(f"Analyzing holdings for SA session {sa.id}")
+    dropped_stocks = []
 
     # Check if we're in the last 30 minutes of trading day (3:30 PM ET onwards)
     et = tz('US/Eastern')
@@ -266,16 +456,22 @@ def analyze_holdings(sa, funds):
                                 break
 
                         elif instruction.instruction == 'DESCENDING_TREND':
-                            # Never sell in loss: only allow descending-trend exits when
-                            # price is at/above the position's buy price.
-                            current_price = holding.stock.price
-                            if buy_price is not None and current_price is not None and current_price < buy_price:
-                                continue
 
                             trend = holding.stock.calc_trend(hours=2)
 
                             if instruction.value1 is not None and trend is not None and trend < instruction.value1:
-                                execute_sell(sa, fund, holding, f"{holding.stock.symbol} descending detected of ${instruction.value1:.2f}")
+
+                                dropped_stocks.append(
+                                    {
+                                        "fund": fund,
+                                        "holding": holding,
+                                        "discovery": discovery,
+                                        "buy_price": buy_price,
+                                        "current_price": holding.stock.price,
+                                        "trend": trend,
+                                        "threshold": instruction.value1,
+                                    }
+                                )
                                 break
 
                         elif instruction.instruction == 'NOT_TRENDING':
@@ -309,13 +505,17 @@ def analyze_holdings(sa, funds):
                     # Continue processing other holdings
                     continue
 
+    if dropped_stocks:
+        logger.info("DT candidates collected: %s", len(dropped_stocks))
+        analyse_drop(sa, dropped_stocks)
+
 
 # Discovery new stock
 def analyze_discovery(sa, funds, advisors):
     logger.info(f"Analyzing discovery for SA session {sa.id}")
 
     # Clear Polygon cache at start of discovery run to ensure fresh data
-    from core.services.advisors.advisor import AdvisorBase # TODO: Review
+    from core.services.advisors.advisor import AdvisorBase  # TODO: Review
     AdvisorBase.clear_polygon_cache()
 
     # 1. Look for new stock
