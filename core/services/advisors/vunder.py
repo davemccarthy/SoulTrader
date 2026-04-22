@@ -2,7 +2,7 @@
 Vunder Advisor - Down-in-the-dumps style value discovery (WIP)
 
 New paradigm (high level):
-- Build a liquid, mid-priced universe from Polygon via AdvisorBase.get_filtered_stocks().
+- Build a liquid, mid-priced universe from Polygon via services.financial.polygon.get_filtered_stocks().
 - For each stock, fetch ~6M daily history from yfinance and basic fundamentals.
 - Require profitability and reasonable valuation via AdvisorBase.evaluate_stock().
 - Score candidates by liquidity/health, valuation, and proximity to 6M/2-week lows.
@@ -15,9 +15,10 @@ from typing import Dict, Any, List, Optional
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
 
 from core.services.advisors.advisor import AdvisorBase, register
+from core.services.financial import polygon as financial_polygon
+from core.services.financial import yahoo as financial_yahoo
 
 logger = logging.getLogger(__name__)
 
@@ -57,24 +58,7 @@ class Vunder(AdvisorBase):
         Fetch ~6 months of daily history for a ticker from yfinance.
         Returns DataFrame with columns: date, open, close, high, low, volume.
         """
-        try:
-            t = yf.Ticker(ticker)
-            hist = t.history(period="6mo", interval="1d", raise_errors=False)
-            if hist is None or hist.empty:
-                return pd.DataFrame()
-            df = pd.DataFrame(
-                {
-                    "date": hist.index,
-                    "open": hist["Open"].values,
-                    "close": hist["Close"].values,
-                    "high": hist["High"].values,
-                    "low": hist["Low"].values,
-                    "volume": hist["Volume"].values,
-                }
-            )
-            return df.reset_index(drop=True)
-        except Exception:
-            return pd.DataFrame()
+        return financial_yahoo.get_6m_history(ticker)
 
     def _compute_scores(
         self,
@@ -190,11 +174,7 @@ class Vunder(AdvisorBase):
             rel_volume = 1.0
 
             # Fundamentals + valuation via AdvisorBase.evaluate_stock
-            try:
-                t = yf.Ticker(ticker)
-                info = t.info or {}
-            except Exception:
-                info = {}
+            info = financial_yahoo.get_ticker_info(ticker)
 
             if not self._is_profitable(info):
                 continue
@@ -244,13 +224,12 @@ class Vunder(AdvisorBase):
         """
         Pre-LLM long list builder.
 
-        - Uses AdvisorBase.get_filtered_stocks() to fetch last-trading-day Polygon universe.
+        - Uses services.financial.polygon.get_filtered_stocks() to fetch last-trading-day Polygon universe.
         - For each stock, fetches ~6M history + basic fundamentals from yfinance.
         - Applies profitability, valuation, and 6M/2w low proximity filters.
         - Returns DataFrame sorted by total_score desc, filtered to total_score >= SCORE_THRESHOLD.
         """
-        df_universe = self.get_filtered_stocks(
-            sa=sa,
+        df_universe = financial_polygon.get_filtered_stocks(
             min_price=MIN_PRICE,
             max_price=MAX_PRICE,
             min_volume=MIN_AVG_VOLUME,
@@ -303,11 +282,7 @@ class Vunder(AdvisorBase):
             rel_volume = today_volume / avg_volume_6m if avg_volume_6m > 0 else 0.0
 
             # Fundamentals + valuation via AdvisorBase.evaluate_stock
-            try:
-                t = yf.Ticker(ticker)
-                info = t.info or {}
-            except Exception:
-                info = {}
+            info = financial_yahoo.get_ticker_info(ticker)
 
             if not self._is_profitable(info):
                 continue
@@ -428,7 +403,7 @@ Example:
     # ---------
 
     def discover(self, sa):
-        target_date = AdvisorBase.get_last_trading_day()
+        target_date = financial_polygon.get_last_trading_day()
         if not target_date:
             logger.info("Vunder: no valid target market date")
             return

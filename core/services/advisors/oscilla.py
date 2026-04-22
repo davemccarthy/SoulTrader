@@ -3,13 +3,14 @@ import logging
 import warnings
 import numpy as np
 import pandas as pd
-import yfinance as yf
 import pywt
 from datetime import datetime, timedelta
 from scipy.signal import find_peaks
 from decimal import Decimal
 
 from core.services.advisors.advisor import AdvisorBase, register
+from core.services.financial import polygon as financial_polygon
+from core.services.financial import yahoo as financial_yahoo
 
 logger = logging.getLogger(__name__)
 
@@ -46,75 +47,6 @@ TURN_CONFIRMATION_ENABLED = True  # Require turn confirmation (higher close + hi
 MAX_WAVE_POSITION = -999  # Maximum (most negative) wave_position to accept (filters strong downtrends) - DISABLED
 MIN_CONSISTENCY = 0.0  # Minimum consistency score (filters inconsistent wave patterns) - DISABLED
 MAX_STOCKS = 1000  # Maximum number of stocks to process (for testing/comparison with test script, None = unlimited)
-
-
-def get_historical_data_yfinance(ticker, start_date, end_date):
-    """
-    Get historical data using yfinance (rate-limit friendly).
-    Always replaces the last entry's price with current price from yfinance.
-    
-    Args:
-        ticker: Stock ticker symbol
-        start_date: Start date string (YYYY-MM-DD)
-        end_date: End date string (YYYY-MM-DD)
-    
-    Returns:
-        pandas DataFrame with columns: date, close, high, low, volume
-    """
-    try:
-        # yfinance end date is exclusive, so add 1 day
-        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-        end_date_exclusive = (end_dt + timedelta(days=1)).strftime("%Y-%m-%d")
-        
-        ticker_obj = yf.Ticker(ticker)
-        # Suppress yfinance warnings for missing historical data
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=FutureWarning)
-            warnings.filterwarnings("ignore", message=".*possibly delisted.*")
-            warnings.filterwarnings("ignore", message=".*no timezone found.*")
-            warnings.filterwarnings("ignore", category=UserWarning, module="yfinance")
-            hist = ticker_obj.history(start=start_date, end=end_date_exclusive, raise_errors=False)
-        
-        if hist.empty:
-            return pd.DataFrame()
-        
-        df = pd.DataFrame({
-            "date": hist.index,
-            "close": hist['Close'].values,
-            "high": hist['High'].values,
-            "low": hist['Low'].values,
-            "volume": hist['Volume'].values
-        })
-        
-        # Always replace last entry's price with current price from yfinance
-        # This ensures we use the actual current price for analysis, not just historical closing price
-        try:
-            if len(df) > 0:
-                info = ticker_obj.info
-                current_price = info.get('currentPrice') or info.get('regularMarketPrice')
-                
-                if current_price and current_price > 0:
-                    # Replace the last row's prices with current prices
-                    df.iloc[-1, df.columns.get_loc('close')] = current_price
-                    
-                    # Update high/low if available, otherwise use current_price
-                    current_low = info.get('dayLow') or current_price
-                    current_high = info.get('dayHigh') or current_price
-                    df.iloc[-1, df.columns.get_loc('low')] = current_low
-                    df.iloc[-1, df.columns.get_loc('high')] = current_high
-                    
-                    # Update volume if available
-                    current_volume = info.get('volume')
-                    if current_volume:
-                        df.iloc[-1, df.columns.get_loc('volume')] = current_volume
-        except Exception as e:
-            # If current price fetch fails, continue with historical data only
-            logger.debug(f"Error fetching current price for {ticker}: {e}")
-        
-        return df.reset_index(drop=True)
-    except Exception as e:
-        logger.debug(f"Error fetching historical data for {ticker}: {e}")
-        return pd.DataFrame()
 
 
 def wavelet_trade_engine(price_series, min_rr=MIN_RR, low_series=None, turn_confirmation_enabled=None):
@@ -280,7 +212,7 @@ class Oscilla(AdvisorBase):
         """
         try:
             # Get reference date (last trading day) - calculate FIRST
-            last_trading_date = AdvisorBase.get_last_trading_day()
+            last_trading_date = financial_polygon.get_last_trading_day()
             
             if not last_trading_date:
                 logger.warning("Oscilla: No valid trading date available")
@@ -295,8 +227,7 @@ class Oscilla(AdvisorBase):
             logger.info(f"Oscilla: Using reference date: {last_trading_date}")
             
             # Get filtered stocks from Polygon (pass test_date explicitly)
-            df_stocks = AdvisorBase.get_filtered_stocks(
-                sa=sa,
+            df_stocks = financial_polygon.get_filtered_stocks(
                 min_price=MIN_PRICE,
                 max_price=MAX_PRICE,
                 min_volume=MIN_VOLUME,
@@ -342,7 +273,9 @@ class Oscilla(AdvisorBase):
                 
                 try:
                     # Get historical data for wavelet analysis
-                    df_price = get_historical_data_yfinance(ticker, wavelet_start_date, last_trading_date)
+                    df_price = financial_yahoo.get_historical_data_yfinance(
+                        ticker, wavelet_start_date, last_trading_date
+                    )
                     if df_price.empty:
                         filtered_no_data += 1
                         continue
@@ -392,8 +325,7 @@ class Oscilla(AdvisorBase):
                     
                     # Verify US exchange and profitability
                     try:
-                        ticker_obj = yf.Ticker(ticker)
-                        info = ticker_obj.info
+                        info = financial_yahoo.get_ticker_info(ticker)
                         
                         # Verify US exchange (NMS, NYQ, NAS, NYS)
                         exchange = info.get('exchange')

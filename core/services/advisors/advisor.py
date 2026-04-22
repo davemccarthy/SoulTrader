@@ -20,6 +20,10 @@ from django.conf import settings
 from django.utils import timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
+from core.services.llm.gemini import ask_gemini as llm_ask_gemini
+from core.services.llm.ollama import ask_ollama as llm_ask_ollama
+from core.services.llm.parsing import extract_json_from_text
+from core.services.financial import polygon as financial_polygon
 
 logger = logging.getLogger(__name__)
 
@@ -344,155 +348,28 @@ class AdvisorBase:
 
     @staticmethod
     def get_last_trading_day(test_date=None):
-        """
-        Get the previous working day (Mon-Fri) for Polygon API.
-        
-        Only works Tue-Fri (skips Mon/Sat/Sun discoveries).
-        Returns None if today is Mon/Sat/Sun or if last day was a holiday.
-        
-        Args:
-            test_date: Optional date string (YYYY-MM-DD) for testing
-            
-        Returns:
-            date string (YYYY-MM-DD) or None
-        """
-        if test_date:
-            # For testing - return the date as-is
-            try:
-                datetime.strptime(test_date, "%Y-%m-%d")
-                return test_date
-            except ValueError:
-                logger.warning(f"Invalid test_date format: {test_date}")
-                return None
-        
-        today = datetime.now().date()
-        weekday = today.weekday()  # Monday=0, Sunday=6
-        
-        # Only run Tue-Fri (1-4)
-        if weekday == 0:  # Monday
-            logger.info("Skipping discovery on Monday")
-            return None
-        elif weekday >= 5:  # Saturday (5) or Sunday (6)
-            logger.info("Skipping discovery on weekend")
-            return None
-        
-        # Tue-Fri: previous working day is just yesterday
-        # (if today is Tue, yesterday is Mon - both weekdays)
-        previous_day = today - timedelta(days=1)
-        
-        # If yesterday was Sunday (previous_day.weekday() == 6), go back to Friday
-        if previous_day.weekday() == 6:  # Yesterday was Sunday
-            previous_day = previous_day - timedelta(days=2)  # Go to Friday
-        # If yesterday was Saturday (previous_day.weekday() == 5), go back to Friday
-        elif previous_day.weekday() == 5:  # Yesterday was Saturday
-            previous_day = previous_day - timedelta(days=1)  # Go to Friday
-        
-        return previous_day.strftime("%Y-%m-%d")
+        """Compatibility wrapper for financial polygon service."""
+        return financial_polygon.get_last_trading_day(test_date=test_date)
 
     @classmethod
     def _fetch_polygon_stocks_for_date(cls, reference_date):
-        """
-        Fetch stocks using Polygon's get_grouped_daily_aggs (1 API call for all stocks on a date).
-        
-        Args:
-            reference_date: Date string (YYYY-MM-DD)
-        
-        Returns:
-            pandas DataFrame with columns: ticker, price, today_volume
-            Returns empty DataFrame on error or if no data available
-        """
-        # Try to get Polygon API key from settings or environment
-        polygon_api_key = getattr(settings, 'POLYGON_API_KEY', None)
-        if not polygon_api_key:
-            # Fallback to environment variable (for compatibility with test scripts)
-            import os
-            polygon_api_key = os.getenv('POLYGON_API_KEY')
-        
-        if not polygon_api_key:
-            logger.warning("POLYGON_API_KEY not set in Django settings or environment")
-            return pd.DataFrame()
-        
-        try:
-            from polygon import RESTClient
-            client = RESTClient(polygon_api_key)
-            
-            logger.info(f"Fetching all stocks for {reference_date} using Polygon (1 API call)...")
-            aggs = client.get_grouped_daily_aggs(
-                locale="us",
-                date=reference_date,
-                adjusted=False
-            )
-            
-            rows = []
-            for agg in aggs:
-                rows.append({
-                    "ticker": agg.ticker,
-                    "price": float(agg.close),
-                    "today_volume": int(agg.volume)
-                })
-            
-            df = pd.DataFrame(rows)
-            
-            if not df.empty:
-                logger.info(f"Fetched {len(df)} stocks from Polygon for {reference_date}")
-            else:
-                logger.warning(f"No stocks returned from Polygon for {reference_date} (may be holiday)")
-            
-            return df
-            
-        except Exception as e:
-            logger.error(f"Error fetching stocks from Polygon for {reference_date}: {e}", exc_info=True)
-            return pd.DataFrame()
+        """Compatibility wrapper for financial polygon service."""
+        return financial_polygon._fetch_polygon_stocks_for_date(reference_date)
 
     @classmethod
     def get_filtered_stocks(cls, sa=None, min_price=None, max_price=None, min_volume=None, test_date=None):
-        """
-        Get filtered stocks from Polygon (last trading day).
-        Fetches once per session, caches, then applies advisor-specific filters.
-        
-        Args:
-            sa: SmartAnalysis session (optional, for logging)
-            min_price: Minimum stock price filter
-            max_price: Maximum stock price filter  
-            min_volume: Minimum volume filter
-            test_date: Optional date string (YYYY-MM-DD) for testing
-            
-        Returns:
-            pandas DataFrame with filtered stocks (columns: ticker, price, today_volume)
-            Returns empty DataFrame if no valid trading date or fetch fails
-        """
-        # Fetch and cache if needed
-        if cls._polygon_stocks_cache is None:
-            last_trading_date = cls.get_last_trading_day(test_date=test_date)
-            
-            if not last_trading_date:
-                logger.warning("No valid trading date available (Mon/weekend/holiday)")
-                return pd.DataFrame()
-            
-            # Fetch from Polygon (will handle holiday failures gracefully)
-            cls._polygon_stocks_cache = cls._fetch_polygon_stocks_for_date(last_trading_date)
-            
-            if cls._polygon_stocks_cache is None or cls._polygon_stocks_cache.empty:
-                logger.warning(f"No stocks fetched for {last_trading_date} (may be holiday)")
-                return pd.DataFrame()
-        
-        # Apply advisor's filters
-        df = cls._polygon_stocks_cache.copy()
-        
-        if min_price is not None:
-            df = df[df['price'] >= min_price]
-        if max_price is not None:
-            df = df[df['price'] <= max_price]
-        if min_volume is not None:
-            df = df[df['today_volume'] >= min_volume]
-        
-        return df
+        """Compatibility wrapper for financial polygon service."""
+        return financial_polygon.get_filtered_stocks(
+            min_price=min_price,
+            max_price=max_price,
+            min_volume=min_volume,
+            test_date=test_date,
+        )
 
     @classmethod
     def clear_polygon_cache(cls):
-        """Clear the Polygon stocks cache (useful for testing or between runs)."""
-        cls._polygon_stocks_cache = None
-        logger.info("Polygon stocks cache cleared")
+        """Compatibility wrapper for financial polygon service."""
+        financial_polygon.clear_polygon_cache()
 
     def allow_discovery(self, symbol, period=None, price_decline=None):
         """
@@ -1272,74 +1149,17 @@ Respond with only a single valid JSON object, no other text.
         use_search: if True, enable Google Search grounding (e.g. for media reaction).
         https://ai.google.dev/gemini-api/docs/rate-limits
         """
-        keys = _get_gemini_keys()
-        if not keys:
-            logger.warning("No GEMINI_KEY (or GEMINI_KEY_2, ...) configured for ask_gemini")
-            return None, None
-
-        for attempt in range(len(models)):
-            try:
-                key = keys[self._gemini_key_index % len(keys)]
-                self._gemini_key_index += 1
-                model = models[self.gemini_model]
-                logger.info(f"{self.advisor.name} using {model}")
-
-                client = genai.Client(
-                    api_key=key,
-                    http_options=types.HttpOptions(timeout=int(timeout * 1000)),
-                )
-                # Deterministic decoding to match test_consensus_llm.py.
-                # When use_search=True, attach the search tool; otherwise omit tools.
-                if use_search:
-                    config = types.GenerateContentConfig(
-                        tools=[types.Tool(google_search=types.GoogleSearch())],
-                        temperature=0.0,
-                        top_p=1.0,
-                    )
-                else:
-                    config = types.GenerateContentConfig(
-                        temperature=0.0,
-                        top_p=1.0,
-                    )
-                response = client.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    config=config,
-                )
-
-                response_text = getattr(response, "text", None) if response else None
-                if not response_text:
-                    logger.warning(f"No text in Gemini response for {self.advisor.name}")
-                    return None, None
-
-                results = self._extract_json(response_text)
-                if not results:
-                    logger.warning(f"Cannot parse response for {self.advisor.name}")
-                    return None, None
-
-                time.sleep(1)
-                return model, results
-
-            except Exception as e:
-                err_str = str(e)
-                if "429" in err_str and "RESOURCE_EXHAUSTED" in err_str:
-                    short_error = "429 RESOURCE_EXHAUSTED"
-                elif "403" in err_str and "PERMISSION_DENIED" in err_str:
-                    short_error = "403 PERMISSION_DENIED"
-                elif "429" in err_str:
-                    short_error = "429 (quota exceeded)"
-                elif "403" in err_str:
-                    short_error = "403 (permission denied)"
-                else:
-                    short_error = err_str[:80] + ("..." if len(err_str) > 80 else "")
-                logger.warning(
-                    f"Attempt {attempt + 1}: {model} {short_error} for {self.advisor.name}. Trying next model."
-                )
-                self.gemini_model += 1
-                self.gemini_model %= len(models)
-
-        logger.error(f"All Gemini models exhausted for {self.advisor.name}")
-        return None, None
+        model, results, next_model_idx, next_key_idx = llm_ask_gemini(
+            prompt=prompt,
+            advisor_name=self.advisor.name,
+            gemini_model_index=self.gemini_model,
+            gemini_key_index=self._gemini_key_index,
+            timeout=timeout,
+            use_search=use_search,
+        )
+        self.gemini_model = next_model_idx
+        self._gemini_key_index = next_key_idx
+        return model, results
 
     def ask_ollama(self, prompt, *, model: str = "qwen3:8b", timeout: float = 300.0):
         """
@@ -1357,78 +1177,12 @@ Respond with only a single valid JSON object, no other text.
         Returns (model, parsed_dict) like ask_gemini, or (None, None) on failure.
         Does not support web search grounding; use ask_gemini for that.
         """
-        host = (os.getenv("OLLAMA_HOST") or "").strip().rstrip("/")
-        username = os.getenv("OLLAMA_USERNAME") or ""
-        password = os.getenv("OLLAMA_PASSWORD") or ""
-
-        if not host or not username or not password:
-            logger.warning(
-                f"ask_ollama: missing OLLAMA_HOST, OLLAMA_USERNAME, or OLLAMA_PASSWORD "
-                f"for {self.advisor.name}"
-            )
-            return None, None
-
-        credentials = f"{username}:{password}"
-        token = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
-        headers = {
-            "Authorization": f"Basic {token}",
-            "Content-Type": "application/json",
-        }
-        payload = {"model": model, "prompt": prompt, "stream": False}
-        url = f"{host}/api/generate"
-
-        try:
-            logger.info(f"{self.advisor.name} ask_ollama model={model}")
-            response = requests.post(url, headers=headers, json=payload, timeout=timeout)
-            response.raise_for_status()
-        except requests.HTTPError as exc:
-            status = exc.response.status_code if exc.response is not None else "?"
-            snippet = (
-                (exc.response.text[:500] + "...")
-                if exc.response is not None and len(exc.response.text) > 500
-                else (exc.response.text if exc.response is not None else "")
-            )
-            logger.warning(
-                f"ask_ollama HTTP {status} for {self.advisor.name}: {snippet}"
-            )
-            return None, None
-        except requests.RequestException as exc:
-            logger.warning(f"ask_ollama request error for {self.advisor.name}: {exc}")
-            return None, None
-
-        try:
-            data = response.json()
-        except ValueError:
-            logger.warning(f"ask_ollama: invalid JSON body for {self.advisor.name}")
-            return None, None
-
-        response_text = data.get("response")
-        if not response_text:
-            logger.warning(f"ask_ollama: empty or missing 'response' for {self.advisor.name}")
-            return None, None
-
-        log_flag = (os.getenv("OLLAMA_PROMPT_LOG") or "1").strip().lower()
-        if log_flag not in ("0", "false", "no", "off"):
-            try:
-                log_path = Path(settings.BASE_DIR) / "ollama.txt"
-                stamp = datetime.now().isoformat(timespec="seconds")
-                block = (
-                    f"========== {stamp} advisor={self.advisor.name} model={model} ==========\n"
-                    f"--- PROMPT ---\n{prompt}\n"
-                    f"--- RESPONSE ---\n{response_text}\n\n"
-                )
-                with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(block)
-            except OSError as exc:
-                logger.warning(f"ask_ollama: could not append ollama.txt: {exc}")
-
-        results = self._extract_json(response_text)
-        if not results:
-            logger.warning(f"ask_ollama: cannot parse JSON for {self.advisor.name}")
-            return None, None
-
-        time.sleep(1)
-        return model, results
+        return llm_ask_ollama(
+            prompt=prompt,
+            advisor_name=self.advisor.name,
+            model=model,
+            timeout=timeout,
+        )
 
     def news_flash(self, sa, title, url):
 
@@ -1558,29 +1312,7 @@ Respond with only a single valid JSON object, no other text.
 
     def _extract_json(self, text):
         """Extract JSON from Gemini response, handling markdown code blocks."""
-        if not text:
-            return None
-
-        # Remove markdown code blocks
-        cleaned = re.sub(r'```json\s*', '', text)
-        cleaned = re.sub(r'```\s*', '', cleaned)
-        cleaned = cleaned.strip()
-
-        # Try direct parse
-        try:
-            return json.loads(cleaned)
-        except json.JSONDecodeError:
-            pass
-
-        # Try to find JSON object with regex
-        match = re.search(r'\{[\s\S]*\}', cleaned)
-        if match:
-            try:
-                return json.loads(match.group(0))
-            except json.JSONDecodeError:
-                pass
-
-        return None
+        return extract_json_from_text(text)
 
 
 def register(name, python_class):

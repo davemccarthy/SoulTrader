@@ -926,6 +926,7 @@ class Edgar(AdvisorBase):
 
     FORM4_LATEST_PAGE_SIZE = 100
     FORM4_WATCH_MIN_TOTAL = 5.0
+    FORM4_WATCH_MAX_SELL_TOTAL = -5.0
     FORM4_WATCH_DAYS = 30
 
     def filter_filing(self, filing) -> bool:
@@ -1412,6 +1413,161 @@ class Edgar(AdvisorBase):
 
         return result
 
+    def match_form4(self, filing):
+
+        cik = str(getattr(filing, "cik", "") or "")
+        ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
+        accession = (
+            getattr(filing, "accession_no", None)
+            or getattr(filing, "accession_number", None)
+            or ""
+        )
+        filing_dt = _filing_datetime(filing)
+
+        if not ticker:
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s Form4 match: no ticker",
+                "N/A",
+                cik or "N/A",
+                accession,
+            )
+            return None
+
+        from core.models import Watchlist
+        from django.utils import timezone
+
+        # Form4 watch entries are created in run_form4_screening with watch_kind=form4_signal/form4_sell.
+        # Keep this non-blocking: no matching signal -> None.
+        qs = Watchlist.objects.filter(
+            advisor=self.advisor,
+            stock__symbol=ticker,
+            meta__watch_kind__in=["form4_signal", "form4_sell"],
+        )
+
+        # Respect active watch window (same convention as AdvisorBase.watchlist()).
+        now = timezone.now()
+        qs = qs.extra(
+            where=["created + (days || ' days')::interval >= %s"],
+            params=[now],
+        ).order_by("-created")
+
+        if not qs.exists():
+            logger.info(
+                "ticker=%s, accession=%s Form4 match: none",
+                ticker,
+                accession,
+            )
+            return None
+
+        entries = list(qs)
+        if not entries:
+            logger.info(
+                "ticker=%s, accession=%s Form4 match: none",
+                ticker,
+                accession,
+            )
+            return None
+
+        # If filing datetime exists, keep only recent Form4 signals (<= 30 days lookback).
+        if filing_dt is not None:
+            recent_entries = []
+            for e in entries:
+                created_dt = getattr(e, "created", None)
+                if created_dt is None:
+                    continue
+                try:
+                    delta_days = abs((filing_dt - created_dt).days)
+                except Exception:
+                    continue
+                if delta_days <= 30:
+                    recent_entries.append(e)
+            entries = recent_entries
+            if not entries:
+                logger.info(
+                    "ticker=%s, accession=%s Form4 match: stale (no entries <=30d)",
+                    ticker,
+                    accession,
+                )
+                return None
+
+        # Newest first for representative metadata.
+        entries.sort(key=lambda e: getattr(e, "created", now), reverse=True)
+        latest = entries[0]
+        latest_meta = latest.meta or {}
+        latest_created = getattr(latest, "created", None)
+        latest_age_days = None
+        if latest_created is not None:
+            try:
+                latest_age_days = (now - latest_created).days
+            except Exception:
+                latest_age_days = None
+
+        net_total = 0.0
+        buy_total = 0.0
+        sell_total = 0.0
+        buy_count = 0
+        sell_count = 0
+        matched_accessions: list[str] = []
+        for e in entries:
+            meta = e.meta or {}
+            kind = str(meta.get("watch_kind") or "")
+            raw_total = meta.get("total")
+            try:
+                total_val = float(raw_total) if raw_total is not None else 0.0
+            except (TypeError, ValueError):
+                total_val = 0.0
+
+            net_total += total_val
+            if kind == "form4_sell":
+                sell_count += 1
+                sell_total += total_val
+            else:
+                buy_count += 1
+                buy_total += total_val
+
+            acc = meta.get("form4_accession")
+            if isinstance(acc, str) and acc.strip():
+                matched_accessions.append(acc.strip())
+
+        dominant_kind = "form4_signal" if net_total >= 0 else "form4_sell"
+        result = {
+            "symbol": ticker,
+            "watch_id": latest.id,
+            "status": latest.status,
+            "created": latest_created.isoformat() if latest_created is not None else None,
+            "age_days": latest_age_days,
+            "entry_count": len(entries),
+            "watch_kind": dominant_kind,
+            "total": net_total,
+            "buy_total": buy_total,
+            "sell_total": sell_total,
+            "buy_count": buy_count,
+            "sell_count": sell_count,
+            "form4_accession": latest_meta.get("form4_accession"),
+            "issuer_cik": latest_meta.get("issuer_cik"),
+            "insider_name": latest_meta.get("insider_name"),
+            "role_label": latest_meta.get("role_label"),
+            "filing_subtotal": latest_meta.get("filing_subtotal"),
+            "cluster_adj": latest_meta.get("cluster_adj"),
+            "period": latest_meta.get("period"),
+            "issuer_name": latest_meta.get("issuer_name"),
+            "explanation": latest.explanation,
+            "matched_accessions": matched_accessions[:20],
+        }
+
+        logger.info(
+            "ticker=%s, accession=%s Form4 match: entries=%d net_total=%.2f buy=%d sell=%d latest=%s age_days=%s",
+            ticker,
+            accession,
+            result["entry_count"],
+            result["total"],
+            result["buy_count"],
+            result["sell_count"],
+            result.get("form4_accession") or "N/A",
+            latest_age_days if latest_age_days is not None else "N/A",
+        )
+        return result
+
     def build_info(self, filing, advanced: dict) -> dict:
 
         cik = str(getattr(filing, "cik", "") or "")
@@ -1428,6 +1584,7 @@ class Edgar(AdvisorBase):
 
         ex99 = advanced.get("ex99") or {}
         media = advanced.get("media") or {}
+        form4 = advanced.get("form4") or {}
         bonuses = advanced.get("bonuses") or []
         penalties = advanced.get("penalties") or []
 
@@ -1453,13 +1610,14 @@ class Edgar(AdvisorBase):
                 "headlines": media.get("headlines") or [],
                 "red_flags": media.get("red_flags") or [],
             },
+            "form4": form4,
             "bonuses": bonuses,
             "penalties": penalties,
         }
         return {"explanation": explanation_parts, "health_meta": health_meta}
 
 
-    def score_results(self, filing, ex99, media):
+    def score_results(self, filing, ex99, media, form4):
 
         cik = str(getattr(filing, "cik", "") or "")
         ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
@@ -1544,6 +1702,34 @@ class Edgar(AdvisorBase):
         elif broker == "weak_buy":
             penalties.append("Weak buy (-0.1)")
             score -= 0.1
+
+        # Form4 (optional, non-blocking): bullish insider cluster can help,
+        # significant selling can add risk.
+        form4_total = None
+        form4_kind = None
+        if isinstance(form4, dict):
+            form4_kind = str(form4.get("watch_kind") or "")
+            raw_total = form4.get("total")
+            try:
+                form4_total = float(raw_total) if raw_total is not None else None
+            except (TypeError, ValueError):
+                form4_total = None
+
+        if form4_total is not None:
+            if form4_kind == "form4_sell" or form4_total <= self.FORM4_WATCH_MAX_SELL_TOTAL:
+                if form4_total <= -8.0:
+                    penalties.append("Strong Form4 sell pressure (-0.30)")
+                    score -= 0.30
+                else:
+                    penalties.append("Form4 sell pressure (-0.20)")
+                    score -= 0.20
+            elif form4_kind == "form4_signal" or form4_total >= self.FORM4_WATCH_MIN_TOTAL:
+                if form4_total >= 8.0:
+                    bonuses.append("Strong Form4 buy signal (+0.25)")
+                    score += 0.25
+                else:
+                    bonuses.append("Form4 buy signal (+0.15)")
+                    score += 0.15
 
         # Valuation
         valuation = self.evaluate_stock(ticker)
@@ -1637,7 +1823,10 @@ class Edgar(AdvisorBase):
         if (media := self.media_reaction_llm(filing)) is None:
             return None
 
-        score, bonuses, penalties = self.score_results(filing, ex99, media)
+        # Form4 association
+        form4 = self.match_form4(filing)
+
+        score, bonuses, penalties = self.score_results(filing, ex99, media, form4)
 
         # Calculate weight and health
         weight = score + 1.0
@@ -1652,6 +1841,7 @@ class Edgar(AdvisorBase):
             "penalties": penalties,
             "ex99": ex99,
             "media": media,
+            "form4": form4,
         }
 
     def analyze_8k(self, filing, sa) -> bool:
@@ -1734,7 +1924,9 @@ class Edgar(AdvisorBase):
             return
         scored = score_form4_filings(filings, apply_cluster=True)
         for fs in scored:
-            if fs.total < self.FORM4_WATCH_MIN_TOTAL:
+            is_bullish = fs.total >= self.FORM4_WATCH_MIN_TOTAL
+            is_bearish = fs.total <= self.FORM4_WATCH_MAX_SELL_TOTAL
+            if not is_bullish and not is_bearish:
                 continue
             sym = (fs.ticker or "").strip().upper()
             if not sym or sym == "?":
@@ -1751,8 +1943,9 @@ class Edgar(AdvisorBase):
                 f"Form4 {fs.accession} {fs.insider_name} total={fs.total:+.1f} "
                 f"({fs.issuer_name})"
             )[:500]
+            watch_kind = "form4_signal" if is_bullish else "form4_sell"
             meta = {
-                "watch_kind": "form4_signal",
+                "watch_kind": watch_kind,
                 "issuer_cik": fs.issuer_cik,
                 "form4_accession": fs.accession,
                 "total": fs.total,
