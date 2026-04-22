@@ -20,7 +20,18 @@ struct HoldingsView: View {
                         .listRowSeparator(.hidden)
 
                     if let fund = viewModel.selectedFund {
-                        FundSecondarySummaryCard(fund: fund)
+                        FundSecondarySummaryCard(
+                            countTitle: "STOCKS",
+                            countValue: String(viewModel.holdings.count),
+                            equityPercent: equityPercent(
+                                totalValue: fund.dashboard.totalValue,
+                                portfolioValue: fund.dashboard.holdingsMarketValue
+                            ),
+                            middleTitle: "EST ABV",
+                            middleValue: formatPercent(fund.dashboard.estAbvPercent),
+                            middleColor: percentColor(fund.dashboard.estAbvPercent),
+                            todayPercent: fund.dashboard.todayPercent
+                        )
                             .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 8, trailing: 6))
                             .listRowBackground(Color.clear)
                             .listRowSeparator(.hidden)
@@ -168,6 +179,18 @@ struct HoldingsView: View {
     private func formatPercent(_ value: Double?) -> String {
         guard let value else { return "0.00%" }
         return String(format: "%.2f%%", value)
+    }
+
+    private func percentColor(_ value: Double?) -> Color {
+        guard let value else { return Theme.valuePrimary }
+        if value > 0 { return .green }
+        if value < 0 { return .red }
+        return Theme.valuePrimary
+    }
+
+    private func equityPercent(totalValue: Double, portfolioValue: Double) -> Double? {
+        guard totalValue > 0 else { return nil }
+        return (portfolioValue / totalValue) * 100
     }
 }
 

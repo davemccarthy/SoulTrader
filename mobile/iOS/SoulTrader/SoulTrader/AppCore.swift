@@ -58,6 +58,7 @@ struct FundResponse: Decodable, Identifiable {
 
 struct GlobalDashboardResponse: Decodable {
     let totalValue: Double
+    let returnAmount: Double
     let cash: Double
     let holdingsPnl: Double
     let returnPercent: Double
@@ -65,6 +66,7 @@ struct GlobalDashboardResponse: Decodable {
 
     private enum CodingKeys: String, CodingKey {
         case totalValue = "total_value"
+        case returnAmount = "return_amount"
         case cash
         case holdingsPnl = "holdings_pnl"
         case returnPercent = "return_percent"
@@ -705,15 +707,15 @@ struct FundSummaryCard: View {
                 alignment: .leading
             ),
             SummaryMetricItem(
-                title: "PORTFOLIO",
-                value: formatCurrency(fund.dashboard.holdingsMarketValue),
-                color: percentColor(fund.dashboard.holdingsPnl),
-                alignment: .trailing
-            ),
-            SummaryMetricItem(
                 title: "CASH",
                 value: formatCurrency(fund.dashboard.cash),
                 color: Theme.valuePrimary,
+                alignment: .trailing
+            ),
+            SummaryMetricItem(
+                title: "PORTFOLIO",
+                value: formatCurrency(fund.dashboard.holdingsMarketValue),
+                color: percentColor(fund.dashboard.holdingsPnl),
                 alignment: .trailing
             ),
             SummaryMetricItem(
@@ -748,61 +750,54 @@ struct FundSummaryCard: View {
 }
 
 struct FundSecondarySummaryCard: View {
-    let fund: FundResponse
+    let countTitle: String
+    let countValue: String
+    let equityPercent: Double?
+    let middleTitle: String
+    let middleValue: String
+    let middleColor: Color
+    let todayPercent: Double?
 
     var body: some View {
         SummaryMetricCard(items: [
             SummaryMetricItem(
-                title: "TODAY",
-                value: formatPercent(fund.dashboard.todayPercent),
-                color: percentColor(fund.dashboard.todayPercent),
+                title: countTitle,
+                value: countValue,
+                color: Theme.valuePrimary,
                 alignment: .leading
             ),
             SummaryMetricItem(
-                title: "RETURN",
-                value: formatCurrency(fund.dashboard.returnAmount),
-                color: amountColor(fund.dashboard.returnAmount),
+                title: "EQUITY",
+                value: formatPercent(equityPercent),
+                color: percentColor(equityPercent),
                 alignment: .trailing
             ),
             SummaryMetricItem(
-                title: "EST ABV",
-                value: formatPercent(fund.dashboard.estAbvPercent),
-                color: percentColor(fund.dashboard.estAbvPercent),
+                title: middleTitle,
+                value: middleValue,
+                color: middleColor,
                 alignment: .trailing
             ),
             SummaryMetricItem(
-                title: "STOCKS",
-                value: String(fund.dashboard.holdingsCount),
-                color: Theme.valuePrimary,
+                title: "TODAY",
+                value: formatPercent(todayPercent),
+                color: percentColor(todayPercent),
                 alignment: .trailing
             ),
         ])
     }
 
-    private func formatCurrency(_ value: Double) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        formatter.minimumFractionDigits = 0
-        formatter.maximumFractionDigits = 0
-        formatter.roundingMode = .halfUp
-        return formatter.string(from: NSNumber(value: value)) ?? "$0"
-    }
-
-    private func formatPercent(_ value: Double) -> String {
+    private func formatPercent(_ value: Double?) -> String {
+        guard let value else { return "—" }
         let normalized = abs(value) < 0.005 ? 0.0 : value
         return String(format: "%.2f%%", normalized)
     }
 
-    private func percentColor(_ value: Double) -> Color {
+    private func percentColor(_ value: Double?) -> Color {
+        guard let value else { return Theme.valuePrimary }
         let normalized = abs(value) < 0.005 ? 0.0 : value
         if normalized > 0 { return .green }
         if normalized < 0 { return .red }
-        return Theme.valuePrimary
-    }
-
-    private func amountColor(_ value: Double) -> Color {
-        if value > 0 { return .green }
-        if value < 0 { return .red }
         return Theme.valuePrimary
     }
 }
@@ -819,15 +814,15 @@ struct GlobalSummaryCard: View {
                 alignment: .leading
             ),
             SummaryMetricItem(
-                title: "PORTFOLIO",
-                value: formatCurrency(dashboard.holdingsMarketValue),
-                color: percentColor(dashboard.holdingsPnl),
+                title: "CASH",
+                value: formatCurrency(dashboard.cash),
+                color: Theme.valuePrimary,
                 alignment: .trailing
             ),
             SummaryMetricItem(
-                title: "TODAY",
-                value: formatPercent(dashboard.todayPercent),
-                color: percentColor(dashboard.todayPercent),
+                title: "PORTFOLIO",
+                value: formatCurrency(dashboard.holdingsMarketValue),
+                color: percentColor(dashboard.holdingsPnl),
                 alignment: .trailing
             ),
             SummaryMetricItem(

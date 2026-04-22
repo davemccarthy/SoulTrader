@@ -17,6 +17,24 @@ struct FundsView: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
 
+                if let dashboard = viewModel.globalDashboard {
+                    FundSecondarySummaryCard(
+                        countTitle: "FUNDS",
+                        countValue: String(viewModel.funds.count),
+                        equityPercent: equityPercent(
+                            totalValue: dashboard.totalValue,
+                            portfolioValue: dashboard.holdingsMarketValue
+                        ),
+                        middleTitle: "RETURN",
+                        middleValue: formatCurrency(dashboard.returnAmount),
+                        middleColor: amountColor(dashboard.returnAmount),
+                        todayPercent: dashboard.todayPercent
+                    )
+                    .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 8, trailing: 6))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                }
+
                 ForEach(viewModel.funds) { fund in
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(alignment: .top, spacing: 0) {
@@ -155,5 +173,16 @@ struct FundsView: View {
 
     private func normalizedPercent(_ value: Double) -> Double {
         abs(value) < 0.005 ? 0.0 : value
+    }
+
+    private func amountColor(_ value: Double) -> Color {
+        if value > 0 { return .green }
+        if value < 0 { return .red }
+        return Theme.valuePrimary
+    }
+
+    private func equityPercent(totalValue: Double, portfolioValue: Double) -> Double? {
+        guard totalValue > 0 else { return nil }
+        return (portfolioValue / totalValue) * 100
     }
 }
