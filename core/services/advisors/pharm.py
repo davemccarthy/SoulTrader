@@ -408,6 +408,31 @@ PHARM_LLM_APPROVAL_TYPE_VALUES = frozenset(
 PHARM_LLM_EVENT_OUTCOME_VALUES = frozenset({"positive", "negative", "mixed", "unclear"})
 PHARM_LLM_IMPACT_DIRECTION_VALUES = frozenset({"bullish", "bearish", "neutral"})
 
+# Terms that should only match as standalone tokens to avoid substring false positives
+# such as "nda" in "National".
+PHARM_WHOLE_WORD_TERMS: frozenset[str] = frozenset(
+    {
+        "nda",
+        "bla",
+        "pdufa",
+        "crl",
+    }
+)
+_PHARM_TERM_PATTERN_CACHE: dict[str, re.Pattern[str]] = {}
+
+
+def _pharm_has_term(blob: str, term: str) -> bool:
+    if not blob or not term:
+        return False
+    term_l = term.lower()
+    if term_l in PHARM_WHOLE_WORD_TERMS:
+        pat = _PHARM_TERM_PATTERN_CACHE.get(term_l)
+        if pat is None:
+            pat = re.compile(rf"\b{re.escape(term_l)}\b")
+            _PHARM_TERM_PATTERN_CACHE[term_l] = pat
+        return bool(pat.search(blob))
+    return term_l in blob
+
 
 def _pharm_llm_hard_failures(parsed: Any) -> list[str]:
     """
@@ -682,24 +707,24 @@ def _score_row(row: dict[str, str]) -> dict[str, Any]:
     score = 0
 
     for term in PHARM_GREEN_TERMS_STRONG:
-        if term in blob:
+        if _pharm_has_term(blob, term):
             green_hits.append(term)
             score += 2
     for term in PHARM_GREEN_TERMS_WEAK:
-        if term in blob:
+        if _pharm_has_term(blob, term):
             green_hits.append(term)
             score += 1
     for term in PHARM_RED_TERMS_STRONG:
-        if term in blob:
+        if _pharm_has_term(blob, term):
             red_hits.append(term)
             score -= 3
     for term in PHARM_RED_TERMS_WEAK:
-        if term in blob:
+        if _pharm_has_term(blob, term):
             red_hits.append(term)
             score -= 1
 
-    suppressed = any(term in blob for term in PHARM_SUPPRESS_TERMS)
-    negative_dominant = any(term in blob for term in PHARM_NEGATIVE_DOMINANT_TERMS)
+    suppressed = any(_pharm_has_term(blob, term) for term in PHARM_SUPPRESS_TERMS)
+    negative_dominant = any(_pharm_has_term(blob, term) for term in PHARM_NEGATIVE_DOMINANT_TERMS)
     if negative_dominant and score > 0:
         score = 0
 
@@ -731,12 +756,12 @@ def _classify_event(row: dict[str, Any]) -> str:
         "layoffs",
         "fund",
     )
-    if any(term in title_blob for term in title_general_overrides):
+    if any(_pharm_has_term(title_blob, term) for term in title_general_overrides):
         return "general"
 
     # Primary classification from title text.
-    title_approval_hits = sum(1 for term in APPROVAL_CLASS_TERMS if term in title_blob)
-    title_trial_hits = sum(1 for term in TRIAL_CLASS_TERMS if term in title_blob)
+    title_approval_hits = sum(1 for term in APPROVAL_CLASS_TERMS if _pharm_has_term(title_blob, term))
+    title_trial_hits = sum(1 for term in TRIAL_CLASS_TERMS if _pharm_has_term(title_blob, term))
     if title_approval_hits > title_trial_hits and title_approval_hits > 0:
         return "approval"
     if title_trial_hits > title_approval_hits and title_trial_hits > 0:
@@ -745,8 +770,8 @@ def _classify_event(row: dict[str, Any]) -> str:
         return "approval"
 
     # Fallback: use summary only when title is inconclusive.
-    summary_approval_hits = sum(1 for term in APPROVAL_CLASS_TERMS if term in summary_blob)
-    summary_trial_hits = sum(1 for term in TRIAL_CLASS_TERMS if term in summary_blob)
+    summary_approval_hits = sum(1 for term in APPROVAL_CLASS_TERMS if _pharm_has_term(summary_blob, term))
+    summary_trial_hits = sum(1 for term in TRIAL_CLASS_TERMS if _pharm_has_term(summary_blob, term))
     if summary_approval_hits > summary_trial_hits and summary_approval_hits > 0:
         return "approval"
     if summary_trial_hits > summary_approval_hits and summary_trial_hits > 0:
@@ -815,7 +840,7 @@ def _is_shortlist_candidate(scored: dict[str, Any]) -> bool:
         "misses phase 3",
         "deaths",
     )
-    if any(t in title_blob for t in hard_triggers):
+    if any(_pharm_has_term(title_blob, t) for t in hard_triggers):
         return True
 
     return int(scored.get("score") or 0) >= PHARM_SHORTLIST_SCORE_MIN
