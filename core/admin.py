@@ -114,7 +114,7 @@ class ProfileAdminForm(forms.ModelForm):
 @admin.register(Profile)
 class ProfileAdmin(admin.ModelAdmin):
     form = ProfileAdminForm
-    readonly_fields = ('id', 'created')
+    readonly_fields = ('id', 'created', 'investment', 'cash')
     list_display = ('id', 'name', 'enabled', 'sentiment', 'investment', 'cash')
     search_fields = ('name', 'description')
     list_filter = ('enabled', 'sentiment')
@@ -129,6 +129,12 @@ class ProfileAdmin(admin.ModelAdmin):
         # Keep user hidden in admin: assign creator user for new records.
         if not obj.user_id:
             obj.user = request.user
+        # Capital fields are execution-owned; never persist admin-form edits.
+        if change and obj.pk:
+            existing = Profile.objects.filter(pk=obj.pk).only('investment', 'cash').first()
+            if existing:
+                obj.investment = existing.investment
+                obj.cash = existing.cash
         super().save_model(request, obj, form, change)
 
 
