@@ -9,7 +9,7 @@ Run:
     python manage.py run_pharm
 
 Optional env:
-    PHARM_EVENT_CLASS=approval|trial|general  (default approval) — which shortlist class gets LLM passes
+    PHARM_EVENT_CLASS=approval|trial|general  (debug override; default processes approval+trial)
     PHARM_DEBUG_SHORTLIST_IDX=N               — only process shortlist row N if it matches PHARM_EVENT_CLASS
 
 Rows with heuristic score < 0 are never sent to the LLM (still listed in the final shortlist log).
@@ -877,20 +877,26 @@ class Pharm(AdvisorBase):
             row["prompt_key"] = _prompt_for_class(event_class)
         shortlist.sort(key=lambda r: (int(r.get("score") or 0), r.get("published_at") or ""), reverse=True)
 
-        event_class_filter = os.getenv("PHARM_EVENT_CLASS", "approval").strip().lower()
-        if event_class_filter not in ("approval", "trial", "general"):
-            logger.warning("PHARM invalid PHARM_EVENT_CLASS=%r; using approval", event_class_filter)
-            event_class_filter = "approval"
-        task_default_for_class = {
-            "approval": TASK_APPROVAL_KEY,
-            "trial": TASK_TRIAL_KEY,
-            "general": TASK_GENERAL_KEY,
-        }[event_class_filter]
+        event_class_override = os.getenv("PHARM_EVENT_CLASS", "").strip().lower()
+        if event_class_override:
+            if event_class_override not in ("approval", "trial", "general"):
+                logger.warning(
+                    "PHARM invalid PHARM_EVENT_CLASS=%r; using default classes approval+trial",
+                    event_class_override,
+                )
+                selected_classes = ("approval", "trial")
+                class_selection_label = "approval+trial(default)"
+            else:
+                selected_classes = (event_class_override,)
+                class_selection_label = event_class_override
+        else:
+            selected_classes = ("approval", "trial")
+            class_selection_label = "approval+trial(default)"
 
         class_match_rows = [
             (shortlist_idx, row)
             for shortlist_idx, row in enumerate(shortlist, start=1)
-            if row.get("event_class") == event_class_filter
+            if row.get("event_class") in selected_classes
         ]
         neg_score_skipped = sum(
             1 for _, row in class_match_rows if int(row.get("score") or 0) < 0
@@ -899,7 +905,7 @@ class Pharm(AdvisorBase):
             logger.info(
                 "PHARM skip LLM for %d %s shortlist row(s) with score < 0",
                 neg_score_skipped,
-                event_class_filter,
+                class_selection_label,
             )
         llm_shortlist = [
             (shortlist_idx, row)
@@ -923,20 +929,20 @@ class Pharm(AdvisorBase):
                     "PHARM debug filter active: PHARM_DEBUG_SHORTLIST_IDX=%d "
                     "PHARM_EVENT_CLASS=%s (matches=%d)",
                     target_shortlist_idx,
-                    event_class_filter,
+                    class_selection_label,
                     len(llm_shortlist),
                 )
         if llm_shortlist:
             logger.info(
                 "PHARM processing %s candidates: count=%d",
-                event_class_filter,
+                class_selection_label,
                 len(llm_shortlist),
             )
 
         for idx, (shortlist_idx, candidate) in enumerate(llm_shortlist, start=1):
             logger.info(
                 "PHARM %s candidate %d/%d (shortlist %d/%d) | %s | %s",
-                event_class_filter,
+                class_selection_label,
                 idx,
                 len(llm_shortlist),
                 shortlist_idx,
@@ -944,7 +950,7 @@ class Pharm(AdvisorBase):
                 candidate.get("published_at") or "",
                 candidate.get("title") or "",
             )
-            task_key = str(candidate.get("prompt_key") or task_default_for_class)
+            task_key = str(candidate.get("prompt_key") or TASK_GENERAL_KEY)
             article_payload = {
                 "source": candidate.get("source"),
                 "published_at": candidate.get("published_at"),
