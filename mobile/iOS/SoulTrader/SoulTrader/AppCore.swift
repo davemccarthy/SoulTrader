@@ -719,7 +719,7 @@ struct FundSummaryCard: View {
                 alignment: .trailing
             ),
             SummaryMetricItem(
-                title: "P&L",
+                title: "TOTAL %",
                 value: formatPercent(fund.dashboard.returnPercent),
                 color: percentColor(fund.dashboard.returnPercent),
                 alignment: .trailing
@@ -826,7 +826,7 @@ struct GlobalSummaryCard: View {
                 alignment: .trailing
             ),
             SummaryMetricItem(
-                title: "P&L",
+                title: "TOTAL %",
                 value: formatPercent(dashboard.returnPercent),
                 color: percentColor(dashboard.returnPercent),
                 alignment: .trailing

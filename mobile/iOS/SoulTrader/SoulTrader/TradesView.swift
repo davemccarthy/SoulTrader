@@ -27,9 +27,9 @@ struct TradesView: View {
                                 totalValue: fund.dashboard.totalValue,
                                 portfolioValue: fund.dashboard.holdingsMarketValue
                             ),
-                            middleTitle: "EST ABV",
-                            middleValue: formatPercent(fund.dashboard.estAbvPercent),
-                            middleColor: percentColor(fund.dashboard.estAbvPercent),
+                            middleTitle: "TRADE %",
+                            middleValue: formatPercent(fund.dashboard.tradePnl),
+                            middleColor: percentColor(fund.dashboard.tradePnl),
                             todayPercent: fund.dashboard.todayPercent
                         )
                         .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 8, trailing: 6))
