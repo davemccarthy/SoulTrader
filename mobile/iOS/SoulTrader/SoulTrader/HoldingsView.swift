@@ -206,8 +206,7 @@ struct HoldingDetailView: View {
         ScrollView {
             VStack(spacing: 10) {
                 headerCard
-                SharePriceChartCard(
-                    symbol: holding.stock.symbol,
+                MarketGraphCard(
                     points: sharePricePoints,
                     tradeAt: nil,
                     tradePrice: nil
@@ -507,7 +506,7 @@ struct HoldingDetailView: View {
         let average = decimal(from: holding.averagePrice)
         return HStack(alignment: .top, spacing: 10) {
             snapshotMetric(
-                title: "AVG",
+                title: "BUY",
                 value: formatCurrency(average),
                 valueColor: Theme.valuePrimary
             )

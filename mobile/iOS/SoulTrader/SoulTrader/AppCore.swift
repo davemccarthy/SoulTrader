@@ -964,9 +964,8 @@ struct WealthChartCard: View {
     }
 }
 
-/// Share price over time (trade detail); Y axis is per-share close, not portfolio wealth.
-struct SharePriceChartCard: View {
-    let symbol: String
+/// Market graph over time; Y axis is per-share close, not portfolio wealth.
+struct MarketGraphCard: View {
     let points: [StockPriceChartPoint]
     /// Execution time (full timestamp); X is drawn at start of that local calendar day to match daily bars.
     let tradeAt: Date?
@@ -980,17 +979,6 @@ struct SharePriceChartCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Share price")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Theme.labelAccent)
-                Spacer()
-                Text("\(symbol) · daily")
-                    .font(.caption2)
-                    .foregroundStyle(Theme.secondaryText)
-            }
-
             if points.count >= 2 {
                 Chart {
                     ForEach(points) { point in

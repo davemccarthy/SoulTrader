@@ -250,8 +250,7 @@ struct TradeDetailView: View {
         ScrollView {
             VStack(spacing: 10) {
                 headerCard
-                SharePriceChartCard(
-                    symbol: trade.stock.symbol,
+                MarketGraphCard(
                     points: sharePricePoints,
                     tradeAt: tradeExecutionChartDate,
                     tradePrice: tradeExecutionPriceDouble
