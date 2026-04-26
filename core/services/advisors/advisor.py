@@ -21,6 +21,7 @@ from django.utils import timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 from core.services.llm.gemini import ask_gemini as llm_ask_gemini
+from core.services.llm.deepseek import ask_deepseek as llm_ask_deepseek
 from core.services.llm.ollama import ask_ollama as llm_ask_ollama
 from core.services.llm.parsing import extract_json_from_text
 from core.services.financial import polygon as financial_polygon
@@ -1178,6 +1179,23 @@ Respond with only a single valid JSON object, no other text.
         Does not support web search grounding; use ask_gemini for that.
         """
         return llm_ask_ollama(
+            prompt=prompt,
+            advisor_name=self.advisor.name,
+            model=model,
+            timeout=timeout,
+        )
+
+    def ask_deepseek(self, prompt, *, model: str = "deepseek-chat", timeout: float = 120.0):
+        """
+        Call DeepSeek OpenAI-compatible /v1/chat/completions over HTTP.
+
+        Environment (via os.getenv, e.g. from .env): DEEPSEEK_API_KEY.
+        Optional DEEPSEEK_BASE_URL can override endpoint host.
+
+        Returns (model, parsed_dict) like ask_gemini/ask_ollama, or (None, None)
+        on failure.
+        """
+        return llm_ask_deepseek(
             prompt=prompt,
             advisor_name=self.advisor.name,
             model=model,

@@ -638,7 +638,7 @@ SECTOR_LIST = (
 )
 
 # EPS beat strength thresholds (on eps_score)
-BEAT_THRESHOLD = 8.0
+BEAT_THRESHOLD = 2.0
 STRONG_BEAT_THRESHOLD = 20.0
 SCORE_THRESHOLD = 60
 
@@ -897,7 +897,7 @@ Respond with STRICT JSON only. No other text before or after:
   "sentiment": "strong_positive" | "positive" | "mixed" | "negative" | "no_coverage",
   "eps": "strong_beat" | "beat" | "miss" | "other" | "unknown",
   "revenue": "strong_beat" | "beat" | "miss" | "other" | "unknown",
-  "broker_reactions": "buy" | "strong_buy" | "moderate_buy" | "hold" | "sell" | "other (specify)",
+  "broker_reactions": "buy" | "strong_buy" | "moderate_buy" | "hold" | "sell" | "other",
   "headlines": [
     "<short positive headline or quote>",
     "<another positive headline or quote>"
