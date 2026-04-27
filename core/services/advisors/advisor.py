@@ -1142,6 +1142,14 @@ Respond with only a single valid JSON object, no other text.
             "model": model,
         }
 
+    def ask_llm(self, prompt, use_search=False):
+
+        model, results = self.ask_gemini(prompt,use_search=use_search)
+
+        if results:
+            return model, results
+
+        return self.ask_deepseek(prompt)
 
     def ask_gemini(self, prompt, timeout=120.0, use_search=False):
         """
@@ -1238,18 +1246,17 @@ Respond with only a single valid JSON object, no other text.
 
         # Carefully worded script for the robot
         prompt = f"""
-            Starting afresh
-            You are an expert analyzing business articles
+            You are an expert on analyzing business articles
             How do you interpret this article by way of speculation of rising share prices? Supply a recommendation.
             
-            If in doubt, lean toward skepticism 
+            DISMISS immediately if article content refers to 1) multiple ticker / companies 2) mega-cap companies such as MSFT, GOOGL, AMZN, META
 
-            Please respond in JSON only choosing one of the below recommendations and supply relevant company symbol / ticker 
+            Please respond in JSON only choosing one of the below recommendations and supply one relevant company symbol / ticker 
 
             RETURN JSON:
             {{
-                "recommendation": "DISMISS|BUY|SELL|STRONG_BUY|STRONG_SELL",
-                "tickers": ["SYM1", "SYM2"],
+                "recommendation": "DISMISS|BUY|MODERATE_BUY|STRONG_BUY",
+                "ticker": "SYM1",
                 "explanation": "A brief reason you came to your descion"
             }}
 
@@ -1271,18 +1278,13 @@ Respond with only a single valid JSON object, no other text.
 
         explanation = results.get("explanation", "")
         recommendation = results.get("recommendation", "")
-        tickers = results.get("tickers", [])
+        ticker = results.get("ticker")
 
         # Log it
-        logger.info(f"{recommendation}: {tickers} | {title}")
+        logger.info(f"{recommendation}: {ticker} | {title}")
 
         # Anything better than DISMISS is put forward for consensus
         if recommendation != "BUY" and recommendation != "STRONG_BUY":
-            return
-
-        # Skip-all rule: dismiss the entire article when multiple tickers are returned
-        if len(tickers) != 1:
-            logger.info(f"{self.advisor.name} dismissing article: multiple tickers {tickers}")
             return
 
         # If market not open yet, add to watchlist (will be processed when market opens via news_watch())
@@ -1297,8 +1299,8 @@ Respond with only a single valid JSON object, no other text.
                 logger.info(f"{self.advisor.name} added {ticker} to watchlist (market closed, {recommendation}): {title[:80]}")
             return
         """
-        # Market open - new discoveries (process immediately)
-        for ticker in tickers:
+
+        if self.allow_discovery(ticker, period=168):
             self.discovered(sa, ticker, f"Article approved by {model} {recommendation} | Article: {title} | {url} | {explanation} ",
                 sell_instructions, 1.5 if recommendation == "STRONG_BUY" else 1.0)
 

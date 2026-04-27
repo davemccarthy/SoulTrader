@@ -1251,7 +1251,8 @@ class Edgar(AdvisorBase):
             return result_dict
 
         prompt = FOUR_DUCKS_PROMPT_LABELS.replace("<<<EX99_1_TEXT>>>", text.strip())
-        model, parsed = self.ask_gemini(prompt)
+        #model, parsed = self.ask_gemini(prompt)
+        model, parsed = self.ask_deepseek(prompt)
         
         if not parsed:
             logger.info(
@@ -1354,7 +1355,8 @@ class Edgar(AdvisorBase):
         print(media_prompt)
         print("-------")
 
-        model, parsed = self.ask_gemini(media_prompt, timeout=120.0, use_search=True)
+        #model, parsed = self.ask_gemini(media_prompt, timeout=120.0, use_search=True)
+        model, parsed = self.ask_deepseek(media_prompt)
         if not parsed or not isinstance(parsed, dict):
             logger.info(
                 "ticker=%s, CIK=%s, accession=%s media LLM: no result from Gemini",
