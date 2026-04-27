@@ -228,15 +228,150 @@ struct HealthHistoryRecord: Decodable, Identifiable {
     var renderKind: String {
         (meta?.render ?? "advisor").lowercased()
     }
+
+    /// Mirrors web `hasEdgarPayload`: Ex-99, media, bonuses, or penalties present in meta.
+    var hasEdgarStructuredPayload: Bool {
+        guard renderKind == "edgar", let meta else { return false }
+        if meta.ex99?.hasStructuredContent == true { return true }
+        if meta.media?.hasStructuredContent == true { return true }
+        if let b = meta.bonuses, !b.isEmpty { return true }
+        if let p = meta.penalties, !p.isEmpty { return true }
+        return false
+    }
 }
 
 struct HealthMetaPayload: Decodable {
     let render: String?
+    let ex99: HealthEx99Payload?
     let media: HealthMediaPayload?
+    let bonuses: [String]?
+    let penalties: [String]?
+}
+
+struct HealthEx99Payload: Decodable {
+    let pastPerformance: String?
+    let guidance: String?
+    let expectation: String?
+    let marketReaction: String?
+    let justifications: HealthEx99Justifications?
+
+    enum CodingKeys: String, CodingKey {
+        case pastPerformance = "past_performance"
+        case guidance
+        case expectation
+        case marketReaction = "market_reaction"
+        case justifications
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        pastPerformance = try c.decodeFlexibleOptionalString(forKey: .pastPerformance)
+        guidance = try c.decodeFlexibleOptionalString(forKey: .guidance)
+        expectation = try c.decodeFlexibleOptionalString(forKey: .expectation)
+        marketReaction = try c.decodeFlexibleOptionalString(forKey: .marketReaction)
+        justifications = try c.decodeIfPresent(HealthEx99Justifications.self, forKey: .justifications)
+    }
+
+    /// Any Ex-99 text or categorical fields worth showing.
+    var hasStructuredContent: Bool {
+        if let j = justifications, j.hasContent { return true }
+        let top = [pastPerformance, guidance, expectation, marketReaction].compactMap { $0 }.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        return !top.isEmpty
+    }
+}
+
+struct HealthEx99Justifications: Decodable {
+    let pastPerformance: String?
+    let guidance: String?
+    let expectation: String?
+    let marketReaction: String?
+
+    enum CodingKeys: String, CodingKey {
+        case pastPerformance = "past_performance"
+        case guidance
+        case expectation
+        case marketReaction = "market_reaction"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        pastPerformance = try c.decodeFlexibleOptionalString(forKey: .pastPerformance)
+        guidance = try c.decodeFlexibleOptionalString(forKey: .guidance)
+        expectation = try c.decodeFlexibleOptionalString(forKey: .expectation)
+        marketReaction = try c.decodeFlexibleOptionalString(forKey: .marketReaction)
+    }
+
+    var hasContent: Bool {
+        [pastPerformance, guidance, expectation, marketReaction]
+            .compactMap { $0 }
+            .contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
 }
 
 struct HealthMediaPayload: Decodable {
     let summary: String?
+    let sentiment: String?
+    let eps: String?
+    let revenue: String?
+    let broker: String?
+    let headlines: [String]?
+    let redFlags: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case summary
+        case sentiment
+        case eps
+        case revenue
+        case broker
+        case headlines
+        case redFlags = "red_flags"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        summary = try c.decodeFlexibleOptionalString(forKey: .summary)
+        sentiment = try c.decodeFlexibleOptionalString(forKey: .sentiment)
+        eps = try c.decodeFlexibleOptionalString(forKey: .eps)
+        revenue = try c.decodeFlexibleOptionalString(forKey: .revenue)
+        broker = try c.decodeFlexibleOptionalString(forKey: .broker)
+        headlines = try c.decodeIfPresent([String].self, forKey: .headlines)
+        redFlags = try c.decodeIfPresent([String].self, forKey: .redFlags)
+    }
+
+    var hasStructuredContent: Bool {
+        if let s = summary?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty { return true }
+        if let s = sentiment?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty { return true }
+        if let s = eps?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty { return true }
+        if let s = revenue?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty { return true }
+        if let s = broker?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty { return true }
+        if let h = headlines, !h.isEmpty { return true }
+        if let r = redFlags, !r.isEmpty { return true }
+        return false
+    }
+}
+
+private extension KeyedDecodingContainer {
+    /// Decodes string, number, or bool from optional JSON fields (SEC/meta payloads vary).
+    func decodeFlexibleOptionalString(forKey key: Key) throws -> String? {
+        guard contains(key) else { return nil }
+        if try decodeNil(forKey: key) { return nil }
+        if let s = try? decode(String.self, forKey: key) {
+            return s
+        }
+        if let i = try? decode(Int.self, forKey: key) {
+            return String(i)
+        }
+        if let d = try? decode(Double.self, forKey: key) {
+            if d.truncatingRemainder(dividingBy: 1) == 0 {
+                return String(format: "%.0f", d)
+            }
+            return String(d)
+        }
+        if let b = try? decode(Bool.self, forKey: key) {
+            return b ? "true" : "false"
+        }
+        return nil
+    }
 }
 
 struct HealthScalar: Decodable {
