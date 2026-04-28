@@ -598,27 +598,6 @@ def _filter4_has_comparables(text: str) -> bool:
     counts = Counter(w.lower() for w in words)
     return any(v >= 2 for v in counts.values())
 
-
-def _earnings_release_filter(raw_text: str) -> dict:
-    """EX-99 structure check. Returns dict with pass, reason, and optional checks."""
-    text = _filter4_normalize(raw_text)
-    checks = {
-        "earnings_context": _filter4_has_earnings_context(text),
-        "eps_evidence": _filter4_has_eps_evidence(text),
-        "numeric_density": _filter4_numeric_density(text),
-        "table_structure": _filter4_has_table_structure(text),
-        "comparables": _filter4_has_comparables(text),
-    }
-    if not checks["earnings_context"]:
-        return {"pass": False, "reason": "no earnings context", "checks": checks}
-    if not checks["eps_evidence"]:
-        return {"pass": False, "reason": "no EPS evidence", "checks": checks}
-    if checks["numeric_density"] < 15:
-        return {"pass": False, "reason": "low numeric density", "checks": checks}
-    score = sum([checks["table_structure"], checks["comparables"]])
-    return {"pass": score >= 1, "score": score, "reason": "ok" if score >= 1 else "soft fail", "checks": checks}
-
-
 # Financial filter (Filter 3)
 FILTER3_PE_MAX = 100
 FILTER3_MIN_CAP = 300e6
@@ -983,9 +962,6 @@ class Edgar(AdvisorBase):
         # Filter 4: EX-99 earnings release structure
         if not exhibit_99_text or not exhibit_99_text.strip():
             return _fail("no EX-99 text")
-        result = _earnings_release_filter(exhibit_99_text)
-        if not result["pass"]:
-            return _fail(result["reason"])
 
         return True
 
@@ -1591,7 +1567,7 @@ class Edgar(AdvisorBase):
         penalties = advanced.get("penalties") or []
 
         # Explanation info
-        explanation_parts = [f"8-K {accession} {weight:.2f} | https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude "]
+        explanation_parts = [f"8-K {accession} Weight:{weight:.2f} | https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude "]
 
         # Health info
         health_meta = {
@@ -1795,35 +1771,47 @@ class Edgar(AdvisorBase):
 
         return score, bonuses, penalties
 
-    def analyze_8k_basic(self, filing) -> bool:
-        """
-        Run basic filing + financial filters.
-        Return True if pass.
-        """
-        if not self.filter_filing(filing):
+    def analyze_8k_earnings(self, filing, cik, ticker, accession, sa):
+
+        exhibit_99_text = _get_ex99_text(filing)
+
+        text = _filter4_normalize(exhibit_99_text)
+        checks = {
+            "earnings_context": _filter4_has_earnings_context(text),
+            "eps_evidence": _filter4_has_eps_evidence(text),
+            "numeric_density": _filter4_numeric_density(text),
+            "table_structure": _filter4_has_table_structure(text),
+            "comparables": _filter4_has_comparables(text),
+        }
+        if not checks["earnings_context"]:
+            return False
+        if not checks["eps_evidence"]:
+            return False
+        if checks["numeric_density"] < 15:
             return False
 
-        if not self.filter_financials(filing):
-            return False
+        score = sum([checks["table_structure"], checks["comparables"]])
 
-        return True
-
-    def analyze_8k_advanced(self, filing):
+        # Check soft fail
+        if score < 1:
+            logger.info("ticker=%s, CIK=%s, accession=%s earnings score -> fail ", ticker, cik, accession)
+            return True
 
         # Try and see if EPS intel in AV or Filing
         eps_beat = self.evaluate_eps_beat(filing)
 
         # First hard-fail
         if eps_beat == "miss":
-            return None
+            logger.info("ticker=%s, CIK=%s, accession=%s eps miss -> fail ", ticker, cik, accession)
+            return True
 
         # First AI - anaylase ex99.1 8-K attachment
         if (ex99 := self.analyse_ex99_llm(filing)) is None:
-            return None
+            return True
         
         # Second AI - media_reaction_llm
         if (media := self.media_reaction_llm(filing)) is None:
-            return None
+            return True
 
         # Form4 association
         form4 = self.match_form4(filing)
@@ -1836,7 +1824,7 @@ class Edgar(AdvisorBase):
         health = base * weight
 
         # Good to go: weight = half / normal / double triage
-        return {
+        info = self.build_info(filing, {
             "weight": weight,
             "health": health,
             "bonuses": bonuses,
@@ -1844,47 +1832,22 @@ class Edgar(AdvisorBase):
             "ex99": ex99,
             "media": media,
             "form4": form4,
-        }
-
-    def analyze_8k(self, filing, sa) -> bool:
-
-        cik = str(getattr(filing, "cik", "") or "")
-        ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
-
-        if not ticker:
-            logger.info(f"{ticker} - no tradable ticker")
-            return False
-
-        # Check if already discovered - rediscover if >1 days ago
-        if not self.allow_discovery(ticker, period=24):
-            return False
-
-        # Check the basics
-        if not self.analyze_8k_basic(filing):
-            return False
-
-        # Now call in the robot help
-        if (advanced :=  self.analyze_8k_advanced(filing)) is None:
-            return False
-
-        # Make sense of it all
-        info = self.build_info(filing, advanced)
+        })
 
         explanation = " | ".join(info["explanation"])
         health_meta = info["health_meta"]
 
         if (stock := self.get_stock(ticker)) is None:
-            return False
+            return True
 
         # Create health ourselves
-        health_score = Decimal(str(float(advanced["health"]))).quantize(Decimal("0.1"))
-        weight = Decimal(advanced["weight"])
+        weight = Decimal(weight)
         target = 1.20
 
         health = Health.objects.create(
             stock=stock,
             sa=sa,
-            score=health_score,
+            score=Decimal(str(health)),
             meta=health_meta,
         )
 
@@ -1905,6 +1868,37 @@ class Edgar(AdvisorBase):
         # Keeper
         self.discovered(sa, ticker, explanation, sell_instructions, weight=weight, health=health)
         return True
+
+    def analyze_8k(self, filing, sa):
+
+        cik = str(getattr(filing, "cik", "") or "")
+        ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
+        accession = (getattr(filing, "accession_no", None) or getattr(filing, "accession_number", None) or "")
+
+        if not ticker:
+            logger.info(f"{ticker} - no tradable ticker")
+            return
+
+        # Check if already discovered - rediscover if >1 days ago
+        if not self.allow_discovery(ticker, period=24):
+            return
+
+        # Check the basics
+        if not self.filter_filing(filing):
+            return
+
+        # Check financials
+        if not self.filter_financials(filing):
+            return
+
+        # Earnings 8-k ?
+        if self.analyze_8k_earnings(filing, cik, ticker, accession, sa):
+            return
+
+        # Next categories
+
+        # Unknown category
+        logger.info("ticker=%s, CIK=%s, accession=%s unknown category -> fail ",ticker , cik, accession)
 
     def _form4_accession_already_watched(self, accession: str) -> bool:
         from core.models import Watchlist
@@ -1974,7 +1968,7 @@ class Edgar(AdvisorBase):
             return
 
         """
-        filing1 = find("0001193125-26-155936")
+        filing1 = find("0001193125-26-084207")
         filing2 = find("0000783325-26-000040")
 
         filings = [filing1]
