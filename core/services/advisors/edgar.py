@@ -860,7 +860,7 @@ END EX-99.1
 # Media reaction LLM prompt template
 # ---------------------------------------------------------------------------
 
-MEDIA_REACTION_PROMPT_TEMPLATE = """Analyze {company} ({ticker}) {quarter} earnings release and, if available, earnings call transcript from the perspective of a professional buy-side equity analyst.
+MEDIA_REACTION_PROMPT_TEMPLATE = """Analyze {company} ({ticker}) {quarter} earnings release from the perspective of a professional buy-side equity analyst.
 
 Search the web for recent business and financial news and analysis about this event.
 
@@ -1049,6 +1049,29 @@ class Edgar(AdvisorBase):
                 pass
 
         return True
+
+    def has_item(self, filing, item: str) -> bool:
+        item_norm = str(item).strip().lower()  # e.g. "2.02"
+
+        # 1) structured items field
+        items = getattr(filing, "items", None)
+        if isinstance(items, str):
+            if item_norm in items.lower():
+                return True
+        elif isinstance(items, (list, tuple, set)):
+            for it in items:
+                if item_norm in str(it).lower():
+                    return True
+
+        # 2) fallback on filing text
+        try:
+            text = (filing.text() or "").lower()
+        except Exception:
+            text = ""
+
+        # escape dots etc, then allow optional "item" prefix
+        item_re = re.escape(item_norm)  # "2\\.02"
+        return bool(re.search(rf"\bitem\s*{item_re}\b", text))
 
     def evaluate_eps_beat(self, filing) -> Optional[str]:
         """
@@ -1771,6 +1794,12 @@ class Edgar(AdvisorBase):
 
     def analyze_8k_earnings(self, filing, cik, ticker, accession, sa):
 
+        # Verify item 2.02
+        if not self.has_item(filing, "2.02"):
+            logger.info("ticker=%s, CIK=%s, accession=%s no item 2.02 -> fail ", ticker, cik, accession)
+            return False
+
+        # Verify earnings text
         exhibit_99_text = _get_ex99_text(filing)
 
         text = _filter4_normalize(exhibit_99_text)
@@ -1866,6 +1895,9 @@ class Edgar(AdvisorBase):
         # Keeper
         self.discovered(sa, ticker, explanation, sell_instructions, weight=weight, health=health)
         return True
+
+    def analyze_8k_pharma(self, filing, cik, ticker, accession, sa):
+        return False
 
     def analyze_8k(self, filing, sa):
 
@@ -1966,12 +1998,11 @@ class Edgar(AdvisorBase):
             return
 
         """
-        filing1 = find("0001193125-26-084207")
+        filing1 = find("0001053507-26-000094")
         filing2 = find("0000783325-26-000040")
 
         filings = [filing1]
         """
-
         # Form 4 / 4-A: dense feed, batch score + watchlist for bullish totals
         try:
             filings_f4 = fetch_latest_form4_filings(self.FORM4_LATEST_PAGE_SIZE)

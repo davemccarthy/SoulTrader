@@ -1143,7 +1143,6 @@ Respond with only a single valid JSON object, no other text.
         }
 
     def ask_llm(self, prompt, use_search=False):
-
         model, results = self.ask_gemini(prompt,use_search=use_search)
 
         if results:
