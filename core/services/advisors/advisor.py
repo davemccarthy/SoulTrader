@@ -25,6 +25,7 @@ from core.services.llm.deepseek import ask_deepseek as llm_ask_deepseek
 from core.services.llm.ollama import ask_ollama as llm_ask_ollama
 from core.services.llm.parsing import extract_json_from_text
 from core.services.financial import polygon as financial_polygon
+from core.services.financial import yahoo as financial_yahoo
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +207,12 @@ class AdvisorBase:
         self.advisor = advisor
         self.gemini_model = 0
         self._gemini_key_index = 0
+
+    def stock_consensus(self, symbol: str) -> Dict[str, Any]:
+        """
+        Convenience wrapper for normalized analyst consensus/target snapshot.
+        """
+        return financial_yahoo.get_consensus_snapshot(symbol)
 
     def _advisor_blob_state(self) -> Dict[str, Any]:
         """Parse Advisor.blob as a dict; return empty dict on blank/invalid data."""
@@ -1143,6 +1150,7 @@ Respond with only a single valid JSON object, no other text.
         }
 
     def ask_llm(self, prompt, use_search=False):
+
         model, results = self.ask_gemini(prompt,use_search=use_search)
 
         if results:

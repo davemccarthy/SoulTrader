@@ -1644,14 +1644,13 @@ class Edgar(AdvisorBase):
         penalties: list[str] = []
         score = 0.0
 
-        # Filing time (ET): 6:30–7:30 inclusive +0.1, 16:00–20:00 inclusive -0.1
+        # Filing time (ET): 6:30–7:30 inclusive +0.0, 16:00–20:00 inclusive -0.1
         filing_dt = _filing_datetime(filing)
         if filing_dt is not None:
             et = ZoneInfo("America/New_York")
             t_et = filing_dt.astimezone(et).time()
             if dt_time(6, 30) <= t_et <= dt_time(7, 30):
-                bonuses.append("Pre-market filing (+0.1)")
-                score += 0.1
+                score += 0.0
             elif dt_time(16, 0) <= t_et <= dt_time(20, 0):
                 penalties.append("After-hours filing (-0.1)")
                 score -= 0.1
@@ -1663,26 +1662,25 @@ class Edgar(AdvisorBase):
         market = ex99['market_reaction']
 
         if past_perform == "strong_positive":
-            bonuses.append("Strong past (+0.1)")
-            score += 0.1
+            score += 0.0
         elif past_perform == "neutral":
             penalties.append("Neutral past (-0.1)")
-            score -= 0.0
+            score -= 0.1
 
         if expectation == "strong_positive":
-            bonuses.append("Strong expectation (+0.2)")
-            score += 0.2
+            bonuses.append("Strong expectation (+0.1)")
+            score += 0.1
         elif expectation == "neutral":
-            penalties.append("Neutral expectation (-0.2)")
-            score -= 0.2
+            penalties.append("Neutral expectation (-0.1)")
+            score -= 0.1
 
         if guidance == "strong_positive":
-            bonuses.append("Strong guidance (+0.2)")
-            score += 0.2
+            bonuses.append("Strong guidance (+0.1)")
+            score += 0.1
 
         if market == "strong_positive":
-            bonuses.append("Strong market (+0.2)")
-            score += 0.2
+            bonuses.append("Strong market (+0.1)")
+            score += 0.1
 
         # Media
         sentiment = media.get("sentiment")
@@ -1691,32 +1689,32 @@ class Edgar(AdvisorBase):
         broker = media.get("broker")
 
         if sentiment == "strong_positive":
-            bonuses.append("Strong reaction (+0.2)")
-            score += 0.2
+            bonuses.append("Strong reaction (+0.1)")
+            score += 0.1
 
         if eps == "strong_beat":
-            bonuses.append("Strong eps (+0.2)")
-            score += 0.2
+            bonuses.append("Strong eps (+0.1)")
+            score += 0.1
         elif eps in ["weak_beat","unknown"]:
-            penalties.append("Weak or unknown eps (-0.1)")
-            score -= 0.1
+            penalties.append("Weak or unknown eps (-0.2)")
+            score -= 0.2
 
         if revenue == "strong_beat":
-            bonuses.append("Strong revenue (+0.2)")
-            score += 0.2
+            bonuses.append("Strong revenue (+0.05)")
+            score += 0.05
         elif revenue == "weak_beat":
-            penalties.append("Weak revenue (-0.0)")
-            score -= 0.0
-        elif revenue == "neutral":
-            penalties.append("Neutral revenue (-0.1)")
+            penalties.append("Weak revenue (-0.1)")
             score -= 0.1
+        elif revenue == "neutral":
+            penalties.append("Neutral revenue (-0.2)")
+            score -= 0.2
         elif revenue == "miss":
-            penalties.append("Neutral revenue (-0.3)")
+            penalties.append("Revenue miss (-0.3)")
             score -= 0.3
 
         if broker == "strong_buy":
-            bonuses.append("Strong buy (+0.2)")
-            score += 0.2
+            bonuses.append("Strong buy (+0.1)")
+            score += 0.1
         elif broker == "weak_buy":
             penalties.append("Weak buy (-0.1)")
             score -= 0.1
@@ -1743,11 +1741,11 @@ class Edgar(AdvisorBase):
                     score -= 0.20
             elif form4_kind == "form4_signal" or form4_total >= self.FORM4_WATCH_MIN_TOTAL:
                 if form4_total >= 8.0:
-                    bonuses.append("Strong Form4 buy signal (+0.25)")
-                    score += 0.25
-                else:
-                    bonuses.append("Form4 buy signal (+0.15)")
+                    bonuses.append("Strong Form4 buy signal (+0.15)")
                     score += 0.15
+                else:
+                    bonuses.append("Form4 buy signal (+0.1)")
+                    score += 0.1
 
         # Valuation
         valuation = self.evaluate_stock(ticker)
@@ -1756,8 +1754,8 @@ class Edgar(AdvisorBase):
             penalties.append("Overvalued (-0.15)")
             score -= 0.15
         elif valuation < 0.90:
-            bonuses.append("Undervalued (+0.15)")
-            score += 0.15
+            bonuses.append("Undervalued (+0.1)")
+            score += 0.1
 
         # Sector (BAD_SECTOR / WATCH -0.2) and 52-week high/low
         try:
@@ -1808,6 +1806,28 @@ class Edgar(AdvisorBase):
                     score -= 0.1
         except Exception:
             pass
+
+        # Consensus
+        if consensus := self.stock_consensus(ticker):
+            upside_to_mean_pct = float(consensus.get("upside_to_mean_pct") or 0.0)
+            upside_to_low_pct = float(consensus.get("upside_to_low_pct") or 0.0)
+            recommendation_key = str(consensus.get("recommendation_key") or "")
+
+            if upside_to_mean_pct < 0:
+                penalties.append("Above consensus mean (-0.2)")
+                score -= 0.2
+
+            if upside_to_low_pct > 0:
+                bonuses.append("Below consensus low (+0.1)")
+                score += 0.1
+
+            if recommendation_key == "hold":
+                penalties.append("Consensus: hold (-0.1)")
+                score -= 0.1
+
+            if recommendation_key == "sell":
+                penalties.append("Consensus: sell (-0.2)")
+                score -= 0.2
 
         return score, bonuses, penalties
 
@@ -1906,7 +1926,7 @@ class Edgar(AdvisorBase):
         sell_instructions = [
             ("PERCENTAGE_DIMINISHING", target, 14),
             ("PERCENTAGE_AUGMENTING", 0.90, 14),
-            ("PEAKED", 20.0, 5.0),
+            ("PEAKED", 25.0, 5.0),
             ("PROFIT_FLAT", 0.5, 14),
             ("DESCENDING_TREND", -0.20, None),
         ]

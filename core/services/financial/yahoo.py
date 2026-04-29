@@ -38,6 +38,73 @@ def get_ticker_info(ticker: str) -> Dict[str, Any]:
         return {}
 
 
+def _safe_float(value: Any) -> Any:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def get_consensus_snapshot(ticker: str) -> Dict[str, Any]:
+    """
+    Fetch analyst consensus/target snapshot from yfinance info.
+
+    Returns a normalized dict with optional numeric fields and a basic usability flag.
+    """
+    symbol = (ticker or "").strip().upper()
+    if not symbol:
+        return {"source": "yfinance", "symbol": "", "is_usable": False}
+
+    info = get_ticker_info(symbol)
+    current_price = _safe_float(
+        info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose")
+    )
+    target_mean = _safe_float(info.get("targetMeanPrice"))
+    target_median = _safe_float(info.get("targetMedianPrice"))
+    target_high = _safe_float(info.get("targetHighPrice"))
+    target_low = _safe_float(info.get("targetLowPrice"))
+    recommendation_mean = _safe_float(info.get("recommendationMean"))
+    recommendation_key = (info.get("recommendationKey") or "").strip().lower() or None
+
+    analyst_count_raw = info.get("numberOfAnalystOpinions")
+    try:
+        analyst_count = int(analyst_count_raw) if analyst_count_raw is not None else None
+    except Exception:
+        analyst_count = None
+
+    upside_to_mean_pct = None
+    if current_price and target_mean and current_price > 0:
+        try:
+            upside_to_mean_pct = (target_mean - current_price) / current_price * 100.0
+        except Exception:
+            upside_to_mean_pct = None
+
+    upside_to_low_pct = None
+    if current_price and target_low and current_price > 0:
+        try:
+            upside_to_low_pct = (target_low - current_price) / current_price * 100.0
+        except Exception:
+            upside_to_low_pct = None
+
+    return {
+        "source": "yfinance",
+        "symbol": symbol,
+        "current_price": current_price,
+        "target_mean": target_mean,
+        "target_median": target_median,
+        "target_high": target_high,
+        "target_low": target_low,
+        "upside_to_mean_pct": upside_to_mean_pct,
+        "upside_to_low_pct": upside_to_low_pct,
+        "recommendation_mean": recommendation_mean,
+        "recommendation_key": recommendation_key,
+        "analyst_count": analyst_count,
+        "is_usable": bool(target_mean is not None or recommendation_mean is not None),
+    }
+
+
 def get_historical_data_yfinance(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
     """
     Fetch date-ranged historical bars and update final row with current session fields.
