@@ -500,18 +500,50 @@ def holding_history(request, stock_id):
     if fund is None:
         return JsonResponse({'error': 'Select a fund first.'}, status=403)
 
-    try:
-        holding = (
-            Holding.objects
-            .select_related('stock')
-            .get(fund=fund, stock_id=stock_id)
-        )
-    except Holding.DoesNotExist:
-        raise Http404("Holding not found")
+    holding = (
+        Holding.objects
+        .select_related('stock')
+        .filter(fund=fund, stock_id=stock_id)
+        .first()
+    )
 
-    stock = holding.stock
-    shares = holding.shares or 0
-    avg_price = holding.average_price or Decimal('0')
+    # Trade history is the canonical source for this detail view; this lets
+    # closed positions (no active Holding row) still render from historical trades.
+    trades_for_position = list(
+        Trade.objects
+        .select_related('stock')
+        .filter(fund=fund, stock_id=stock_id)
+        .order_by('created', 'id')
+    )
+
+    if holding is None and not trades_for_position:
+        raise Http404("No holding or trade history found")
+
+    stock = holding.stock if holding is not None else trades_for_position[0].stock
+
+    if holding is not None:
+        shares = holding.shares or 0
+        avg_price = holding.average_price or Decimal('0')
+    else:
+        # Reconstruct current position from trade ledger for closed positions.
+        position_shares = Decimal('0')
+        position_avg_price = Decimal('0')
+        for trade in trades_for_position:
+            trade_shares = Decimal(trade.shares or 0)
+            trade_price = Decimal(trade.price or 0)
+
+            if trade.action == 'BUY':
+                total_cost = (position_avg_price * position_shares) + (trade_price * trade_shares)
+                position_shares += trade_shares
+                position_avg_price = (total_cost / position_shares) if position_shares > 0 else Decimal('0')
+            else:
+                position_shares = max(position_shares - trade_shares, Decimal('0'))
+                if position_shares == 0:
+                    position_avg_price = Decimal('0')
+
+        shares = position_shares
+        avg_price = position_avg_price
+
     current_price = stock.price or Decimal('0')
     worth = current_price * shares
 

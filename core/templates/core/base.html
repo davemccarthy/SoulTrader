@@ -505,11 +505,6 @@
             cursor: pointer;
         }
 
-        .holdings-row[data-action="SELL"]:hover {
-            background-color: transparent;
-            cursor: default;
-        }
-
         .holdings-row:not(:last-child) {
             border-bottom: 1px solid #f0f0f0;
         }
@@ -2362,10 +2357,6 @@
                         return;
                     }
 
-                    // Skip SELL trades (they don't have related holdings)
-                    if (row.getAttribute('data-action') === 'SELL') {
-                        return;
-                    }
                     const itemId = row.getAttribute(idAttr);
                     loadDetail(itemId);
                 });
