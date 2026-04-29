@@ -1365,6 +1365,12 @@ class Edgar(AdvisorBase):
             return None
 
         if parsed.get("sentiment") == "no_coverage":
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s media LLM: no_coverage - retrying",
+                ticker or "N/A",
+                cik or "N/A",
+                accession,
+            )
             model, parsed = self.ask_gemini(media_prompt, use_search=True)
 
         if not parsed or not isinstance(parsed, dict):
@@ -1900,7 +1906,7 @@ class Edgar(AdvisorBase):
         sell_instructions = [
             ("PERCENTAGE_DIMINISHING", target, 14),
             ("PERCENTAGE_AUGMENTING", 0.90, 14),
-            ("PEAKED", 7.0, None),
+            ("PEAKED", 20.0, 5.0),
             ("PROFIT_FLAT", 0.5, 14),
             ("DESCENDING_TREND", -0.20, None),
         ]
