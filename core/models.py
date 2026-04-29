@@ -349,84 +349,69 @@ class Stock(models.Model):
             logger.warning(f"Could not check trending status for {self.symbol}: {e}")
             return None
 
-    def downturned(self, since_date, pullback_pct=5.0):
+    def downturned(self, since_date, buy_price, giveback_pct=33.0, min_peak_gain_pct=5.0):
         """
-        True if current price is down pullback_pct from the peak since since_date.
-        Used for take-profit: sell when price has given back X% from the high since purchase.
-        Intraday for current day (today's high from 1h bars), daily for history.
+        True if current gain has given back giveback_pct of peak gain since since_date.
+
+        Example:
+            buy=100, peak=112 (+12%), current=108 (+8%) -> giveback = 33.3%.
+            Triggers when giveback_pct <= 33.3 and peak_gain >= min_peak_gain_pct.
 
         Args:
             since_date: datetime or date - start of window (e.g. discovery.created).
-            pullback_pct: float - downturn threshold, e.g. 5.0 = 5% down from peak.
-
-        Returns:
-            bool: True if current price <= peak * (1 - pullback_pct/100), False otherwise.
+            buy_price: Decimal/float - cost basis anchor.
+            giveback_pct: float - percent of peak gain allowed to be given back.
+            min_peak_gain_pct: float - activate trailing only after this peak gain.
         """
-        import yfinance as yf
-        from datetime import datetime
-        import pytz
-
         logger = logging.getLogger(__name__)
 
         try:
-            et = pytz.timezone("US/Eastern")
-            today_et = datetime.now(et).date()
-            start_date = since_date.date() if isinstance(since_date, datetime) else since_date
+            buy = float(buy_price) if buy_price is not None else 0.0
+            if buy <= 0:
+                return False
 
-            ticker = yf.Ticker(self.symbol)
-
-            # Daily: peak from daily bars (since_date up to and including yesterday)
-            days_back = (today_et - start_date).days + 5
-            period = f"{days_back}d" if days_back > 1 else "5d"
-            hist_daily = ticker.history(period=period, interval="1d")
-            peak_daily = None
-            if not hist_daily.empty and "High" in hist_daily.columns:
-                # Filter to start_date <= date < today_et (historical only; today from intraday)
-                hist_daily = hist_daily[hist_daily.index.date >= start_date]
-                hist_daily = hist_daily[hist_daily.index.date < today_et]
-                if not hist_daily.empty:
-                    peak_daily = float(hist_daily["High"].max())
-
-            # Intraday: today's high so far (1h bars)
-            today_high = None
-            hist_intraday = ticker.history(period="5d", interval="1h")
-            if not hist_intraday.empty and "High" in hist_intraday.columns:
-                # Filter to rows where date (in ET) is today
-                today_mask = []
-                for ts in hist_intraday.index:
-                    if getattr(ts, "tzinfo", None):
-                        d = ts.astimezone(et).date()
-                    else:
-                        d = ts.date() if hasattr(ts, "date") else ts
-                    today_mask.append(d == today_et)
-                if any(today_mask):
-                    hist_today = hist_intraday[today_mask]
-                    today_high = float(hist_today["High"].max())
-
-            peak = None
-            if peak_daily is not None and today_high is not None:
-                peak = max(peak_daily, today_high)
-            elif peak_daily is not None:
-                peak = peak_daily
-            elif today_high is not None:
-                peak = today_high
-
+            peak = self.peak_since(since_date)
             if peak is None or peak <= 0:
                 return False
 
-            current = (
-                float(self.price)
-                if self.price is not None and self.price > 0
-                else (float(hist_daily["Close"].iloc[-1]) if not hist_daily.empty else None)
-            )
+            current = float(self.price) if self.price is not None and self.price > 0 else None
             if current is None:
                 return False
 
-            threshold = peak * (1 - pullback_pct / 100)
-            return current <= threshold
+            peak_gain_pct = ((peak - buy) / buy) * 100.0
+            if peak_gain_pct < float(min_peak_gain_pct):
+                return False
+            if peak_gain_pct <= 0:
+                return False
+
+            current_gain_pct = ((current - buy) / buy) * 100.0
+            giveback_ratio = (peak_gain_pct - current_gain_pct) / peak_gain_pct
+
+            return giveback_ratio >= (float(giveback_pct) / 100.0)
 
         except Exception as e:
-            logger.warning(f"Error checking downturn for {self.symbol}: {e}")
+            logger.warning(f"Error checking profit downturn for {self.symbol}: {e}")
+            return False
+
+    def downturned_price(self, since_date, pullback_pct=5.0):
+        """
+        Price-based downturn: current price down pullback_pct from peak since since_date.
+        Kept for legacy target logic.
+        """
+        logger = logging.getLogger(__name__)
+        try:
+            peak = self.peak_since(since_date)
+            if peak is None or peak <= 0:
+                return False
+
+            current = float(self.price) if self.price is not None and self.price > 0 else None
+            if current is None:
+                return False
+
+            threshold = peak * (1 - pullback_pct / 100.0)
+            return current <= threshold
+        except Exception as e:
+            logger.warning(f"Error checking price downturn for {self.symbol}: {e}")
             return False
 
     def peak_since(self, since_date):

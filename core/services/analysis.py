@@ -70,7 +70,7 @@ def analyse_target(discovery, holding, target, sentiment):
         return False
 
     # Case 2: Price >= target and downturn detected (down pullback_pct from peak since purchase; intraday today, daily history)
-    if current >= target and stock.downturned(discovery.created, pullback_pct=5.0 * float(sentiment)):
+    if current >= target and stock.downturned_price(discovery.created, pullback_pct=5.0 * float(sentiment)):
         return True
 
     # Case 3: Price < target but previously peaked at/above target (protect gains)
@@ -478,6 +478,16 @@ def analyze_holdings(sa, funds):
                             trending = holding.stock.is_trending()
                             if trending is False:  # Explicitly False (not None)
                                 execute_sell(sa, fund, holding, f"{holding.stock.symbol} no longer trending (low volume)")
+                                break
+
+                        elif instruction.instruction == 'PEAKED':
+                            if holding.stock.downturned(
+                                discovery.created,
+                                buy_price=buy_price,
+                                giveback_pct=float(instruction.value1),
+                                min_peak_gain_pct=5.0,
+                            ):
+                                execute_sell(sa, fund, holding,f"{holding.stock.symbol} down {instruction.value1}% from peak")
                                 break
 
                         elif instruction.instruction == 'END_DAY' and end_day:
