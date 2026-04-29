@@ -385,6 +385,9 @@ class Stock(models.Model):
                 return False
 
             current_gain_pct = ((current - buy) / buy) * 100.0
+            # PEAKED is intended to protect gains; do not sell at/below break-even.
+            if current_gain_pct <= 0:
+                return False
             giveback_ratio = (peak_gain_pct - current_gain_pct) / peak_gain_pct
 
             return giveback_ratio >= (float(giveback_pct) / 100.0)
