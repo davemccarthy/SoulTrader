@@ -1250,11 +1250,11 @@ class Edgar(AdvisorBase):
             return result_dict
 
         prompt = FOUR_DUCKS_PROMPT_LABELS.replace("<<<EX99_1_TEXT>>>", text.strip())
-        model, parsed = self.ask_llm(prompt)
+        model, parsed = self.ask_deepseek(prompt)
         
         if not parsed:
             logger.info(
-                "ticker=%s, CIK=%s, accession=%s EX99 LLM: no result from Gemini",
+                "ticker=%s, CIK=%s, accession=%s EX99 LLM: no result from LLM",
                 ticker or "N/A",
                 cik or "N/A",
                 accession,
@@ -1353,10 +1353,23 @@ class Edgar(AdvisorBase):
         print(media_prompt)
         print("-------")
 
-        model, parsed = self.ask_llm(media_prompt, use_search=True)
+        model, parsed = self.ask_deepseek(media_prompt)
+
         if not parsed or not isinstance(parsed, dict):
             logger.info(
-                "ticker=%s, CIK=%s, accession=%s media LLM: no result from Gemini",
+                "ticker=%s, CIK=%s, accession=%s media LLM: no result from LLM(s)",
+                ticker or "N/A",
+                cik or "N/A",
+                accession,
+            )
+            return None
+
+        if parsed.get("sentiment") == "no_coverage":
+            model, parsed = self.ask_gemini(media_prompt, use_search=True)
+
+        if not parsed or not isinstance(parsed, dict):
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s media LLM: no result from LLM(s)",
                 ticker or "N/A",
                 cik or "N/A",
                 accession,
