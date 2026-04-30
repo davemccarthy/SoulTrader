@@ -1835,7 +1835,7 @@ class Edgar(AdvisorBase):
 
         # Verify item 2.02
         if not self.has_item(filing, "2.02"):
-            logger.info("ticker=%s, CIK=%s, accession=%s no item 2.02 -> fail ", ticker, cik, accession)
+            logger.info("ticker=%s, CIK=%s, accession=%s no item 2.02 -> not earnings filing ", ticker, cik, accession)
             return False
 
         # Verify earnings text
@@ -1936,6 +1936,15 @@ class Edgar(AdvisorBase):
         return True
 
     def analyze_8k_pharma(self, filing, cik, ticker, accession, sa):
+
+        # Verify no item 2.02
+        if self.has_item(filing, "2.02"):
+            logger.info("ticker=%s, CIK=%s, accession=%s has item 2.02 -> not pharma filing ", ticker, cik, accession)
+            return False
+
+        # Parse ex99.1
+        exhibit_99_text = _get_ex99_text(filing)
+
         return False
 
     def analyze_8k(self, filing, sa):
