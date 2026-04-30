@@ -526,6 +526,24 @@ def _get_ex99_text(filing) -> str:
     return " ".join(parts)
 
 
+def _extract_item_section_text(filing_text: str, item_number: str) -> str:
+    """Best-effort extraction of a specific 8-K item section."""
+    if not filing_text or not item_number:
+        return ""
+    text = re.sub(r"\s+", " ", filing_text)
+    start_re = re.compile(rf"\bitem\s*{re.escape(item_number)}\b", re.IGNORECASE)
+    next_item_re = re.compile(r"\bitem\s*\d+\.\d+\b", re.IGNORECASE)
+
+    start_match = start_re.search(text)
+    if not start_match:
+        return ""
+    remainder = text[start_match.end():]
+    end_match = next_item_re.search(remainder)
+    if not end_match:
+        return remainder.strip()
+    return remainder[:end_match.start()].strip()
+
+
 # Filing filter (Filter 2): red/green flags
 RED_FLAGS_SEVERE = {
     "chapter 11": -10, "bankruptcy filing": -10, "receivership": -10,
@@ -893,6 +911,31 @@ If you find no relevant coverage in that window, set:
 - \"eps_result\": \"unknown\",
 - \"revenue_result\": \"unknown\",
 - \"broker_reactions\": \"unknown\"
+"""
+
+PHARMA_ITEM_PROMPT_TEMPLATE = """You are a biotech/pharma event analyst.
+
+Classify the 8-K disclosure using only Item 7.01 and Item 8.01 text.
+Do not use outside knowledge. Do not infer facts not present in the text.
+
+Return STRICT JSON only:
+{{
+  "category": "regulatory" | "clinical" | "commercial" | "legal" | "mixed" | "other",
+  "sentiment": "strong_positive" | "positive" | "neutral" | "negative",
+  "materiality": "high" | "medium" | "low",
+  "key_event": "<short phrase>",
+  "timeline": "<short phrase or unknown>",
+  "red_flags": ["<risk 1>", "<risk 2>"],
+  "summary": "<1-2 sentence summary>"
+}}
+
+If information is missing, use "unknown" for timeline and [] for red_flags.
+
+Item 7.01:
+<<<ITEM_701_TEXT>>>
+
+Item 8.01:
+<<<ITEM_801_TEXT>>>
 """
 
 
@@ -1607,7 +1650,7 @@ class Edgar(AdvisorBase):
         penalties = advanced.get("penalties") or []
 
         # Explanation info
-        explanation_parts = [f"8-K {accession} Weight:{weight:.2f} | https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude "]
+        explanation_parts = [f"8-K earnings | Accession: {accession} | Weight:{weight:.2f} | https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude "]
 
         # Health info
         health_meta = {
@@ -1942,10 +1985,148 @@ class Edgar(AdvisorBase):
             logger.info("ticker=%s, CIK=%s, accession=%s has item 2.02 -> not pharma filing ", ticker, cik, accession)
             return False
 
-        # Parse ex99.1
-        exhibit_99_text = _get_ex99_text(filing)
+        has_701 = self.has_item(filing, "7.01")
+        has_801 = self.has_item(filing, "8.01")
+        if not (has_701 or has_801):
+            logger.info("ticker=%s, CIK=%s, accession=%s no item 7.01 or 8.01 -> not pharma filing ", ticker, cik, accession)
+            return False
 
-        return False
+        filing_text = ""
+        try:
+            filing_text = filing.text() or ""
+        except Exception:
+            filing_text = ""
+
+        item_701_text = _extract_item_section_text(filing_text, "7.01") if has_701 else ""
+        item_801_text = _extract_item_section_text(filing_text, "8.01") if has_801 else ""
+        text = _filter4_normalize(f"{item_701_text} {item_801_text}")
+        if not text:
+            logger.info("ticker=%s, CIK=%s, accession=%s no item 7.01 or 8.01 text -> not pharma filing", ticker, cik,accession)
+            return False
+
+        pharma_patterns = {
+            "regulatory": (
+                r"\b(?:fda|u\.?\s*s\.?\s*food and drug administration)\b",
+                r"\b(?:ema|european medicines agency|chmp|committee for medicinal products for human use|mhra|pmda)\b",
+                r"\b(?:ind|investigational new drug|nda|new drug application|bla|biologics license application|sbla|supplemental nda)\b",
+                r"\b(?:pdufa|complete response letter|crl|fast track|breakthrough therapy|orphan drug|priority review|clinical hold|advisory committee)\b",
+                r"\b(?:approval|approved|clearance|authoriz\w+|label expansion|marketing authoriz\w+|conditional marketing authoriz\w+)\b",
+                r"\b(?:positive opinion|recommend\w+)\b",
+            ),
+            "clinical": (
+                r"\bphase\s*(?:1|2|3|i|ii|iii)\b",
+                r"\b(?:topline|top-line)\s+data\b",
+                r"\b(?:interim data|efficacy|safety|endpoint|primary endpoint|secondary endpoint)\b",
+                r"\b(?:dose escalation|dose expansion|patient enrollment|randomized|placebo-controlled|double-blind|open-label)\b",
+                r"\b(?:proof-of-concept|pivotal study|registrational trial|cohort)\b",
+                r"\b(?:met|missed|did not meet)\s+(?:its\s+)?primary endpoint\b",
+            ),
+            "product_therapeutic": (
+                r"\b(?:candidate|pipeline|therapeutic|biologic|small molecule|monoclonal antibody)\b",
+                r"\b(?:gene therapy|cell therapy|mrna|car-?t|antibody-drug conjugate|vaccine|immunotherapy)\b",
+                r"\b(?:oncology|rare disease|autoimmune|cns|antiviral)\b",
+            ),
+            "commercial_legal": (
+                r"\b(?:license|licence|licensing|exclusive license)\b",
+                r"\b(?:collaboration|partnership|milestone|royalt(?:y|ies))\b",
+                r"\b(?:patent|litigation|settlement)\b",
+            ),
+        }
+
+        intel = {}
+        for bucket, patterns in pharma_patterns.items():
+            hits = []
+            for pattern in patterns:
+                for match in re.finditer(pattern, text, re.IGNORECASE):
+                    snippet = match.group(0).strip()
+                    if snippet and snippet not in hits:
+                        hits.append(snippet)
+                    if len(hits) >= 3:
+                        break
+                if len(hits) >= 3:
+                    break
+            if hits:
+                intel[bucket] = hits
+
+        if not any(intel.get(k) for k in ("regulatory", "clinical")):
+            logger.info("ticker=%s, CIK=%s, accession=%s no regulatory/clinical intel -> not pharma filing", ticker, cik, accession)
+            return False
+
+        logger.info(
+            "ticker=%s, CIK=%s, accession=%s pharma claimed via items (7.01=%s, 8.01=%s) buckets=%s",
+            ticker,
+            cik,
+            accession,
+            has_701,
+            has_801,
+            {k: len(v) for k, v in intel.items()},
+        )
+
+        # Optional LLM interpretation for pharma/event filings (item-driven only).
+        prompt = (
+            PHARMA_ITEM_PROMPT_TEMPLATE
+            .replace("<<<ITEM_701_TEXT>>>", item_701_text[:8000] if item_701_text else "")
+            .replace("<<<ITEM_801_TEXT>>>", item_801_text[:8000] if item_801_text else "")
+        )
+        logger.info(
+            "ticker=%s, CIK=%s, accession=%s pharma LLM prompt items (7.01_len=%d, 8.01_len=%d)",
+            ticker,
+            cik,
+            accession,
+            len(item_701_text),
+            len(item_801_text),
+        )
+        model, parsed = self.ask_llm(prompt)
+        if isinstance(parsed, dict):
+            sentiment = str(parsed.get("sentiment") or "").strip().lower()
+            category = str(parsed.get("category") or "other").strip().lower()
+            materiality = str(parsed.get("materiality") or "low").strip().lower()
+            key_event = str(parsed.get("key_event") or "").strip()
+            summary = str(parsed.get("summary") or "").strip()
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s pharma LLM: model=%s category=%s sentiment=%s materiality=%s",
+                ticker,
+                cik,
+                accession,
+                model or "N/A",
+                category,
+                sentiment,
+                materiality,
+            )
+
+            weight = None
+            if sentiment == "strong_positive":
+                weight = Decimal("1.10")
+            elif sentiment == "positive":
+                weight = Decimal("0.90")
+
+            if weight is not None:
+                explanation = (
+                    f"8-K pharma | Accession: {accession} | Weight:{float(weight):.2f} | "
+                    f"https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude "
+                    f"| Category:{category} Sentiment:{sentiment} Materiality:{materiality}"
+                )
+                if key_event:
+                    explanation += f" | Event:{key_event}"
+                if summary:
+                    explanation += f" | Summary:{summary}"
+                self.discovered(sa, ticker, explanation, weight=weight)
+            else:
+                logger.info(
+                    "ticker=%s, CIK=%s, accession=%s pharma sentiment=%s -> no discovery",
+                    ticker,
+                    cik,
+                    accession,
+                    sentiment or "unknown",
+                )
+        else:
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s pharma LLM: no valid JSON result",
+                ticker,
+                cik,
+                accession,
+            )
+        return True
 
     def analyze_8k(self, filing, sa):
 
@@ -1974,6 +2155,8 @@ class Edgar(AdvisorBase):
             return
 
         # Next categories
+        if self.analyze_8k_pharma(filing, cik, ticker, accession, sa):
+            return
 
         # Unknown category
         logger.info("ticker=%s, CIK=%s, accession=%s unknown category -> fail ",ticker , cik, accession)
@@ -2046,8 +2229,9 @@ class Edgar(AdvisorBase):
             return
 
         """
-        filing1 = find("0001053507-26-000094")
-        filing2 = find("0000783325-26-000040")
+        filing1 = find("0001193125-26-084267")
+        filing2 = find("0001193125-26-084207")
+        filing3 = find("0000078003-26-000005")
 
         filings = [filing1]
         """
