@@ -1024,6 +1024,39 @@ class AdvisorBase:
                     except Exception:
                         pass
 
+                    # Analyst consensus overlay (same directional logic as edgar score bonuses/penalties)
+                    target_mean = info_safe.get("targetMeanPrice")
+                    target_low = info_safe.get("targetLowPrice")
+                    recommendation_key_raw = info_safe.get("recommendationKey")
+                    recommendation_key = (
+                        str(recommendation_key_raw).strip().lower()
+                        if recommendation_key_raw is not None
+                        else ""
+                    )
+
+                    if isinstance(target_mean, (int, float)) and target_mean > 0:
+                        upside_to_mean_pct = ((float(target_mean) - float(price_now)) / float(price_now)) * 100.0
+                        if upside_to_mean_pct < 0:
+                            overlay_points -= 5.0
+                            overlay_reasons.append(
+                                f"above consensus mean ({upside_to_mean_pct:.1f}%) -5"
+                            )
+
+                    if isinstance(target_low, (int, float)) and target_low > 0:
+                        upside_to_low_pct = ((float(target_low) - float(price_now)) / float(price_now)) * 100.0
+                        if upside_to_low_pct > 0:
+                            overlay_points += 3.0
+                            overlay_reasons.append(
+                                f"below consensus low ({upside_to_low_pct:.1f}%) +3"
+                            )
+
+                    if recommendation_key == "hold":
+                        overlay_points -= 2.0
+                        overlay_reasons.append("consensus hold -2")
+                    elif recommendation_key == "sell":
+                        overlay_points -= 5.0
+                        overlay_reasons.append("consensus sell -5")
+
             except Exception as e:
                 logger.warning("health overlay %s: %s", symbol, e)
 
@@ -1226,15 +1259,12 @@ Respond with only a single valid JSON object, no other text.
         # Filter by title: reject articles containing common low-value phrases
         title_lower = title.lower() if title else ""
         filter_phrases = [
-            "stock market",
-            "market today",
-            "today nasdaq",
-            "nasdaq futures",
-            "futures slip",
-            "analyst questions",
-            "stocks"
+            "stock market", "market today", "today nasdaq", "nasdaq futures", "futures slip", "analyst questions", "stocks",
+            "microsoft", "alphabet", "google", "amazon", "meta", "apple", "tesla", "nvidia",
+            "msft", "googl", "goog", "amzn", "meta", "aapl", "tsla"
         ]
-        
+
+
         for phrase in filter_phrases:
             if phrase in title_lower:
                 logger.info(f"{self.advisor.name} filtering article (skipping LLM): {title[:80]}")
@@ -1256,7 +1286,7 @@ Respond with only a single valid JSON object, no other text.
             You are an expert on analyzing business articles
             How do you interpret this article by way of speculation of rising share prices? Supply a recommendation.
             
-            DISMISS immediately if article content refers to 1) multiple ticker / companies 2) mega-cap companies such as MSFT, GOOGL, AMZN, META
+            DISMISS immediately if article content refers to multiple ticker / companies.
 
             Please respond in JSON only choosing one of the below recommendations and supply one relevant company symbol / ticker 
 
@@ -1278,7 +1308,7 @@ Respond with only a single valid JSON object, no other text.
         ]
 
         # Ask AI for opinion
-        model, results = self.ask_ollama(prompt)
+        model, results = self.ask_llm(prompt)
 
         if not results:
             return
