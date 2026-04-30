@@ -938,6 +938,10 @@ Item 8.01:
 <<<ITEM_801_TEXT>>>
 """
 
+# Pharma regex scoring thresholds (item-text only; no EX-99 dependency)
+PHARMA_SCORE_REJECT_MAX = 2
+PHARMA_SCORE_LLM_MIN = 5
+
 
 # ---------------------------------------------------------------------------
 # ED-8 advisor class and command entry
@@ -2004,63 +2008,97 @@ class Edgar(AdvisorBase):
             logger.info("ticker=%s, CIK=%s, accession=%s no item 7.01 or 8.01 text -> not pharma filing", ticker, cik,accession)
             return False
 
-        pharma_patterns = {
-            "regulatory": (
-                r"\b(?:fda|u\.?\s*s\.?\s*food and drug administration)\b",
-                r"\b(?:ema|european medicines agency|chmp|committee for medicinal products for human use|mhra|pmda)\b",
-                r"\b(?:ind|investigational new drug|nda|new drug application|bla|biologics license application|sbla|supplemental nda)\b",
-                r"\b(?:pdufa|complete response letter|crl|fast track|breakthrough therapy|orphan drug|priority review|clinical hold|advisory committee)\b",
-                r"\b(?:approval|approved|clearance|authoriz\w+|label expansion|marketing authoriz\w+|conditional marketing authoriz\w+)\b",
-                r"\b(?:positive opinion|recommend\w+)\b",
-            ),
-            "clinical": (
-                r"\bphase\s*(?:1|2|3|i|ii|iii)\b",
-                r"\b(?:topline|top-line)\s+data\b",
-                r"\b(?:interim data|efficacy|safety|endpoint|primary endpoint|secondary endpoint)\b",
-                r"\b(?:dose escalation|dose expansion|patient enrollment|randomized|placebo-controlled|double-blind|open-label)\b",
-                r"\b(?:proof-of-concept|pivotal study|registrational trial|cohort)\b",
-                r"\b(?:met|missed|did not meet)\s+(?:its\s+)?primary endpoint\b",
-            ),
-            "product_therapeutic": (
-                r"\b(?:candidate|pipeline|therapeutic|biologic|small molecule|monoclonal antibody)\b",
-                r"\b(?:gene therapy|cell therapy|mrna|car-?t|antibody-drug conjugate|vaccine|immunotherapy)\b",
-                r"\b(?:oncology|rare disease|autoimmune|cns|antiviral)\b",
-            ),
-            "commercial_legal": (
-                r"\b(?:license|licence|licensing|exclusive license)\b",
-                r"\b(?:collaboration|partnership|milestone|royalt(?:y|ies))\b",
-                r"\b(?:patent|litigation|settlement)\b",
-            ),
+        weighted_patterns = {
+            "regulatory": [
+                (4, r"\b(?:ind|investigational new drug|nda|new drug application|bla|biologics license application|sbla|supplemental nda|pdufa|complete response letter|crl)\b"),
+                (4, r"\b(?:ema|european medicines agency|chmp|committee for medicinal products for human use)\b"),
+                (4, r"\b(?:marketing authoriz\w+|conditional marketing authoriz\w+)\b"),
+                (2, r"\b(?:fda|u\.?\s*s\.?\s*food and drug administration|mhra|pmda)\b"),
+                (2, r"\b(?:approval|approved|clearance|authoriz\w+|label expansion|positive opinion|recommend\w+)\b"),
+                (2, r"\b(?:fast track|breakthrough therapy|orphan drug|priority review|clinical hold|advisory committee)\b"),
+            ],
+            "clinical": [
+                (3, r"\bphase\s*(?:1|2|3|i|ii|iii)\b"),
+                (3, r"\b(?:topline|top-line)\s+(?:data|results?)\b"),
+                (3, r"\b(?:primary endpoint|secondary endpoint|interim data|efficacy|safety|registrational trial|pivotal study)\b"),
+                (2, r"\b(?:dose escalation|dose expansion|patient enrollment|randomized|placebo-controlled|double-blind|open-label|proof-of-concept|cohort)\b"),
+                (2, r"\b(?:met|missed|did not meet)\s+(?:its\s+)?primary endpoint\b"),
+            ],
+            "commercial_legal": [
+                (2, r"\b(?:exclusive license|exclusive licence|license agreement|licensing agreement)\b"),
+                (2, r"\b(?:collaboration|partnership|milestone|royalt(?:y|ies)|commercializ\w+)\b"),
+                (2, r"\b(?:patent|litigation|settlement)\b"),
+            ],
+            "product_therapeutic": [
+                (2, r"\b(?:monotherapy|treatment of|relapsed|refractory)\b"),
+                (1, r"\b(?:candidate|pipeline|therapeutic|biologic|small molecule|monoclonal antibody)\b"),
+                (1, r"\b(?:gene therapy|cell therapy|mrna|car-?t|antibody-drug conjugate|vaccine|immunotherapy)\b"),
+                (1, r"\b(?:oncology|rare disease|autoimmune|cns|antiviral)\b"),
+            ],
+            "filing_context": [
+                (1, r"\bexhibit\s*99\.1\b"),
+                (1, r"\bcorporate presentation\b"),
+            ],
         }
 
-        intel = {}
-        for bucket, patterns in pharma_patterns.items():
-            hits = []
-            for pattern in patterns:
-                for match in re.finditer(pattern, text, re.IGNORECASE):
-                    snippet = match.group(0).strip()
-                    if snippet and snippet not in hits:
-                        hits.append(snippet)
-                    if len(hits) >= 3:
-                        break
-                if len(hits) >= 3:
-                    break
-            if hits:
-                intel[bucket] = hits
+        pharma_score = 0
+        matched_signals = {}
+        has_primary_signal = False  # regulatory/clinical only
+        for bucket, weighted in weighted_patterns.items():
+            bucket_hits = []
+            for weight, pattern in weighted:
+                m = re.search(pattern, text, re.IGNORECASE)
+                if not m:
+                    continue
+                snippet = m.group(0).strip()
+                bucket_hits.append({"weight": weight, "match": snippet})
+                pharma_score += weight
+                if bucket in ("regulatory", "clinical"):
+                    has_primary_signal = True
+            if bucket_hits:
+                matched_signals[bucket] = bucket_hits
 
-        if not any(intel.get(k) for k in ("regulatory", "clinical")):
-            logger.info("ticker=%s, CIK=%s, accession=%s no regulatory/clinical intel -> not pharma filing", ticker, cik, accession)
+        if not has_primary_signal:
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s no primary regulatory/clinical signal -> not pharma filing",
+                ticker,
+                cik,
+                accession,
+            )
+            return False
+
+        if pharma_score <= PHARMA_SCORE_REJECT_MAX:
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s pharma score=%d <= %d -> reject",
+                ticker,
+                cik,
+                accession,
+                pharma_score,
+                PHARMA_SCORE_REJECT_MAX,
+            )
             return False
 
         logger.info(
-            "ticker=%s, CIK=%s, accession=%s pharma claimed via items (7.01=%s, 8.01=%s) buckets=%s",
+            "ticker=%s, CIK=%s, accession=%s pharma score=%d claimed via items (7.01=%s, 8.01=%s) buckets=%s",
             ticker,
             cik,
             accession,
+            pharma_score,
             has_701,
             has_801,
-            {k: len(v) for k, v in intel.items()},
+            {k: len(v) for k, v in matched_signals.items()},
         )
+
+        if pharma_score < PHARMA_SCORE_LLM_MIN:
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s pharma score=%d below LLM threshold=%d -> no LLM/discovery",
+                ticker,
+                cik,
+                accession,
+                pharma_score,
+                PHARMA_SCORE_LLM_MIN,
+            )
+            return True
 
         # Optional LLM interpretation for pharma/event filings (item-driven only).
         prompt = (
