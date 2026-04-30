@@ -1715,8 +1715,8 @@ class Edgar(AdvisorBase):
         if broker == "strong_buy":
             bonuses.append("Strong buy (+0.1)")
             score += 0.1
-        elif broker in  ("moderate_buy","weak_buy"):
-            penalties.append("Moderate buy (-0.1)")
+        elif broker in  ("moderate_buy","weak_buy","unknown"):
+            penalties.append("Moderat or unknown (-0.1)")
             score -= 0.1
 
         # Form4 (optional, non-blocking): bullish insider cluster can help,
