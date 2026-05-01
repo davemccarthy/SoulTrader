@@ -6,7 +6,14 @@ struct FundsView: View {
     var body: some View {
         VStack(spacing: 8) {
             if let dashboard = viewModel.globalDashboard {
-                GlobalSummaryCard(dashboard: dashboard)
+                GlobalSummaryCard(
+                    dashboard: dashboard,
+                    totalPercentTitle: viewModel.totalPercentTitle,
+                    totalPercentValue: viewModel.totalPercentValue(for: dashboard),
+                    onTap: {
+                        viewModel.toggleReturnPercentMode()
+                    }
+                )
                     .padding(.horizontal, 6)
                     .padding(.top, 6)
             }
@@ -61,9 +68,9 @@ struct FundsView: View {
                         )
 
                         metricPair(
-                            title: "P&L",
-                            value: formatPercent(fund.dashboard.returnPercent),
-                            color: percentColor(fund.dashboard.returnPercent),
+                            title: viewModel.totalPercentTitle,
+                            value: formatPercent(viewModel.totalPercentValue(for: fund.dashboard)),
+                            color: percentColor(viewModel.totalPercentValue(for: fund.dashboard)),
                             alignment: .trailing
                         )
                         }
@@ -159,12 +166,14 @@ struct FundsView: View {
         return formatter.string(from: NSNumber(value: value)) ?? "$0"
     }
 
-    private func formatPercent(_ value: Double) -> String {
+    private func formatPercent(_ value: Double?) -> String {
+        guard let value else { return "—" }
         let normalized = normalizedPercent(value)
         return String(format: "%.2f%%", normalized)
     }
 
-    private func percentColor(_ value: Double) -> Color {
+    private func percentColor(_ value: Double?) -> Color {
+        guard let value else { return Theme.valuePrimary }
         let normalized = normalizedPercent(value)
         if normalized > 0 { return .green }
         if normalized < 0 { return .red }

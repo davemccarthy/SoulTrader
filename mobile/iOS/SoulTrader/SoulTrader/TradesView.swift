@@ -8,7 +8,14 @@ struct TradesView: View {
         NavigationStack(path: $path) {
             VStack(spacing: 8) {
                 if let fund = viewModel.selectedFund {
-                    FundSummaryCard(fund: fund)
+                    FundSummaryCard(
+                        fund: fund,
+                        totalPercentTitle: viewModel.totalPercentTitle,
+                        totalPercentValue: viewModel.totalPercentValue(for: fund.dashboard),
+                        onTap: {
+                            viewModel.toggleReturnPercentMode()
+                        }
+                    )
                         .padding(.horizontal, 6)
                         .padding(.top, 6)
                 }

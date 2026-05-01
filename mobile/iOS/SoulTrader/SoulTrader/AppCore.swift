@@ -10,6 +10,11 @@ enum AppTab {
     case trades
 }
 
+enum ReturnPercentMode {
+    case total
+    case invested
+}
+
 struct UserProfile: Decodable {
     let id: Int
     let username: String
@@ -77,12 +82,24 @@ struct GlobalDashboardResponse: Decodable {
     var holdingsMarketValue: Double {
         max(0, totalValue - cash)
     }
+
+    /// Return percent against currently invested capital (market value excluding cash).
+    var investedReturnPercent: Double? {
+        guard holdingsMarketValue > 0 else { return nil }
+        return (returnAmount / holdingsMarketValue) * 100
+    }
 }
 
 extension FundDashboardResponse {
     /// Market value of stock positions (excludes cash).
     var holdingsMarketValue: Double {
         max(0, totalValue - cash)
+    }
+
+    /// Return percent against currently invested capital (market value excluding cash).
+    var investedReturnPercent: Double? {
+        guard holdingsMarketValue > 0 else { return nil }
+        return (returnAmount / holdingsMarketValue) * 100
     }
 }
 
@@ -612,6 +629,7 @@ final class AuthViewModel: ObservableObject {
     @Published var selectedFundHistory: [WealthChartPoint] = []
     @Published var isLoading = false
     @Published var statusMessage: String?
+    @Published var returnPercentMode: ReturnPercentMode = .total
 
     private let tokenStore = TokenStore()
     private enum RememberedLoginKeys {
@@ -633,6 +651,12 @@ final class AuthViewModel: ObservableObject {
     var selectedFundName: String? { funds.first(where: { $0.id == selectedFundId })?.name }
     var selectedFund: FundResponse? { funds.first(where: { $0.id == selectedFundId }) }
     var activeHistory: [WealthChartPoint] { selectedTab == .funds ? globalHistory : selectedFundHistory }
+    var totalPercentTitle: String {
+        switch returnPercentMode {
+        case .total: return "TOTAL %"
+        case .invested: return "INVST %"
+        }
+    }
 
     var headerTitle: String {
         switch selectedTab {
@@ -646,6 +670,28 @@ final class AuthViewModel: ObservableObject {
     func bootstrap() async {
         guard isAuthenticated else { statusMessage = "Not logged in."; return }
         await refreshAll()
+    }
+
+    func toggleReturnPercentMode() {
+        returnPercentMode = (returnPercentMode == .total) ? .invested : .total
+    }
+
+    func totalPercentValue(for dashboard: GlobalDashboardResponse) -> Double? {
+        switch returnPercentMode {
+        case .total:
+            return dashboard.returnPercent
+        case .invested:
+            return dashboard.investedReturnPercent
+        }
+    }
+
+    func totalPercentValue(for dashboard: FundDashboardResponse) -> Double? {
+        switch returnPercentMode {
+        case .total:
+            return dashboard.returnPercent
+        case .invested:
+            return dashboard.investedReturnPercent
+        }
     }
 
     func login() async {
@@ -832,6 +878,9 @@ private struct SummaryMetricCard: View {
 
 struct FundSummaryCard: View {
     let fund: FundResponse
+    let totalPercentTitle: String
+    let totalPercentValue: Double?
+    let onTap: (() -> Void)?
 
     var body: some View {
         SummaryMetricCard(items: [
@@ -854,12 +903,16 @@ struct FundSummaryCard: View {
                 alignment: .trailing
             ),
             SummaryMetricItem(
-                title: "TOTAL %",
-                value: formatPercent(fund.dashboard.returnPercent),
-                color: percentColor(fund.dashboard.returnPercent),
+                title: totalPercentTitle,
+                value: formatPercent(totalPercentValue),
+                color: percentColor(totalPercentValue),
                 alignment: .trailing
             ),
         ])
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onTap?()
+        }
     }
 
     private func formatCurrency(_ value: Double) -> String {
@@ -871,12 +924,14 @@ struct FundSummaryCard: View {
         return formatter.string(from: NSNumber(value: value)) ?? "$0"
     }
 
-    private func formatPercent(_ value: Double) -> String {
+    private func formatPercent(_ value: Double?) -> String {
+        guard let value else { return "—" }
         let normalized = abs(value) < 0.005 ? 0.0 : value
         return String(format: "%.2f%%", normalized)
     }
 
-    private func percentColor(_ value: Double) -> Color {
+    private func percentColor(_ value: Double?) -> Color {
+        guard let value else { return Theme.valuePrimary }
         let normalized = abs(value) < 0.005 ? 0.0 : value
         if normalized > 0 { return .green }
         if normalized < 0 { return .red }
@@ -939,6 +994,9 @@ struct FundSecondarySummaryCard: View {
 
 struct GlobalSummaryCard: View {
     let dashboard: GlobalDashboardResponse
+    let totalPercentTitle: String
+    let totalPercentValue: Double?
+    let onTap: (() -> Void)?
 
     var body: some View {
         SummaryMetricCard(items: [
@@ -961,12 +1019,16 @@ struct GlobalSummaryCard: View {
                 alignment: .trailing
             ),
             SummaryMetricItem(
-                title: "TOTAL %",
-                value: formatPercent(dashboard.returnPercent),
-                color: percentColor(dashboard.returnPercent),
+                title: totalPercentTitle,
+                value: formatPercent(totalPercentValue),
+                color: percentColor(totalPercentValue),
                 alignment: .trailing
             ),
         ])
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onTap?()
+        }
     }
 
     private func formatCurrency(_ value: Double) -> String {
@@ -978,12 +1040,14 @@ struct GlobalSummaryCard: View {
         return formatter.string(from: NSNumber(value: value)) ?? "$0"
     }
 
-    private func formatPercent(_ value: Double) -> String {
+    private func formatPercent(_ value: Double?) -> String {
+        guard let value else { return "—" }
         let normalized = abs(value) < 0.005 ? 0.0 : value
         return String(format: "%.2f%%", normalized)
     }
 
-    private func percentColor(_ value: Double) -> Color {
+    private func percentColor(_ value: Double?) -> Color {
+        guard let value else { return Theme.valuePrimary }
         let normalized = abs(value) < 0.005 ? 0.0 : value
         if normalized > 0 { return .green }
         if normalized < 0 { return .red }
