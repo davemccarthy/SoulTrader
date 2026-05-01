@@ -942,6 +942,10 @@ Item 8.01:
 PHARMA_SCORE_REJECT_MAX = 2
 PHARMA_SCORE_LLM_MIN = 5
 
+# Event regex scoring thresholds (log-only rollout)
+EVENT_SCORE_REJECT_MAX = 2
+EVENT_SCORE_PASS_MIN = 5
+
 
 # ---------------------------------------------------------------------------
 # ED-8 advisor class and command entry
@@ -2166,6 +2170,151 @@ class Edgar(AdvisorBase):
             )
         return True
 
+    def analyze_8k_event(self, filing, cik, ticker, accession, sa):
+        """
+        Event-category triage (log-only for now).
+        Uses item-gated weighted regex scoring and emits WOULD_DISCOVER style logs.
+        """
+        _ = sa
+
+        # Earnings ownership always wins.
+        if self.has_item(filing, "2.02"):
+            return False
+
+        # Event-relevant 8-K items.
+        event_items = ("1.01", "2.01", "2.03", "2.04", "3.02", "7.01", "8.01")
+        item_flags = {item: self.has_item(filing, item) for item in event_items}
+        if not any(item_flags.values()):
+            return False
+
+        filing_text = ""
+        try:
+            filing_text = filing.text() or ""
+        except Exception:
+            filing_text = ""
+
+        sections: list[str] = []
+        for item in event_items:
+            if item_flags.get(item):
+                sec = _extract_item_section_text(filing_text, item)
+                if sec:
+                    sections.append(sec)
+        text = _filter4_normalize(" ".join(sections))
+        if not text:
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s event: no item section text -> reject",
+                ticker,
+                cik,
+                accession,
+            )
+            return False
+
+        weighted_patterns = {
+            "mna": [
+                (5, r"\b(?:merger agreement|definitive merger agreement|business combination)\b"),
+                (4, r"\b(?:acquisition|strategic alternatives|sale process|take-private|special committee)\b"),
+                (3, r"\b(?:asset purchase agreement|letter of intent|go-shop)\b"),
+            ],
+            "contracts": [
+                (5, r"\b(?:government contract|federal contract|defense contract)\b"),
+                (4, r"\b(?:multi-year agreement|enterprise agreement|exclusive partnership)\b"),
+                (3, r"\b(?:commercial agreement|strategic partnership|distribution agreement|joint venture)\b"),
+                (2, r"\b(?:customer agreement|supplier agreement|purchase order)\b"),
+            ],
+            "financing": [
+                (5, r"\b(?:covenant waiver|event of default|liquidity crisis)\b"),
+                (4, r"\b(?:debt refinancing|amended credit facility|credit agreement|term loan|senior secured notes)\b"),
+                (3, r"\b(?:convertible notes|private placement|pipe financing|registered direct offering)\b"),
+                (2, r"\b(?:liquidity facility|amendment and restatement)\b"),
+            ],
+        }
+
+        event_score = 0
+        matched_signals = {}
+        for bucket, weighted in weighted_patterns.items():
+            bucket_hits = []
+            for weight, pattern in weighted:
+                m = re.search(pattern, text, re.IGNORECASE)
+                if not m:
+                    continue
+                snippet = m.group(0).strip()
+                bucket_hits.append({"weight": weight, "match": snippet})
+                event_score += weight
+            if bucket_hits:
+                matched_signals[bucket] = bucket_hits
+
+        if event_score <= EVENT_SCORE_REJECT_MAX:
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s event score=%d <= %d -> reject",
+                ticker,
+                cik,
+                accession,
+                event_score,
+                EVENT_SCORE_REJECT_MAX,
+            )
+            return False
+
+        # Additional anti-noise constraints.
+        contracts_ok = True
+        if "contracts" in matched_signals:
+            contracts_ok = bool(
+                re.search(
+                    r"\b(?:multi-year|exclusive|government|enterprise)\b",
+                    text,
+                    re.IGNORECASE,
+                )
+            )
+        financing_ok = True
+        if "financing" in matched_signals:
+            financing_ok = bool(
+                re.search(
+                    r"\b(?:credit facility|covenant|refinancing|pipe financing)\b",
+                    text,
+                    re.IGNORECASE,
+                )
+            )
+        mna_ok = True
+        if "mna" in matched_signals:
+            mna_ok = bool(
+                re.search(
+                    r"\b(?:strategic alternatives|merger|acquisition)\b",
+                    text,
+                    re.IGNORECASE,
+                )
+            )
+
+        if not (contracts_ok and financing_ok and mna_ok):
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s event score=%d anti-noise gate -> reject",
+                ticker,
+                cik,
+                accession,
+                event_score,
+            )
+            return False
+
+        if event_score < EVENT_SCORE_PASS_MIN:
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s event score=%d below pass threshold=%d -> no-op",
+                ticker,
+                cik,
+                accession,
+                event_score,
+                EVENT_SCORE_PASS_MIN,
+            )
+            return True
+
+        logger.info(
+            "*8K_EVENT_PASS ticker=%s CIK=%s accession=%s score=%d items=%s buckets=%s would_discover=true",
+            ticker,
+            cik,
+            accession,
+            event_score,
+            {k: v for k, v in item_flags.items() if v},
+            {k: len(v) for k, v in matched_signals.items()},
+        )
+        return True
+
     def analyze_8k(self, filing, sa):
 
         cik = str(getattr(filing, "cik", "") or "")
@@ -2188,12 +2337,16 @@ class Edgar(AdvisorBase):
         if not self.filter_financials(filing):
             return
 
-        # Earnings 8-k ?
+        # Earnings 8-k
         if self.analyze_8k_earnings(filing, cik, ticker, accession, sa):
             return
 
-        # Next categories
+        # Pharma 8-k
         if self.analyze_8k_pharma(filing, cik, ticker, accession, sa):
+            return
+
+        # Event 8-K
+        if self.analyze_8k_event(filing, cik, ticker, accession, sa):
             return
 
         # Unknown category
