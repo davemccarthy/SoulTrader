@@ -1,7 +1,7 @@
 import logging
 from datetime import timedelta
 
-from django.db.models import F, Max, Sum
+from django.db.models import Count, F, Max, Sum
 from django.templatetags.static import static
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
@@ -9,8 +9,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from .serializers import HoldingSerializer, TradeSerializer, ProfileSerializer, UserSerializer
 from django.http import Http404
+from django.shortcuts import get_object_or_404
 
-from core.models import Profile, Holding, Trade, Snapshot, Discovery
+from core.models import Advisor, Discovery, Holding, Profile, Snapshot, Trade
 from core.portfolio_metrics import get_portfolio_dashboard_data
 
 logger = logging.getLogger(__name__)
@@ -124,26 +125,31 @@ def get_holding_health_history(request, stock_id: int):
             continue
         seen_health_ids.add(health.id)
 
-        meta = health.meta or {}
-        overlay = meta.get('overlay') if isinstance(meta.get('overlay'), dict) else {}
-        health_history.append({
-            'id': health.id,
-            'score': float(health.score),
-            'created': health.created.isoformat() if health.created else None,
-            'meta': meta,
-            'confidence_score': meta.get('confidence_score'),
-            'health_score': meta.get('health_score'),
-            'valuation_score': meta.get('valuation_score'),
-            'piotroski': meta.get('piotroski'),
-            'altman_z': meta.get('altman_z'),
-            'gemini_weight': meta.get('gemini_weight'),
-            'gemini_rec': meta.get('gemini_recommendation'),
-            'gemini_explanation': meta.get('gemini_explanation'),
-            'overlay_points': overlay.get('points'),
-            'overlay_reasons': overlay.get('reasons') if isinstance(overlay.get('reasons'), list) else [],
-        })
+        health_history.append(_health_record_payload(health))
 
     return Response({'health_history': health_history})
+
+
+def _health_record_payload(health):
+    """JSON shape aligned with `HealthHistoryRecord` on iOS (holding health_history)."""
+    meta = health.meta or {}
+    overlay = meta.get('overlay') if isinstance(meta.get('overlay'), dict) else {}
+    return {
+        'id': health.id,
+        'score': float(health.score),
+        'created': health.created.isoformat() if health.created else None,
+        'meta': meta,
+        'confidence_score': meta.get('confidence_score'),
+        'health_score': meta.get('health_score'),
+        'valuation_score': meta.get('valuation_score'),
+        'piotroski': meta.get('piotroski'),
+        'altman_z': meta.get('altman_z'),
+        'gemini_weight': meta.get('gemini_weight'),
+        'gemini_rec': meta.get('gemini_recommendation'),
+        'gemini_explanation': meta.get('gemini_explanation'),
+        'overlay_points': overlay.get('points'),
+        'overlay_reasons': overlay.get('reasons') if isinstance(overlay.get('reasons'), list) else [],
+    }
 
 
 def _advisor_logo_url(advisor):
@@ -153,6 +159,13 @@ def _advisor_logo_url(advisor):
     if not python_class:
         return None
     return static(f"core/advisors/{python_class.lower()}.png")
+
+
+def _advisor_logo_absolute_url(request, advisor):
+    path = _advisor_logo_url(advisor)
+    if not path:
+        return None
+    return request.build_absolute_uri(path)
 
 
 def _discovery_comment(explanation: str | None):
@@ -209,6 +222,115 @@ def get_funds(request):
         })
 
     return Response(payload)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_fund_advisors(request):
+    """
+    Advisors listed on a fund's Profile.advisors (ordered).
+    Omits python_class entries with no Advisor row. Discovery count is global per advisor.
+    GET /api/funds/advisors/?fund_id=26
+    """
+    fund_id = request.query_params.get('fund_id')
+    if not fund_id:
+        return Response({'error': 'fund_id is required.'}, status=400)
+    fund = get_object_or_404(Profile, pk=int(fund_id), enabled=True)
+
+    pcs_ordered = list(fund.advisors or [])
+    by_pc = {
+        a.python_class: a
+        for a in Advisor.objects.filter(python_class__in=pcs_ordered)
+    }
+    ordered_advisors = [by_pc[pc] for pc in pcs_ordered if pc in by_pc]
+    advisor_ids = [a.id for a in ordered_advisors]
+
+    counts = {}
+    if advisor_ids:
+        counts = {
+            row['advisor_id']: row['n']
+            for row in Discovery.objects.filter(advisor_id__in=advisor_ids)
+            .values('advisor_id')
+            .annotate(n=Count('id'))
+        }
+
+    advisors_out = []
+    for adv in ordered_advisors:
+        advisors_out.append({
+            'id': adv.id,
+            'python_class': adv.python_class,
+            'name': adv.name,
+            'description': adv.description or '',
+            'discovery_count': counts.get(adv.id, 0),
+            'image_url': _advisor_logo_absolute_url(request, adv),
+        })
+
+    return Response({'fund_id': fund.id, 'advisors': advisors_out})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_advisor_discoveries(request, advisor_id: int):
+    """
+    Discoveries for an advisor (newest first). Not fund-scoped.
+    GET /api/advisors/<id>/discoveries/
+    """
+    get_object_or_404(Advisor, pk=advisor_id)
+    discoveries = (
+        Discovery.objects.filter(advisor_id=advisor_id)
+        .select_related('stock', 'health')
+        .order_by('-id')[:250]
+    )
+    out = []
+    for d in discoveries:
+        stock = d.stock
+        out.append({
+            'id': d.id,
+            'stock': {
+                'symbol': stock.symbol,
+                'company': (stock.company or '').strip(),
+                'price': str(stock.price),
+            },
+            'explanation_line': _discovery_comment(d.explanation) or '',
+            'health_score': float(d.health.score) if d.health else None,
+        })
+    return Response({'advisor_id': advisor_id, 'discoveries': out})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_discovery_detail(request, discovery_id: int):
+    """
+    Single discovery: stock snapshot, full explanation, advisor, linked health (if any).
+    GET /api/discoveries/<id>/
+    """
+    d = get_object_or_404(
+        Discovery.objects.select_related('stock', 'advisor', 'health'),
+        pk=discovery_id,
+    )
+    stock = d.stock
+    health_payload = _health_record_payload(d.health) if d.health else None
+
+    return Response({
+        'id': d.id,
+        'explanation': d.explanation or '',
+        'discovery_price': str(d.price) if d.price is not None else None,
+        'created': d.created.isoformat() if d.created else None,
+        'stock': {
+            'symbol': stock.symbol,
+            'company': (stock.company or '').strip(),
+            'industry': (stock.industry or '').strip(),
+            'sector': (stock.sector or '').strip(),
+            'exchange': (stock.exchange or '').strip(),
+            'price': str(stock.price),
+        },
+        'advisor': {
+            'id': d.advisor_id,
+            'name': d.advisor.name if d.advisor else '',
+            'logo_url': _advisor_logo_absolute_url(request, d.advisor) if d.advisor else None,
+        },
+        'health': health_payload,
+    })
 
 
 @api_view(['GET'])

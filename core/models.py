@@ -84,6 +84,7 @@ class Profile(models.Model):
 class Advisor(models.Model):
     name = models.CharField(max_length=100, unique=True)
     python_class = models.CharField(max_length=100, unique=True)
+    description = models.TextField(blank=True, default="")
     enabled = models.BooleanField(default=True)
     endpoint = models.CharField(max_length=500, default="")
     key = models.CharField(max_length=255, default="")

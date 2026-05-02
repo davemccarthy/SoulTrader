@@ -8,6 +8,7 @@ enum AppTab {
     case funds
     case holdings
     case trades
+    case advisory
 }
 
 enum ReturnPercentMode {
@@ -433,6 +434,101 @@ struct TradeResponse: Decodable, Identifiable {
     let created: String?
 }
 
+struct FundAdvisorRow: Decodable, Identifiable {
+    let id: Int
+    let pythonClass: String
+    let name: String
+    let description: String
+    let discoveryCount: Int
+    let imageUrl: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case pythonClass = "python_class"
+        case name
+        case description
+        case discoveryCount = "discovery_count"
+        case imageUrl = "image_url"
+    }
+}
+
+struct FundAdvisorsResponse: Decodable {
+    let fundId: Int
+    let advisors: [FundAdvisorRow]
+
+    private enum CodingKeys: String, CodingKey {
+        case fundId = "fund_id"
+        case advisors
+    }
+}
+
+struct AdvisorDiscoveryStock: Decodable {
+    let symbol: String
+    let company: String
+    let price: String
+}
+
+struct AdvisorDiscoveryRow: Decodable, Identifiable {
+    let id: Int
+    let stock: AdvisorDiscoveryStock
+    let explanationLine: String
+    let healthScore: Double?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case stock
+        case explanationLine = "explanation_line"
+        case healthScore = "health_score"
+    }
+}
+
+struct AdvisorDiscoveriesResponse: Decodable {
+    let advisorId: Int
+    let discoveries: [AdvisorDiscoveryRow]
+
+    private enum CodingKeys: String, CodingKey {
+        case advisorId = "advisor_id"
+        case discoveries
+    }
+}
+
+struct DiscoveryDetailAdvisor: Decodable {
+    let id: Int
+    let name: String
+    let logoUrl: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name
+        case logoUrl = "logo_url"
+    }
+}
+
+struct DiscoveryDetailResponse: Decodable {
+    let id: Int
+    let explanation: String
+    let discoveryPrice: String?
+    let created: String?
+    let stock: StockInfo
+    let advisor: DiscoveryDetailAdvisor
+    let health: HealthHistoryRecord?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, explanation, created, stock, advisor, health
+        case discoveryPrice = "discovery_price"
+    }
+}
+
+struct DiscoveryDetailNav: Hashable {
+    let discoveryId: Int
+}
+
+struct AdvisorNav: Hashable {
+    let id: Int
+    let name: String
+    let description: String
+    let imageUrl: String?
+}
+
 struct LoginRequest: Encodable {
     let username: String
     let password: String
@@ -605,6 +701,37 @@ struct APIClient {
         return try JSONDecoder().decode([TradeResponse].self, from: data)
     }
 
+    func fetchFundAdvisors(accessToken: String, fundId: Int) async throws -> FundAdvisorsResponse {
+        var components = URLComponents(url: endpoint("funds/advisors/"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "fund_id", value: String(fundId))]
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(FundAdvisorsResponse.self, from: data)
+    }
+
+    func fetchAdvisorDiscoveries(accessToken: String, advisorId: Int) async throws -> AdvisorDiscoveriesResponse {
+        let url = endpoint("advisors/\(advisorId)/discoveries/")
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(AdvisorDiscoveriesResponse.self, from: data)
+    }
+
+    func fetchDiscoveryDetail(accessToken: String, discoveryId: Int) async throws -> DiscoveryDetailResponse {
+        let url = endpoint("discoveries/\(discoveryId)/")
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(DiscoveryDetailResponse.self, from: data)
+    }
+
     private func validate(response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
         guard (200...299).contains(http.statusCode) else {
@@ -661,7 +788,7 @@ final class AuthViewModel: ObservableObject {
     var headerTitle: String {
         switch selectedTab {
         case .funds: return "SOULTRADER - FUNDS"
-        case .holdings, .trades:
+        case .holdings, .trades, .advisory:
             if let selectedFundName, !selectedFundName.isEmpty { return "SOULTRADER - \(selectedFundName)" }
             return "SOULTRADER"
         }
@@ -761,6 +888,21 @@ final class AuthViewModel: ObservableObject {
         } catch {
             return []
         }
+    }
+
+    func fetchFundAdvisors() async throws -> FundAdvisorsResponse {
+        guard let access = tokenStore.getAccessToken(), let fundId = selectedFundId else { throw APIError.missingToken }
+        return try await apiClient.fetchFundAdvisors(accessToken: access, fundId: fundId)
+    }
+
+    func fetchAdvisorDiscoveries(advisorId: Int) async throws -> AdvisorDiscoveriesResponse {
+        guard let access = tokenStore.getAccessToken() else { throw APIError.missingToken }
+        return try await apiClient.fetchAdvisorDiscoveries(accessToken: access, advisorId: advisorId)
+    }
+
+    func fetchDiscoveryDetail(discoveryId: Int) async throws -> DiscoveryDetailResponse {
+        guard let access = tokenStore.getAccessToken() else { throw APIError.missingToken }
+        return try await apiClient.fetchDiscoveryDetail(accessToken: access, discoveryId: discoveryId)
     }
 
     func logout() {

@@ -547,41 +547,6 @@ class AdvisorBase:
 
         logger.info(f"{self.advisor.name} scores {stock.symbol} a confidences of {confidence:.2f}")
 
-    def watch_sells(self, instructions, explanation, days=14):
-        """
-        Query database for sell instructions triggered today and add to watchlist.
-
-        Only watches stocks discovered by this advisor.
-        Filters by instruction types listed in the advisor's 'watch' class attribute.
-        Called after market close (last 30 min) during discovery phase.
-
-        Args:
-            instructions: Sell instruction types
-            explanation: description
-            days: Number of days to watch (default 14)
-
-        Returns:
-            int: Number of stocks added/updated in watchlist
-        """
-        from core.models import SellInstruction, Discovery
-        from datetime import date
-
-        # Find sells from today for this advisor's discoveries
-        today = date.today()
-        sells = SellInstruction.objects.filter(
-            discovery__advisor=self.advisor,
-            discovery__created__date=today,  # Sells from discoveries created today
-            instruction__in=instructions  # Filter by watch instruction types
-        ).select_related('discovery', 'discovery__stock').distinct('discovery__stock')
-
-        # Add each unique stock to watchlist - watch() handles duplicates
-        watched = 0
-        for sell in sells:
-            discovery = sell.discovery
-            self.watch(discovery.stock.symbol, explanation, days=days)
-            watched += 1
-
-        return watched
 
     def watch(self, symbol, explanation, days=14, meta=None, status=None):
         """
@@ -624,7 +589,6 @@ class AdvisorBase:
 
         logger.info(f"{self.advisor.name} added {stock.symbol} to watchlist at ${stock.price:.2f}: {explanation[:100]}")
         return watchlist_entry
-
 
     def watchlist(self):
         """

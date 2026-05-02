@@ -7,22 +7,6 @@ struct ContentView: View {
         configureTabBarAppearance()
     }
 
-    private var fundSessionTabSelection: Binding<AppTab> {
-        Binding(
-            get: {
-                if viewModel.selectedTab == .trades { return .trades }
-                return .holdings
-            },
-            set: { newTab in
-                guard viewModel.hasSelectedFund else {
-                    viewModel.selectedTab = .funds
-                    return
-                }
-                viewModel.selectedTab = (newTab == .trades) ? .trades : .holdings
-            }
-        )
-    }
-
     var body: some View {
         ZStack {
             Group {
@@ -30,7 +14,7 @@ struct ContentView: View {
                     VStack(spacing: 0) {
                         AppHeaderView(viewModel: viewModel)
                         if viewModel.hasSelectedFund {
-                            TabView(selection: fundSessionTabSelection) {
+                            TabView(selection: $viewModel.selectedTab) {
                                 HoldingsView(viewModel: viewModel)
                                     .background(appBackground)
                                     .tabItem { Label("HOLDINGS", systemImage: "chart.pie") }
@@ -40,6 +24,11 @@ struct ContentView: View {
                                     .background(appBackground)
                                     .tabItem { Label("TRADES", systemImage: "arrow.left.arrow.right") }
                                     .tag(AppTab.trades)
+
+                                AdvisoryView(viewModel: viewModel)
+                                    .background(appBackground)
+                                    .tabItem { Label("ADVISORY", systemImage: "person.3.sequence") }
+                                    .tag(AppTab.advisory)
                             }
                             .background(appBackground)
                         } else {

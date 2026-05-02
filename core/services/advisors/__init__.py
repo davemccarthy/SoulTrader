@@ -20,6 +20,7 @@ _LAZY_MODULES = frozenset(
         "intraday",
         "flux",
         "vunder",
+        "trash",
         "oscilla",
         "edgar",
     }
