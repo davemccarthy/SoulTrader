@@ -1,6 +1,7 @@
 import logging
 from datetime import timedelta
 
+from django.conf import settings
 from django.db.models import Count, F, Max, Sum
 from django.templatetags.static import static
 from django.utils import timezone
@@ -81,13 +82,13 @@ def get_holdings(request):
         discovery = discovery_map.get((holding.stock_id, latest_sa)) if latest_sa else None
         if discovery:
             item['discovery_name'] = discovery.advisor.name if discovery.advisor else ""
-            item['discovery_logo'] = _advisor_logo_url(discovery.advisor)
+            item['discovery_logo'] = _advisor_logo_absolute_url(request, discovery.advisor)
             item['discovery_comment'] = _discovery_comment(discovery.explanation)
             item['discovery_explanation'] = discovery.explanation or ""
         else:
             fallback_advisor = getattr(holding.stock, 'advisor', None)
             item['discovery_name'] = fallback_advisor.name if fallback_advisor else ""
-            item['discovery_logo'] = _advisor_logo_url(fallback_advisor)
+            item['discovery_logo'] = _advisor_logo_absolute_url(request, fallback_advisor)
             item['discovery_comment'] = None
             item['discovery_explanation'] = ""
 
@@ -162,9 +163,14 @@ def _advisor_logo_url(advisor):
 
 
 def _advisor_logo_absolute_url(request, advisor):
+    """Public URL for PNG under STATIC_URL; safe behind reverse proxies when PUBLIC_BASE_URL or proxy headers are set."""
     path = _advisor_logo_url(advisor)
     if not path:
         return None
+    base = getattr(settings, 'PUBLIC_BASE_URL', '') or ''
+    base = base.strip().rstrip('/')
+    if base:
+        return f'{base}{path}'
     return request.build_absolute_uri(path)
 
 

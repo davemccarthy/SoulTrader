@@ -156,6 +156,14 @@ STATIC_URL = '/static/'
 STATICFILES_DIRS = [BASE_DIR / 'core' / 'static']
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
+# Behind nginx / TLS termination: correct Host and scheme for request.build_absolute_uri().
+USE_X_FORWARDED_HOST = _env_bool('USE_X_FORWARDED_HOST', default=not DEBUG)
+if _env_bool('USE_SECURE_PROXY_SSL_HEADER', default=not DEBUG):
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# Optional e.g. https://klynt.com — used for advisor logo URLs in API JSON when set (always HTTPS/public host).
+PUBLIC_BASE_URL = os.getenv('PUBLIC_BASE_URL', '').strip().rstrip('/')
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
