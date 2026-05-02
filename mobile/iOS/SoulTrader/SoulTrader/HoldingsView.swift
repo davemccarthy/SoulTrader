@@ -218,8 +218,8 @@ struct HoldingDetailView: View {
                     tradeAt: nil,
                     tradePrice: nil
                 )
-                discoveryCard
                 secondaryMetaCard
+                discoveryCard
                 healthSection
             }
             .padding(.horizontal, 6)
