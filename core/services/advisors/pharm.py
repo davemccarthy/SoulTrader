@@ -986,7 +986,7 @@ class Pharm(AdvisorBase):
                 "score": candidate.get("score"),
             }
             prompt = _build_pharm_llm_prompt(task_key=task_key, article_json=article_payload)
-            _model, parsed = self.ask_ollama(prompt)
+            _model, parsed = self.ask_llm(prompt)
 
             hard_fails = _pharm_llm_hard_failures(parsed)
             if hard_fails:
