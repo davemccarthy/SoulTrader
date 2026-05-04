@@ -276,14 +276,45 @@ def get_fund_advisors(request):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+def get_fund_advisor_scoreboard(request):
+    """
+    FIFO-attributed BUY lot stats per advisor for one fund (fund-scoped trades).
+    Uses DB stock prices only (no live refresh) to keep the endpoint responsive.
+
+    GET /api/funds/advisors/scoreboard/?fund_id=26&days=30
+    """
+    from core.services.discovery_scoreboard import fund_advisor_scoreboard_rows
+
+    fund_id = request.query_params.get('fund_id')
+    if not fund_id:
+        return Response({'error': 'fund_id is required.'}, status=400)
+    try:
+        days = int(request.query_params.get('days', '30'))
+    except ValueError:
+        days = 30
+    days = max(7, min(days, 365))
+    fund = get_object_or_404(Profile, pk=int(fund_id), enabled=True)
+    rows = fund_advisor_scoreboard_rows(fund.id, days, refresh_prices=False)
+    return Response({'fund_id': fund.id, 'days': days, 'advisors': rows})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def get_advisor_discoveries(request, advisor_id: int):
     """
-    Discoveries for an advisor (newest first). Not fund-scoped.
-    GET /api/advisors/<id>/discoveries/
+    Discoveries for an advisor (newest first), lookback-filtered by created date.
+    Not fund-scoped.
+    GET /api/advisors/<id>/discoveries/?days=30
     """
     get_object_or_404(Advisor, pk=advisor_id)
+    try:
+        days = int(request.query_params.get('days', '30'))
+    except ValueError:
+        days = 30
+    days = max(7, min(days, 365))
+    cutoff = timezone.now() - timedelta(days=days)
     discoveries = (
-        Discovery.objects.filter(advisor_id=advisor_id)
+        Discovery.objects.filter(advisor_id=advisor_id, created__gte=cutoff)
         .select_related('stock', 'health')
         .order_by('-id')[:250]
     )
@@ -300,7 +331,7 @@ def get_advisor_discoveries(request, advisor_id: int):
             'explanation_line': _discovery_comment(d.explanation) or '',
             'health_score': float(d.health.score) if d.health else None,
         })
-    return Response({'advisor_id': advisor_id, 'discoveries': out})
+    return Response({'advisor_id': advisor_id, 'days': days, 'discoveries': out})
 
 
 @api_view(['GET'])

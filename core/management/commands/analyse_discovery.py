@@ -3,8 +3,7 @@ Analyse Discovery Management Command
 
 Trade-based discovery success: BUY trades in the last N days, attributed to
 advisors via Discovery(sa, stock), with outcomes from FIFO-matched SELLs or
-current holding. Outputs a scoreboard (winners vs losers, % gain/loss). No
-weight updates in this version.
+current holding. Core logic lives in core.services.discovery_scoreboard.
 
 Usage:
     python manage.py analyse_discovery           # Last 14 days (lookback from now)
@@ -12,297 +11,21 @@ Usage:
     python manage.py analyse_discovery --user joe
 """
 
-from collections import defaultdict
-from dataclasses import dataclass
-from datetime import datetime as dt, timedelta
-from decimal import Decimal
-
 from django.contrib.auth.models import User
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
-from core.models import Discovery, Holding, Stock, Trade
-
-
-# Scoreboard column keys
-COL_TRADES = "Trades"
-COL_WINNERS = "Winners"
-COL_LOSERS = "Losers"
-COL_WIN_RATE_PCT = "Win rate %"
-COL_TOTAL_PCT = "gain/loss %"
-COL_PEAK_INVEST = "peak invest"
-COL_PNL = "P&L"
-COL_RETURN_PEAK = "return"
-
-COLUMNS = (COL_TRADES, COL_WINNERS, COL_LOSERS, COL_WIN_RATE_PCT, COL_TOTAL_PCT, COL_PEAK_INVEST, COL_PNL, COL_RETURN_PEAK)
-
-
-@dataclass
-class LotOutcome:
-    """Result of FIFO for one BUY lot: cost, exit value, and advisor."""
-    advisor: str
-    cost: Decimal
-    exit_value: Decimal
-    pct: float  # (exit_value - cost) / cost * 100
-    winner: bool  # pct >= 0
-
-
-def _cutoff_lookback(days: int):
-    """Start of lookback: start of calendar day N days ago (so --days 2 includes full Thursday if today is Saturday)."""
-    now = timezone.now()
-    period_date = now.date() - timedelta(days=days)
-    midnight = dt.combine(period_date, dt.min.time())
-    if timezone.get_current_timezone():
-        return timezone.make_aware(midnight, timezone.get_current_timezone())
-    return midnight
-
-
-def _discovery_advisor_map(sa_ids, stock_ids):
-    """(sa_id, stock_id) -> advisor name. First discovery per (sa, stock) — the one that led to the buy."""
-    discoveries = (
-        Discovery.objects.filter(sa_id__in=sa_ids, stock_id__in=stock_ids)
-        .select_related("advisor")
-        .order_by("sa_id", "stock_id", "created")
-    )
-    out = {}
-    for d in discoveries:
-        key = (d.sa_id, d.stock_id)
-        if key not in out:
-            out[key] = d.advisor.name
-    return out
-
-
-def _fifo_outcomes_for_user_stock(user_id, stock_id, cutoff_dt, advisor_for_buy):
-    """
-    For (user, stock) get all BUY and SELL trades, run FIFO. Return list of
-    LotOutcome for BUYs that fall in period (sa.started >= cutoff_dt).
-    """
-    trades = (
-        Trade.objects.filter(user_id=user_id, stock_id=stock_id, action__in=("BUY", "SELL"))
-        .select_related("sa", "stock")
-        .order_by("created")
-    )
-    # Queue: list of (trade_id, shares_remaining, cost_per_share)
-    queue = []
-    # buy_id -> (shares_sold, proceeds)
-    sold_from = defaultdict(lambda: {"shares": 0, "proceeds": Decimal("0")})
-
-    for t in trades:
-        if t.action == "BUY":
-            queue.append((t.id, t.shares, t.price))
-        else:
-            # SELL: consume from queue (FIFO)
-            remaining = t.shares
-            sell_price = t.price
-            while remaining > 0 and queue:
-                buy_id, lot_shares, cost_per_share = queue[0]
-                take = min(remaining, lot_shares)
-                sold_from[buy_id]["shares"] += take
-                sold_from[buy_id]["proceeds"] += Decimal(take) * sell_price
-                remaining -= take
-                if lot_shares == take:
-                    queue.pop(0)
-                else:
-                    queue[0] = (buy_id, lot_shares - take, cost_per_share)
-
-    # Shares still open per buy_id (from queue)
-    remaining_by_buy_id = {buy_id: sh for (buy_id, sh, _) in queue}
-
-    # Build outcomes only for BUYs in period
-    outcomes = []
-    buy_trades = (
-        Trade.objects.filter(user_id=user_id, stock_id=stock_id, action="BUY")
-        .select_related("sa", "stock", "stock__advisor")
-        .order_by("created")
-    )
-    for t in buy_trades:
-        if t.sa.started < cutoff_dt:
-            continue
-        # Prefer Discovery (advisor that led to this buy); else Stock.advisor
-        advisor = advisor_for_buy.get((t.sa_id, t.stock_id))
-        if not advisor and t.stock and getattr(t.stock, "advisor_id", None):
-            advisor = t.stock.advisor.name
-        if not advisor:
-            continue
-        cost = Decimal(t.shares) * t.price
-        sold = sold_from.get(t.id, {"shares": 0, "proceeds": Decimal("0")})
-        proceeds = sold["proceeds"]
-        shares_remaining = remaining_by_buy_id.get(t.id, 0)
-        current_price = t.stock.price if t.stock else Decimal("0")
-        exit_value = proceeds + (Decimal(shares_remaining) * current_price)
-        if cost and cost > 0:
-            pct = float((exit_value - cost) / cost * 100)
-        else:
-            pct = 0.0
-        outcomes.append(
-            LotOutcome(
-                advisor=advisor,
-                cost=cost,
-                exit_value=exit_value,
-                pct=pct,
-                winner=(pct >= 0),
-            )
-        )
-    return outcomes
-
-
-def _run_fifo_and_collect_lots(buy_trades_in_period, advisor_for_buy, cutoff_dt):
-    """
-    For each (user, stock) that appears in buy_trades_in_period, run FIFO and
-    collect LotOutcome for BUYs in period. Return list of LotOutcome. Current
-    price for open lots must be set later (we'll refresh stocks).
-    """
-    # Group period BUYs by (user_id, stock_id)
-    by_user_stock = defaultdict(list)
-    for t in buy_trades_in_period:
-        by_user_stock[(t.user_id, t.stock_id)].append(t)
-
-    all_outcomes = []
-    stocks_to_refresh = set()
-
-    for (user_id, stock_id), buys in by_user_stock.items():
-        outcomes = _fifo_outcomes_for_user_stock(user_id, stock_id, cutoff_dt, advisor_for_buy)
-        for o in outcomes:
-            all_outcomes.append(o)
-        # We need current price for this stock for any open lot - will refresh below
-        stocks_to_refresh.add(stock_id)
-
-    return all_outcomes, stocks_to_refresh
-
-
-def _refresh_stock_prices(stock_ids):
-    """Update Stock.price for given ids (persisted to DB for later queries)."""
-    for stock in Stock.objects.filter(id__in=stock_ids):
-        stock.refresh()
-
-
-def _peak_holdings_cost(user_ids, cutoff):
-    """
-    Maximum total cost basis in holdings at any time in the lookback window.
-    Walks all BUY/SELL trades for user_ids with created >= cutoff, FIFO per (user, stock).
-    Returns float (peak cost) or 0.0 if no trades.
-    """
-    trades = (
-        Trade.objects.filter(
-            user_id__in=user_ids,
-            action__in=("BUY", "SELL"),
-            created__gte=cutoff,
-        )
-        .order_by("created")
-    )
-    # (user_id, stock_id) -> list of (shares_remaining, cost_per_share)
-    positions = defaultdict(list)
-    peak = Decimal("0")
-
-    for t in trades:
-        key = (t.user_id, t.stock_id)
-        if t.action == "BUY":
-            positions[key].append((t.shares, t.price))
-        else:
-            remaining = t.shares
-            while remaining > 0 and positions[key]:
-                lot_shares, cost_per_share = positions[key][0]
-                take = min(remaining, lot_shares)
-                remaining -= take
-                if lot_shares == take:
-                    positions[key].pop(0)
-                else:
-                    positions[key][0] = (lot_shares - take, cost_per_share)
-
-        total_cost = sum(
-            Decimal(str(sh)) * Decimal(str(cost))
-            for (user_id, stock_id), lots in positions.items()
-            for sh, cost in lots
-        )
-        if total_cost > peak:
-            peak = total_cost
-
-    return float(peak)
-
-
-def _build_scoreboard(lot_outcomes, return_peak_pct=None, peak_cost=None):
-    """From list of LotOutcome, build (row, col) -> value. return_peak_pct and peak_cost only on Total row."""
-    by_advisor = defaultdict(list)
-    for o in lot_outcomes:
-        by_advisor[o.advisor].append(o)
-
-    scoreboard = {}
-
-    for advisor, outcomes in sorted(by_advisor.items()):
-        n = len(outcomes)
-        winners = sum(1 for o in outcomes if o.winner)
-        losers = n - winners
-        win_rate = (winners / n * 100) if n else 0.0
-        total_cost = sum(o.cost for o in outcomes)
-        total_exit = sum(o.exit_value for o in outcomes)
-        total_pct = float((total_exit - total_cost) / total_cost * 100) if total_cost else 0.0
-        pnl = float(total_exit - total_cost)
-
-        scoreboard[(advisor, COL_TRADES)] = n
-        scoreboard[(advisor, COL_WINNERS)] = winners
-        scoreboard[(advisor, COL_LOSERS)] = losers
-        scoreboard[(advisor, COL_WIN_RATE_PCT)] = win_rate
-        scoreboard[(advisor, COL_TOTAL_PCT)] = total_pct
-        scoreboard[(advisor, COL_PNL)] = pnl
-
-    # Total row
-    if by_advisor:
-        n_total = len(lot_outcomes)
-        winners_total = sum(1 for o in lot_outcomes if o.winner)
-        scoreboard[("Total", COL_TRADES)] = n_total
-        scoreboard[("Total", COL_WINNERS)] = winners_total
-        scoreboard[("Total", COL_LOSERS)] = n_total - winners_total
-        scoreboard[("Total", COL_WIN_RATE_PCT)] = (winners_total / n_total * 100) if n_total else 0.0
-        total_cost_all = sum(o.cost for o in lot_outcomes)
-        total_exit_all = sum(o.exit_value for o in lot_outcomes)
-        scoreboard[("Total", COL_TOTAL_PCT)] = (
-            float((total_exit_all - total_cost_all) / total_cost_all * 100) if total_cost_all else 0.0
-        )
-        if peak_cost is not None:
-            scoreboard[("Total", COL_PEAK_INVEST)] = peak_cost
-        scoreboard[("Total", COL_PNL)] = float(total_exit_all - total_cost_all)
-        if return_peak_pct is not None:
-            scoreboard[("Total", COL_RETURN_PEAK)] = return_peak_pct
-
-    return scoreboard
-
-
-def _print_scoreboard(scoreboard, stdout, cols=COLUMNS):
-    """Print scoreboard as fixed-width table."""
-    rows = sorted({r for (r, c) in scoreboard}, key=lambda x: (x != "Total", x))
-    if not rows:
-        return
-
-    width = {c: max(len(c), 8) for c in cols}
-    for (r, c), v in scoreboard.items():
-        if c in (COL_TRADES, COL_WINNERS, COL_LOSERS):
-            width[c] = max(width[c], len(str(int(v))))
-        elif c in (COL_PNL, COL_PEAK_INVEST):
-            width[c] = max(width[c], len(f"{v:,.2f}"))
-        elif c == COL_RETURN_PEAK and v != "" and v is not None:
-            width[c] = max(width[c], len(f"{v:.1f}"))
-        else:
-            width[c] = max(width[c], len(f"{v:.1f}"))
-    row_label_width = max(len(r) for r in rows)
-
-    sep = "  "
-    header = sep.join(c.ljust(width[c]) for c in cols)
-    stdout.write((" " * row_label_width) + sep + header)
-    stdout.write("-" * (row_label_width + len(sep) + sum(width[c] for c in cols) + len(sep) * (len(cols) - 1)))
-
-    for r in rows:
-        cells = []
-        for c in cols:
-            v = scoreboard.get((r, c), "")
-            if c in (COL_TRADES, COL_WINNERS, COL_LOSERS):
-                cells.append(str(int(v)).rjust(width[c]))
-            elif c in (COL_PNL, COL_PEAK_INVEST):
-                cells.append((f"{v:,.2f}" if v != "" and v is not None else "-").rjust(width[c]))
-            elif c == COL_RETURN_PEAK:
-                cells.append((f"{v:.1f}" if v != "" and v is not None else "-").rjust(width[c]))
-            else:
-                cells.append(f"{v:.1f}".rjust(width[c]))
-        stdout.write(r.ljust(row_label_width) + sep + sep.join(cells))
+from core.models import Trade
+from core.services.discovery_scoreboard import (
+    COLUMNS,
+    build_scoreboard,
+    cutoff_lookback,
+    discovery_advisor_map,
+    peak_holdings_cost,
+    print_scoreboard,
+    refresh_stock_prices,
+    run_fifo_and_collect_lots,
+)
 
 
 class Command(BaseCommand):
@@ -341,7 +64,7 @@ class Command(BaseCommand):
         if days is None:
             days = 14
 
-        cutoff = _cutoff_lookback(days)
+        cutoff = cutoff_lookback(days)
         qs = Trade.objects.filter(
             action="BUY",
             sa__started__gte=cutoff,
@@ -357,27 +80,25 @@ class Command(BaseCommand):
 
         sa_ids = [t.sa_id for t in buy_list]
         stock_ids = [t.stock_id for t in buy_list]
-        advisor_for_buy = _discovery_advisor_map(sa_ids, stock_ids)
+        advisor_for_buy = discovery_advisor_map(sa_ids, stock_ids)
 
-        # Refresh current prices for stocks that might have open positions
-        stocks_to_refresh = set(stock_ids)
-        _refresh_stock_prices(stocks_to_refresh)
+        refresh_stock_prices(set(stock_ids))
 
-        lot_outcomes, _ = _run_fifo_and_collect_lots(buy_list, advisor_for_buy, cutoff)
+        lot_outcomes, _ = run_fifo_and_collect_lots(buy_list, advisor_for_buy, cutoff)
 
         if not lot_outcomes:
             self.stdout.write(self.style.WARNING("No BUY lots in period could be attributed to an advisor."))
             return
 
         user_ids = list({t.user_id for t in buy_list})
-        peak_cost = _peak_holdings_cost(user_ids, cutoff)
+        peak_cost = peak_holdings_cost(user_ids, cutoff)
         total_pnl = sum(float(o.exit_value - o.cost) for o in lot_outcomes)
         return_peak_pct = (total_pnl / peak_cost * 100) if peak_cost and peak_cost > 0 else None
 
-        scoreboard = _build_scoreboard(
+        scoreboard = build_scoreboard(
             lot_outcomes, return_peak_pct=return_peak_pct, peak_cost=peak_cost if peak_cost else None
         )
         period_msg = f"last {days} days"
         user_note = f" (user: {username})" if username else ""
         self.stdout.write(f"\nDiscovery success (BUY trades, {period_msg}){user_note}\n")
-        _print_scoreboard(scoreboard, self.stdout)
+        print_scoreboard(scoreboard, self.stdout, cols=COLUMNS)

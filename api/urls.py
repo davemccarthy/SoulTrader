@@ -12,6 +12,7 @@ urlpatterns = [
 
     # Funds
     path('funds/', views.get_funds, name='funds'),
+    path('funds/advisors/scoreboard/', views.get_fund_advisor_scoreboard, name='fund_advisor_scoreboard'),
     path('funds/advisors/', views.get_fund_advisors, name='fund_advisors'),
     path('advisors/<int:advisor_id>/discoveries/', views.get_advisor_discoveries, name='advisor_discoveries'),
     path('discoveries/<int:discovery_id>/', views.get_discovery_detail, name='discovery_detail'),

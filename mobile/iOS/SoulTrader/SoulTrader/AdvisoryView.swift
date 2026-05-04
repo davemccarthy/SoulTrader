@@ -1,13 +1,18 @@
 import SwiftUI
 
 struct AdvisoryView: View {
+    /// Must match `fetchFundAdvisorScoreboard(days:)` and LOOKBACK column.
+    private let scoreboardLookbackDays = 30
+
     @ObservedObject var viewModel: AuthViewModel
+    @State private var path = NavigationPath()
     @State private var advisors: [FundAdvisorRow] = []
+    @State private var statsByAdvisorId: [Int: AdvisorScoreboardRow] = [:]
     @State private var loadError: String?
     @State private var isLoading = false
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Group {
                 if isLoading && advisors.isEmpty && loadError == nil {
                     ProgressView()
@@ -24,16 +29,28 @@ struct AdvisoryView: View {
                         .padding()
                 } else {
                     List {
+                        AdvisoryTopSummaryCard(
+                            advisorCount: advisors.count,
+                            winners: statsByAdvisorId.values.reduce(0) { $0 + $1.winners },
+                            losers: statsByAdvisorId.values.reduce(0) { $0 + $1.losers },
+                            lookbackDays: scoreboardLookbackDays
+                        )
+                        .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 8, trailing: 6))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+
                         ForEach(advisors) { row in
-                            NavigationLink(
-                                value: AdvisorNav(
-                                    id: row.id,
-                                    name: row.name,
-                                    description: row.description,
-                                    imageUrl: row.imageUrl
+                            Button {
+                                path.append(
+                                    AdvisorNav(
+                                        id: row.id,
+                                        name: row.name,
+                                        description: row.description,
+                                        imageUrl: row.imageUrl
+                                    )
                                 )
-                            ) {
-                                advisorRow(row)
+                            } label: {
+                                advisorRow(row, stats: statsByAdvisorId[row.id])
                             }
                             .buttonStyle(.plain)
                             .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
@@ -50,10 +67,13 @@ struct AdvisoryView: View {
             .navigationDestination(for: AdvisorNav.self) { nav in
                 AdvisorDiscoveriesView(
                     viewModel: viewModel,
+                    navigationPath: $path,
                     advisorId: nav.id,
                     advisorName: nav.name,
                     advisorDescription: nav.description,
-                    advisorImageUrl: nav.imageUrl
+                    advisorImageUrl: nav.imageUrl,
+                    advisorStats: statsByAdvisorId[nav.id],
+                    lookbackDays: scoreboardLookbackDays
                 )
             }
             .navigationDestination(for: DiscoveryDetailNav.self) { nav in
@@ -65,12 +85,15 @@ struct AdvisoryView: View {
             }
         }
         .task(id: viewModel.selectedFundId) { await load() }
+        .onChange(of: viewModel.selectedFundId) { _, _ in
+            path = NavigationPath()
+        }
         .onChange(of: viewModel.selectedTab) { _, tab in
             if tab == .advisory { Task { await load() } }
         }
     }
 
-    private func advisorRow(_ row: FundAdvisorRow) -> some View {
+    private func advisorRow(_ row: FundAdvisorRow, stats: AdvisorScoreboardRow?) -> some View {
         HStack(alignment: .top, spacing: 12) {
             advisorImage(urlString: row.imageUrl)
                 .frame(width: 44, height: 44)
@@ -83,6 +106,17 @@ struct AdvisoryView: View {
                         .font(.subheadline)
                         .foregroundStyle(Theme.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
+                }
+                if let s = stats {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("\(s.trades) \(s.trades == 1 ? "buy" : "buys") · \(String(format: "%.0f%%", s.winRate)) win · \(formatGainLoss(s.gainLossPct))")
+                            .font(.caption2)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(Theme.labelAccent)
+                        AdvisorWinRateBar(winRate: s.winRate)
+                            .frame(maxWidth: 200)
+                    }
+                    .padding(.top, 2)
                 }
             }
             Spacer(minLength: 8)
@@ -100,6 +134,11 @@ struct AdvisoryView: View {
         }
         .padding(10)
         .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func formatGainLoss(_ pct: Double) -> String {
+        let sign = pct > 0 ? "+" : ""
+        return "\(sign)\(String(format: "%.1f", pct))%"
     }
 
     @ViewBuilder
@@ -127,7 +166,6 @@ struct AdvisoryView: View {
     private func load() async {
         guard viewModel.hasSelectedFund else { return }
         isLoading = true
-        defer { isLoading = false }
         do {
             let r = try await viewModel.fetchFundAdvisors()
             advisors = r.advisors
@@ -135,7 +173,36 @@ struct AdvisoryView: View {
         } catch {
             loadError = error.localizedDescription
             advisors = []
+            statsByAdvisorId = [:]
+            isLoading = false
+            return
         }
+        isLoading = false
+
+        if let s = try? await viewModel.fetchFundAdvisorScoreboard(days: scoreboardLookbackDays) {
+            statsByAdvisorId = Dictionary(uniqueKeysWithValues: s.advisors.map { ($0.advisorId, $0) })
+        } else {
+            statsByAdvisorId = [:]
+        }
+    }
+}
+
+/// Win rate 0…100% as a horizontal bar (30-day attributed BUYs from API scoreboard).
+private struct AdvisorWinRateBar: View {
+    let winRate: Double
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width * min(1, max(0, winRate / 100))
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.white.opacity(0.12))
+                Capsule()
+                    .fill(winRate >= 50 ? Color.green.opacity(0.75) : Color.orange.opacity(0.7))
+                    .frame(width: max(3, w))
+            }
+        }
+        .frame(height: 6)
     }
 }
 
@@ -143,10 +210,13 @@ struct AdvisoryView: View {
 
 struct AdvisorDiscoveriesView: View {
     @ObservedObject var viewModel: AuthViewModel
+    @Binding var navigationPath: NavigationPath
     let advisorId: Int
     let advisorName: String
     let advisorDescription: String
     let advisorImageUrl: String?
+    let advisorStats: AdvisorScoreboardRow?
+    let lookbackDays: Int
 
     @Environment(\.dismiss) private var dismiss
     @State private var discoveries: [AdvisorDiscoveryRow] = []
@@ -158,6 +228,8 @@ struct AdvisorDiscoveriesView: View {
             discoveriesHeaderCard
                 .padding(.horizontal, 6)
                 .padding(.top, 6)
+            discoveriesSummaryCard
+                .padding(.horizontal, 6)
 
             Group {
                 if isLoading && discoveries.isEmpty && loadError == nil {
@@ -175,7 +247,9 @@ struct AdvisorDiscoveriesView: View {
                 } else {
                     List {
                         ForEach(discoveries) { row in
-                            NavigationLink(value: DiscoveryDetailNav(discoveryId: row.id)) {
+                            Button {
+                                navigationPath.append(DiscoveryDetailNav(discoveryId: row.id))
+                            } label: {
                                 discoveryRow(row)
                             }
                             .buttonStyle(.plain)
@@ -238,6 +312,64 @@ struct AdvisorDiscoveriesView: View {
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
         .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var discoveriesSummaryCard: some View {
+        let buys = advisorStats?.trades
+        let winRate = advisorStats?.winRate
+        let pnlPct = advisorStats?.gainLossPct
+        return HStack(alignment: .top, spacing: 10) {
+            discoverySummaryMetric(
+                title: "STOCKS",
+                value: String(discoveries.count),
+                valueColor: Theme.valuePrimary
+            )
+            discoverySummaryMetric(
+                title: "BUYS",
+                value: buys.map(String.init) ?? "—",
+                valueColor: Theme.valuePrimary
+            )
+            discoverySummaryMetric(
+                title: "WINS",
+                value: winRate.map { String(format: "%.0f%%", $0) } ?? "—",
+                valueColor: Theme.valuePrimary
+            )
+            discoverySummaryMetric(
+                title: "P&L %",
+                value: pnlPct.map(formatPnlPercent) ?? "—",
+                valueColor: pnlPercentColor(pnlPct)
+            )
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func discoverySummaryMetric(title: String, value: String, valueColor: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption2)
+                .fontWeight(.semibold)
+                .foregroundStyle(Theme.labelAccent)
+            Text(value)
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .foregroundStyle(valueColor)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func formatPnlPercent(_ pct: Double) -> String {
+        let sign = pct > 0 ? "+" : ""
+        return "\(sign)\(String(format: "%.1f", pct))%"
+    }
+
+    private func pnlPercentColor(_ pct: Double?) -> Color {
+        guard let pct else { return Theme.valuePrimary }
+        if pct > 0 { return .green }
+        if pct < 0 { return .red }
+        return Theme.valuePrimary
     }
 
     @ViewBuilder
@@ -340,7 +472,7 @@ struct AdvisorDiscoveriesView: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            let r = try await viewModel.fetchAdvisorDiscoveries(advisorId: advisorId)
+            let r = try await viewModel.fetchAdvisorDiscoveries(advisorId: advisorId, days: lookbackDays)
             discoveries = r.discoveries
             loadError = nil
         } catch {

@@ -462,6 +462,33 @@ struct FundAdvisorsResponse: Decodable {
     }
 }
 
+struct AdvisorScoreboardRow: Decodable, Equatable {
+    let advisorId: Int
+    let trades: Int
+    let winners: Int
+    let losers: Int
+    let winRate: Double
+    let gainLossPct: Double
+
+    private enum CodingKeys: String, CodingKey {
+        case advisorId = "advisor_id"
+        case trades, winners, losers
+        case winRate = "win_rate"
+        case gainLossPct = "gain_loss_pct"
+    }
+}
+
+struct FundAdvisorScoreboardResponse: Decodable {
+    let fundId: Int
+    let days: Int
+    let advisors: [AdvisorScoreboardRow]
+
+    private enum CodingKeys: String, CodingKey {
+        case fundId = "fund_id"
+        case days, advisors
+    }
+}
+
 struct AdvisorDiscoveryStock: Decodable {
     let symbol: String
     let company: String
@@ -484,10 +511,12 @@ struct AdvisorDiscoveryRow: Decodable, Identifiable {
 
 struct AdvisorDiscoveriesResponse: Decodable {
     let advisorId: Int
+    let days: Int?
     let discoveries: [AdvisorDiscoveryRow]
 
     private enum CodingKeys: String, CodingKey {
         case advisorId = "advisor_id"
+        case days
         case discoveries
     }
 }
@@ -712,9 +741,24 @@ struct APIClient {
         return try JSONDecoder().decode(FundAdvisorsResponse.self, from: data)
     }
 
-    func fetchAdvisorDiscoveries(accessToken: String, advisorId: Int) async throws -> AdvisorDiscoveriesResponse {
-        let url = endpoint("advisors/\(advisorId)/discoveries/")
-        var request = URLRequest(url: url)
+    func fetchFundAdvisorScoreboard(accessToken: String, fundId: Int, days: Int = 30) async throws -> FundAdvisorScoreboardResponse {
+        var components = URLComponents(url: endpoint("funds/advisors/scoreboard/"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "fund_id", value: String(fundId)),
+            URLQueryItem(name: "days", value: String(days)),
+        ]
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(FundAdvisorScoreboardResponse.self, from: data)
+    }
+
+    func fetchAdvisorDiscoveries(accessToken: String, advisorId: Int, days: Int = 30) async throws -> AdvisorDiscoveriesResponse {
+        var components = URLComponents(url: endpoint("advisors/\(advisorId)/discoveries/"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "days", value: String(days))]
+        var request = URLRequest(url: components.url!)
         request.httpMethod = "GET"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: request)
@@ -895,9 +939,14 @@ final class AuthViewModel: ObservableObject {
         return try await apiClient.fetchFundAdvisors(accessToken: access, fundId: fundId)
     }
 
-    func fetchAdvisorDiscoveries(advisorId: Int) async throws -> AdvisorDiscoveriesResponse {
+    func fetchFundAdvisorScoreboard(days: Int = 30) async throws -> FundAdvisorScoreboardResponse {
+        guard let access = tokenStore.getAccessToken(), let fundId = selectedFundId else { throw APIError.missingToken }
+        return try await apiClient.fetchFundAdvisorScoreboard(accessToken: access, fundId: fundId, days: days)
+    }
+
+    func fetchAdvisorDiscoveries(advisorId: Int, days: Int = 30) async throws -> AdvisorDiscoveriesResponse {
         guard let access = tokenStore.getAccessToken() else { throw APIError.missingToken }
-        return try await apiClient.fetchAdvisorDiscoveries(accessToken: access, advisorId: advisorId)
+        return try await apiClient.fetchAdvisorDiscoveries(accessToken: access, advisorId: advisorId, days: days)
     }
 
     func fetchDiscoveryDetail(discoveryId: Int) async throws -> DiscoveryDetailResponse {
@@ -1078,6 +1127,43 @@ struct FundSummaryCard: View {
         if normalized > 0 { return .green }
         if normalized < 0 { return .red }
         return Theme.valuePrimary
+    }
+}
+
+/// Advisory tab strip: matches `FundSecondarySummaryCard` alignment (leading first column, trailing others).
+struct AdvisoryTopSummaryCard: View {
+    let advisorCount: Int
+    let winners: Int
+    let losers: Int
+    let lookbackDays: Int
+
+    var body: some View {
+        SummaryMetricCard(items: [
+            SummaryMetricItem(
+                title: "ADVISORS",
+                value: String(advisorCount),
+                color: Theme.valuePrimary,
+                alignment: .leading
+            ),
+            SummaryMetricItem(
+                title: "WINNERS",
+                value: String(winners),
+                color: .green,
+                alignment: .trailing
+            ),
+            SummaryMetricItem(
+                title: "LOSERS",
+                value: String(losers),
+                color: .red,
+                alignment: .trailing
+            ),
+            SummaryMetricItem(
+                title: "LOOKBACK",
+                value: "\(lookbackDays)d",
+                color: Theme.secondaryText,
+                alignment: .trailing
+            ),
+        ])
     }
 }
 
