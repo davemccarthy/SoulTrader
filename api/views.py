@@ -235,12 +235,19 @@ def get_funds(request):
 def get_fund_advisors(request):
     """
     Advisors listed on a fund's Profile.advisors (ordered).
-    Omits python_class entries with no Advisor row. Discovery count is global per advisor.
-    GET /api/funds/advisors/?fund_id=26
+    Omits python_class entries with no Advisor row.
+    Discovery count uses lookback filter (default 30d) for consistency with advisory scoreboard/discoveries.
+    GET /api/funds/advisors/?fund_id=26&days=30
     """
     fund_id = request.query_params.get('fund_id')
     if not fund_id:
         return Response({'error': 'fund_id is required.'}, status=400)
+    try:
+        days = int(request.query_params.get('days', '30'))
+    except ValueError:
+        days = 30
+    days = max(7, min(days, 365))
+    cutoff = timezone.now() - timedelta(days=days)
     fund = get_object_or_404(Profile, pk=int(fund_id), enabled=True)
 
     pcs_ordered = list(fund.advisors or [])
@@ -255,7 +262,7 @@ def get_fund_advisors(request):
     if advisor_ids:
         counts = {
             row['advisor_id']: row['n']
-            for row in Discovery.objects.filter(advisor_id__in=advisor_ids)
+            for row in Discovery.objects.filter(advisor_id__in=advisor_ids, created__gte=cutoff)
             .values('advisor_id')
             .annotate(n=Count('id'))
         }
@@ -271,7 +278,7 @@ def get_fund_advisors(request):
             'image_url': _advisor_logo_absolute_url(request, adv),
         })
 
-    return Response({'fund_id': fund.id, 'advisors': advisors_out})
+    return Response({'fund_id': fund.id, 'days': days, 'advisors': advisors_out})
 
 
 @api_view(['GET'])

@@ -454,10 +454,12 @@ struct FundAdvisorRow: Decodable, Identifiable {
 
 struct FundAdvisorsResponse: Decodable {
     let fundId: Int
+    let days: Int?
     let advisors: [FundAdvisorRow]
 
     private enum CodingKeys: String, CodingKey {
         case fundId = "fund_id"
+        case days
         case advisors
     }
 }
@@ -730,9 +732,12 @@ struct APIClient {
         return try JSONDecoder().decode([TradeResponse].self, from: data)
     }
 
-    func fetchFundAdvisors(accessToken: String, fundId: Int) async throws -> FundAdvisorsResponse {
+    func fetchFundAdvisors(accessToken: String, fundId: Int, days: Int = 30) async throws -> FundAdvisorsResponse {
         var components = URLComponents(url: endpoint("funds/advisors/"), resolvingAgainstBaseURL: false)!
-        components.queryItems = [URLQueryItem(name: "fund_id", value: String(fundId))]
+        components.queryItems = [
+            URLQueryItem(name: "fund_id", value: String(fundId)),
+            URLQueryItem(name: "days", value: String(days)),
+        ]
         var request = URLRequest(url: components.url!)
         request.httpMethod = "GET"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
@@ -934,9 +939,9 @@ final class AuthViewModel: ObservableObject {
         }
     }
 
-    func fetchFundAdvisors() async throws -> FundAdvisorsResponse {
+    func fetchFundAdvisors(days: Int = 30) async throws -> FundAdvisorsResponse {
         guard let access = tokenStore.getAccessToken(), let fundId = selectedFundId else { throw APIError.missingToken }
-        return try await apiClient.fetchFundAdvisors(accessToken: access, fundId: fundId)
+        return try await apiClient.fetchFundAdvisors(accessToken: access, fundId: fundId, days: days)
     }
 
     func fetchFundAdvisorScoreboard(days: Int = 30) async throws -> FundAdvisorScoreboardResponse {
@@ -1039,6 +1044,7 @@ private struct SummaryMetricItem {
     let value: String
     let color: Color
     let alignment: SummaryMetricAlignment
+    var onTap: (() -> Void)? = nil
 }
 
 private struct SummaryMetricCard: View {
@@ -1059,6 +1065,10 @@ private struct SummaryMetricCard: View {
                         .lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: item.alignment == .leading ? .leading : .trailing)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    item.onTap?()
+                }
             }
         }
         .padding(.horizontal, 10)
@@ -1136,6 +1146,7 @@ struct AdvisoryTopSummaryCard: View {
     let winners: Int
     let losers: Int
     let lookbackDays: Int
+    var onTapLookback: (() -> Void)? = nil
 
     var body: some View {
         SummaryMetricCard(items: [
@@ -1161,7 +1172,8 @@ struct AdvisoryTopSummaryCard: View {
                 title: "LOOKBACK",
                 value: "\(lookbackDays)d",
                 color: Theme.secondaryText,
-                alignment: .trailing
+                alignment: .trailing,
+                onTap: onTapLookback
             ),
         ])
     }

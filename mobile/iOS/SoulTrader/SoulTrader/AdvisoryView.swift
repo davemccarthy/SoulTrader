@@ -1,13 +1,14 @@
 import SwiftUI
 
 struct AdvisoryView: View {
-    /// Must match `fetchFundAdvisorScoreboard(days:)` and LOOKBACK column.
-    private let scoreboardLookbackDays = 30
+    /// Tap-to-cycle values for advisory lookback.
+    private let lookbackOptions = [7, 30, 90]
 
     @ObservedObject var viewModel: AuthViewModel
     @State private var path = NavigationPath()
     @State private var advisors: [FundAdvisorRow] = []
     @State private var statsByAdvisorId: [Int: AdvisorScoreboardRow] = [:]
+    @State private var selectedLookbackDays = 30
     @State private var loadError: String?
     @State private var isLoading = false
 
@@ -33,7 +34,8 @@ struct AdvisoryView: View {
                             advisorCount: advisors.count,
                             winners: statsByAdvisorId.values.reduce(0) { $0 + $1.winners },
                             losers: statsByAdvisorId.values.reduce(0) { $0 + $1.losers },
-                            lookbackDays: scoreboardLookbackDays
+                            lookbackDays: selectedLookbackDays,
+                            onTapLookback: cycleLookback
                         )
                         .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 8, trailing: 6))
                         .listRowBackground(Color.clear)
@@ -73,7 +75,7 @@ struct AdvisoryView: View {
                     advisorDescription: nav.description,
                     advisorImageUrl: nav.imageUrl,
                     advisorStats: statsByAdvisorId[nav.id],
-                    lookbackDays: scoreboardLookbackDays
+                    lookbackDays: selectedLookbackDays
                 )
             }
             .navigationDestination(for: DiscoveryDetailNav.self) { nav in
@@ -87,6 +89,9 @@ struct AdvisoryView: View {
         .task(id: viewModel.selectedFundId) { await load() }
         .onChange(of: viewModel.selectedFundId) { _, _ in
             path = NavigationPath()
+        }
+        .onChange(of: selectedLookbackDays) { _, _ in
+            Task { await load() }
         }
         .onChange(of: viewModel.selectedTab) { _, tab in
             if tab == .advisory { Task { await load() } }
@@ -165,12 +170,15 @@ struct AdvisoryView: View {
 
     private func load() async {
         guard viewModel.hasSelectedFund else { return }
+        let days = selectedLookbackDays
         isLoading = true
         do {
-            let r = try await viewModel.fetchFundAdvisors()
+            let r = try await viewModel.fetchFundAdvisors(days: days)
+            guard days == selectedLookbackDays else { return }
             advisors = r.advisors
             loadError = nil
         } catch {
+            guard days == selectedLookbackDays else { return }
             loadError = error.localizedDescription
             advisors = []
             statsByAdvisorId = [:]
@@ -179,11 +187,22 @@ struct AdvisoryView: View {
         }
         isLoading = false
 
-        if let s = try? await viewModel.fetchFundAdvisorScoreboard(days: scoreboardLookbackDays) {
+        if let s = try? await viewModel.fetchFundAdvisorScoreboard(days: days) {
+            guard days == selectedLookbackDays else { return }
             statsByAdvisorId = Dictionary(uniqueKeysWithValues: s.advisors.map { ($0.advisorId, $0) })
         } else {
+            guard days == selectedLookbackDays else { return }
             statsByAdvisorId = [:]
         }
+    }
+
+    private func cycleLookback() {
+        guard let idx = lookbackOptions.firstIndex(of: selectedLookbackDays) else {
+            selectedLookbackDays = lookbackOptions.first ?? 30
+            return
+        }
+        let next = (idx + 1) % lookbackOptions.count
+        selectedLookbackDays = lookbackOptions[next]
     }
 }
 
