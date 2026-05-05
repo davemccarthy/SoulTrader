@@ -1224,8 +1224,8 @@ Respond with only a single valid JSON object, no other text.
         title_lower = title.lower() if title else ""
         filter_phrases = [
             "stock market", "market today", "today nasdaq", "nasdaq futures", "futures slip", "analyst questions", "stocks",
-            "microsoft", "alphabet", "google", "amazon", "meta", "apple", "tesla", "nvidia",
-            "msft", "googl", "goog", "amzn", "meta", "aapl", "tsla"
+            "microsoft", "alphabet", "google", "amazon", "meta", "apple", "tesla", "nvidia", "broadcom inc"
+            "msft", "googl", "goog", "amzn", "meta", "aapl", "tsla", "avgo"
         ]
 
 
