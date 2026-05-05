@@ -1398,6 +1398,7 @@
                     <a href="{% url 'core:funds' %}" {% if current_page == 'funds' %}class="active"{% endif %}>Funds</a>
                     <a href="{% url 'core:holdings' %}" class="{% if current_page == 'holdings' %}active {% endif %}{% if not current_fund %}nav-disabled{% endif %}">Holdings</a>
                     <a href="{% url 'core:trades' %}" class="{% if current_page == 'trades' %}active {% endif %}{% if not current_fund %}nav-disabled{% endif %}">Trades</a>
+                    <a href="{% url 'core:advisory' %}" class="{% if current_page == 'advisory' %}active {% endif %}{% if not current_fund %}nav-disabled{% endif %}">Advisory</a>
                 {% endif %}
             </nav>
 

@@ -2,7 +2,7 @@ from django.shortcuts import render, redirect
 from django.contrib.auth import login, authenticate, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib import messages
-from django.db.models import F, Q, Case, When, Value, CharField, Max
+from django.db.models import F, Q, Case, When, Value, CharField, Max, Count
 from django.http import JsonResponse, Http404
 from django.templatetags.static import static
 from django.utils import timezone
@@ -14,7 +14,7 @@ import logging
 
 import yfinance as yf
 
-from .models import Profile, Holding, Discovery, Trade, Recommendation, SellInstruction, Health, Snapshot
+from .models import Profile, Holding, Discovery, Trade, Recommendation, SellInstruction, Health, Snapshot, Advisor
 from .fund_session import (
     get_current_fund,
     init_fund_session_after_login,
@@ -22,6 +22,7 @@ from .fund_session import (
     clear_fund_session,
 )
 from .portfolio_metrics import get_portfolio_dashboard_data
+from .services.discovery_scoreboard import fund_advisor_scoreboard_rows
 
 
 logger = logging.getLogger(__name__)
@@ -977,3 +978,64 @@ def trades(request):
     return render(request, 'core/trades.html', context)
 
 
+@login_required
+def advisory(request):
+    """Advisory page - advisor list with simple lookback stats for the selected fund."""
+    fund = get_current_fund(request)
+    if fund is None:
+        return redirect('core:funds')
+
+    lookback_options = (7, 30, 90)
+    try:
+        lookback_days = int(request.GET.get('days', 30))
+    except (TypeError, ValueError):
+        lookback_days = 30
+    if lookback_days not in lookback_options:
+        lookback_days = 30
+
+    cutoff = timezone.now() - datetime.timedelta(days=lookback_days)
+    python_classes = list(fund.advisors or [])
+
+    advisors = list(Advisor.objects.filter(python_class__in=python_classes))
+    advisor_by_class = {advisor.python_class: advisor for advisor in advisors}
+    ordered_advisors = [advisor_by_class[pc] for pc in python_classes if pc in advisor_by_class]
+    advisor_ids = [advisor.id for advisor in ordered_advisors]
+
+    discovery_counts = {}
+    if advisor_ids:
+        discovery_counts = {
+            row['advisor_id']: row['n']
+            for row in (
+                Discovery.objects
+                .filter(advisor_id__in=advisor_ids, created__gte=cutoff)
+                .values('advisor_id')
+                .annotate(n=Count('id'))
+            )
+        }
+
+    scoreboard_rows = fund_advisor_scoreboard_rows(fund.id, lookback_days, refresh_prices=False)
+    scoreboard_by_advisor_id = {row['advisor_id']: row for row in scoreboard_rows}
+
+    advisory_rows = []
+    for advisor in ordered_advisors:
+        score = scoreboard_by_advisor_id.get(advisor.id, {})
+        advisory_rows.append({
+            'id': advisor.id,
+            'name': advisor.name,
+            'description': advisor.description or '',
+            'discovery_count': discovery_counts.get(advisor.id, 0),
+            'winners': score.get('winners', 0),
+            'losers': score.get('losers', 0),
+            'trades': score.get('trades', 0),
+            'win_rate': score.get('win_rate', 0.0),
+            'gain_loss_pct': score.get('gain_loss_pct', 0.0),
+            'logo_url': _advisor_logo_url(advisor),
+        })
+
+    context = {
+        'current_page': 'advisory',
+        'lookback_days': lookback_days,
+        'lookback_options': lookback_options,
+        'advisory_rows': advisory_rows,
+    }
+    return render(request, 'core/advisory.html', context)
