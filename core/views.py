@@ -977,14 +977,3 @@ def trades(request):
     return render(request, 'core/trades.html', context)
 
 
-@login_required
-def profile(request):
-    """Profile page — shows the session-scoped fund (profile)."""
-    user_profile = get_current_fund(request)
-    if user_profile is None:
-        return redirect('core:funds')
-    context = {
-        'current_page': 'profile',
-        'profile': user_profile,
-    }
-    return render(request, 'core/profile.html', context)

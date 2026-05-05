@@ -12,6 +12,5 @@ urlpatterns = [
     path('holdings/<int:stock_id>/detail/', views.holding_detail, name='holding-detail'),
     path('holdings/<int:stock_id>/history/', views.holding_history, name='holding-history'),
     path('trades/', views.trades, name='trades'),
-    path('profile/', views.profile, name='profile'),
 ]
 
