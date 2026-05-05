@@ -1,317 +1,213 @@
 """
-Intraday Momentum Trading Advisor
+Intraday overlay advisor.
 
-Discovers stocks with intraday momentum signals during optimal trading hours.
-Only available for EXPERIMENTAL risk users.
-
-Discovery Window: 15:30-16:30 GMT (10:30-11:30 ET) - once per day
-Entry Signals: Price > VWAP, EMA momentum, RSI < 75, Volume surge
-Exit Instructions: STOP_LOSS and TARGET_PRICE based on ATR
+Phase-1 design:
+- Universe is stocks already held across enabled funds.
+- One pass per market day, only in first quarter of session.
+- Trigger only when weakness is broad across spread.
+- Reuse existing Health records (no new LLM health checks).
 """
 
 import logging
-import time
-from decimal import Decimal
-from datetime import datetime, timedelta
+from statistics import median
+from typing import Dict, List, Optional
+
+import pandas as pd
+import yfinance as yf
+from django.utils import timezone
 from pytz import timezone as tz
 
-import yfinance as yf
-import pandas as pd
-import numpy as np
-from yfinance.screener import EquityQuery as YfEquityQuery
-
+from core.models import Health, Holding, Stock
 from core.services.advisors.advisor import AdvisorBase, register
-from core.models import Discovery, SmartAnalysis
 
 logger = logging.getLogger(__name__)
 
-# Trading parameters
-EMA_SHORT = 8
-EMA_LONG = 21
-RSI_PERIOD = 14
-RSI_OVERBOUGHT = 75
-VOL_MULTIPLIER = 1.0
-SL_ATR_MULT = 2.0
-TP_ATR_MULT = 3.0
-MIN_MARKET_CAP = 100_000_000
-MAX_STOCKS_TO_CHECK = 100  # Scan top 100 most active stocks for better coverage
+# Session windows (market_open() returns minutes since 9:30 ET)
+TRIGGER_WINDOW_START_MINUTE = 0
+TRIGGER_WINDOW_END_MINUTE = 98  # ~first quarter of regular session (390 / 4)
 
-# Discovery window: 15:30-16:30 GMT = 10:30-11:30 ET
-DISCOVERY_START_HOUR = 15
-DISCOVERY_START_MINUTE = 30
-DISCOVERY_END_HOUR = 16
-DISCOVERY_END_MINUTE = 30
+# Spread trigger thresholds
+MIN_UNIVERSE_SIZE = 10
+SPREAD_RED_RATIO_MIN = 0.70
+SPREAD_MEDIAN_DROP_MAX = -0.60  # percent since open
+
+# Candidate thresholds (percent since open)
+ENTRY_DROP_MIN = -2.50
+ENTRY_DROP_MAX = -1.00
+EXTREME_BREAKDOWN_CUTOFF = -3.50
+MIN_PRICE = 1.0
+
+# Exit behavior (handled by core/services/analysis.py)
+TARGET_PROFIT_MULTIPLIER = 1.015  # +1.5%
+END_DAY_WINNER_MULTIPLIER = 1.0   # sell if >= break-even by EOD check
+MAX_HOLD_DAYS = 3
 
 
-def normalize_dataframe(df):
-    """
-    Normalize DataFrame from yfinance download/history.
-    Handles MultiIndex columns and ensures proper column names.
-    """
+def normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize yfinance history outputs, including MultiIndex columns."""
     df = df.copy()
-    
-    # Handle MultiIndex columns
     if isinstance(df.columns, pd.MultiIndex):
         if len(df.columns.levels) > 1:
             df.columns = df.columns.droplevel(1)
         else:
             df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
-    
-    # Ensure columns are accessible
-    df.columns = [str(col).split('.')[0] if '.' in str(col) else str(col) for col in df.columns]
-    
+    df.columns = [str(col).split(".")[0] if "." in str(col) else str(col) for col in df.columns]
     return df
 
 
-def ema(series, span):
-    """Calculate Exponential Moving Average."""
-    return series.ewm(span=span, adjust=False).mean()
-
-
-def sma(series, window):
-    """Calculate Simple Moving Average."""
-    return series.rolling(window).mean()
-
-
-def rsi(series, period=14):
-    """Calculate Relative Strength Index."""
-    delta = series.diff()
-    up = delta.clip(lower=0)
-    down = -1 * delta.clip(upper=0)
-    ma_up = up.rolling(window=period, min_periods=period).mean()
-    ma_down = down.rolling(window=period, min_periods=period).mean()
-    rs = ma_up / ma_down
-    return 100 - (100 / (1 + rs))
-
-
-def atr(df, period=14):
-    """Calculate Average True Range."""
-    high = df['High']
-    low = df['Low']
-    close = df['Close']
-    tr1 = high - low
-    tr2 = (high - close.shift()).abs()
-    tr3 = (low - close.shift()).abs()
-    tr_df = pd.DataFrame({'tr1': tr1, 'tr2': tr2, 'tr3': tr3})
-    tr = tr_df.max(axis=1)
-    return tr.rolling(window=period, min_periods=period).mean()
-
-
-def vwap(df):
-    """Calculate Volume Weighted Average Price."""
-    tpv = (df['Close'] * df['Volume']).cumsum()
-    vol_cum = df['Volume'].cumsum()
-    return tpv / vol_cum
-
-
-def generate_signals(df, ema_short=EMA_SHORT, ema_long=EMA_LONG,
-                     rsi_period=RSI_PERIOD, rsi_overbought=RSI_OVERBOUGHT,
-                     vol_multiplier=VOL_MULTIPLIER):
-    """Generate technical indicators and entry signals."""
-    df = df.copy()
-    df['EMA_S'] = ema(df['Close'], ema_short)
-    df['EMA_L'] = ema(df['Close'], ema_long)
-    df['RSI'] = rsi(df['Close'], rsi_period)
-    df['ATR'] = atr(df, period=14)
-    df['VWAP'] = vwap(df)
-    df['Vol_MA'] = df['Volume'].rolling(window=20, min_periods=1).mean()
-
-    # Entry long conditions: price > VWAP, EMA_S > EMA_L, RSI not overbought, volume surge
-    df['enter_long'] = (
-        (df['Close'] > df['VWAP']) &
-        (df['EMA_S'] > df['EMA_L']) &
-        (df['RSI'] < rsi_overbought) &
-        (df['Volume'] > df['Vol_MA'] * vol_multiplier)
-    )
-
-    return df
-
-
-def check_entry_signal(symbol, period="7d", interval="1h"):
+def _intraday_return_since_open(symbol: str) -> Optional[float]:
     """
-    Check if a stock currently meets ALL entry conditions.
-    Returns discovery dict if signals present, None otherwise.
+    Return percentage change from today's first intraday open to latest close.
+    Returns None when data is unavailable.
     """
     try:
         ticker = yf.Ticker(symbol)
-        
-        df = ticker.history(period=period, interval=interval)
-        df = normalize_dataframe(df)
-        
-        # Need at least 40 bars for reliable indicators
-        if df.empty or len(df) < 40:
+        hist = ticker.history(period="1d", interval="5m")
+        hist = normalize_dataframe(hist)
+        if hist.empty:
             return None
-        
-        # Calculate indicators
-        df = generate_signals(df)
-        
-        latest = df.iloc[-1]
-        current_price = float(latest['Close'])
-        atr_val = float(latest['ATR']) if not np.isnan(latest['ATR']) else 0.0
-        
-        # Check ALL entry conditions (must all be true)
-        if not latest.get('enter_long', False):
+
+        first_open = float(hist["Open"].iloc[0])
+        latest_close = float(hist["Close"].iloc[-1])
+        if first_open <= 0:
             return None
-        
-        # Calculate stop/target based on ATR
-        stop_loss_price = current_price - (SL_ATR_MULT * atr_val)
-        take_profit_price = current_price + (TP_ATR_MULT * atr_val)
-        
-        # Get company name and market cap
-        try:
-            info = ticker.info
-            company_name = info.get('longName') or info.get('shortName') or symbol
-            market_cap = info.get('marketCap', 0)
-        except:
-            company_name = symbol
-            market_cap = 0
-        
-        # Filter by market cap
-        if market_cap > 0 and market_cap < MIN_MARKET_CAP:
+        if latest_close < MIN_PRICE:
             return None
-        
-        # Build explanation
-        explanation_parts = [
-            f"Intraday momentum: Price ${current_price:.2f} > VWAP ${latest['VWAP']:.2f}",
-            f"EMA {latest['EMA_S']:.2f} > {latest['EMA_L']:.2f}",
-            f"RSI {latest['RSI']:.1f}",
-            f"Volume {latest['Volume']/latest['Vol_MA']:.1f}x avg"
-        ]
-        
-        return {
-            'symbol': symbol,
-            'company': company_name,
-            'entry_price': current_price,
-            'stop_loss_price': stop_loss_price,
-            'take_profit_price': take_profit_price,
-            'explanation': " | ".join(explanation_parts),
-            'rsi': float(latest['RSI']),
-            'volume_ratio': float(latest['Volume'] / latest['Vol_MA']),
-            'atr': atr_val,
-            'vwap': float(latest['VWAP']),
-            'ema_short': float(latest['EMA_S']),
-            'ema_long': float(latest['EMA_L']),
-            'market_cap': market_cap,
-        }
-    except Exception as e:
-        logger.debug(f"Error checking {symbol}: {e}")
+
+        return ((latest_close - first_open) / first_open) * 100.0
+    except Exception as exc:
+        logger.debug("Intraday return failed for %s: %s", symbol, exc)
         return None
 
 
-def get_active_stocks(limit=MAX_STOCKS_TO_CHECK):
-    """Get most active stocks from Yahoo Finance."""
-    try:
-        most_active_query = YfEquityQuery(
-            "and",
-            [
-                YfEquityQuery("is-in", ["exchange", "NMS", "NYQ"]),
-                YfEquityQuery("gt", ["intradayprice", 1.0]),
-            ]
-        )
-        
-        max_size = min(limit * 2, 250)
-        response = yf.screen(
-            most_active_query,
-            offset=0,
-            size=max_size,
-            sortField="intradayprice",
-            sortAsc=True,
-        )
-        
-        quotes = response.get("quotes", [])
-        stocks = []
-        
-        for quote in quotes:
-            symbol = quote.get('symbol')
-            volume = quote.get('volume') or quote.get('regularMarketVolume') or 0
-            
-            if symbol:
-                stocks.append({
-                    'symbol': symbol,
-                    'volume': float(volume) if volume else 0.0,
-                })
-        
-        # Sort by volume AFTER getting results
-        stocks.sort(key=lambda x: x['volume'], reverse=True)
-        return [s['symbol'] for s in stocks[:limit]]
-        
-    except Exception as e:
-        logger.warning(f"Screener failed: {e}")
-        return []  # Fail gracefully - return empty list
-
-
 class Intraday(AdvisorBase):
-    """
-    Intraday Momentum Trading Advisor
-    
-    Discovers stocks with intraday momentum signals during optimal trading hours.
-    Only runs during 10:30-11:30 ET (15:30-16:30 GMT) - once per day.
-    """
+    """Intraday spread-dip overlay for already-held stocks."""
+
+    def _today_key(self) -> str:
+        et_now = timezone.now().astimezone(tz("US/Eastern"))
+        return et_now.strftime("%Y-%m-%d")
+
+    def _held_universe(self) -> List[str]:
+        symbols = (
+            Holding.objects.filter(fund__enabled=True, shares__gt=0)
+            .select_related("stock")
+            .values_list("stock__symbol", flat=True)
+            .distinct()
+        )
+        return [s.strip().upper() for s in symbols if s]
+
+    def _latest_health(self, stock: Stock) -> Optional[Health]:
+        return Health.objects.filter(stock=stock).order_by("-created").first()
 
     def discover(self, sa):
-        """
-        Discover stocks with intraday momentum signals.
-        Only runs during discovery window (10:30-11:30 ET) and once per day.
-        """
-        # Check if within discovery window
         market_status = self.market_open()
-        if market_status is None or market_status < 60 or market_status >= 120:
-            logger.info(f"Intraday discovery skipped: outside time window")
+        if market_status is None or market_status < TRIGGER_WINDOW_START_MINUTE or market_status > TRIGGER_WINDOW_END_MINUTE:
+            logger.info("Intraday skip: outside trigger window (%s min since open)", market_status)
             return
-        
-        logger.info("Starting Intraday discovery scan...")
-        
-        # Get active stocks to check
-        symbols = get_active_stocks(limit=MAX_STOCKS_TO_CHECK)
-        logger.info(f"Evaluating {len(symbols)} stocks for entry signals...")
-        
-        discoveries = []
-        
-        for i, symbol in enumerate(symbols, 1):
-            if i % 10 == 0:
-                logger.info(f"Processed {i}/{len(symbols)} stocks...")
-            
-            discovery_data = check_entry_signal(symbol)
-            
-            if discovery_data is None:
-                continue
 
-            # Check if already discovered - skip if discovered within last 1 day
+        today = self._today_key()
+        state = self._advisor_blob_state()
+        if (state.get("processed_date") or "").strip() == today:
+            logger.info("Intraday skip: already processed for %s", today)
+            return
+
+        symbols = self._held_universe()
+        if len(symbols) < MIN_UNIVERSE_SIZE:
+            logger.info("Intraday skip: insufficient universe size (%s < %s)", len(symbols), MIN_UNIVERSE_SIZE)
+            return
+
+        returns: Dict[str, float] = {}
+        for symbol in symbols:
+            ret = _intraday_return_since_open(symbol)
+            if ret is None:
+                continue
+            returns[symbol] = ret
+
+        if len(returns) < MIN_UNIVERSE_SIZE:
+            logger.info("Intraday skip: insufficient valid return samples (%s)", len(returns))
+            return
+
+        red_count = sum(1 for r in returns.values() if r < 0.0)
+        red_ratio = red_count / float(len(returns))
+        median_ret = median(returns.values())
+
+        if red_ratio < SPREAD_RED_RATIO_MIN or median_ret > SPREAD_MEDIAN_DROP_MAX:
+            logger.info(
+                "Intraday skip: spread condition failed (red_ratio=%.2f median=%.2f%% size=%s)",
+                red_ratio,
+                median_ret,
+                len(returns),
+            )
+            return
+
+        candidates = []
+        for symbol, ret in returns.items():
+            if ret < EXTREME_BREAKDOWN_CUTOFF:
+                continue
+            if ENTRY_DROP_MIN <= ret <= ENTRY_DROP_MAX:
+                candidates.append((symbol, ret))
+
+        discoveries = 0
+        for symbol, ret in sorted(candidates, key=lambda x: x[1]):
             if not self.allow_discovery(symbol, period=24):
                 continue
 
-            # Create discovery with sell instructions
-            stop_loss_price = discovery_data['stop_loss_price']
-            take_profit_price = discovery_data['take_profit_price']
-            
+            stock = self.get_stock(symbol)
+            if stock is None:
+                continue
+
+            health = self._latest_health(stock)
+            if health is None:
+                logger.info("Intraday skip %s: no existing health object", symbol)
+                continue
+
+            explanation = (
+                f"Intraday spread dip trigger: red_ratio={red_ratio:.2f}, median={median_ret:.2f}% | "
+                f"{symbol} since-open return={ret:.2f}%"
+            )
             sell_instructions = [
-                ("STOP_PRICE", stop_loss_price, None),  # Actual dollar price
-                ("TARGET_PRICE", take_profit_price, None),  # Actual dollar price
-                ("END_DAY", 1.0, None),  # Sell at EOD if P&L >= 0.0% (sell any winner at end of day)
+                ("TARGET_PERCENTAGE", TARGET_PROFIT_MULTIPLIER, None),
+                ("END_DAY", END_DAY_WINNER_MULTIPLIER, None),
+                ("AFTER_DAYS", MAX_HOLD_DAYS, None),
             ]
-            
-            # Create discovery
+
             self.discovered(
                 sa=sa,
-                symbol=discovery_data['symbol'],
-                explanation=discovery_data['explanation'],
+                symbol=symbol,
+                explanation=explanation,
                 sell_instructions=sell_instructions,
-                weight=1.0
+                weight=1.0,
+                health=health,
             )
-            
-            discoveries.append(discovery_data['symbol'])
-            
-            time.sleep(0.1)  # Rate limiting
-        
-        logger.info(f"Intraday discovery complete: {len(discoveries)} stocks discovered")
-    
+            discoveries += 1
+
+        state.update(
+            {
+                "processed_date": today,
+                "triggered_date": today,
+                "triggered_at": timezone.now().isoformat(timespec="seconds"),
+                "spread_red_ratio": round(red_ratio, 4),
+                "spread_median_return": round(median_ret, 4),
+                "universe_size": len(returns),
+                "candidate_count": len(candidates),
+                "discoveries_count": discoveries,
+            }
+        )
+        self._save_advisor_blob_state(state)
+
+        logger.info(
+            "Intraday processed %s: discoveries=%s candidates=%s universe=%s red_ratio=%.2f median=%.2f%%",
+            today,
+            discoveries,
+            len(candidates),
+            len(returns),
+            red_ratio,
+            median_ret,
+        )
+
     def analyze(self, sa, stock):
-        """
-        Intraday advisor doesn't provide recommendations/analysis.
-        It only discovers stocks based on momentum signals.
-        """
-        # This advisor only discovers, doesn't analyze
-        pass
+        # This advisor only discovers intraday overlays.
+        return
 
 
 register(name="Intraday", python_class="Intraday")
