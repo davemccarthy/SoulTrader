@@ -958,6 +958,7 @@ class Edgar(AdvisorBase):
     FORM4_WATCH_MIN_TOTAL = 5.0
     FORM4_WATCH_MAX_SELL_TOTAL = -5.0
     FORM4_WATCH_DAYS = 30
+    FORM4_PASS_LOG_MIN_TOTAL = 30.0
 
     def filter_filing(self, filing) -> bool:
         """
@@ -2387,6 +2388,14 @@ class Edgar(AdvisorBase):
             if self._form4_accession_already_watched(fs.accession):
                 logger.debug("Form 4 skip watch accession=%s: already on watchlist", fs.accession)
                 continue
+            if fs.total >= self.FORM4_PASS_LOG_MIN_TOTAL:
+                logger.info(
+                    "*FORM4_PASS ticker=%s score=%.1f accession=%s watch_kind=%s would_discover=true",
+                    sym,
+                    fs.total,
+                    fs.accession,
+                    "form4_signal" if is_bullish else "form4_sell",
+                )
             explanation = (
                 f"Form4 {fs.accession} {fs.insider_name} total={fs.total:+.1f} "
                 f"({fs.issuer_name})"
