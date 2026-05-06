@@ -75,22 +75,8 @@ class UserAdminWithRisk(BaseUserAdmin):
         return super().get_form(request, obj, **defaults)
     
     def save_model(self, request, obj, form, change):
-        """Override to create Profile with selected risk level"""
-        # Save the user first (this will trigger the signal to create Profile with default 'MODERATE')
+        """Persist User; profile creation is handled explicitly elsewhere."""
         super().save_model(request, obj, form, change)
-        
-        # If this is a new user (not an update), update Profile with risk level from form
-        # The signal will have created it already, so we just update it
-        if not change and isinstance(form, UserCreationFormWithRisk):
-            risk_level = form.cleaned_data.get('risk_level', 'MODERATE')
-            Profile.objects.update_or_create(
-                user=obj,
-                defaults={
-                    'risk': risk_level,
-                    'cash': Decimal('100000.00'),
-                    'investment': Decimal('100000.00')
-                }
-            )
 
 
 class ProfileAdminForm(forms.ModelForm):

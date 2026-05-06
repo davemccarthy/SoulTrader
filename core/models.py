@@ -732,20 +732,3 @@ class Snapshot(models.Model):
             models.Index(fields=['user', '-date']),
         ]
 
-
-# Signal to auto-create Profile when User is created
-from django.db.models.signals import post_save
-from django.dispatch import receiver
-
-@receiver(post_save, sender=User)
-def create_user_profile(sender, instance, created, **kwargs):
-    """Automatically create Profile when User is created"""
-    if created:
-        Profile.objects.get_or_create(
-            user=instance,
-            defaults={
-                'risk': 'MODERATE',
-                'cash': Decimal('100000.00'),
-                'investment': Decimal('100000.00')
-            }
-        )
