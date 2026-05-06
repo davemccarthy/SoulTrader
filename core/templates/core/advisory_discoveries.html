@@ -140,46 +140,92 @@
             display: grid;
             gap: 0.65rem;
         }
-        .disc-row {
+        .disc-detail-panel {
+            min-width: 0;
             border: 1px solid #e6eaef;
             border-radius: 10px;
             background: #fff;
-            padding: 0.7rem 0.75rem;
-            display: flex;
-            align-items: flex-start;
-            gap: 0.65rem;
-        }
-        .disc-symbol-block {
-            width: 52px;
-            flex: 0 0 52px;
+            padding: 0.85rem 0.9rem;
             display: grid;
-            gap: 0.2rem;
-            justify-items: start;
+            gap: 0.8rem;
         }
-        .disc-symbol {
-            font-size: 0.72rem;
-            font-weight: 700;
-            color: #0f172a;
+        .disc-detail-title-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: stretch;
+            gap: 0.7rem;
         }
-        .disc-main {
+        .disc-detail-identity {
+            display: flex;
+            align-items: stretch;
+            gap: 0.6rem;
             min-width: 0;
             flex: 1;
         }
-        .disc-company {
-            font-size: 0.92rem;
-            font-weight: 700;
-            color: #0f172a;
-            line-height: 1.2;
-            margin-bottom: 0.15rem;
+        .disc-detail-logo-wrap {
+            height: 2.25rem;
+            width: 2.25rem;
+            border-radius: 6px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            background: #fff;
+            border: 1px solid #eef2f7;
+            flex: 0 0 auto;
         }
-        .disc-expl {
-            font-size: 0.82rem;
-            line-height: 1.3;
-            color: #64748b;
+        .disc-detail-logo-wrap img {
+            height: 100%;
+            width: 100%;
+            object-fit: contain;
+        }
+        .disc-detail-title-copy {
+            min-height: 2.25rem;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            min-width: 0;
+        }
+        .disc-detail-symbol {
+            font-size: 1rem;
+            font-weight: 800;
+            color: #0f172a;
+            line-height: 1.1;
+        }
+        .disc-detail-company {
+            margin-top: 0.15rem;
+            color: #475569;
+            font-size: 0.85rem;
+            line-height: 1.25;
+        }
+        .disc-detail-meta {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 0.55rem;
+        }
+        .disc-detail-copy {
+            border-top: 1px solid #eef2f7;
+            padding-top: 0.75rem;
+        }
+        .disc-detail-copy p {
+            margin: 0 0 0.55rem 0;
+            color: #334155;
+            font-size: 0.9rem;
+            line-height: 1.45;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+        .disc-detail-copy p:last-child {
+            margin-bottom: 0;
         }
         .disc-score {
             min-width: 60px;
             text-align: right;
+        }
+        @media (max-width: 980px) {
+            .disc-detail-meta {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
         }
     </style>
 
@@ -204,20 +250,50 @@
     {% if discovery_rows %}
     <div class="disc-list">
         {% for row in discovery_rows %}
-        <article class="disc-row">
-            <div class="disc-symbol-block">
-                <img src="https://images.financialmodelingprep.com/symbol/{{ row.symbol }}.png" alt="{{ row.symbol }}" width="28" height="28">
-                <div class="disc-symbol">{{ row.symbol }}</div>
+        <article class="disc-detail-panel">
+            <div class="disc-detail-title-row">
+                <div class="disc-detail-identity">
+                    <span class="disc-detail-logo-wrap">
+                        <img src="https://images.financialmodelingprep.com/symbol/{{ row.symbol }}.png" alt="{{ row.symbol }}">
+                    </span>
+                    <div class="disc-detail-title-copy">
+                        <div class="disc-detail-symbol">{{ row.symbol }}</div>
+                        <div class="disc-detail-company">{{ row.company }}</div>
+                    </div>
+                </div>
+                <div class="disc-score">
+                    <div class="disc-kicker">Score</div>
+                    <div class="disc-value">{{ row.health_score_display }}</div>
+                </div>
             </div>
-            <div class="disc-main">
-                <div class="disc-company">{{ row.company }}</div>
-                {% if row.explanation_line %}
-                <div class="disc-expl">{{ row.explanation_line }}</div>
+
+            <div class="disc-detail-meta">
+                <div>
+                    <div class="disc-kicker">Discovered</div>
+                    <div class="disc-value">{% if row.created %}{{ row.created|date:"Y-m-d H:i" }}{% else %}—{% endif %}</div>
+                </div>
+                <div>
+                    <div class="disc-kicker">Price</div>
+                    <div class="disc-value">{% if row.discovery_price %}${{ row.discovery_price|floatformat:2 }}{% elif row.price %}${{ row.price|floatformat:2 }}{% else %}—{% endif %}</div>
+                </div>
+                <div>
+                    <div class="disc-kicker">Exchange</div>
+                    <div class="disc-value">{{ row.exchange|default:"—" }}</div>
+                </div>
+                <div>
+                    <div class="disc-kicker">Sector</div>
+                    <div class="disc-value">{{ row.sector|default:"—" }}</div>
+                </div>
+            </div>
+
+            <div class="disc-detail-copy">
+                {% if row.explanation_paragraphs %}
+                    {% for paragraph in row.explanation_paragraphs %}
+                <p>{{ paragraph }}</p>
+                    {% endfor %}
+                {% else %}
+                <p style="color: #64748b; font-size: 0.88rem;">No explanation available for this discovery.</p>
                 {% endif %}
-            </div>
-            <div class="disc-score">
-                <div class="disc-kicker">Score</div>
-                <div class="disc-value">{{ row.health_score_display }}</div>
             </div>
         </article>
         {% endfor %}

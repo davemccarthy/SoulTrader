@@ -1066,11 +1066,13 @@ def advisory_discoveries(request, advisor_id: int):
         Discovery.objects
         .filter(advisor_id=advisor.id, created__gte=cutoff)
         .select_related('stock', 'health')
-        .order_by('-id')[:250]
+        .order_by('-id')
     )
 
+    discoveries = list(discoveries_qs)
+
     discovery_rows = []
-    for discovery in discoveries_qs:
+    for discovery in discoveries:
         company = (discovery.stock.company or '').strip()
         score = float(discovery.health.score) if discovery.health else None
         if score is None:
@@ -1084,7 +1086,14 @@ def advisory_discoveries(request, advisor_id: int):
             'id': discovery.id,
             'symbol': discovery.stock.symbol,
             'company': company or discovery.stock.symbol,
-            'explanation_line': _discovery_excerpt(discovery.explanation),
+            'price': discovery.stock.price,
+            'industry': discovery.stock.industry or '',
+            'sector': discovery.stock.sector or '',
+            'exchange': discovery.stock.exchange or '',
+            'discovery_price': discovery.price,
+            'created': discovery.created,
+            'explanation': discovery.explanation or '',
+            'explanation_paragraphs': _discovery_paragraphs(discovery.explanation),
             'health_score_display': score_display,
         })
 
@@ -1134,3 +1143,13 @@ def _discovery_excerpt(explanation: str | None) -> str:
             continue
         return segment
     return ""
+
+
+def _discovery_paragraphs(explanation: str | None) -> list[str]:
+    """Render-ready explanation paragraphs split by pipe segments."""
+    if not explanation:
+        return []
+    normalized = " ".join(explanation.split()).strip()
+    if not normalized:
+        return []
+    return [segment.strip() for segment in normalized.split("|") if segment.strip()]
