@@ -1763,13 +1763,12 @@ class Edgar(AdvisorBase):
         elif revenue == "miss":
             penalties.append("Revenue miss (-0.3)")
             score -= 0.3
-
         if broker == "strong_buy":
             bonuses.append("Strong buy (+0.1)")
             score += 0.1
-        elif broker in  ("moderate_buy","weak_buy","unknown"):
-            penalties.append("Moderat or unknown (-0.1)")
-            score -= 0.1
+        elif broker in  ("moderate_buy","weak_buy"):
+            penalties.append("Broker weak buy (-0.15)")
+            score -= 0.15
 
         # Form4 (optional, non-blocking): bullish insider cluster can help,
         # significant selling can add risk.
