@@ -186,6 +186,12 @@ class Command(BaseCommand):
         # Update snapshots for all funds at the end of SA (after trades execute)
         today = timezone.now().date()
         for fund in funds:
+            # Re-resolve fund from DB at write time to avoid stale/deleted FK references.
+            fund = Profile.objects.select_related('user').filter(pk=fund.pk).first()
+            if not fund:
+                logger.warning("Skipping snapshot update for missing fund (deleted during run).")
+                continue
+
             cash_value = fund.cash or Decimal('0')
 
             # Calculate holdings value (refresh prices first to ensure accuracy)
