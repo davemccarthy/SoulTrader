@@ -51,6 +51,11 @@
             display: grid;
             gap: 0.5rem;
         }
+        .advisory-card-link {
+            color: inherit;
+            text-decoration: none;
+            display: block;
+        }
         .advisory-card-top {
             display: flex;
             align-items: flex-start;
@@ -150,6 +155,7 @@
     {% if advisory_rows %}
     <div class="advisory-list">
         {% for row in advisory_rows %}
+        <a class="advisory-card-link" href="{% url 'core:advisory-discoveries' row.id %}?days={{ lookback_days }}">
         <article class="advisory-card">
             <div class="advisory-card-top">
                 <div class="advisory-card-title">
@@ -213,6 +219,7 @@
                 </div>
             </div>
         </article>
+        </a>
         {% endfor %}
     </div>
     {% else %}

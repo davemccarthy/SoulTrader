@@ -1,4 +1,4 @@
-from django.shortcuts import render, redirect
+from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import login, authenticate, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib import messages
@@ -1039,3 +1039,87 @@ def advisory(request):
         'advisory_rows': advisory_rows,
     }
     return render(request, 'core/advisory.html', context)
+
+
+@login_required
+def advisory_discoveries(request, advisor_id: int):
+    """Advisor discoveries page - list recent discoveries for one advisor."""
+    fund = get_current_fund(request)
+    if fund is None:
+        return redirect('core:funds')
+
+    lookback_options = (7, 30, 90)
+    try:
+        lookback_days = int(request.GET.get('days', 30))
+    except (TypeError, ValueError):
+        lookback_days = 30
+    if lookback_days not in lookback_options:
+        lookback_days = 30
+
+    cutoff = timezone.now() - datetime.timedelta(days=lookback_days)
+    advisor = get_object_or_404(Advisor, pk=advisor_id)
+
+    scoreboard_rows = fund_advisor_scoreboard_rows(fund.id, lookback_days, refresh_prices=False)
+    advisor_stats = next((row for row in scoreboard_rows if row.get('advisor_id') == advisor.id), None)
+
+    discoveries_qs = (
+        Discovery.objects
+        .filter(advisor_id=advisor.id, created__gte=cutoff)
+        .select_related('stock', 'health')
+        .order_by('-id')[:250]
+    )
+
+    discovery_rows = []
+    for discovery in discoveries_qs:
+        company = (discovery.stock.company or '').strip()
+        score = float(discovery.health.score) if discovery.health else None
+        if score is None:
+            score_display = "—"
+        elif abs(score) < 1e-9:
+            score_display = "AVOID"
+        else:
+            score_display = f"{score:.1f}"
+
+        discovery_rows.append({
+            'id': discovery.id,
+            'symbol': discovery.stock.symbol,
+            'company': company or discovery.stock.symbol,
+            'explanation_line': _discovery_excerpt(discovery.explanation),
+            'health_score_display': score_display,
+        })
+
+    context = {
+        'current_page': 'advisory',
+        'lookback_days': lookback_days,
+        'lookback_options': lookback_options,
+        'advisor': {
+            'id': advisor.id,
+            'name': advisor.name,
+            'description': advisor.description or '',
+            'logo_url': _advisor_logo_url(advisor),
+        },
+        'advisor_stats': advisor_stats,
+        'discovery_rows': discovery_rows,
+    }
+    return render(request, 'core/advisory_discoveries.html', context)
+
+
+def _discovery_excerpt(explanation: str | None) -> str:
+    """Short discovery copy from first meaningful explanation segment."""
+    if not explanation:
+        return ""
+    normalized = " ".join(explanation.split()).strip()
+    if not normalized:
+        return ""
+    segments = [segment.strip() for segment in normalized.split("|") if segment.strip()]
+    for segment in segments:
+        if segment.startswith("http://") or segment.startswith("https://"):
+            continue
+        lower = segment.lower()
+        if lower.startswith("article:"):
+            title = segment.split(":", 1)[1].strip()
+            if title:
+                return title
+            continue
+        return segment
+    return ""

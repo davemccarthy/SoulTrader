@@ -13,5 +13,6 @@ urlpatterns = [
     path('holdings/<int:stock_id>/history/', views.holding_history, name='holding-history'),
     path('trades/', views.trades, name='trades'),
     path('advisory/', views.advisory, name='advisory'),
+    path('advisory/<int:advisor_id>/discoveries/', views.advisory_discoveries, name='advisory-discoveries'),
 ]
 

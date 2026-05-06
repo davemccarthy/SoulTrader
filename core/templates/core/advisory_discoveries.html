@@ -1,0 +1,182 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Advisory Discoveries - SOULTRADER{% endblock %}
+
+{% block content %}
+<div class="card">
+    <style>
+        .disc-header {
+            display: grid;
+            gap: 0.75rem;
+            margin-bottom: 0.9rem;
+        }
+        .disc-back {
+            font-size: 0.85rem;
+            color: #475569;
+            text-decoration: none;
+            font-weight: 600;
+        }
+        .disc-back:hover { text-decoration: underline; }
+        .disc-header-card {
+            border: 1px solid #e6eaef;
+            border-radius: 10px;
+            background: #fff;
+            padding: 0.7rem 0.8rem;
+            display: flex;
+            align-items: flex-start;
+            gap: 0.6rem;
+            justify-content: space-between;
+        }
+        .disc-header-title {
+            min-width: 0;
+            flex: 1;
+        }
+        .disc-header-name {
+            font-weight: 700;
+            line-height: 1.2;
+        }
+        .disc-header-desc {
+            margin-top: 0.2rem;
+            color: #64748b;
+            font-size: 0.82rem;
+            line-height: 1.3;
+        }
+        .disc-summary {
+            border: 1px solid #e6eaef;
+            border-radius: 10px;
+            background: #fff;
+            padding: 0.65rem 0.75rem;
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 0.5rem;
+            margin-bottom: 0.9rem;
+        }
+        .disc-kicker {
+            font-size: 0.66rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: #64748b;
+            font-weight: 700;
+        }
+        .disc-value {
+            font-size: 0.92rem;
+            font-weight: 700;
+            color: #0f172a;
+            line-height: 1.15;
+        }
+        .disc-value.positive { color: #059669; }
+        .disc-value.negative { color: #dc2626; }
+        .disc-list {
+            display: grid;
+            gap: 0.65rem;
+        }
+        .disc-row {
+            border: 1px solid #e6eaef;
+            border-radius: 10px;
+            background: #fff;
+            padding: 0.7rem 0.75rem;
+            display: flex;
+            align-items: flex-start;
+            gap: 0.65rem;
+        }
+        .disc-symbol-block {
+            width: 52px;
+            flex: 0 0 52px;
+            display: grid;
+            gap: 0.2rem;
+            justify-items: start;
+        }
+        .disc-symbol {
+            font-size: 0.72rem;
+            font-weight: 700;
+            color: #0f172a;
+        }
+        .disc-main {
+            min-width: 0;
+            flex: 1;
+        }
+        .disc-company {
+            font-size: 0.92rem;
+            font-weight: 700;
+            color: #0f172a;
+            line-height: 1.2;
+            margin-bottom: 0.15rem;
+        }
+        .disc-expl {
+            font-size: 0.82rem;
+            line-height: 1.3;
+            color: #64748b;
+        }
+        .disc-score {
+            min-width: 60px;
+            text-align: right;
+        }
+    </style>
+
+    <div class="disc-header">
+        <a class="disc-back" href="{% url 'core:advisory' %}?days={{ lookback_days }}">&#8592; Back to advisory</a>
+        <div class="disc-header-card">
+            <div class="disc-header-title">
+                <div class="disc-header-name">{{ advisor.name }}</div>
+                {% if advisor.description %}
+                <div class="disc-header-desc">{{ advisor.description }}</div>
+                {% endif %}
+            </div>
+            <span class="advisor-logo">
+                {% if advisor.logo_url %}
+                    <img src="{{ advisor.logo_url }}" alt="{{ advisor.name }}">
+                {% else %}
+                    {{ advisor.name|slice:":1" }}
+                {% endif %}
+            </span>
+        </div>
+    </div>
+
+    <div class="disc-summary">
+        <div>
+            <div class="disc-kicker">Stocks</div>
+            <div class="disc-value">{{ discovery_rows|length }}</div>
+        </div>
+        <div>
+            <div class="disc-kicker">Buys</div>
+            <div class="disc-value">{% if advisor_stats %}{{ advisor_stats.trades }}{% else %}0{% endif %}</div>
+        </div>
+        <div>
+            <div class="disc-kicker">Wins</div>
+            <div class="disc-value">{% if advisor_stats %}{{ advisor_stats.win_rate|floatformat:0 }}%{% else %}0%{% endif %}</div>
+        </div>
+        <div>
+            <div class="disc-kicker">P&amp;L %</div>
+            <div class="disc-value {% if advisor_stats and advisor_stats.gain_loss_pct > 0 %}positive{% elif advisor_stats and advisor_stats.gain_loss_pct < 0 %}negative{% endif %}">
+                {% if advisor_stats %}{{ advisor_stats.gain_loss_pct|floatformat:1 }}%{% else %}0.0%{% endif %}
+            </div>
+        </div>
+    </div>
+
+    {% if discovery_rows %}
+    <div class="disc-list">
+        {% for row in discovery_rows %}
+        <article class="disc-row">
+            <div class="disc-symbol-block">
+                <img src="https://images.financialmodelingprep.com/symbol/{{ row.symbol }}.png" alt="{{ row.symbol }}" width="28" height="28">
+                <div class="disc-symbol">{{ row.symbol }}</div>
+            </div>
+            <div class="disc-main">
+                <div class="disc-company">{{ row.company }}</div>
+                {% if row.explanation_line %}
+                <div class="disc-expl">{{ row.explanation_line }}</div>
+                {% endif %}
+            </div>
+            <div class="disc-score">
+                <div class="disc-kicker">Score</div>
+                <div class="disc-value">{{ row.health_score_display }}</div>
+            </div>
+        </article>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p style="color: #6c757d;">No discoveries yet for this advisor in the selected window.</p>
+    {% endif %}
+</div>
+{% endblock %}
+
