@@ -1,0 +1,69 @@
+{% if link_url %}
+<a class="advisory-card-link" href="{{ link_url }}?days={{ lookback_days }}">
+{% endif %}
+<article class="advisory-card">
+    <div class="advisory-card-top">
+        <div class="advisory-card-title">
+            <span class="advisor-logo">
+                {% if row.logo_url %}
+                    <img src="{{ row.logo_url }}" alt="{{ row.name }}">
+                {% else %}
+                    {{ row.name|slice:":1" }}
+                {% endif %}
+            </span>
+            <div style="min-width:0;">
+                <div class="advisory-card-name">{{ row.name }}</div>
+            </div>
+        </div>
+        <div class="advisory-card-side">
+            <div class="advisory-card-description" style="margin-top: 0; text-align: right;">
+                {% if row.description %}
+                    {{ row.description }}
+                {% else %}
+                    —
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="advisory-metrics" style="margin-top: 0.2rem;">
+        <div class="advisory-metric">
+            <div class="advisory-kicker">Discoveries</div>
+            <div class="advisory-metric-value">{{ row.discovery_count }}</div>
+        </div>
+        <div class="advisory-metric">
+            <div class="advisory-kicker">Buys</div>
+            <div class="advisory-metric-value">{{ row.trades }}</div>
+        </div>
+        <div class="advisory-metric">
+            <div class="advisory-kicker">Winners</div>
+            <div class="advisory-metric-value">{{ row.winners }}</div>
+        </div>
+        <div class="advisory-metric">
+            <div class="advisory-kicker">Losers</div>
+            <div class="advisory-metric-value">{{ row.losers }}</div>
+        </div>
+        <div class="advisory-metric">
+            <div class="advisory-kicker">Success</div>
+            <div class="advisory-metric-value">{{ row.win_rate|floatformat:1 }}%</div>
+        </div>
+        <div class="advisory-metric">
+            <div class="advisory-kicker">P&amp;L</div>
+            <div class="advisory-metric-value {% if row.gain_loss_pct > 0 %}positive{% elif row.gain_loss_pct < 0 %}negative{% endif %}">
+                {{ row.gain_loss_pct|floatformat:2 }}%
+            </div>
+        </div>
+    </div>
+
+    <div class="advisory-progress-row">
+        <div class="advisory-progress-track" role="img" aria-label="Win rate {{ row.win_rate|floatformat:1 }} percent">
+            <div
+                class="advisory-progress-fill {% if row.win_rate < 35 %}poor{% elif row.win_rate < 55 %}caution{% endif %}"
+                style="width: {{ row.win_rate|floatformat:1 }}%;"
+            ></div>
+        </div>
+    </div>
+</article>
+{% if link_url %}
+</a>
+{% endif %}

@@ -1092,6 +1092,17 @@ def advisory_discoveries(request, advisor_id: int):
         'current_page': 'advisory',
         'lookback_days': lookback_days,
         'lookback_options': lookback_options,
+        'header_row': {
+            'name': advisor.name,
+            'description': advisor.description or '',
+            'logo_url': _advisor_logo_url(advisor),
+            'discovery_count': len(discovery_rows),
+            'trades': advisor_stats.get('trades', 0) if advisor_stats else 0,
+            'winners': advisor_stats.get('winners', 0) if advisor_stats else 0,
+            'losers': advisor_stats.get('losers', 0) if advisor_stats else 0,
+            'win_rate': advisor_stats.get('win_rate', 0.0) if advisor_stats else 0.0,
+            'gain_loss_pct': advisor_stats.get('gain_loss_pct', 0.0) if advisor_stats else 0.0,
+        },
         'advisor': {
             'id': advisor.id,
             'name': advisor.name,
