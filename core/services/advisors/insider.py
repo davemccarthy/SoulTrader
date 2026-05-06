@@ -700,14 +700,6 @@ class Insider(AdvisorBase):
             if not purchases:
                 logger.info("No insider purchases found")
                 return
-
-            # Pass sell instructions to siacovery
-            sell_instructions = [
-                ("PERCENTAGE_DIMINISHING", 1.30, 7),
-                ("PERCENTAGE_AUGMENTING", 0.90, 14),
-                ('DESCENDING_TREND', -0.20, None),
-                ('NOT_TRENDING', None, None)
-            ]
             
             # Group purchases by ticker
             by_ticker = {}
@@ -779,7 +771,7 @@ class Insider(AdvisorBase):
                     continue
                 
                 # Discover the stock
-                stock = self.discovered(sa, ticker, explanation, sell_instructions)
+                stock = self.discovered(sa, ticker, explanation, None)
                 
                 discovered_count += 1
             

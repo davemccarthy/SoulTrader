@@ -1969,22 +1969,8 @@ class Edgar(AdvisorBase):
             meta=health_meta,
         )
 
-        # Calculate target
-        if weight < 1.0:
-            target = 1.10
-        elif weight >= 1.3:
-            target = 1.30
-
-        sell_instructions = [
-            ("PERCENTAGE_DIMINISHING", target, 14),
-            ("PERCENTAGE_AUGMENTING", 0.90, 14),
-            ("PEAKED", 25.0, 5.0),
-            ("PROFIT_FLAT", 0.5, 14),
-            ("DESCENDING_TREND", -0.20, None),
-        ]
-
         # Keeper
-        self.discovered(sa, ticker, explanation, sell_instructions, weight=weight, health=health)
+        self.discovered(sa, ticker, explanation, None, weight=weight, health=health)
         return True
 
     def analyze_8k_pharma(self, filing, cik, ticker, accession, sa):

@@ -5,16 +5,15 @@ from core.models import Stock
 
 
 def _default_user_sell_instructions(stock):
-    """Build default sell instructions for user discovery (--discover). Uses stock.price for TARGET_DIMINISHING."""
     if not stock or not stock.price:
         return [
             ("STOP_PERCENTAGE", Decimal("0.95"), None),
             ("PEAKED", Decimal("5.0"), None),
         ]
-    target_price = (Decimal(str(stock.price)) * Decimal("1.20")).quantize(Decimal("0.01"))
+
     return [
         ("STOP_PERCENTAGE", Decimal("0.90"), None),   # Stop loss at 90% of discovery price
-        ("PEAKED", Decimal("20.0"), None),             # Sell when down 5% from peak since purchase
+        ("PEAKED", Decimal("20.0"), 5.0),             # Sell when down 20% from peak since purchase
         ("PROFIT_FLAT", Decimal("0.5"), 14),           # Profit hovering around 5% for 14 days
     ]
 

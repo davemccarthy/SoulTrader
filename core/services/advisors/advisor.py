@@ -208,6 +208,14 @@ class AdvisorBase:
         self.gemini_model = 0
         self._gemini_key_index = 0
 
+    # Default sell instructions to discovery
+    sell_instructions = [
+        ("PERCENTAGE_DIMINISHING", 1.50, 30),
+        ("PERCENTAGE_AUGMENTING", 0.90, 60),
+        ('DESCENDING_TREND', -0.20, None),
+        ("PEAKED", 20.0, 5.0)
+    ]
+
     def stock_consensus(self, symbol: str) -> Dict[str, Any]:
         """
         Convenience wrapper for normalized analyst consensus/target snapshot.
@@ -478,6 +486,9 @@ class AdvisorBase:
 
         if (stock := self.get_stock(symbol)) is None:
             return None
+
+        if sell_instructions is None:
+            sell_instructions = list(self.sell_instructions)
 
         if not health:
             # Attempt health check (graceful failure - don't block discovery)
@@ -1263,14 +1274,6 @@ Respond with only a single valid JSON object, no other text.
 
             url: {url}"""
 
-        # Pass sell instructions to discovery
-        sell_instructions = [
-            ("PERCENTAGE_DIMINISHING", 1.20, 7),
-            ("PERCENTAGE_AUGMENTING", 0.95, 21),
-            ('DESCENDING_TREND', -0.20, None),
-            ('NOT_TRENDING', None, None)
-        ]
-
         # Ask AI for opinion
         model, results = self.ask_llm(prompt)
 
@@ -1288,48 +1291,10 @@ Respond with only a single valid JSON object, no other text.
         if recommendation != "BUY" and recommendation != "STRONG_BUY":
             return
 
-        # If market not open yet, add to watchlist (will be processed when market opens via news_watch())
-        """
-        if not is_market_open:
-            for ticker in tickers:
-                self.watch(
-                    symbol=ticker,
-                    explanation=f"{model} recommendation | Article: {title} | {url} | {explanation} ",
-                    days=1
-                )
-                logger.info(f"{self.advisor.name} added {ticker} to watchlist (market closed, {recommendation}): {title[:80]}")
-            return
-        """
-
         if self.allow_discovery(ticker, period=168):
             self.discovered(sa, ticker, f"Article approved by {model} {recommendation} | Article: {title} | {url} | {explanation} ",
-                sell_instructions, 1.5 if recommendation == "STRONG_BUY" else 1.0)
+                None, 1.5 if recommendation == "STRONG_BUY" else 1.0)
 
-
-    def news_watch(self, sa):
-        # Check if market is open
-        market_status = self.market_open()
-        if market_status is None or market_status < 0:
-            return
-
-        # Pass sell instructions to discovery
-        sell_instructions = [
-            ("PERCENTAGE_DIMINISHING", 1.50, 7),
-            ("PERCENTAGE_AUGMENTING", 0.95, 21),
-            ('DESCENDING_TREND', -0.20, None),
-            ('NOT_TRENDING', None, None)
-        ]
-
-        # Market open - process pending watchlist entries
-        pending_entries = self.watchlist()
-
-        for entry in pending_entries:
-            self.discovered(sa, entry.stock.symbol, entry.explanation, sell_instructions, 1.0)
-
-            entry.status = "Executed"
-            entry.save()
-
-            logger.info(f"{self.advisor.name} processed pending watchlist entry: {entry.stock.symbol}")
 
     def _extract_json(self, text):
         """Extract JSON from Gemini response, handling markdown code blocks."""

@@ -19,7 +19,6 @@ _LAZY_MODULES = frozenset(
         "user",
         "intraday",
         "vulture",
-        "flux",
         "vunder",
         "trash",
         "oscilla",

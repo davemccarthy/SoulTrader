@@ -454,9 +454,9 @@ Example:
 
         # Sell instructions
         sell_instructions = [
-            ("PERCENTAGE_DIMINISHING", 1.30, 60),
+            ("PERCENTAGE_DIMINISHING", 1.80, 120),
             ("PERCENTAGE_AUGMENTING", 0.85, 120),
-            ("PEAKED", 7.0, None),
+            ("PEAKED", 20.0, 5.0),
             ("DESCENDING_TREND", -0.20, None)
         ]
 

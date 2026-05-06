@@ -1044,20 +1044,8 @@ class Pharm(AdvisorBase):
                 article_link=(candidate.get("link") or "").strip(),
             )
 
-            sell_instructions = [
-                ("PERCENTAGE_DIMINISHING", 1.30, 7),
-                ("PERCENTAGE_AUGMENTING", 0.90, 20),
-                ("DESCENDING_TREND", -0.20, None),
-                ("NOT_TRENDING", None, None),
-            ]
+            stock = self.discovered(sa, resolved_ticker, explanation, None, weight=weight)
 
-            stock = self.discovered(
-                sa,
-                resolved_ticker,
-                explanation,
-                sell_instructions,
-                weight=weight,
-            )
             if stock:
                 logger.info("PHARM discovered %s (%s)", resolved_ticker, row_event_class)
             else:

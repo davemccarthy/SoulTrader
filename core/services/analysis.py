@@ -59,22 +59,17 @@ def factor_sentiment(fund: Profile) -> Decimal:
     return Decimal(str(sentiment))
 
 def analyse_target(discovery, holding, target, sentiment):
-    stock = holding.stock
+
     current = holding.stock.price
     buy_price = holding.average_price if holding.average_price else discovery.price
-
     target = buy_price + (Decimal(str(target)) - buy_price) * sentiment
 
     # Case 1: Targets should only trigger sells at a profit, not at a loss
     if current < buy_price:
         return False
 
-    # Case 2: Price >= target and downturn detected (down pullback_pct from peak since purchase; intraday today, daily history)
-    if current >= target and stock.downturned_price(discovery.created, pullback_pct=5.0 * float(sentiment)):
-        return True
-
-    # Case 3: Price < target but previously peaked at/above target (protect gains)
-    if current < target and stock.peaked(discovery.created, target):
+    # Case 2: Price >= target
+    if current >= target:
         return True
 
     return False
@@ -343,10 +338,10 @@ def analyze_holdings(sa, funds):
                                     current_target = float(buy_price)  # After max_days, target = buy_price (break-even)
 
                                 if analyse_target(discovery, holding, Decimal(str(current_target)), sentiment):
-                                    execute_sell(sa, fund, holding, f"{holding.stock.symbol} downturn detected at diminishing target ${current_target:.2f} (day {days_held}/{max_days})")
+                                    execute_sell(sa, fund, holding, f"{holding.stock.symbol} diminishing target ${current_target:.2f} (day {days_held}/{max_days})")
                                     break
                             else:
-                                logger.warning(f"TARGET_DIMINISHING instruction {instruction.id} missing required fields (value1 or buy_price)")
+                                logger.warning(f"TARGET_DIMINISHING invalid threshold (value1={instruction.value1}, buy_price={buy_price})")
 
                         elif instruction.instruction == 'PROFIT_TARGET':
                             # Calculate target profit based on average spend and ratio
@@ -362,8 +357,7 @@ def analyze_holdings(sa, funds):
                                     execute_sell(sa, fund, holding, f"{holding.stock.symbol} reached profit target (target price: ${target_price:.2f})")
                                     break
                             else:
-                                logger.warning(f"PROFIT_TARGET instruction {instruction.id} missing required fields (value1 or shares)")
-
+                                logger.warning(f"PROFIT_TARGET invalid threshold (value1={instruction.value1}, buy_price={buy_price})")
 
                         elif instruction.instruction in ['STOP_AUGMENTING', 'PERCENTAGE_AUGMENTING']:
                             # Calculate augmenting stop: original_stop → buy_price over max_days
@@ -382,7 +376,7 @@ def analyze_holdings(sa, funds):
                                                 f"{holding.stock.symbol} hit augmenting stop-loss of ${current_stop:.2f} (day {days_held}/{max_days})")
                                     break
                             else:
-                                logger.warning(f"STOP_AUGMENTING instruction {instruction.id} missing required fields (value1 or buy_price)")
+                                logger.warning(f"{instruction.instruction} invalid threshold (value1={instruction.value1}, buy_price={buy_price})")
 
                         elif instruction.instruction == 'PERCENTAGE_REBUY':
                             # Rebuy on price drop (alternative to stop-loss)
@@ -485,7 +479,7 @@ def analyze_holdings(sa, funds):
                                 discovery.created,
                                 buy_price=buy_price,
                                 giveback_pct=float(instruction.value1),
-                                min_peak_gain_pct=5.0,
+                                min_peak_gain_pct=float(instruction.value2 or 5.0),
                             ):
                                 execute_sell(sa, fund, holding,f"{holding.stock.symbol} down {instruction.value1}% from peak")
                                 break
