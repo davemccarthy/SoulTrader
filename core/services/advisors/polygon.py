@@ -33,9 +33,6 @@ class Polygon(AdvisorBase):
             # Calculate time window: since last SA session for this username
             sa_start_ts = self.get_previous_sa_timestamp(sa, username=sa.username)
 
-            # Process articles already read
-            self.news_watch(sa)
-
             # Set bounds: prev SA started -> current SA started
             sa_end_utc = timezone.make_aware(sa.started) if timezone.is_naive(sa.started) else sa.started
             if sa_start_ts is not None:
