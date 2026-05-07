@@ -8,6 +8,12 @@
     <style>
         :root {
             --max-content-width: 1000px;
+            --surface-bg: #f1f4f6;
+            --surface-card: #ffffff;
+            --text-primary: #1f2937;
+            --text-muted: #667085;
+            --border-subtle: #dbe2e8;
+            --shadow-soft: 0 10px 26px rgba(15, 23, 42, 0.08);
         }
         
         * {
@@ -18,9 +24,10 @@
         
         body {
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background-color: #f8f9fa;
-            color: #333;
-            line-height: 1.6;
+            background-color: var(--surface-bg);
+            color: var(--text-primary);
+            line-height: 1.55;
+            letter-spacing: 0.005em;
         }
 
         p {
@@ -35,7 +42,7 @@
             background: linear-gradient(135deg, #00843D 0%, #00B04F 100%);
             color: white;
             padding: 1rem 0;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            box-shadow: 0 8px 24px rgba(0, 84, 44, 0.16);
             width: 100%;
             max-width: 100%;
             box-sizing: border-box;
@@ -177,10 +184,10 @@
         
         /* Portfolio Dashboard Widget */
         .portfolio-widget {
-            background: white;
-            border-bottom: 0.5px solid #00843D;
+            background: var(--surface-card);
+            border-bottom: 1px solid #d8e4dd;
             padding: 0.75rem 0;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
             width: 100%;
             max-width: 100%;
             box-sizing: border-box;
@@ -210,11 +217,12 @@
         .portfolio-stat-header {
             font-size: 0.75rem;
             text-transform: uppercase;
-            color: #6c757d;
+            color: var(--text-muted);
             font-weight: 600;
             margin-bottom: 0.15rem;
             overflow-wrap: break-word;
             hyphens: auto;
+            letter-spacing: 0.06em;
         }
 
         .portfolio-stat-value {
@@ -261,16 +269,16 @@
         .main-content {
             max-width: var(--max-content-width);
             margin: 2rem auto;
-            padding: 0;
+            padding: 0 0.2rem;
         }
 
         .card {
-            background: white;
-            border-radius: 8px;
+            background: var(--surface-card);
+            border-radius: 10px;
             padding: 1.5rem;
             margin: 1rem 0;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            border: 1px solid #e9ecef;
+            box-shadow: var(--shadow-soft);
+            border: 1px solid var(--border-subtle);
         }
 
         .btn {
@@ -279,15 +287,18 @@
             background: linear-gradient(135deg, #00843D 0%, #00B04F 100%);
             color: white;
             text-decoration: none;
-            border-radius: 4px;
+            border-radius: 6px;
             border: none;
             cursor: pointer;
             font-size: 1rem;
-            transition: transform 0.2s;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            transition: transform 0.2s, box-shadow 0.2s ease;
         }
 
         .btn:hover {
             transform: translateY(-2px);
+            box-shadow: 0 10px 22px rgba(0, 132, 61, 0.28);
         }
 
         .btn-secondary {
@@ -310,11 +321,12 @@
         }
 
         .stat-card {
-            background: white;
+            background: var(--surface-card);
             padding: 1.5rem;
-            border-radius: 8px;
+            border-radius: 10px;
             text-align: center;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            box-shadow: var(--shadow-soft);
+            border: 1px solid var(--border-subtle);
         }
 
         .stat-number {
@@ -327,7 +339,7 @@
         }
 
         .stat-label {
-            color: #6c757d;
+            color: var(--text-muted);
             margin-top: 0.5rem;
         }
         .stat-label.caps {
@@ -360,7 +372,8 @@
         .form-group label {
             display: block;
             margin-bottom: 0.5rem;
-            font-weight: 500;
+            font-weight: 600;
+            color: #475467;
         }
 
         .form-group input,
@@ -368,9 +381,11 @@
         .form-group textarea {
             width: 100%;
             padding: 0.75rem;
-            border: 1px solid #ced4da;
-            border-radius: 4px;
+            border: 1px solid #c7d0d9;
+            border-radius: 6px;
             font-size: 1rem;
+            color: var(--text-primary);
+            background: #fcfdff;
         }
 
         .form-group input:focus,
@@ -391,12 +406,14 @@
         .table td {
             padding: 0.75rem;
             text-align: left;
-            border-bottom: 1px solid #dee2e6;
+            border-bottom: 1px solid #e2e8ee;
         }
 
         .table th {
-            background-color: #f8f9fa;
+            background-color: #f3f6f8;
             font-weight: 600;
+            color: #344054;
+            letter-spacing: 0.02em;
         }
 
         .positive {
@@ -421,9 +438,10 @@
 
         .footer {
             background-color: clear;
-            color: darkgrey;
+            color: #8a949f;
             text-align: center;
             margin-bottom: 1rem;
+            font-size: 0.9rem;
         }
 
         /* Stock Ticker */
