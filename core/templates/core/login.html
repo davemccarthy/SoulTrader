@@ -3,24 +3,121 @@
 {% block title %}Login - SOULTRADER{% endblock %}
 
 {% block content %}
-<div class="card">
-    <h1 style="color: #667eea; margin-bottom: 1rem;">Login</h1>
-    
-    <form method="post">
-        {% csrf_token %}
-        
-        <div class="form-group">
-            <label for="username">Username</label>
-            <input type="text" id="username" name="username" required>
-        </div>
-        
-        <div class="form-group">
-            <label for="password">Password</label>
-            <input type="password" id="password" name="password" required>
-        </div>
-        
-        <button type="submit" class="btn" style="width: 100%;">Login</button>
-    </form>
+<style>
+    body {
+        background: radial-gradient(circle at 20% 20%, #2a2a2a 0%, #161616 65%);
+    }
+
+    .header,
+    .portfolio-widget,
+    .ticker-container,
+    .footer {
+        display: none;
+    }
+
+    .main-content {
+        max-width: 100%;
+        margin: 0;
+        padding: 0;
+    }
+
+    .login-shell {
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 2rem 1rem;
+    }
+
+    .login-card {
+        width: 100%;
+        max-width: 430px;
+        background: linear-gradient(160deg, #0a0f1a 0%, #111827 100%);
+        border: 1px solid #1f2937;
+        border-radius: 12px;
+        padding: 1.8rem;
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
+        color: #e5e7eb;
+        font-family: "Courier New", Courier, monospace;
+    }
+
+    .login-title {
+        margin: 0 0 0.35rem 0;
+        font-size: 1.6rem;
+        letter-spacing: 0.04em;
+        color: #f3f4f6;
+    }
+
+    .login-card .form-group {
+        margin-bottom: 1rem;
+    }
+
+    .login-card .form-group label {
+        color: #9ca3af;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        font-size: 0.85rem;
+        text-transform: uppercase;
+    }
+
+    .login-card .form-group input {
+        width: 100%;
+        background: #0b1220;
+        border: 1px solid #334155;
+        color: #f9fafb;
+        border-radius: 8px;
+        padding: 0.75rem 0.85rem;
+        font-family: "Courier New", Courier, monospace;
+    }
+
+    .login-card .form-group input:focus {
+        outline: none;
+        border-color: #22c55e;
+        box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.22);
+    }
+
+    .login-btn {
+        width: 100%;
+        margin-top: 0.4rem;
+        border: 1px solid #22c55e;
+        background: #16a34a;
+        color: #f8fafc;
+        border-radius: 8px;
+        padding: 0.8rem 1rem;
+        cursor: pointer;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        font-family: "Courier New", Courier, monospace;
+        transition: background 0.2s ease, transform 0.15s ease;
+    }
+
+    .login-btn:hover {
+        background: #15803d;
+        transform: translateY(-1px);
+    }
+</style>
+
+<div class="login-shell">
+    <div class="login-card">
+        <h1 class="login-title">SOULTRADER</h1>
+
+        <form method="post">
+            {% csrf_token %}
+
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input type="text" id="username" name="username" required>
+            </div>
+
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" required>
+            </div>
+
+            <button type="submit" class="login-btn">Log In</button>
+        </form>
+    </div>
 </div>
 {% endblock %}
 
