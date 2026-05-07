@@ -52,28 +52,41 @@
             display: flex;
             align-items: flex-start;
             gap: 0.6rem;
-            justify-content: space-between;
+            justify-content: flex-start;
         }
         .advisory-card-title {
             display: flex;
-            align-items: flex-start;
-            gap: 0.5rem;
+            align-items: stretch;
+            gap: 0.6rem;
             min-width: 0;
             flex: 1;
         }
-        .advisory-card-name {
+        .advisory-card .advisor-logo {
+            width: 1.85rem;
+            height: 1.85rem;
+            font-size: 0.8rem;
             font-weight: 700;
+            flex-shrink: 0;
+        }
+        .advisory-card-title-copy {
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 0.12rem;
+        }
+        .advisory-card-name {
+            font-size: 1.05rem;
+            font-weight: 800;
             line-height: 1.15;
+            color: #0f172a;
         }
         .advisory-card-description {
-            margin-top: 0.15rem;
-            color: #64748b;
-            font-size: 0.82rem;
-            line-height: 1.3;
-        }
-        .advisory-card-side {
-            text-align: right;
-            min-width: 3.2rem;
+            margin-top: 0;
+            color: #475569;
+            font-size: 0.85rem;
+            font-weight: 500;
+            line-height: 1.35;
         }
         .advisory-kicker {
             font-size: 0.66rem;
@@ -202,6 +215,7 @@
             display: grid;
             grid-template-columns: repeat(4, minmax(0, 1fr));
             gap: 0.55rem;
+            margin-top: 0.75rem;
         }
         .disc-detail-copy {
             border-top: 1px solid #eef2f7;
@@ -212,11 +226,22 @@
             color: #334155;
             font-size: 0.9rem;
             line-height: 1.45;
-            white-space: pre-wrap;
+            /* pre-line: real newlines still break; leading indentation in HTML is collapsed */
+            white-space: pre-line;
             overflow-wrap: anywhere;
         }
         .disc-detail-copy p:last-child {
             margin-bottom: 0;
+        }
+        .disc-detail-copy a {
+            display: inline;
+            margin: 0;
+            padding: 0;
+            font: inherit;
+            line-height: inherit;
+            color: #00843D;
+            text-decoration: underline;
+            text-underline-offset: 0.12em;
         }
         .disc-score {
             min-width: 60px;
@@ -289,10 +314,10 @@
             <div class="disc-detail-copy">
                 {% if row.explanation_paragraphs %}
                     {% for paragraph in row.explanation_paragraphs %}
-                <p>{{ paragraph }}</p>
+                <p>{% if paragraph.kind == 'link' %}<a href="{{ paragraph.url }}" target="_blank" rel="noopener noreferrer">{{ paragraph.label }}</a>{% else %}{{ paragraph.text }}{% endif %}</p>
                     {% endfor %}
                 {% else %}
-                <p style="color: #64748b; font-size: 0.88rem;">No explanation available for this discovery.</p>
+                <p style="color: #64748b; font-size: 0.85rem;">No explanation available for this discovery.</p>
                 {% endif %}
             </div>
         </article>

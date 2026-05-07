@@ -11,22 +11,20 @@
                     {{ row.name|slice:":1" }}
                 {% endif %}
             </span>
-            <div style="min-width:0;">
+            <div class="advisory-card-title-copy">
                 <div class="advisory-card-name">{{ row.name }}</div>
-            </div>
-        </div>
-        <div class="advisory-card-side">
-            <div class="advisory-card-description" style="margin-top: 0; text-align: right;">
-                {% if row.description %}
-                    {{ row.description }}
-                {% else %}
-                    —
-                {% endif %}
+                <div class="advisory-card-description">
+                    {% if row.description %}
+                        {{ row.description }}
+                    {% else %}
+                        —
+                    {% endif %}
+                </div>
             </div>
         </div>
     </div>
 
-    <div class="advisory-metrics" style="margin-top: 0.45rem;">
+    <div class="advisory-metrics" style="margin-top: 0.75rem;">
         <div class="advisory-metric">
             <div class="advisory-kicker">Discoveries</div>
             <div class="advisory-metric-value">{{ row.discovery_count }}</div>

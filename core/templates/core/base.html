@@ -2045,8 +2045,8 @@
                             </div>
 
                             <div class="health-meta-section">
-                                ${bonuses.length ? `<div class="health-meta-label">Bonuses</div>${bonuses.length ? renderStringList('Bonuses', bonuses, 6) : ''}` : ''}
-                                ${penalties.length ? `<div class="health-meta-label">Penalties</div>${penalties.length ? renderStringList('Penalties', penalties, 6) : ''}` : ''}
+                                ${bonuses.length ? renderStringList('Bonuses', bonuses, 6) : ''}
+                                ${penalties.length ? renderStringList('Penalties', penalties, 6) : ''}
                                 ${!bonuses.length && !penalties.length ? '<div class="health-meta-item holdings-history-text"><span class="health-meta-value">No bonuses/penalties.</span></div>' : ''}
                             </div>
                         </div>
