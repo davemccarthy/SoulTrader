@@ -214,10 +214,16 @@
         }
         .disc-detail-meta {
             display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
+            grid-template-columns: repeat(5, minmax(0, 1fr));
             gap: 0.55rem;
             margin-top: 0.75rem;
         }
+        .disc-value.outcome-perfect { color: #059669; }
+        .disc-value.outcome-adequate { color: #0f766e; }
+        .disc-value.outcome-disappointing { color: #b45309; }
+        .disc-value.outcome-disaster { color: #dc2626; }
+        .disc-value.outcome-too-early,
+        .disc-value.outcome-unknown { color: #64748b; }
         .disc-detail-copy {
             border-top: 1px solid #eef2f7;
             padding-top: 0.75rem;
@@ -309,6 +315,10 @@
                 <div>
                     <div class="disc-kicker">Sector</div>
                     <div class="disc-value">{{ row.sector|default:"—" }}</div>
+                </div>
+                <div>
+                    <div class="disc-kicker">Outcome</div>
+                    <div class="disc-value {{ row.outcome.css_class }}" title="{{ row.outcome.reason_code }}">{{ row.outcome.label }}</div>
                 </div>
             </div>
 

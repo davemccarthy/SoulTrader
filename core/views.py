@@ -1220,6 +1220,7 @@ def advisory_discoveries(request, advisor_id: int):
     for discovery in discoveries:
         company = (discovery.stock.company or '').strip()
         score = float(discovery.health.score) if discovery.health else None
+        outcome = _discovery_outcome(discovery, score)
         if score is None:
             score_display = "—"
         elif abs(score) < 1e-9:
@@ -1240,6 +1241,7 @@ def advisory_discoveries(request, advisor_id: int):
             'explanation': discovery.explanation or '',
             'explanation_paragraphs': _discovery_paragraphs(discovery.explanation),
             'health_score_display': score_display,
+            'outcome': outcome,
         })
 
     context = {
@@ -1333,3 +1335,86 @@ def _discovery_paragraphs(explanation: str | None) -> list[dict[str, str]]:
         i += 1
 
     return blocks
+
+
+def _discovery_outcome(discovery: Discovery, score: float | None) -> dict[str, object]:
+    """Classify discovery quality from score, age, and mark-to-market return."""
+    now = timezone.now()
+    age = now - discovery.created if discovery.created else datetime.timedelta.max
+    age_hours = age.total_seconds() / 3600
+
+    if age < datetime.timedelta(days=1):
+        return {
+            "label": "TOO EARLY",
+            "state": "TOO_EARLY",
+            "reason_code": "too_early_lt_24h",
+            "reason_text": "Discovery is less than 24 hours old.",
+            "css_class": "outcome-too-early",
+            "return_pct": None,
+            "age_hours": round(age_hours, 2),
+        }
+
+    discovery_price = discovery.price
+    current_price = discovery.stock.price if discovery.stock else None
+    if score is None:
+        return {
+            "label": "UNKNOWN",
+            "state": "UNKNOWN",
+            "reason_code": "missing_health_score",
+            "reason_text": "Health score is unavailable.",
+            "css_class": "outcome-unknown",
+            "return_pct": None,
+            "age_hours": round(age_hours, 2),
+        }
+    if discovery_price is None or discovery_price <= 0:
+        return {
+            "label": "UNKNOWN",
+            "state": "UNKNOWN",
+            "reason_code": "missing_discovery_price",
+            "reason_text": "Discovery price is missing.",
+            "css_class": "outcome-unknown",
+            "return_pct": None,
+            "age_hours": round(age_hours, 2),
+        }
+    if current_price is None or current_price <= 0:
+        return {
+            "label": "UNKNOWN",
+            "state": "UNKNOWN",
+            "reason_code": "missing_current_price",
+            "reason_text": "Current price is missing.",
+            "css_class": "outcome-unknown",
+            "return_pct": None,
+            "age_hours": round(age_hours, 2),
+        }
+
+    return_pct = float((current_price - discovery_price) / discovery_price * 100)
+    if score >= 7.0 and return_pct >= 8.0:
+        label = "PERFECT"
+        reason_code = "high_score_high_return"
+        css_class = "outcome-perfect"
+    elif score >= 7.0 and return_pct <= -4.0:
+        label = "DISASTER"
+        reason_code = "high_score_low_return"
+        css_class = "outcome-disaster"
+    elif score < 4.0 and return_pct >= 8.0:
+        label = "DISASTER"
+        reason_code = "low_score_high_return"
+        css_class = "outcome-disaster"
+    elif score >= 7.0 and return_pct < 8.0:
+        label = "DISAPPOINTING"
+        reason_code = "high_score_subpar_return"
+        css_class = "outcome-disappointing"
+    else:
+        label = "ADEQUATE"
+        reason_code = "middle_band_alignment"
+        css_class = "outcome-adequate"
+
+    return {
+        "label": label,
+        "state": "FINAL",
+        "reason_code": reason_code,
+        "reason_text": "",
+        "css_class": css_class,
+        "return_pct": round(return_pct, 2),
+        "age_hours": round(age_hours, 2),
+    }
