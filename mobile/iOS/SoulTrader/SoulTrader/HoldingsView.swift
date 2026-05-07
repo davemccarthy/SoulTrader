@@ -341,14 +341,14 @@ struct HoldingDetailView: View {
 
             HStack(alignment: .top, spacing: 10) {
                 snapshotMetric(
-                    title: "CURRENT",
-                    value: formatCurrency(current),
+                    title: "BUY",
+                    value: formatCurrency(average),
                     valueColor: Theme.valuePrimary
                 )
                 snapshotMetric(
-                    title: "P&L %",
-                    value: formatPercent(pnlPercent),
-                    valueColor: percentColor(for: pnlPercent)
+                    title: "CURRENT",
+                    value: formatCurrency(current),
+                    valueColor: Theme.valuePrimary
                 )
                 snapshotMetric(
                     title: "P&L $",
@@ -356,9 +356,9 @@ struct HoldingDetailView: View {
                     valueColor: amountColor(for: pnlAmount)
                 )
                 snapshotMetric(
-                    title: "VALUE",
-                    value: formatCurrency(value),
-                    valueColor: Theme.valuePrimary
+                    title: "P&L %",
+                    value: formatPercent(pnlPercent),
+                    valueColor: percentColor(for: pnlPercent)
                 )
                 Spacer()
             }
@@ -370,11 +370,13 @@ struct HoldingDetailView: View {
     }
 
     private var secondaryMetaCard: some View {
-        let average = decimal(from: holding.averagePrice)
+        let current = decimal(from: holding.stock.price)
+        let shares = Decimal(holding.shares)
+        let value = (current ?? 0) * shares
         return HStack(alignment: .top, spacing: 10) {
             snapshotMetric(
-                title: "BUY",
-                value: formatCurrency(average),
+                title: "VALUE",
+                value: formatCurrency(value),
                 valueColor: Theme.valuePrimary
             )
             snapshotMetric(

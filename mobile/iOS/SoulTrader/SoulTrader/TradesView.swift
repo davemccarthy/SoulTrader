@@ -262,6 +262,7 @@ struct TradeDetailView: View {
                     tradeAt: tradeExecutionChartDate,
                     tradePrice: tradeExecutionPriceDouble
                 )
+                secondaryMetaCard
                 tradeExplanationSection
             }
             .padding(.horizontal, 6)
@@ -284,8 +285,10 @@ struct TradeDetailView: View {
     @ViewBuilder
     private var tradeExplanationSection: some View {
         if let text = trimmedTradeExplanation {
+            let action = trade.action.uppercased()
+            let reasonTitle = "REASON FOR \(action)"
             VStack(alignment: .leading, spacing: 6) {
-                Text("Explanation")
+                Text(reasonTitle)
                     .font(.caption2)
                     .fontWeight(.semibold)
                     .foregroundStyle(Theme.labelAccent)
@@ -344,14 +347,14 @@ struct TradeDetailView: View {
 
     private var tradeMetricsRow: some View {
         HStack(alignment: .top, spacing: 10) {
-            ForEach(Array(tradeMetricCells.enumerated()), id: \.offset) { _, cell in
+            ForEach(Array(topTradeMetricCells.enumerated()), id: \.offset) { _, cell in
                 snapshotMetric(title: cell.title, value: cell.value, valueColor: cell.color)
             }
             Spacer()
         }
     }
 
-    private var tradeMetricCells: [(title: String, value: String, color: Color)] {
+    private var topTradeMetricCells: [(title: String, value: String, color: Color)] {
         let px = decimal(from: trade.price)
         let current = decimal(from: trade.stock.price)
         let sh = Decimal(trade.shares)
@@ -359,46 +362,81 @@ struct TradeDetailView: View {
 
         switch trade.action.uppercased() {
         case "BUY":
-            let positionValue = (current ?? px).map { sh * $0 }
+            let pnlDollars: Decimal? = {
+                guard let px, let current else { return nil }
+                return (current - px) * sh
+            }()
             let pnl = pnlPercentBuy(buyPrice: px, currentPrice: current)
             return [
                 ("BUY", formatCurrency(px), Theme.valuePrimary),
                 ("CURRENT", formatCurrency(current), Theme.valuePrimary),
-                ("COST", formatCurrency(positionValue), Theme.valuePrimary),
-                ("SHRS", String(trade.shares), Theme.valuePrimary),
+                ("P&L $", pnlDollars.map(formatSignedCurrency) ?? "—", amountColor(for: pnlDollars)),
                 ("P&L %", formatPercent(pnl), percentColor(for: pnl)),
             ]
         case "SELL":
             let pnl = pnlPercentSell(sellPrice: px, avgCost: avgBuy)
             let pnlDollars: Decimal? = {
-                guard let px, let avgBuy, avgBuy != 0 else { return nil }
+                guard let px, let avgBuy else { return nil }
                 return (px - avgBuy) * sh
-            }()
-            let profitLossCell: (String, String, Color) = {
-                guard let d = pnlDollars else {
-                    return ("P&L $", "—", Theme.valuePrimary)
-                }
-                if d > 0 { return ("PROFIT", formatSignedCurrency(d), .green) }
-                if d < 0 { return ("LOSS", formatSignedCurrency(d), .red) }
-                return ("PROFIT", formatSignedCurrency(d), Theme.valuePrimary)
             }()
             return [
                 ("BUY", formatCurrency(avgBuy), Theme.valuePrimary),
                 ("SELL", formatCurrency(px), Theme.valuePrimary),
-                profitLossCell,
-                ("SHRS", String(trade.shares), Theme.valuePrimary),
+                ("P&L $", pnlDollars.map(formatSignedCurrency) ?? "—", amountColor(for: pnlDollars)),
                 ("P&L %", formatPercent(pnl), percentColor(for: pnl)),
             ]
         default:
-            let mid = px.map { sh * $0 }
+            let pnlDollars: Decimal? = {
+                guard let px, let current else { return nil }
+                return (current - px) * sh
+            }()
+            let pnl = pnlPercentBuy(buyPrice: px, currentPrice: current)
             return [
                 ("PRICE", formatCurrency(px), Theme.valuePrimary),
                 ("CURRENT", formatCurrency(current), Theme.valuePrimary),
-                ("VALUE", formatCurrency(mid), Theme.valuePrimary),
-                ("SHRS", String(trade.shares), Theme.valuePrimary),
-                ("P&L %", "—", Theme.valuePrimary),
+                ("P&L $", pnlDollars.map(formatSignedCurrency) ?? "—", amountColor(for: pnlDollars)),
+                ("P&L %", formatPercent(pnl), percentColor(for: pnl)),
             ]
         }
+    }
+
+    private var secondaryMetaCard: some View {
+        let px = decimal(from: trade.price)
+        let current = decimal(from: trade.stock.price)
+        let sh = Decimal(trade.shares)
+        let value: Decimal? = {
+            if trade.action.uppercased() == "BUY" {
+                return (current ?? px).map { sh * $0 }
+            }
+            return px.map { sh * $0 }
+        }()
+
+        return HStack(alignment: .top, spacing: 10) {
+            snapshotMetric(
+                title: "VALUE",
+                value: formatCurrency(value),
+                valueColor: Theme.valuePrimary
+            )
+            snapshotMetric(
+                title: "EXCHANGE",
+                value: normalizedMeta(trade.stock.exchange),
+                valueColor: Theme.secondaryText
+            )
+            snapshotMetric(
+                title: "SECTOR",
+                value: normalizedMeta(trade.stock.sector),
+                valueColor: Theme.secondaryText
+            )
+            snapshotMetric(
+                title: "SHARES",
+                value: String(trade.shares),
+                valueColor: Theme.valuePrimary
+            )
+            Spacer()
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
     }
 
     private func snapshotMetric(title: String, value: String, valueColor: Color) -> some View {
@@ -432,6 +470,20 @@ struct TradeDetailView: View {
         if value > 0 { return .green }
         if value < 0 { return .red }
         return Theme.valuePrimary
+    }
+
+    private func amountColor(for value: Decimal?) -> Color {
+        guard let value else { return Theme.valuePrimary }
+        if value > 0 { return .green }
+        if value < 0 { return .red }
+        return Theme.valuePrimary
+    }
+
+    private func normalizedMeta(_ value: String?) -> String {
+        guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return "—"
+        }
+        return value
     }
 
     private func decimal(from text: String?) -> Decimal? {
