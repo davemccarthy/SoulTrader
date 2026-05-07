@@ -41,6 +41,7 @@ MIN_PRICE = 1.0
 TARGET_PROFIT_MULTIPLIER = 1.015  # +1.5%
 END_DAY_WINNER_MULTIPLIER = 1.0   # sell if >= break-even by EOD check
 MAX_HOLD_DAYS = 3
+PREV_CLOSE_TARGET_MIN_UPSIDE_MULTIPLIER = 1.005  # require >= +0.5% upside vs entry
 
 
 def normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -98,6 +99,22 @@ class Vulture(AdvisorBase):
 
     def _latest_health(self, stock: Stock) -> Optional[Health]:
         return Health.objects.filter(stock=stock).order_by("-created").first()
+
+    def _previous_close_price(self, symbol: str) -> Optional[float]:
+        """
+        Return previous daily close for symbol, or None when unavailable.
+        """
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period="5d", interval="1d")
+            hist = normalize_dataframe(hist)
+            if hist.empty or len(hist) < 2 or "Close" not in hist.columns:
+                return None
+            prev_close = float(hist["Close"].iloc[-2])
+            return prev_close if prev_close > 0 else None
+        except Exception as exc:
+            logger.debug("Previous close failed for %s: %s", symbol, exc)
+            return None
 
     def discover(self, sa):
         market_status = self.market_open()
@@ -200,11 +217,28 @@ class Vulture(AdvisorBase):
                 f"Intraday spread dip trigger: red_ratio={red_ratio:.2f}, median={median_ret:.2f}% | "
                 f"{symbol} since-open return={ret:.2f}%"
             )
-            sell_instructions = [
-                ("TARGET_PERCENTAGE", TARGET_PROFIT_MULTIPLIER, None),
-                ("END_DAY", END_DAY_WINNER_MULTIPLIER, None),
-                ("AFTER_DAYS", MAX_HOLD_DAYS, None),
-            ]
+            prev_close = self._previous_close_price(symbol)
+            current_price = float(stock.price) if stock.price is not None else None
+            use_prev_close_target = bool(
+                prev_close
+                and current_price
+                and current_price > 0
+                and prev_close >= current_price * PREV_CLOSE_TARGET_MIN_UPSIDE_MULTIPLIER
+            )
+
+            if use_prev_close_target:
+                explanation = f"{explanation} | target=prev_close ${prev_close:.2f}"
+                sell_instructions = [
+                    ("TARGET_PRICE", prev_close, None),
+                    ("END_DAY", END_DAY_WINNER_MULTIPLIER, None),
+                    ("AFTER_DAYS", MAX_HOLD_DAYS, None),
+                ]
+            else:
+                sell_instructions = [
+                    ("TARGET_PERCENTAGE", TARGET_PROFIT_MULTIPLIER, None),
+                    ("END_DAY", END_DAY_WINNER_MULTIPLIER, None),
+                    ("AFTER_DAYS", MAX_HOLD_DAYS, None),
+                ]
 
             self.discovered(
                 sa=sa,

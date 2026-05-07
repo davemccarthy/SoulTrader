@@ -58,20 +58,32 @@ def factor_sentiment(fund: Profile) -> Decimal:
 
     return Decimal(str(sentiment))
 
-def analyse_target(discovery, holding, target, sentiment):
+def analyse_target(holding, target, sentiment):
 
     current = holding.stock.price
-    buy_price = holding.average_price if holding.average_price else discovery.price
+    buy_price = holding.average_price or Decimal(0.0)
     target = buy_price + (Decimal(str(target)) - buy_price) * sentiment
 
     # Case 1: Targets should only trigger sells at a profit, not at a loss
     if current < buy_price:
         return False
 
-    # Case 2: Price >= target
-    if current >= target:
-        return True
+    # Case 2: Price < target
+    if current < target:
+        return False
 
+    # Case 3: At/above target, only hold if trend is clearly positive
+    trend = holding.stock.calc_trend(period="1d", interval="15m", hours=2)
+    if trend is None:
+        return True  # in doubt sell
+
+    if trend < Decimal("0.03"):  # tune threshold
+        return True  # weak/negative momentum => take profit
+
+    logger.info(
+        "Delaying TP SELL. %s trending upward (trend=%.4f >= 0.03, current=%s, target=%s)",
+        holding.stock.symbol, float(trend), current, target,
+    )
     return False
 
 
@@ -321,7 +333,7 @@ def analyze_holdings(sa, funds):
                                 break
 
                         elif instruction.instruction in ['TARGET_PRICE', 'TARGET_PERCENTAGE']:
-                            if analyse_target(discovery, holding, instruction.value1, sentiment):
+                            if analyse_target(holding, instruction.value1, sentiment):
                                 execute_sell(sa, fund, holding, f"{holding.stock.symbol} reached target price of ${instruction.value1:.2f}")
                                 break
 
@@ -337,7 +349,7 @@ def analyze_holdings(sa, funds):
                                 else:
                                     current_target = float(buy_price)  # After max_days, target = buy_price (break-even)
 
-                                if analyse_target(discovery, holding, Decimal(str(current_target)), sentiment):
+                                if analyse_target(holding, Decimal(str(current_target)), sentiment):
                                     execute_sell(sa, fund, holding, f"{holding.stock.symbol} diminishing target ${current_target:.2f} (day {days_held}/{max_days})")
                                     break
                             else:
@@ -353,7 +365,7 @@ def analyze_holdings(sa, funds):
                                 target_value = base_allowance * (Decimal('1.0') + ratio)
                                 target_price = target_value / Decimal(str(holding.shares))
                                 
-                                if analyse_target(discovery, holding, target_price, sentiment):
+                                if analyse_target(holding, target_price, sentiment):
                                     execute_sell(sa, fund, holding, f"{holding.stock.symbol} reached profit target (target price: ${target_price:.2f})")
                                     break
                             else:

@@ -397,27 +397,6 @@ class Stock(models.Model):
             logger.warning(f"Error checking profit downturn for {self.symbol}: {e}")
             return False
 
-    def downturned_price(self, since_date, pullback_pct=5.0):
-        """
-        Price-based downturn: current price down pullback_pct from peak since since_date.
-        Kept for legacy target logic.
-        """
-        logger = logging.getLogger(__name__)
-        try:
-            peak = self.peak_since(since_date)
-            if peak is None or peak <= 0:
-                return False
-
-            current = float(self.price) if self.price is not None and self.price > 0 else None
-            if current is None:
-                return False
-
-            threshold = peak * (1 - pullback_pct / 100.0)
-            return current <= threshold
-        except Exception as e:
-            logger.warning(f"Error checking price downturn for {self.symbol}: {e}")
-            return False
-
     def peak_since(self, since_date):
         """
         Get the peak (max high) price since a given date.
