@@ -1221,6 +1221,11 @@ def advisory_discoveries(request, advisor_id: int):
         company = (discovery.stock.company or '').strip()
         score = float(discovery.health.score) if discovery.health else None
         outcome = _discovery_outcome(discovery, score)
+        discovery_price = discovery.price
+        current_price = discovery.stock.price
+        pnl_pct = None
+        if discovery_price and discovery_price > 0 and current_price is not None:
+            pnl_pct = float((current_price - discovery_price) / discovery_price * 100)
         if score is None:
             score_display = "—"
         elif abs(score) < 1e-9:
@@ -1232,11 +1237,13 @@ def advisory_discoveries(request, advisor_id: int):
             'id': discovery.id,
             'symbol': discovery.stock.symbol,
             'company': company or discovery.stock.symbol,
-            'price': discovery.stock.price,
+            'price': current_price,
             'industry': discovery.stock.industry or '',
             'sector': discovery.stock.sector or '',
             'exchange': discovery.stock.exchange or '',
-            'discovery_price': discovery.price,
+            'discovery_price': discovery_price,
+            'current_price': current_price,
+            'pnl_pct': pnl_pct,
             'created': discovery.created,
             'explanation': discovery.explanation or '',
             'explanation_paragraphs': _discovery_paragraphs(discovery.explanation),
@@ -1342,20 +1349,29 @@ def _discovery_outcome(discovery: Discovery, score: float | None) -> dict[str, o
     now = timezone.now()
     age = now - discovery.created if discovery.created else datetime.timedelta.max
     age_hours = age.total_seconds() / 3600
-
-    if age < datetime.timedelta(days=1):
-        return {
-            "label": "TOO EARLY",
-            "state": "TOO_EARLY",
-            "reason_code": "too_early_lt_24h",
-            "reason_text": "Discovery is less than 24 hours old.",
-            "css_class": "outcome-too-early",
-            "return_pct": None,
-            "age_hours": round(age_hours, 2),
-        }
-
     discovery_price = discovery.price
     current_price = discovery.stock.price if discovery.stock else None
+
+    # TOO EARLY means "no fresh price signal yet", not simply elapsed time.
+    if age < datetime.timedelta(days=1):
+        has_fresh_price_signal = (
+            discovery_price is not None
+            and current_price is not None
+            and discovery_price > 0
+            and current_price > 0
+            and abs(float(current_price - discovery_price)) > 1e-9
+        )
+        if not has_fresh_price_signal:
+            return {
+                "label": "TOO EARLY",
+                "state": "TOO_EARLY",
+                "reason_code": "too_early_no_fresh_price",
+                "reason_text": "Waiting for updated market prices before judging outcome.",
+                "css_class": "outcome-too-early",
+                "return_pct": None,
+                "age_hours": round(age_hours, 2),
+            }
+
     if score is None:
         return {
             "label": "UNKNOWN",
@@ -1388,32 +1404,51 @@ def _discovery_outcome(discovery: Discovery, score: float | None) -> dict[str, o
         }
 
     return_pct = float((current_price - discovery_price) / discovery_price * 100)
-    if score >= 7.0 and return_pct >= 8.0:
-        label = "PERFECT"
-        reason_code = "high_score_high_return"
-        css_class = "outcome-perfect"
-    elif score >= 7.0 and return_pct <= -4.0:
-        label = "DISASTER"
-        reason_code = "high_score_low_return"
-        css_class = "outcome-disaster"
-    elif score < 4.0 and return_pct >= 8.0:
+    score_midpoint = 25.0
+
+    # Missed opportunity: strong gain despite below-average score.
+    if score < score_midpoint and return_pct >= 8.0:
         label = "DISASTER"
         reason_code = "low_score_high_return"
         css_class = "outcome-disaster"
-    elif score >= 7.0 and return_pct < 8.0:
+        reason_text = "Below-average score missed a strong upside move."
+    # Rule: otherwise flat or positive return is at least ADEQUATE.
+    elif return_pct >= 0 and score >= score_midpoint and return_pct >= 8.0:
+        label = "PERFECT"
+        reason_code = "high_score_high_return"
+        css_class = "outcome-perfect"
+        reason_text = "High conviction and strong return aligned well."
+    elif return_pct >= 0:
+        label = "ADEQUATE"
+        reason_code = "non_negative_return"
+        css_class = "outcome-adequate"
+        reason_text = "Return is flat or positive without a major score/return mismatch."
+    elif score >= score_midpoint and return_pct <= -4.0:
+        label = "DISASTER"
+        reason_code = "high_score_low_return"
+        css_class = "outcome-disaster"
+        reason_text = "High conviction but the return moved sharply against the call."
+    elif score >= score_midpoint:
         label = "DISAPPOINTING"
         reason_code = "high_score_subpar_return"
         css_class = "outcome-disappointing"
+        reason_text = "High conviction has not produced the expected upside yet."
+    elif return_pct <= -8.0:
+        label = "DISAPPOINTING"
+        reason_code = "deep_negative_return"
+        css_class = "outcome-disappointing"
+        reason_text = "Return is materially negative versus discovery price."
     else:
         label = "ADEQUATE"
         reason_code = "middle_band_alignment"
         css_class = "outcome-adequate"
+        reason_text = "Score and return are broadly in line."
 
     return {
         "label": label,
         "state": "FINAL",
         "reason_code": reason_code,
-        "reason_text": "",
+        "reason_text": reason_text,
         "css_class": css_class,
         "return_pct": round(return_pct, 2),
         "age_hours": round(age_hours, 2),

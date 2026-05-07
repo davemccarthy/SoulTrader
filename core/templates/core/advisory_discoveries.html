@@ -250,6 +250,16 @@
             text-decoration: underline;
             text-underline-offset: 0.12em;
         }
+        .disc-outcome-reason {
+            border-top: 1px solid #eef2f7;
+            padding-top: 0.72rem;
+        }
+        .disc-outcome-reason p {
+            margin: 0;
+            color: #475569;
+            font-size: 0.86rem;
+            line-height: 1.35;
+        }
         .disc-score {
             min-width: 60px;
             text-align: right;
@@ -305,16 +315,18 @@
                     <div class="disc-value">{% if row.created %}{{ row.created|date:"Y-m-d H:i" }}{% else %}—{% endif %}</div>
                 </div>
                 <div>
-                    <div class="disc-kicker">Price</div>
-                    <div class="disc-value">{% if row.discovery_price %}${{ row.discovery_price|floatformat:2 }}{% elif row.price %}${{ row.price|floatformat:2 }}{% else %}—{% endif %}</div>
+                    <div class="disc-kicker">Discovery</div>
+                    <div class="disc-value">{% if row.discovery_price %}${{ row.discovery_price|floatformat:2 }}{% else %}—{% endif %}</div>
                 </div>
                 <div>
-                    <div class="disc-kicker">Exchange</div>
-                    <div class="disc-value">{{ row.exchange|default:"—" }}</div>
+                    <div class="disc-kicker">Current</div>
+                    <div class="disc-value">{% if row.current_price %}${{ row.current_price|floatformat:2 }}{% else %}—{% endif %}</div>
                 </div>
                 <div>
-                    <div class="disc-kicker">Sector</div>
-                    <div class="disc-value">{{ row.sector|default:"—" }}</div>
+                    <div class="disc-kicker">P&amp;L</div>
+                    <div class="disc-value {% if row.pnl_pct > 0 %}positive{% elif row.pnl_pct < 0 %}negative{% endif %}">
+                        {% if row.pnl_pct is not None %}{{ row.pnl_pct|floatformat:2 }}%{% else %}—{% endif %}
+                    </div>
                 </div>
                 <div>
                     <div class="disc-kicker">Outcome</div>
@@ -331,6 +343,11 @@
                 <p style="color: #64748b; font-size: 0.85rem;">No explanation available for this discovery.</p>
                 {% endif %}
             </div>
+            {% if row.outcome.reason_text %}
+            <div class="disc-outcome-reason">
+                <p><strong>Outcome rationale:</strong> {{ row.outcome.reason_text }}</p>
+            </div>
+            {% endif %}
         </article>
         {% endfor %}
     </div>
