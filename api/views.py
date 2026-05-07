@@ -1,5 +1,9 @@
 import logging
-from datetime import timedelta
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime as dt, timedelta
+from decimal import Decimal
+from typing import Any
 
 from django.conf import settings
 from django.db.models import Count, F, Max, Sum
@@ -281,6 +285,158 @@ def get_fund_advisors(request):
     return Response({'fund_id': fund.id, 'days': days, 'advisors': advisors_out})
 
 
+@dataclass
+class _ApiLotOutcome:
+    advisor: str
+    cost: Decimal
+    exit_value: Decimal
+    winner: bool
+
+
+def _scoreboard_cutoff_lookback(days: int):
+    now = timezone.now()
+    period_date = now.date() - timedelta(days=days)
+    midnight = dt.combine(period_date, dt.min.time())
+    if timezone.get_current_timezone():
+        return timezone.make_aware(midnight, timezone.get_current_timezone())
+    return midnight
+
+
+def _scoreboard_discovery_advisor_map(sa_ids: list[int], stock_ids: list[int]) -> dict[tuple[int, int], str]:
+    discoveries = (
+        Discovery.objects.filter(sa_id__in=sa_ids, stock_id__in=stock_ids)
+        .select_related("advisor")
+        .order_by("sa_id", "stock_id", "created")
+    )
+    out: dict[tuple[int, int], str] = {}
+    for d in discoveries:
+        key = (d.sa_id, d.stock_id)
+        if key not in out:
+            out[key] = d.advisor.name
+    return out
+
+
+def _scoreboard_fifo_outcomes_for_user_stock(
+    user_id: int,
+    stock_id: int,
+    cutoff_dt,
+    advisor_for_buy: dict[tuple[int, int], str],
+) -> list[_ApiLotOutcome]:
+    trades = (
+        Trade.objects.filter(user_id=user_id, stock_id=stock_id, action__in=("BUY", "SELL"))
+        .select_related("sa", "stock")
+        .order_by("created")
+    )
+    queue: list[tuple[int, int, Decimal]] = []
+    sold_from: dict[int, dict[str, Any]] = defaultdict(lambda: {"shares": 0, "proceeds": Decimal("0")})
+    for t in trades:
+        if t.action == "BUY":
+            queue.append((t.id, t.shares, t.price))
+        else:
+            remaining = t.shares
+            sell_price = t.price
+            while remaining > 0 and queue:
+                buy_id, lot_shares, cost_per_share = queue[0]
+                take = min(remaining, lot_shares)
+                sold_from[buy_id]["shares"] += take
+                sold_from[buy_id]["proceeds"] += Decimal(take) * sell_price
+                remaining -= take
+                if lot_shares == take:
+                    queue.pop(0)
+                else:
+                    queue[0] = (buy_id, lot_shares - take, cost_per_share)
+
+    remaining_by_buy_id = {buy_id: sh for (buy_id, sh, _) in queue}
+    outcomes: list[_ApiLotOutcome] = []
+    buy_trades = (
+        Trade.objects.filter(user_id=user_id, stock_id=stock_id, action="BUY")
+        .select_related("sa", "stock", "stock__advisor")
+        .order_by("created")
+    )
+    for t in buy_trades:
+        if t.sa.started < cutoff_dt:
+            continue
+        advisor = advisor_for_buy.get((t.sa_id, t.stock_id))
+        if not advisor and t.stock and getattr(t.stock, "advisor_id", None):
+            advisor = t.stock.advisor.name
+        if not advisor:
+            continue
+        cost = Decimal(t.shares) * t.price
+        sold = sold_from.get(t.id, {"shares": 0, "proceeds": Decimal("0")})
+        proceeds = sold["proceeds"]
+        shares_remaining = remaining_by_buy_id.get(t.id, 0)
+        current_price = t.stock.price if t.stock else Decimal("0")
+        exit_value = proceeds + (Decimal(shares_remaining) * current_price)
+        outcomes.append(
+            _ApiLotOutcome(
+                advisor=advisor,
+                cost=cost,
+                exit_value=exit_value,
+                winner=(exit_value >= cost),
+            )
+        )
+    return outcomes
+
+
+def _fund_advisor_scoreboard_rows(fund_id: int, days: int) -> list[dict[str, Any]]:
+    cutoff = _scoreboard_cutoff_lookback(days)
+    buy_list = list(
+        Trade.objects.filter(fund_id=fund_id, action="BUY", sa__started__gte=cutoff)
+        .select_related("sa", "user", "stock")
+        .order_by("created")
+    )
+    if not buy_list:
+        return []
+
+    sa_ids = [t.sa_id for t in buy_list]
+    stock_ids = [t.stock_id for t in buy_list]
+    advisor_for_buy = _scoreboard_discovery_advisor_map(sa_ids, stock_ids)
+
+    by_user_stock: dict[tuple[int, int], list[Trade]] = defaultdict(list)
+    for t in buy_list:
+        by_user_stock[(t.user_id, t.stock_id)].append(t)
+
+    outcomes: list[_ApiLotOutcome] = []
+    for (user_id, stock_id), _ in by_user_stock.items():
+        outcomes.extend(_scoreboard_fifo_outcomes_for_user_stock(user_id, stock_id, cutoff, advisor_for_buy))
+    if not outcomes:
+        return []
+
+    by_name: dict[str, list[_ApiLotOutcome]] = defaultdict(list)
+    for o in outcomes:
+        by_name[o.advisor].append(o)
+
+    id_by_name = {
+        a.name: a.id
+        for a in Advisor.objects.filter(name__in=list(by_name.keys())).only("id", "name")
+    }
+    rows: list[dict[str, Any]] = []
+    for name in sorted(by_name.keys()):
+        advisor_id = id_by_name.get(name)
+        if advisor_id is None:
+            continue
+        advisor_outcomes = by_name[name]
+        n = len(advisor_outcomes)
+        winners = sum(1 for o in advisor_outcomes if o.winner)
+        losers = n - winners
+        win_rate = (winners / n * 100) if n else 0.0
+        total_cost = sum(o.cost for o in advisor_outcomes)
+        total_exit = sum(o.exit_value for o in advisor_outcomes)
+        gain_loss_pct = float((total_exit - total_cost) / total_cost * 100) if total_cost else 0.0
+        rows.append(
+            {
+                "advisor_id": advisor_id,
+                "trades": n,
+                "winners": winners,
+                "losers": losers,
+                "win_rate": round(win_rate, 1),
+                "gain_loss_pct": round(gain_loss_pct, 2),
+            }
+        )
+    rows.sort(key=lambda r: r["advisor_id"])
+    return rows
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_fund_advisor_scoreboard(request):
@@ -290,8 +446,6 @@ def get_fund_advisor_scoreboard(request):
 
     GET /api/funds/advisors/scoreboard/?fund_id=26&days=30
     """
-    from core.services.discovery_scoreboard import fund_advisor_scoreboard_rows
-
     fund_id = request.query_params.get('fund_id')
     if not fund_id:
         return Response({'error': 'fund_id is required.'}, status=400)
@@ -301,7 +455,7 @@ def get_fund_advisor_scoreboard(request):
         days = 30
     days = max(7, min(days, 365))
     fund = get_object_or_404(Profile, pk=int(fund_id), enabled=True)
-    rows = fund_advisor_scoreboard_rows(fund.id, days, refresh_prices=False)
+    rows = _fund_advisor_scoreboard_rows(fund.id, days)
     return Response({'fund_id': fund.id, 'days': days, 'advisors': rows})
 
 

@@ -11,6 +11,7 @@ from collections import defaultdict
 import datetime
 import json
 import logging
+import re
 
 import yfinance as yf
 
@@ -22,10 +23,154 @@ from .fund_session import (
     clear_fund_session,
 )
 from .portfolio_metrics import get_portfolio_dashboard_data
-from .services.discovery_scoreboard import fund_advisor_scoreboard_rows
 
 
 logger = logging.getLogger(__name__)
+
+
+def _scoreboard_cutoff_lookback(days: int):
+    now = timezone.now()
+    period_date = now.date() - datetime.timedelta(days=days)
+    midnight = datetime.datetime.combine(period_date, datetime.datetime.min.time())
+    if timezone.get_current_timezone():
+        return timezone.make_aware(midnight, timezone.get_current_timezone())
+    return midnight
+
+
+def _scoreboard_discovery_advisor_map(sa_ids: list[int], stock_ids: list[int]) -> dict[tuple[int, int], str]:
+    discoveries = (
+        Discovery.objects.filter(sa_id__in=sa_ids, stock_id__in=stock_ids)
+        .select_related("advisor")
+        .order_by("sa_id", "stock_id", "created")
+    )
+    out: dict[tuple[int, int], str] = {}
+    for d in discoveries:
+        key = (d.sa_id, d.stock_id)
+        if key not in out:
+            out[key] = d.advisor.name
+    return out
+
+
+def _scoreboard_fifo_outcomes_for_user_stock(
+    user_id: int,
+    stock_id: int,
+    cutoff_dt,
+    advisor_for_buy: dict[tuple[int, int], str],
+) -> list[dict]:
+    trades = (
+        Trade.objects.filter(user_id=user_id, stock_id=stock_id, action__in=("BUY", "SELL"))
+        .select_related("sa", "stock")
+        .order_by("created")
+    )
+    queue = []
+    sold_from = defaultdict(lambda: {"shares": 0, "proceeds": Decimal("0")})
+    for t in trades:
+        if t.action == "BUY":
+            queue.append((t.id, t.shares, t.price))
+        else:
+            remaining = t.shares
+            sell_price = t.price
+            while remaining > 0 and queue:
+                buy_id, lot_shares, cost_per_share = queue[0]
+                take = min(remaining, lot_shares)
+                sold_from[buy_id]["shares"] += take
+                sold_from[buy_id]["proceeds"] += Decimal(take) * sell_price
+                remaining -= take
+                if lot_shares == take:
+                    queue.pop(0)
+                else:
+                    queue[0] = (buy_id, lot_shares - take, cost_per_share)
+
+    remaining_by_buy_id = {buy_id: sh for (buy_id, sh, _) in queue}
+    outcomes = []
+    buy_trades = (
+        Trade.objects.filter(user_id=user_id, stock_id=stock_id, action="BUY")
+        .select_related("sa", "stock", "stock__advisor")
+        .order_by("created")
+    )
+    for t in buy_trades:
+        if t.sa.started < cutoff_dt:
+            continue
+        advisor = advisor_for_buy.get((t.sa_id, t.stock_id))
+        if not advisor and t.stock and getattr(t.stock, "advisor_id", None):
+            advisor = t.stock.advisor.name
+        if not advisor:
+            continue
+        cost = Decimal(t.shares) * t.price
+        sold = sold_from.get(t.id, {"shares": 0, "proceeds": Decimal("0")})
+        proceeds = sold["proceeds"]
+        shares_remaining = remaining_by_buy_id.get(t.id, 0)
+        current_price = t.stock.price if t.stock else Decimal("0")
+        exit_value = proceeds + (Decimal(shares_remaining) * current_price)
+        outcomes.append(
+            {
+                "advisor": advisor,
+                "cost": cost,
+                "exit_value": exit_value,
+                "winner": exit_value >= cost,
+            }
+        )
+    return outcomes
+
+
+def _fund_advisor_scoreboard_rows(fund_id: int, days: int) -> list[dict]:
+    cutoff = _scoreboard_cutoff_lookback(days)
+    buy_list = list(
+        Trade.objects.filter(fund_id=fund_id, action="BUY", sa__started__gte=cutoff)
+        .select_related("sa", "user", "stock")
+        .order_by("created")
+    )
+    if not buy_list:
+        return []
+
+    sa_ids = [t.sa_id for t in buy_list]
+    stock_ids = [t.stock_id for t in buy_list]
+    advisor_for_buy = _scoreboard_discovery_advisor_map(sa_ids, stock_ids)
+
+    by_user_stock = defaultdict(list)
+    for t in buy_list:
+        by_user_stock[(t.user_id, t.stock_id)].append(t)
+
+    outcomes = []
+    for (user_id, stock_id), _ in by_user_stock.items():
+        outcomes.extend(_scoreboard_fifo_outcomes_for_user_stock(user_id, stock_id, cutoff, advisor_for_buy))
+    if not outcomes:
+        return []
+
+    by_name = defaultdict(list)
+    for o in outcomes:
+        by_name[o["advisor"]].append(o)
+
+    id_by_name = {
+        a.name: a.id
+        for a in Advisor.objects.filter(name__in=list(by_name.keys())).only("id", "name")
+    }
+
+    rows = []
+    for name in sorted(by_name.keys()):
+        advisor_id = id_by_name.get(name)
+        if advisor_id is None:
+            continue
+        advisor_outcomes = by_name[name]
+        n = len(advisor_outcomes)
+        winners = sum(1 for o in advisor_outcomes if o["winner"])
+        losers = n - winners
+        win_rate = (winners / n * 100) if n else 0.0
+        total_cost = sum(o["cost"] for o in advisor_outcomes)
+        total_exit = sum(o["exit_value"] for o in advisor_outcomes)
+        gain_loss_pct = float((total_exit - total_cost) / total_cost * 100) if total_cost else 0.0
+        rows.append(
+            {
+                "advisor_id": advisor_id,
+                "trades": n,
+                "winners": winners,
+                "losers": losers,
+                "win_rate": round(win_rate, 1),
+                "gain_loss_pct": round(gain_loss_pct, 2),
+            }
+        )
+    rows.sort(key=lambda r: r["advisor_id"])
+    return rows
 
 
 def home(request):
@@ -1013,7 +1158,7 @@ def advisory(request):
             )
         }
 
-    scoreboard_rows = fund_advisor_scoreboard_rows(fund.id, lookback_days, refresh_prices=False)
+    scoreboard_rows = _fund_advisor_scoreboard_rows(fund.id, lookback_days)
     scoreboard_by_advisor_id = {row['advisor_id']: row for row in scoreboard_rows}
 
     advisory_rows = []
@@ -1059,7 +1204,7 @@ def advisory_discoveries(request, advisor_id: int):
     cutoff = timezone.now() - datetime.timedelta(days=lookback_days)
     advisor = get_object_or_404(Advisor, pk=advisor_id)
 
-    scoreboard_rows = fund_advisor_scoreboard_rows(fund.id, lookback_days, refresh_prices=False)
+    scoreboard_rows = _fund_advisor_scoreboard_rows(fund.id, lookback_days)
     advisor_stats = next((row for row in scoreboard_rows if row.get('advisor_id') == advisor.id), None)
 
     discoveries_qs = (
@@ -1145,11 +1290,46 @@ def _discovery_excerpt(explanation: str | None) -> str:
     return ""
 
 
-def _discovery_paragraphs(explanation: str | None) -> list[str]:
-    """Render-ready explanation paragraphs split by pipe segments."""
+def _discovery_paragraphs(explanation: str | None) -> list[dict[str, str]]:
+    """Render-ready explanation blocks with article title URL linking."""
     if not explanation:
         return []
-    normalized = " ".join(explanation.split()).strip()
-    if not normalized:
+    segments = [
+        segment.strip()
+        for segment in re.split(r"\s*\|\s*|\n+", explanation)
+        if segment and segment.strip()
+    ]
+    if not segments:
         return []
-    return [segment.strip() for segment in normalized.split("|") if segment.strip()]
+
+    blocks: list[dict[str, str]] = []
+    i = 0
+    while i < len(segments):
+        segment = segments[i]
+        lower = segment.lower()
+        if lower.startswith("article:") and i + 1 < len(segments):
+            title = segment.split(":", 1)[1].strip()
+            next_segment = segments[i + 1].strip()
+            if title and (next_segment.startswith("http://") or next_segment.startswith("https://")):
+                blocks.append({
+                    "kind": "link",
+                    "label": title,
+                    "url": next_segment,
+                })
+                i += 2
+                continue
+
+        if segment.startswith("http://") or segment.startswith("https://"):
+            blocks.append({
+                "kind": "link",
+                "label": segment,
+                "url": segment,
+            })
+        else:
+            blocks.append({
+                "kind": "text",
+                "text": segment,
+            })
+        i += 1
+
+    return blocks
