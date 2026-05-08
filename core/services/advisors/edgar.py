@@ -894,7 +894,7 @@ Respond with STRICT JSON only. No other text before or after:
   "sentiment": "strong_positive" | "positive" | "mixed" | "negative" | "no_coverage",
   "eps": "strong_beat" | "beat" | "miss" | "other" | "unknown",
   "revenue": "strong_beat" | "beat" | "miss" | "other" | "unknown",
-  "broker_reactions": "buy" | "strong_buy" | "moderate_buy" | "hold" | "sell" | "other",
+  "broker_reactions": "buy" | "strong_buy" | "moderate_buy" | "hold" | "sell" | "mixed"| "other",
   "headlines": [
     "<short positive headline or quote>",
     "<another positive headline or quote>"
@@ -1447,7 +1447,7 @@ class Edgar(AdvisorBase):
         summary = parsed.get("summary")
 
         # Media-driven hard fail or watch:
-        if sentiment in ["no_coverage", "mixed", "negative"] or eps in ["miss"] or broker in ["hold" ,"sell", "unknown"]:
+        if sentiment in ["no_coverage", "mixed", "negative"] or eps in ["miss"] or broker in ["hold" ,"sell", "unknown","mixed","other"]:
             logger.info(
                 "ticker=%s, accession=%s media LLM: "
                 "(eps=%s, revenue=%s, sentiment=%s, broker=%s) -> fail",
