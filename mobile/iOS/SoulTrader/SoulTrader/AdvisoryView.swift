@@ -126,7 +126,7 @@ struct AdvisoryView: View {
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 2) {
-                Text("STOCKS")
+                Text("DISCOVERED")
                     .font(.caption2)
                     .fontWeight(.semibold)
                     .foregroundStyle(Theme.labelAccent)
@@ -339,7 +339,7 @@ struct AdvisorDiscoveriesView: View {
         let pnlPct = advisorStats?.gainLossPct
         return HStack(alignment: .top, spacing: 10) {
             discoverySummaryMetric(
-                title: "STOCKS",
+                title: "FINDS",
                 value: String(discoveries.count),
                 valueColor: Theme.valuePrimary
             )
