@@ -23,6 +23,7 @@ def execute_sell(sa, fund, holding, explanation):
     stock_ref = holding.stock  # Save reference before deleting
     shares_ref = holding.shares  # Save reference before deleting
     sell_price = stock_ref.price  # Save price before deleting
+    discovery_ref = holding.discovery  # Preserve position provenance for SELL trade
 
     # Transfer funds
     fund.cash += holding.shares * holding.stock.price
@@ -38,6 +39,7 @@ def execute_sell(sa, fund, holding, explanation):
     trade.fund = fund
     trade.action = "SELL"
     trade.stock = stock_ref
+    trade.discovery = discovery_ref
     trade.price = sell_price
     trade.shares = shares_ref
     trade.cost = cost_basis  # Store cost basis for P&L calculation
@@ -46,7 +48,7 @@ def execute_sell(sa, fund, holding, explanation):
 
     fund.save()
 
-def execute_buy(sa, fund, stock, allowance, explanation="", force = False):
+def execute_buy(sa, fund, stock, allowance, explanation="", force = False, discovery=None):
 
     # Check for existing stock
     #profile = Profile.objects.get(user=user)
@@ -101,6 +103,7 @@ def execute_buy(sa, fund, stock, allowance, explanation="", force = False):
     trade.fund = fund
     trade.action = "BUY"
     trade.stock = stock
+    trade.discovery = discovery
     trade.price = stock.price
     trade.shares = shares
     trade.explanation = explanation
@@ -110,6 +113,9 @@ def execute_buy(sa, fund, stock, allowance, explanation="", force = False):
     holding.fund = fund
     holding.user = fund.user  # TODO: Remove. Required for backward compatibility temp
     holding.stock = stock
+    # Forward-only population: persist origin discovery for new/legacy-unlinked holdings.
+    if discovery is not None and holding.discovery_id is None:
+        holding.discovery = discovery
     old_shares = holding.shares
     old_avg = holding.average_price or Decimal('0')
     holding.shares += shares

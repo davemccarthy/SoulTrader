@@ -620,4 +620,4 @@ def analyze_discovery(sa, funds, advisors):
             explanation = discovery.explanation.split(" | ")[0].strip()
 
             # Call execute_buy
-            execute_buy(sa, fund, discovery.stock, allowance, explanation)
+            execute_buy(sa, fund, discovery.stock, allowance, explanation, discovery=discovery)
