@@ -1,13 +1,13 @@
 """
-Test consensus LLM: ask Gemini for an "advisor consensus" recommendation and target price
-range for a publicly traded stock ticker passed via CLI.
+Test consensus LLM: ask Gemini for institutional-style consensus (Strong Buy / Buy / Hold / Sell),
+a sharp one-line summary, and confidence. Uses yfinance for company name and optional hints.
 
-Standalone script (like test_3ducks_llm / test_media_response_llm).
-Calls Gemini directly (google.generativeai) with strict JSON output.
+Standalone script. Calls Gemini directly (google.generativeai) with strict JSON output.
 
 Usage:
-    python test_consensus_llm.py --ticker AAPL
-    python test_consensus_llm.py -t NVDA
+    python test_consensus_llm.py -t TSM --price 370.5 --low52 351 --high52 600
+    python test_consensus_llm.py -t TSM --price 370.5 --low52 351 --high52 600 \\
+        --scenario "Portfolio review" --context "Weigh overvaluation vs growth."
 """
 
 import argparse
@@ -16,6 +16,7 @@ import os
 import re
 import time
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 import google.generativeai as genai
@@ -34,33 +35,54 @@ MODELS = [
     "gemini-2.5-flash-lite",
 ]
 
-PROMPT_TEMPLATE = """You are a financial research assistant. Provide a realistic buy/no-buy recommendation for a publicly traded stock.
+PROMPT_TEMPLATE = """You are an equity research assistant producing institutional-quality summaries.
 
-- Stock: {ticker}
-- Company Name: {company_name}
-- Current Price: {current_price}
-- 52-Week Low: {week52_low}, 52-Week High: {week52_high}
-- Consider the company’s valuation (P/E, P/B), sector trends, operational performance, and macroeconomic risks.
-- You must choose exactly one recommendation from: STRONG_BUY, BUY, NEUTRAL, AVOID, STRONG_AVOID.
-- This is a buy gate (not a short). Prefer AVOID/STRONG_AVOID when valuation/risk dominates even if the company is profitable.
-- If the current price is within 5–10% of the 52-week high and valuation appears stretched versus typical sector norms, lean NEUTRAL or AVOID unless there is a clear, durable catalyst.
-- Reasoning must mention both positives (e.g., strong earnings, cash flow, stability) and negatives (e.g., high valuation, sector headwinds, declining growth).
+For each ticker below, infer the CURRENT consensus-style recommendation
+("Strong Buy", "Buy", "Hold", "Sell") as seen in mainstream equity research.
 
-Additional context (use if helpful):
-- P/E (trailing): {pe_trailing}
-- P/B: {pb}
-- Sector: {sector}
-- Industry: {industry}
+IMPORTANT:
+- Do NOT default to generic summaries.
+- Explicitly weigh the dominant bull vs bear arguments before deciding.
+- Reflect what would ACTUALLY drive an analyst's rating (growth, margins, valuation, macro sensitivity, etc.).
+- Avoid vague phrasing like "mixed outlook" unless truly justified.
 
-Output a single JSON object only in this format:
+Use the FACT LINES only as supporting hints. If facts are sparse, infer from widely known characteristics of the company/sector and LOWER confidence accordingly.
 
+Scenario: {scenario}
+
+Stocks and context (one ticker per line):
+{context_block}
+
+TASK — for each ticker, return:
+1) consensus: exactly one of "Strong Buy", "Buy", "Hold", "Sell".
+2) summary: ONE sharp sentence that includes:
+   - the PRIMARY driver of the rating
+   - and the MAIN limiting factor or risk
+3) confidence: number 0.0–1.0 based on:
+   - 0.9+ = very strong, widely agreed consensus
+   - 0.7–0.89 = solid but not unanimous
+   - 0.5–0.69 = mixed or uncertain
+   - <0.5 = weak/unclear consensus
+
+CONSTRAINTS:
+- No fluff or filler language
+- No repetition of the ticker name
+- No bullet points
+- Keep summaries under 25 words
+- Avoid trendy narratives unless clearly material (e.g., AI risk only if it meaningfully impacts fundamentals)
+
+OUTPUT FORMAT:
+Respond with ONLY a single JSON object.
+Keys are ticker symbols. Each value is an object with:
+- "consensus"
+- "summary"
+- "confidence" (number)
+
+Example:
 {{
-  "symbol": "{ticker}",
-  "recommendation": "STRONG_BUY" | "BUY" | "NEUTRAL" | "AVOID" | "STRONG_AVOID",
-  "explanation": "<2-3 sentences including positives and risks>"
+  "AAPL": {{"consensus": "Buy", "summary": "Services growth supports margins but valuation limits upside.", "confidence": 0.82}},
+  "MSFT": {{"consensus": "Strong Buy", "summary": "Cloud and AI leadership drive durable growth with minimal near-term risk.", "confidence": 0.9}}
 }}
-
-Respond with only a single valid JSON object, no other text.
 """
 
 
@@ -179,32 +201,26 @@ def ask_gemini(prompt: str, timeout: float = 120.0):
     return None, None
 
 
-def _validate_result(result: dict, ticker: str) -> dict:
-    """Best-effort validation/normalization; returns result unchanged if already OK."""
+def _validate_consensus_result(result: dict, ticker: str) -> Optional[dict]:
+    """Ensure keyed by ticker and has consensus/summary/confidence."""
     if not isinstance(result, dict):
-        return result
-
-    result.setdefault("symbol", ticker)
-
-    rec = result.get("recommendation")
-    if isinstance(rec, str):
-        normalized = rec.strip().upper().replace("-", "_").replace(" ", "_")
-        aliases = {
-            "STRONG_BUY": "STRONG_BUY",
-            "STRONGBUY": "STRONG_BUY",
-            "BUY": "BUY",
-            "NEUTRAL": "NEUTRAL",
-            "AVOID": "AVOID",
-            "STRONG_AVOID": "STRONG_AVOID",
-            "STRONGAVOID": "STRONG_AVOID",
-        }
-        if normalized in aliases:
-            result["recommendation"] = aliases[normalized]
+        return None
+    t_up = ticker.upper()
+    entry = result.get(ticker) or result.get(t_up) or result.get(ticker.lower())
+    if not isinstance(entry, dict):
+        return None
+    cons = (entry.get("consensus") or "").strip()
+    if not cons:
+        return None
+    allowed = {"strong buy", "buy", "hold", "sell"}
+    if cons.lower() not in allowed:
+        return None
     return result
 
 
 def run(
     ticker: str,
+    *,
     company_name: str | None = None,
     current_price: float | None = None,
     low_52w: float | None = None,
@@ -213,6 +229,8 @@ def run(
     pb: float | None = None,
     sector: str | None = None,
     industry: str | None = None,
+    scenario: str = "Portfolio holdings review",
+    extra_context: str = "",  # merged into scenario (same line as stock_audit)
 ):
     ticker = (ticker or "").strip().upper()
     if not ticker:
@@ -221,7 +239,6 @@ def run(
 
     snapshot = _fetch_market_snapshot(ticker)
     company_name = (company_name or snapshot.get("company_name") or ticker).strip()
-    # Price is required by CLI (do not default to yfinance for this field).
     current_price = current_price if current_price is not None else None
     low_52w = low_52w if low_52w is not None else snapshot.get("low_52w")
     high_52w = high_52w if high_52w is not None else snapshot.get("high_52w")
@@ -242,33 +259,48 @@ def run(
         print("Provide overrides via CLI (e.g. --price/--low52/--high52) or ensure yfinance can fetch ticker info.")
         return
 
-    prompt = PROMPT_TEMPLATE.format(
-        ticker=ticker,
-        company_name=company_name,
-        current_price=f"${current_price:.2f}",
-        week52_low=f"${low_52w:.2f}",
-        week52_high=f"${high_52w:.2f}",
-        pe_trailing=(f"{pe_trailing:.2f}" if isinstance(pe_trailing, (int, float)) else "Not provided"),
-        pb=(f"{pb:.2f}" if isinstance(pb, (int, float)) else "Not provided"),
-        sector=sector,
-        industry=industry,
+    pe_str = f"{pe_trailing:.2f}" if isinstance(pe_trailing, (int, float)) else "Not provided"
+    pb_str = f"{pb:.2f}" if isinstance(pb, (int, float)) else "Not provided"
+
+    context_block = (
+        f"  {ticker}: {company_name!r}, ${current_price:.2f}\n"
+        f"  52-week range: ${low_52w:.2f} – ${high_52w:.2f}; trailing P/E: {pe_str}; "
+        f"P/B: {pb_str}; sector: {sector}; industry: {industry}"
     )
-    print(f"Calling Gemini for consensus on {ticker}...")
+
+    scen = (scenario or "Portfolio holdings review").strip()
+    ctx = (extra_context or "").strip()
+    if ctx:
+        scen = f"{scen} — {ctx}".strip()
+
+    prompt = PROMPT_TEMPLATE.format(
+        scenario=scen,
+        context_block=context_block,
+    )
+
+    print("=== Prompt ===\n")
+    print(prompt)
+    print("\nCalling Gemini...")
 
     model, result = ask_gemini(prompt)
     if not result:
         print("No result from Gemini.")
         return
 
-    result = _validate_result(result, ticker)
+    validated = _validate_consensus_result(result, ticker)
+    if not validated:
+        print("Unexpected JSON shape (expected top-level key = ticker with consensus/summary/confidence).")
+        print(json.dumps(result, indent=2))
+        return
+
     print(f"\nModel: {model}")
     print("Result:")
-    print(json.dumps(result, indent=2))
+    print(json.dumps(validated, indent=2))
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Ask Gemini for a consensus recommendation + target price range (JSON)"
+        description="Ask Gemini for Strong Buy/Buy/Hold/Sell consensus + summary + confidence (JSON)"
     )
     parser.add_argument("--ticker", "-t", required=True, help="Stock ticker (e.g. AAPL, MSFT)")
     parser.add_argument("--company-name", "--company", default=None, help="Company name (optional; otherwise fetched)")
@@ -279,6 +311,16 @@ if __name__ == "__main__":
     parser.add_argument("--pb", type=float, default=None, help="Override P/B")
     parser.add_argument("--sector", default=None, help="Override sector")
     parser.add_argument("--industry", default=None, help="Override industry")
+    parser.add_argument(
+        "--scenario",
+        default="Portfolio holdings review",
+        help="Scenario line in the prompt",
+    )
+    parser.add_argument(
+        "--context",
+        default="",
+        help="Optional text appended to Scenario (same line)",
+    )
     args = parser.parse_args()
     run(
         args.ticker,
@@ -290,5 +332,6 @@ if __name__ == "__main__":
         pb=args.pb,
         sector=args.sector,
         industry=args.industry,
+        scenario=args.scenario,
+        extra_context=args.context,
     )
-

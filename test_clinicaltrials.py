@@ -49,8 +49,6 @@ BASE_DIR = Path(__file__).resolve().parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from core.services.market.yahoo_event_window import default_min_event_year
-
 # query.term uses the search expression language (AREA[Field]VALUE, AND, OR, …)
 _IN_PROGRESS_STATUSES = (
     "AREA[OverallStatus]RECRUITING OR AREA[OverallStatus]ACTIVE_NOT_RECRUITING "
@@ -778,7 +776,7 @@ def main() -> None:
     if args.with_prices and not args.csv:
         parser.error("--with-prices requires --csv PATH")
 
-    min_year = args.min_year if args.min_year is not None else default_min_event_year()
+    min_year = args.min_year if args.min_year is not None else 2026
 
     query_term: str | None = None
     query_cond: str | None = None

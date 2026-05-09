@@ -74,6 +74,11 @@ struct DiscoveryDetailView: View {
         let current = decimal(from: stock.price)
         let disc = decimal(from: detail.discoveryPrice)
         let chg = percentChange(from: disc, to: current)
+        let discoveredLine: String = {
+            let when = formatShortDate(detail.created)
+            if when == "—" { return "Discovered —" }
+            return "Discovered \(when)"
+        }()
 
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
@@ -93,7 +98,7 @@ struct DiscoveryDetailView: View {
                         .foregroundStyle(.white)
                         .lineLimit(1)
 
-                    Text(normalizedMeta(stock.industry))
+                    Text(discoveredLine)
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundStyle(Theme.secondaryText)
@@ -182,11 +187,6 @@ struct DiscoveryDetailView: View {
     private func secondaryMetaCard(_ detail: DiscoveryDetailResponse) -> some View {
         let stock = detail.stock
         return HStack(alignment: .top, spacing: 10) {
-            snapshotMetric(
-                title: "DISCOVERED",
-                value: formatShortDate(detail.created),
-                valueColor: Theme.secondaryText
-            )
             snapshotMetric(
                 title: "EXCHANGE",
                 value: normalizedMeta(stock.exchange),

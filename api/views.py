@@ -21,6 +21,9 @@ from core.portfolio_metrics import get_portfolio_dashboard_data
 
 logger = logging.getLogger(__name__)
 
+# Mobile/API trades list: newest-first slice (avoid unbounded responses).
+_TRADES_LIST_LIMIT = 250
+
 _ALLOWED_YF_PERIODS = frozenset({
     '1d', '5d', '1mo', '2mo', '3mo', '6mo', '1y', '2y', '5y', '10y', 'ytd', 'max',
 })
@@ -208,7 +211,7 @@ def get_trades(request):
         trades = Trade.objects.filter(fund_id=fund_id)
     else:
         trades = request.user.trade_set.all()
-    trades = trades.order_by('-id')[:50]
+    trades = trades.order_by('-id')[:_TRADES_LIST_LIMIT]
     serializer = TradeSerializer(trades, many=True)
     return Response(serializer.data)
 
