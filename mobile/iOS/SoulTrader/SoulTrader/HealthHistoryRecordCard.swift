@@ -201,10 +201,6 @@ struct HealthHistoryRecordCard: View {
 
     @ViewBuilder
     private func advisorHealthSections() -> some View {
-        Text("Algorithm components")
-            .font(.subheadline)
-            .fontWeight(.semibold)
-            .foregroundStyle(Theme.labelAccent)
         healthMetricRow(label: "Confidence", value: record.confidenceScore?.display)
         healthMetricRow(label: "Health", value: record.healthScore?.display)
         healthMetricRow(label: "Valuation", value: record.valuationScore?.display)
@@ -212,12 +208,8 @@ struct HealthHistoryRecordCard: View {
         healthMetricRow(label: "Altman Z", value: record.altmanZ?.display)
 
         if record.overlayPoints != nil || !record.overlayReasons.isEmpty {
-            Text("Overlay")
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.labelAccent)
-                .padding(.top, 2)
             healthMetricRow(label: "Points", value: overlayPointsLabel(record.overlayPoints))
+                .padding(.top, 2)
             if !record.overlayReasons.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(Array(record.overlayReasons.enumerated()), id: \.offset) { _, reason in
@@ -237,12 +229,8 @@ struct HealthHistoryRecordCard: View {
     @ViewBuilder
     private func geminiHealthBlock() -> some View {
         if record.geminiWeight != nil || record.geminiRec != nil || (record.geminiExplanation.map { $0.display != "—" } ?? false) {
-            Text("Gemini")
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.labelAccent)
-                .padding(.top, 2)
             healthMetricRow(label: "Weight", value: record.geminiWeight?.display)
+                .padding(.top, 2)
             healthMetricRow(label: "Recommendation", value: record.geminiRec?.display)
             if let gem = record.geminiExplanation?.display, gem != "—" {
                 Text(gem)
