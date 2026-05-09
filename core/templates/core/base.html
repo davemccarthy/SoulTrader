@@ -1859,7 +1859,7 @@
                         // Create linked article title, skip the URL, wrap in <p> tag
                         const safeTitle = escapeHtml(title);
                         const safeUrl = escapeHtml(nextSegment);
-                        processedSegments.push(`<p>Article: <a href="${safeUrl}" target="_blank" rel="noopener">${safeTitle}</a></p>`);
+                        processedSegments.push(`<p><a href="${safeUrl}" target="_blank" rel="noopener">${safeTitle}</a></p>`);
                         i += 2; // Skip both the article title and URL
                         continue;
                     }

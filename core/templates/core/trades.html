@@ -1,4 +1,5 @@
 {% extends 'core/base.html' %}
+{% load explanation_filters %}
 
 {% block title %}Trades - SOULTRADER{% endblock %}
 
@@ -133,8 +134,8 @@
                     </div>
                     <div class="holdings-col holdings-col-company trade-company-col">
                         <span class="trade-company" title="{{ trade.company }}">{{ trade.company|default:"—"|truncatechars:40 }}</span>
-                        <span class="trade-meta" title="{{ trade.explanation }}">
-                            {{ trade.explanation|default:"—"|truncatechars:80 }}
+                        <span class="trade-meta" title="{{ trade.explanation|strip_article_lead }}">
+                            {{ trade.explanation|strip_article_lead|default:"—"|truncatechars:80 }}
                         </span>
                     </div>
 

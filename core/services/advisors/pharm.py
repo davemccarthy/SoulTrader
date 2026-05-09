@@ -637,6 +637,15 @@ def _pharm_discovery_metadata_lines(parsed: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _pharm_article_label(feed_title: str | None, headline: str) -> str:
+    """Prefer RSS/feed headline for UI; fallback to synthesized pharm headline."""
+    if isinstance(feed_title, str):
+        t = " ".join(feed_title.split()).strip()
+        if t:
+            return t
+    return headline
+
+
 def _pharm_brief_trade_summary(listed_ticker: str, event_class: str) -> str:
     """
     One-line summary for Trade.explanation (analyze_discovery uses split(' | ')[0]).
@@ -648,10 +657,17 @@ def _pharm_brief_trade_summary(listed_ticker: str, event_class: str) -> str:
 
 
 def _pharm_build_discovery_explanation(
-    parsed: dict[str, Any], event_class: str, *, listed_ticker: str, article_link: str
+    parsed: dict[str, Any],
+    event_class: str,
+    *,
+    listed_ticker: str,
+    article_link: str,
+    feed_title: str | None,
 ) -> str:
     headline = _pharm_discovery_headline(parsed, event_class)
-    article_title = discovery_trade_explanation_lead(f"Article: {headline}")
+    article_label = _pharm_article_label(feed_title, headline)
+    full_article_line = f"Article: {article_label}"
+    article_lead = discovery_trade_explanation_lead(full_article_line)
 
     def _clean_sentence(value: Any, *, max_len: int = 180) -> str | None:
         if not isinstance(value, str):
@@ -667,9 +683,11 @@ def _pharm_build_discovery_explanation(
             t = t[: max_len - 3].rstrip() + "..."
         return t
 
-    parts: list[str] = [article_title]
+    parts: list[str] = [article_lead]
     if article_link:
         parts.append(article_link)
+    if article_lead != full_article_line:
+        parts.append(f"article_title: {article_label}")
     parts.append(f"headline: {headline}")
 
     for key, label in (
@@ -1042,6 +1060,7 @@ class Pharm(AdvisorBase):
                 row_event_class,
                 listed_ticker=resolved_ticker,
                 article_link=(candidate.get("link") or "").strip(),
+                feed_title=(candidate.get("title") or "").strip() or None,
             )
 
             stock = self.discovered(sa, resolved_ticker, explanation, None, weight=weight)

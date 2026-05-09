@@ -43,9 +43,15 @@ enum DiscoveryExplanationFormatting {
             return AttributedString(trimmed)
         }
 
-        let label = String(trimmed[labelRange]).uppercased()
+        let labelRaw = String(trimmed[labelRange])
         let value = String(trimmed[valueRange])
 
+        // Hide stored "Article:" prefix in UI while keeping raw explanation intact for pairing logic.
+        if labelRaw.lowercased() == "article" {
+            return AttributedString(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+
+        let label = labelRaw.uppercased()
         var attributed = AttributedString()
         var labelText = AttributedString("\(label):")
         labelText.inlinePresentationIntent = .stronglyEmphasized

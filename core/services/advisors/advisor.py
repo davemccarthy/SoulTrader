@@ -1235,7 +1235,7 @@ Respond with only a single valid JSON object, no other text.
         title_lower = title.lower() if title else ""
         filter_phrases = [
             "stock market", "market today", "today nasdaq", "nasdaq futures", "futures slip", "analyst questions", "stocks",
-            "microsoft", "alphabet", "google", "amazon", "meta", "apple", "tesla", "nvidia", "broadcom inc"
+            "microsoft", "alphabet", "google", "amazon", "meta", "apple", "tesla", "nvidia", "broadcom inc",
             "msft", "googl", "goog", "amzn", "meta", "aapl", "tsla", "avgo"
         ]
 
@@ -1292,7 +1292,7 @@ Respond with only a single valid JSON object, no other text.
             return
 
         if self.allow_discovery(ticker, period=168):
-            self.discovered(sa, ticker, f"Article approved by {model} {recommendation} | Article: {title} | {url} | {explanation} ",
+            self.discovered(sa, ticker, f"Article: {title} | {url} | {explanation} | Approved by {model} {recommendation}",
                 None, 1.5 if recommendation == "STRONG_BUY" else 1.0)
 
 

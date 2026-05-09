@@ -1659,7 +1659,7 @@ class Edgar(AdvisorBase):
         penalties = advanced.get("penalties") or []
 
         # Explanation info
-        explanation_parts = [f"8-K earnings | Accession: {accession} | Weight:{weight:.2f} | https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude "]
+        explanation_parts = [f"8-K earnings filing | Accession: {accession} | Weight:{weight:.2f} | https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude "]
 
         # Health info
         health_meta = {

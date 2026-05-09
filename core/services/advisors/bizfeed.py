@@ -776,17 +776,28 @@ def _bizfeed_format_explanation_value(value: Any) -> str:
     return str(value)
 
 
+def _bizfeed_article_label(feed_title: str | None, headline: str) -> str:
+    """Prefer RSS/feed headline for UI; fallback to heuristic '{category} catalyst'."""
+    if isinstance(feed_title, str):
+        t = " ".join(feed_title.split()).strip()
+        if t:
+            return t
+    return headline
+
+
 def _bizfeed_build_discovery_explanation(
     parsed: dict[str, Any],
     *,
     primary_category: str | None,
     article_link: str,
+    feed_title: str | None,
     resolved_symbol: str,
     yahoo_exchange: str,
 ) -> str:
     pc = (primary_category or "catalyst").strip().lower()
     headline = f"{pc} catalyst"
-    trade_lead = discovery_trade_explanation_lead(headline)
+    article_label = _bizfeed_article_label(feed_title, headline)
+    trade_lead = discovery_trade_explanation_lead(article_label)
 
     def _clean_sentence(value: Any, *, max_len: int = 180) -> str | None:
         if not isinstance(value, str):
@@ -804,12 +815,14 @@ def _bizfeed_build_discovery_explanation(
 
     segments: list[str] = []
     if article_link:
-        segments.append(discovery_trade_explanation_lead(f"Article: {headline}"))
+        segments.append(discovery_trade_explanation_lead(f"Article: {article_label}"))
         segments.append(article_link)
     else:
         segments.append(trade_lead)
-    if trade_lead != headline:
-        segments.append(f"headline: {headline}")
+    if trade_lead != article_label:
+        segments.append(f"headline: {article_label}")
+    if article_label != headline:
+        segments.append(f"catalyst: {headline}")
 
     field_specs: tuple[tuple[str, str], ...] = (
         ("summary", "summary"),
@@ -1363,6 +1376,7 @@ class Bizfeed(AdvisorBase):
                 parsed,
                 primary_category=primary,
                 article_link=(row.get("link") or "").strip(),
+                feed_title=(row.get("title") or "").strip() or None,
                 resolved_symbol=listed_sym,
                 yahoo_exchange=listed_ex or "",
             )

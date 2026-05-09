@@ -182,6 +182,10 @@ window.detailPanelRenderer = function(data) {
         return `<div class="trade-advisor-logo">${fallback}</div>`;
     }
 
+    function stripArticleLeadDisplay(segment) {
+        return segment.replace(/^\s*Article:\s*/i, '').trim();
+    }
+
     function formatExplanation(text) {
         if (!text) {
             return '';
@@ -225,7 +229,7 @@ window.detailPanelRenderer = function(data) {
                 continue;
             }
 
-            clauses.push(escapeHtml(current));
+            clauses.push(escapeHtml(stripArticleLeadDisplay(current)));
         }
 
         if (!clauses.length) {

@@ -1335,9 +1335,12 @@ def _discovery_paragraphs(explanation: str | None) -> list[dict[str, str]]:
                 "url": segment,
             })
         else:
+            display_text = segment
+            if lower.startswith("article:"):
+                display_text = segment.split(":", 1)[1].strip()
             blocks.append({
                 "kind": "text",
-                "text": segment,
+                "text": display_text,
             })
         i += 1
 

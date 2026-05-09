@@ -282,28 +282,70 @@ struct TradeDetailView: View {
         return t.isEmpty ? nil : t
     }
 
+    private var priorBuyExplanationForSell: String? {
+        guard trade.action.uppercased() == "SELL" else { return nil }
+        let currentId = trade.id
+        let currentDate = parsedTradeDate(trade.created)
+
+        let priorBuy = viewModel.trades
+            .filter { candidate in
+                guard candidate.stock.symbol == trade.stock.symbol else { return false }
+                guard candidate.action.uppercased() == "BUY" else { return false }
+                if let candidateDate = parsedTradeDate(candidate.created), let currentDate {
+                    return candidateDate <= currentDate
+                }
+                return candidate.id < currentId
+            }
+            .max { lhs, rhs in
+                if let lhsDate = parsedTradeDate(lhs.created), let rhsDate = parsedTradeDate(rhs.created) {
+                    return lhsDate < rhsDate
+                }
+                return lhs.id < rhs.id
+            }
+
+        let text = priorBuy?.explanation?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (text?.isEmpty == false) ? text : nil
+    }
+
+    private func parsedTradeDate(_ isoString: String?) -> Date? {
+        guard let isoString, !isoString.isEmpty else { return nil }
+        let withFraction = ISO8601DateFormatter()
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        return withFraction.date(from: isoString) ?? plain.date(from: isoString)
+    }
+
     @ViewBuilder
     private var tradeExplanationSection: some View {
         if let text = trimmedTradeExplanation {
             let action = trade.action.uppercased()
             let reasonTitle = "REASON FOR \(action)"
-            VStack(alignment: .leading, spacing: 6) {
-                Text(reasonTitle)
-                    .font(.caption2)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Theme.labelAccent)
-                Text(text)
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-                    .foregroundStyle(Theme.valuePrimary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
+            explanationCard(title: reasonTitle, text: text)
+
+            if let buyReason = priorBuyExplanationForSell {
+                explanationCard(title: "REASON FOR BUY", text: buyReason)
             }
-            .padding(.vertical, 10)
-            .padding(.horizontal, 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
         }
+    }
+
+    private func explanationCard(title: String, text: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption2)
+                .fontWeight(.semibold)
+                .foregroundStyle(Theme.labelAccent)
+            Text(text)
+                .font(.subheadline)
+                .fontWeight(.medium)
+                .foregroundStyle(Theme.valuePrimary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 10)
+        .padding(.horizontal, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
     }
 
     private var headerCard: some View {
