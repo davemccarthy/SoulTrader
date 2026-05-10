@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct LoginView: View {
     @ObservedObject var viewModel: AuthViewModel
@@ -22,6 +23,19 @@ struct LoginView: View {
 
             ScrollView {
                 VStack(spacing: 10) {
+                    Group {
+                        if UIImage(named: "LoginHero") != nil {
+                            Image("LoginHero")
+                                .resizable()
+                                .renderingMode(.original)
+                                .scaledToFit()
+                                .frame(maxHeight: 168)
+                                .padding(.horizontal, 20)
+                                .padding(.top, 4)
+                                .accessibilityLabel("SoulTrader")
+                        }
+                    }
+
                     VStack(alignment: .leading, spacing: 10) {
                         TextField(
                             "",
@@ -71,6 +85,7 @@ struct LoginView: View {
                             RoundedRectangle(cornerRadius: 8)
                                 .stroke(Color.white.opacity(0.10), lineWidth: 1)
                         )
+
                     }
                     .padding(.vertical, 10)
                     .padding(.horizontal, 10)
