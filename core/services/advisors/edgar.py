@@ -1686,7 +1686,7 @@ class Edgar(AdvisorBase):
         headline = _first_media_headline_for_explanation(media)
         if headline:
             lead = (
-                f"8-K earnings filing — {headline} | Accession: {accession} | "
+                f"{headline} | Accession: {accession} | "
                 f"Weight:{weight:.2f} | https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude "
             )
         else:
