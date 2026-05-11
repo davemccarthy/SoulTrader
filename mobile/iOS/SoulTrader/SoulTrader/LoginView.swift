@@ -29,9 +29,9 @@ struct LoginView: View {
                                 .resizable()
                                 .renderingMode(.original)
                                 .scaledToFit()
-                                .frame(maxHeight: 168)
+                                .frame(maxHeight: 200)
                                 .padding(.horizontal, 20)
-                                .padding(.top, 4)
+                                .padding(.top, 16)
                                 .accessibilityLabel("SoulTrader")
                         }
                     }
