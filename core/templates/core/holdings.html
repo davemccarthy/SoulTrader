@@ -103,15 +103,6 @@
 
                     <div class="holdings-col">
                         <div class="holding-value-pair">
-                            <div class="holding-value-pair-label">P&L $</div>
-                            <div class="holding-value-pair-value {% if holding.pl >= 0 %}positive{% else %}negative{% endif %}">
-                                {% if holding.pl >= 0 %}+{% endif %}${{ holding.pl|floatformat:2 }}
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="holdings-col">
-                        <div class="holding-value-pair">
                             <div class="holding-value-pair-label">P&L %</div>
                             <div class="holding-value-pair-value {% if holding.pl >= 0 %}positive{% else %}negative{% endif %}">
                                 {% if holding.change_percent >= 0 %}+{% endif %}{{ holding.change_percent|floatformat:2 }}%
