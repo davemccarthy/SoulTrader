@@ -244,30 +244,9 @@ def holdings(request):
     holdings_list = (
         Holding.objects
         .filter(fund=fund)
-        .annotate(
-            latest_trade_sa=Max(
-                'stock__trade__sa_id',
-                filter=Q(stock__trade__fund=fund)
-            )
-        )
-        .order_by('-latest_trade_sa', '-id')
-        .select_related('stock', 'stock__advisor')
+        .order_by('-id')
+        .select_related('stock', 'stock__advisor', 'discovery__advisor')
     )
-    
-    # Get all SA IDs for discoveries lookup
-    sa_ids = {h.latest_trade_sa for h in holdings_list if h.latest_trade_sa}
-    
-    # Prefetch discoveries for all holdings
-    discoveries_map = {}
-    if sa_ids:
-        discoveries = Discovery.objects.select_related('advisor').filter(
-            sa_id__in=sa_ids,
-            stock_id__in=[h.stock_id for h in holdings_list]
-        )
-        for discovery in discoveries:
-            key = (discovery.stock_id, discovery.sa_id)
-            if key not in discoveries_map:
-                discoveries_map[key] = discovery
     
     # Annotate with calculated fields
     holdings_data = []
@@ -293,11 +272,8 @@ def holdings(request):
         else:
             price_class = 'neutral'
         
-        # Get advisor name for discovery - use Discovery if available, fallback to stock.advisor
-        discovery_obj = None
-        if holding.latest_trade_sa:
-            discovery_obj = discoveries_map.get((stock.id, holding.latest_trade_sa))
-        
+        # Get advisor name for discovery - use holding provenance, fallback to stock.advisor
+        discovery_obj = holding.discovery
         discovery_comment = None
         if discovery_obj:
             discovery = discovery_obj.advisor.name if discovery_obj.advisor else ""

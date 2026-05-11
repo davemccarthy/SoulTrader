@@ -55,38 +55,13 @@ def get_holdings(request):
     holdings_qs = holdings_qs.order_by(
         F('created').desc(nulls_last=True),
         '-id',
-    ).select_related('stock', 'stock__advisor')
+    ).select_related('stock', 'stock__advisor', 'discovery__advisor')
     holdings = list(holdings_qs)
     serializer = HoldingSerializer(holdings, many=True)
     payload = serializer.data
 
-    stock_ids = [holding.stock_id for holding in holdings]
-    latest_sa_by_stock = {}
-    if stock_ids:
-        trade_qs = Trade.objects.filter(stock_id__in=stock_ids)
-        if fund_id:
-            trade_qs = trade_qs.filter(fund_id=fund_id)
-        else:
-            trade_qs = trade_qs.filter(user=request.user)
-        latest_sa_rows = trade_qs.values('stock_id').annotate(latest_sa=Max('sa_id'))
-        latest_sa_by_stock = {row['stock_id']: row['latest_sa'] for row in latest_sa_rows if row['latest_sa']}
-
-    discovery_map = {}
-    if latest_sa_by_stock:
-        sa_ids = list(set(latest_sa_by_stock.values()))
-        discoveries = (
-            Discovery.objects
-            .select_related('advisor')
-            .filter(stock_id__in=stock_ids, sa_id__in=sa_ids)
-        )
-        for discovery in discoveries:
-            key = (discovery.stock_id, discovery.sa_id)
-            if key not in discovery_map:
-                discovery_map[key] = discovery
-
     for item, holding in zip(payload, holdings):
-        latest_sa = latest_sa_by_stock.get(holding.stock_id)
-        discovery = discovery_map.get((holding.stock_id, latest_sa)) if latest_sa else None
+        discovery = holding.discovery
         if discovery:
             item['discovery_name'] = discovery.advisor.name if discovery.advisor else ""
             item['discovery_logo'] = _advisor_logo_absolute_url(request, discovery.advisor)

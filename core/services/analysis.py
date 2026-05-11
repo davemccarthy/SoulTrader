@@ -314,7 +314,14 @@ def analyze_holdings(sa, funds):
             holding.stock.refresh()
 
             # Get most recent discovery for this stock
-            discovery = Discovery.objects.filter(stock=holding.stock).order_by('-created').first()
+            # discovery = Discovery.objects.filter(stock=holding.stock).order_by('-created').first()
+            discovery = holding.discovery
+
+            if not discovery:
+                logger.info("No holding.discovery for %s (fund=%s); skipping sell-instruction eval",
+                            holding.stock.symbol, fund.name)
+                continue
+
             if discovery:
                 # Get all sell instructions for this discovery
                 from core.models import SellInstruction
