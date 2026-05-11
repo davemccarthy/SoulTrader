@@ -946,6 +946,30 @@ PHARMA_SCORE_LLM_MIN = 5
 EVENT_SCORE_REJECT_MAX = 2
 EVENT_SCORE_PASS_MIN = 5
 
+# First pipe segment of discovery explanation: optional lead from media LLM headlines
+_EXPLANATION_HEADLINE_MAX_LEN = 180
+
+
+def _first_media_headline_for_explanation(media: dict) -> str:
+    """First non-empty headline, safe for pipe-delimited explanation strings."""
+    raw = media.get("headlines")
+    if not isinstance(raw, list):
+        return ""
+    for item in raw:
+        if item is None:
+            continue
+        s = str(item).strip()
+        if not s:
+            continue
+        s = s.replace("|", "·").replace("\n", " ")
+        s = re.sub(r"\s+", " ", s).strip()
+        if not s:
+            continue
+        if len(s) > _EXPLANATION_HEADLINE_MAX_LEN:
+            s = s[: _EXPLANATION_HEADLINE_MAX_LEN - 1].rstrip() + "…"
+        return s
+    return ""
+
 
 # ---------------------------------------------------------------------------
 # ED-8 advisor class and command entry
@@ -1658,8 +1682,19 @@ class Edgar(AdvisorBase):
         bonuses = advanced.get("bonuses") or []
         penalties = advanced.get("penalties") or []
 
-        # Explanation info
-        explanation_parts = [f"8-K earnings filing | Accession: {accession} | Weight:{weight:.2f} | https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude "]
+        # Explanation info (first segment: form label + optional first media headline for list UIs)
+        headline = _first_media_headline_for_explanation(media)
+        if headline:
+            lead = (
+                f"8-K earnings filing — {headline} | Accession: {accession} | "
+                f"Weight:{weight:.2f} | https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude "
+            )
+        else:
+            lead = (
+                f"8-K earnings filing | Accession: {accession} | Weight:{weight:.2f} | "
+                f"https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude "
+            )
+        explanation_parts = [lead]
 
         # Health info
         health_meta = {
