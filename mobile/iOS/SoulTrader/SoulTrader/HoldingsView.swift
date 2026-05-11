@@ -65,7 +65,7 @@ struct HoldingsView: View {
                             } label: {
                                 HStack(spacing: 12) {
                                     imageTickerPair(symbol: holding.stock.symbol)
-                                    middleCompanyInvestmentPair(holding: holding)
+                                    middleCompanyDiscoveryPair(holding: holding)
                                     Spacer()
                                     pricePnlPair(holding: holding)
                                 }
@@ -116,25 +116,66 @@ struct HoldingsView: View {
         .frame(width: 50, alignment: .leading)
     }
 
-    private func middleCompanyInvestmentPair(holding: HoldingResponse) -> some View {
+    /// Matches advisory discovery rows: company (up to 2 lines) + first explanation snippet (2 lines), else cost basis.
+    private func middleCompanyDiscoveryPair(holding: HoldingResponse) -> some View {
         let avgDecimal = decimal(from: holding.averagePrice) ?? 0
         let sharesDecimal = Decimal(holding.shares)
         let investment = sharesDecimal * avgDecimal
+        let expl = holdingListExplanationLine(holding)
 
         return VStack(alignment: .leading, spacing: 3) {
             Text(holding.stock.company ?? holding.stock.symbol)
                 .font(.subheadline)
                 .fontWeight(.semibold)
                 .foregroundStyle(Theme.valuePrimary)
-                .lineLimit(1)
+                .lineLimit(2)
                 .truncationMode(.tail)
 
-            Text(formatCurrency(investment))
-                .font(.caption)
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.valuePrimary)
+            if let expl, !expl.isEmpty {
+                Text(expl)
+                    .font(.caption)
+                    .foregroundStyle(Theme.secondaryText)
+                    .lineLimit(2)
+            } else {
+                Text(formatCurrency(investment))
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Theme.valuePrimary)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Prefer API `discovery_comment`; else first non-URL text segment from `discovery_explanation` (pipe-separated).
+    private func holdingListExplanationLine(_ holding: HoldingResponse) -> String? {
+        if let c = holding.discoveryComment?.trimmingCharacters(in: .whitespacesAndNewlines), !c.isEmpty {
+            return c
+        }
+        guard let raw = holding.discoveryExplanation?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+        let normalized = raw.split(whereSeparator: \.isNewline).joined(separator: " ")
+        let segments = normalized.split(separator: "|", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        for segment in segments {
+            if segment.hasPrefix("http://") || segment.hasPrefix("https://") {
+                continue
+            }
+            let lower = segment.lowercased()
+            if lower.hasPrefix("article:") {
+                let parts = segment.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+                if parts.count > 1 {
+                    let title = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !title.isEmpty {
+                        return String(title)
+                    }
+                }
+                continue
+            }
+            return segment
+        }
+        return nil
     }
 
     private func pricePnlPair(holding: HoldingResponse) -> some View {

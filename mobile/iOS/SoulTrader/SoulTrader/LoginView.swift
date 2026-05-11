@@ -2,7 +2,11 @@ import SwiftUI
 import UIKit
 
 struct LoginView: View {
+    /// Set to `true` to show the host row again.
+    private let showHostCredential = true
+
     @ObservedObject var viewModel: AuthViewModel
+    @FocusState private var focusedField: LoginFocusedField?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -37,55 +41,82 @@ struct LoginView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 10) {
-                        TextField(
-                            "",
-                            text: $viewModel.username,
-                            prompt: Text("Username").foregroundStyle(Theme.secondaryText)
-                        )
+                        CredentialFieldBlock(
+                            caption: "USERNAME",
+                            systemImage: "person.fill",
+                            focused: focusedField == .username
+                        ) {
+                            TextField(
+                                "",
+                                text: $viewModel.username,
+                                prompt: Text("Enter username").foregroundStyle(Theme.secondaryText)
+                            )
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .foregroundStyle(Theme.valuePrimary)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 10)
-                            .background(Color.black.opacity(0.26), in: RoundedRectangle(cornerRadius: 8))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(Color.white.opacity(0.10), lineWidth: 1)
-                            )
+                            .focused($focusedField, equals: .username)
+                            .submitLabel(.next)
+                            .onSubmit { focusedField = .password }
                             .tint(Theme.valuePrimary)
+                        }
 
-                        SecureField(
-                            "",
-                            text: $viewModel.password,
-                            prompt: Text("Password").foregroundStyle(Theme.secondaryText)
-                        )
+                        CredentialFieldBlock(
+                            caption: "PASSWORD",
+                            systemImage: "lock.fill",
+                            focused: focusedField == .password
+                        ) {
+                            SecureField(
+                                "",
+                                text: $viewModel.password,
+                                prompt: Text("Enter password").foregroundStyle(Theme.secondaryText)
+                            )
                             .foregroundStyle(Theme.valuePrimary)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 10)
-                            .background(Color.black.opacity(0.26), in: RoundedRectangle(cornerRadius: 8))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(Color.white.opacity(0.10), lineWidth: 1)
-                            )
+                            .focused($focusedField, equals: .password)
+                            .submitLabel(.go)
+                            .onSubmit {
+                                if !viewModel.username.isEmpty, !viewModel.password.isEmpty {
+                                    Task { await viewModel.login() }
+                                }
+                            }
                             .tint(Theme.valuePrimary)
+                        }
 
-                        Picker("Host", selection: $viewModel.selectedHost) {
-                            ForEach(APIEnvironment.HostOption.allCases) { host in
-                                Text(host.rawValue).tag(host)
+                        if showHostCredential {
+                            CredentialFieldBlock(
+                                caption: "HOST",
+                                systemImage: "network",
+                                focused: false
+                            ) {
+                                Menu {
+                                    ForEach(APIEnvironment.HostOption.allCases) { host in
+                                        Button {
+                                            viewModel.selectedHost = host
+                                        } label: {
+                                            HStack {
+                                                Text(host.rawValue)
+                                                if host == viewModel.selectedHost {
+                                                    Image(systemName: "checkmark")
+                                                }
+                                            }
+                                        }
+                                    }
+                                } label: {
+                                    HStack {
+                                        Text(viewModel.selectedHost.rawValue)
+                                            .font(.body)
+                                            .foregroundStyle(Theme.valuePrimary)
+                                            .lineLimit(1)
+                                        Spacer(minLength: 8)
+                                        Image(systemName: "chevron.up.chevron.down")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(Theme.secondaryText)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                                }
+                                .tint(Theme.valuePrimary)
                             }
                         }
-                        .pickerStyle(.menu)
-                        .labelsHidden()
-                        .tint(Theme.valuePrimary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .background(Color.black.opacity(0.26), in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.white.opacity(0.10), lineWidth: 1)
-                        )
-
                     }
                     .padding(.vertical, 10)
                     .padding(.horizontal, 10)
@@ -113,5 +144,51 @@ struct LoginView: View {
             .background(Theme.appBackground)
         }
         .background(Theme.appBackground)
+    }
+}
+
+private enum LoginFocusedField: Hashable {
+    case username
+    case password
+}
+
+private struct CredentialFieldBlock<Content: View>: View {
+    let caption: String
+    let systemImage: String
+    var focused: Bool
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(caption)
+                .font(.caption2)
+                .fontWeight(.semibold)
+                .foregroundStyle(Theme.labelAccent)
+
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: systemImage)
+                    .font(.body)
+                    .foregroundStyle(Theme.labelAccent.opacity(0.92))
+                    .frame(width: 22, alignment: .center)
+                    .accessibilityHidden(true)
+
+                content()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 10)
+            .background(Color.black.opacity(0.26), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(borderColor, lineWidth: focused ? 1.5 : 1)
+            )
+        }
+    }
+
+    private var borderColor: Color {
+        if focused {
+            return Theme.brandHeaderEnd.opacity(0.65)
+        }
+        return Color.white.opacity(0.10)
     }
 }
