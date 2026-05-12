@@ -12,11 +12,18 @@ from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from .serializers import HoldingSerializer, TradeSerializer, ProfileSerializer, UserSerializer
+from .serializers import (
+    HoldingSerializer,
+    PushDeviceRegisterSerializer,
+    PushDeviceSerializer,
+    ProfileSerializer,
+    TradeSerializer,
+    UserSerializer,
+)
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 
-from core.models import Advisor, Discovery, Holding, Profile, Snapshot, Trade
+from core.models import Advisor, Discovery, Holding, Profile, PushDevice, Snapshot, Trade
 from core.portfolio_metrics import get_portfolio_dashboard_data
 
 logger = logging.getLogger(__name__)
@@ -698,4 +705,40 @@ def get_profile(request):
         )
     serializer = ProfileSerializer(user_profile)
     return Response(serializer.data)
+
+
+@api_view(['POST', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def push_devices(request):
+    """
+    POST: upsert a push registration token for the current user.
+    DELETE: remove a token (JSON body or ?token=); must belong to the current user.
+    """
+    if request.method == 'DELETE':
+        token = (request.data.get('token') or request.query_params.get('token') or '').strip()
+        if not token:
+            return Response({'detail': 'token is required.'}, status=400)
+        qs = PushDevice.objects.filter(token=token, user=request.user)
+        if not qs.exists():
+            return Response({'detail': 'Not found.'}, status=404)
+        qs.delete()
+        return Response(status=204)
+
+    ser = PushDeviceRegisterSerializer(data=request.data)
+    ser.is_valid(raise_exception=True)
+    data = ser.validated_data
+    token = data['token'].strip()
+    if not token:
+        return Response({'token': ['This field may not be blank.']}, status=400)
+
+    obj, created = PushDevice.objects.update_or_create(
+        token=token,
+        defaults={
+            'user': request.user,
+            'platform': data['platform'],
+            'environment': (data.get('environment') or '').strip(),
+        },
+    )
+    out = PushDeviceSerializer(obj)
+    return Response(out.data, status=201 if created else 200)
 

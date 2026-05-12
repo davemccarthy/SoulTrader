@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B2FA00032FB39EE5007D87E5 /* FirebaseMessaging in Frameworks */ = {isa = PBXBuildFile; productRef = B2FA00022FB39EE5007D87E5 /* FirebaseMessaging */; };
+		87110EE82FB38A08007D87E5 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = 87110EE72FB38A08007D87E5 /* GoogleService-Info.plist */; };
 		871F04332F84F61A00039EE2 /* SoulTraderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 871F04322F84F61A00039EE2 /* SoulTraderApp.swift */; };
 		871F04352F84F61A00039EE2 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 871F04342F84F61A00039EE2 /* ContentView.swift */; };
 		871F04372F84F61C00039EE2 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 871F04362F84F61C00039EE2 /* Assets.xcassets */; };
@@ -26,6 +28,7 @@
 		A10000252F84F61A00039EE2 /* DiscoveryExplanationFormatting.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000222F84F61A00039EE2 /* DiscoveryExplanationFormatting.swift */; };
 		A10000262F84F61A00039EE2 /* HealthHistoryRecordCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000232F84F61A00039EE2 /* HealthHistoryRecordCard.swift */; };
 		A10000272F84F61A00039EE2 /* DiscoveryDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000242F84F61A00039EE2 /* DiscoveryDetailView.swift */; };
+		A10000292F84F61A00039EE2 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000282F84F61A00039EE2 /* AppDelegate.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -46,6 +49,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		87110EE72FB38A08007D87E5 /* GoogleService-Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
+		87110EF22FB38AC2007D87E5 /* SoulTrader-Debug.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "SoulTrader-Debug.entitlements"; sourceTree = "<group>"; };
+		87110EF32FB38AC2007D87E5 /* SoulTrader-Release.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "SoulTrader-Release.entitlements"; sourceTree = "<group>"; };
 		871F042F2F84F61A00039EE2 /* SoulTrader.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SoulTrader.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		871F04322F84F61A00039EE2 /* SoulTraderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoulTraderApp.swift; sourceTree = "<group>"; };
 		871F04342F84F61A00039EE2 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -68,6 +74,7 @@
 		A10000222F84F61A00039EE2 /* DiscoveryExplanationFormatting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryExplanationFormatting.swift; sourceTree = "<group>"; };
 		A10000232F84F61A00039EE2 /* HealthHistoryRecordCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthHistoryRecordCard.swift; sourceTree = "<group>"; };
 		A10000242F84F61A00039EE2 /* DiscoveryDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryDetailView.swift; sourceTree = "<group>"; };
+		A10000282F84F61A00039EE2 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -75,6 +82,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B2FA00032FB39EE5007D87E5 /* FirebaseMessaging in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -119,6 +127,7 @@
 			isa = PBXGroup;
 			children = (
 				871F04322F84F61A00039EE2 /* SoulTraderApp.swift */,
+				A10000282F84F61A00039EE2 /* AppDelegate.swift */,
 				871F04342F84F61A00039EE2 /* ContentView.swift */,
 				A10000102F84F61A00039EE2 /* AppCore.swift */,
 				A10000122F84F61A00039EE2 /* AppHeaderView.swift */,
@@ -132,6 +141,9 @@
 				A10000242F84F61A00039EE2 /* DiscoveryDetailView.swift */,
 				A100001C2F84F61A00039EE2 /* Theme.swift */,
 				A100001E2F84F61A00039EE2 /* BrandHeaderTitleView.swift */,
+				87110EE72FB38A08007D87E5 /* GoogleService-Info.plist */,
+				87110EF22FB38AC2007D87E5 /* SoulTrader-Debug.entitlements */,
+				87110EF32FB38AC2007D87E5 /* SoulTrader-Release.entitlements */,
 				871F04362F84F61C00039EE2 /* Assets.xcassets */,
 				871F04382F84F61C00039EE2 /* Preview Content */,
 			);
@@ -179,6 +191,9 @@
 			dependencies = (
 			);
 			name = SoulTrader;
+			packageProductDependencies = (
+				B2FA00022FB39EE5007D87E5 /* FirebaseMessaging */,
+			);
 			productName = SoulTrader;
 			productReference = 871F042F2F84F61A00039EE2 /* SoulTrader.app */;
 			productType = "com.apple.product-type.application";
@@ -251,6 +266,9 @@
 				Base,
 			);
 			mainGroup = 871F04262F84F61A00039EE2;
+			packageReferences = (
+				B2FA00012FB39EE5007D87E5 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
+			);
 			productRefGroup = 871F04302F84F61A00039EE2 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -269,6 +287,7 @@
 			files = (
 				871F043A2F84F61C00039EE2 /* Preview Assets.xcassets in Resources */,
 				871F04372F84F61C00039EE2 /* Assets.xcassets in Resources */,
+				87110EE82FB38A08007D87E5 /* GoogleService-Info.plist in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -303,6 +322,7 @@
 				A10000112F84F61A00039EE2 /* AppCore.swift in Sources */,
 				871F04352F84F61A00039EE2 /* ContentView.swift in Sources */,
 				871F04332F84F61A00039EE2 /* SoulTraderApp.swift in Sources */,
+				A10000292F84F61A00039EE2 /* AppDelegate.swift in Sources */,
 				A10000212F84F61A00039EE2 /* AdvisoryView.swift in Sources */,
 				A10000252F84F61A00039EE2 /* DiscoveryExplanationFormatting.swift in Sources */,
 				A10000262F84F61A00039EE2 /* HealthHistoryRecordCard.swift in Sources */,
@@ -470,11 +490,13 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_ENTITLEMENTS = SoulTrader/SoulTrader-Debug.entitlements;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"SoulTrader/Preview Content\"";
 				DEVELOPMENT_TEAM = 99RY7DMR6A;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_FirebaseAppDelegateProxyEnabled = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -504,11 +526,13 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_ENTITLEMENTS = SoulTrader/SoulTrader-Release.entitlements;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"SoulTrader/Preview Content\"";
 				DEVELOPMENT_TEAM = 99RY7DMR6A;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_FirebaseAppDelegateProxyEnabled = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -646,6 +670,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		B2FA00022FB39EE5007D87E5 /* FirebaseMessaging */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B2FA00012FB39EE5007D87E5 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseMessaging;
+		};
+/* End XCSwiftPackageProductDependency section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		B2FA00012FB39EE5007D87E5 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/firebase/firebase-ios-sdk.git";
+			requirement = {
+				kind = exactVersion;
+				version = 10.29.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
 	};
 	rootObject = 871F04272F84F61A00039EE2 /* Project object */;
 }

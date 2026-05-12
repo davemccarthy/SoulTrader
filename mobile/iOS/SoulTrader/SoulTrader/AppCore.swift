@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import Charts
+import FirebaseMessaging
 
 let appBackground = Theme.appBackground
 
@@ -639,6 +640,16 @@ enum APIError: Error, LocalizedError {
     }
 }
 
+private struct PushDeviceRegisterBody: Encodable {
+    let token: String
+    let platform: String
+    let environment: String
+}
+
+private struct PushDeviceUnregisterBody: Encodable {
+    let token: String
+}
+
 struct APIClient {
     let baseURL: URL
     let session: URLSession = .shared
@@ -805,6 +816,36 @@ struct APIClient {
         return try JSONDecoder().decode(DiscoveryDetailResponse.self, from: data)
     }
 
+    func registerPushDevice(accessToken: String, fcmToken: String, platform: String, environment: String) async throws {
+        let url = endpoint("push/devices/")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONEncoder().encode(
+            PushDeviceRegisterBody(token: fcmToken, platform: platform, environment: environment)
+        )
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+    }
+
+    func unregisterPushDevice(accessToken: String, fcmToken: String) async throws {
+        let url = endpoint("push/devices/")
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONEncoder().encode(PushDeviceUnregisterBody(token: fcmToken))
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
+        if http.statusCode == 204 {
+            return
+        }
+        guard (200...299).contains(http.statusCode) else {
+            throw APIError.httpStatus(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+        }
+    }
+
     private func validate(response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
         guard (200...299).contains(http.statusCode) else {
@@ -840,6 +881,10 @@ final class AuthViewModel: ObservableObject {
         static let username = "remembered_login_username"
         static let password = "remembered_login_password"
         static let host = "remembered_login_host"
+    }
+
+    private enum PushKeys {
+        static let lastRegisteredFCM = "push.last_registered_fcm_token"
     }
 
     init() {
@@ -960,6 +1005,7 @@ final class AuthViewModel: ObservableObject {
                 selectedFundHistory = []
             }
             statusMessage = "Data refreshed."
+            await syncFCMTokenWithServerIfAuthenticated()
         } catch {
             statusMessage = error.localizedDescription
         }
@@ -1000,7 +1046,55 @@ final class AuthViewModel: ObservableObject {
         return try await apiClient.fetchDiscoveryDetail(accessToken: access, discoveryId: discoveryId)
     }
 
+    /// Registers the FCM token with Django (`POST /api/push/devices/`). Safe to call repeatedly.
+    func registerPushDeviceWithServer(fcmToken: String) async {
+        guard let access = tokenStore.getAccessToken() else { return }
+        let env = Self.pushEnvironmentLabel()
+        do {
+            try await apiClient.registerPushDevice(
+                accessToken: access,
+                fcmToken: fcmToken,
+                platform: "ios",
+                environment: env
+            )
+            UserDefaults.standard.set(fcmToken, forKey: PushKeys.lastRegisteredFCM)
+        } catch {
+            // Non-fatal: push plumbing should not block the app.
+        }
+    }
+
+    private func syncFCMTokenWithServerIfAuthenticated() async {
+        guard isAuthenticated else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            Messaging.messaging().token { token, _ in
+                Task { @MainActor in
+                    if let token, !token.isEmpty {
+                        await self.registerPushDeviceWithServer(fcmToken: token)
+                    }
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
+    private static func pushEnvironmentLabel() -> String {
+        #if DEBUG
+        "sandbox"
+        #else
+        "production"
+        #endif
+    }
+
     func logout() {
+        let access = tokenStore.getAccessToken()
+        let lastFCM = UserDefaults.standard.string(forKey: PushKeys.lastRegisteredFCM)
+        let host = selectedHost
+        if let access, let lastFCM {
+            Task {
+                try? await APIClient(baseURL: host.baseURL).unregisterPushDevice(accessToken: access, fcmToken: lastFCM)
+            }
+        }
+        UserDefaults.standard.removeObject(forKey: PushKeys.lastRegisteredFCM)
         tokenStore.clear()
         currentUser = nil
         selectedFundId = nil

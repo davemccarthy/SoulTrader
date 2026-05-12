@@ -63,6 +63,10 @@ struct ContentView: View {
         .task {
             await viewModel.bootstrap()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .soultraderFCMTokenDidChange)) { note in
+            guard let token = note.object as? String else { return }
+            Task { await viewModel.registerPushDeviceWithServer(fcmToken: token) }
+        }
     }
 }
 

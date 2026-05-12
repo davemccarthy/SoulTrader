@@ -31,5 +31,8 @@ urlpatterns = [
     
     # Profile
     path('profile/', views.get_profile, name='profile'),
+
+    # Push (device tokens for FCM / native providers)
+    path('push/devices/', views.push_devices, name='push_devices'),
 ]
 

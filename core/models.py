@@ -671,6 +671,40 @@ class Trade(models.Model):
     explanation = models.CharField(max_length=256, null=True, blank=True)
 
 
+class PushDevice(models.Model):
+    """FCM / provider registration tokens; multiple devices per user."""
+
+    class Platform(models.TextChoices):
+        IOS = 'ios', 'iOS'
+        ANDROID = 'android', 'Android'
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='push_devices')
+    token = models.CharField(
+        max_length=512,
+        unique=True,
+        db_index=True,
+        help_text='Provider registration token; globally unique.',
+    )
+    platform = models.CharField(max_length=16, choices=Platform.choices)
+    environment = models.CharField(
+        max_length=16,
+        blank=True,
+        default='',
+        help_text='Optional: sandbox vs production for native APNS routing.',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['user', 'updated_at']),
+        ]
+
+    def __str__(self) -> str:
+        suffix = self.token[-12:] if len(self.token) > 12 else self.token
+        return f'{self.user_id} {self.platform} …{suffix}'
+
+
 class Snapshot(models.Model):
     """Daily snapshot of user's portfolio (cash + holdings value)"""
     user = models.ForeignKey(User, on_delete=models.CASCADE)
