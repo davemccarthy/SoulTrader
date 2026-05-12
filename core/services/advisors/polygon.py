@@ -10,11 +10,14 @@ import requests
 import pandas as pd
 import pandas_ta as ta
 from django.utils import timezone
-from django.conf import settings
 import json
 import re
 
 logger = logging.getLogger(__name__)
+
+# Advisor.blob: newest article published_utc from last fetch (next run uses published_utc.gt).
+POLYGON_NEWS_WATERMARK_KEY = "polygon_news_watermark"
+
 
 class Polygon(AdvisorBase):
 
@@ -24,35 +27,34 @@ class Polygon(AdvisorBase):
 
     def discover(self, sa):
         try:
-            # Get polygon news
             polygon_key = self.advisor.key
             if not polygon_key:
                 logger.warning("No POLYGON_API_KEY")
                 return
 
-            # Calculate time window: since last SA session for this username
-            sa_start_ts = self.get_previous_sa_timestamp(sa, username=sa.username)
+            now_utc = timezone.now()
+            state = self._advisor_blob_state()
+            watermark = (state.get(POLYGON_NEWS_WATERMARK_KEY) or "").strip()
 
-            # Set bounds: prev SA started -> current SA started
-            sa_end_utc = timezone.make_aware(sa.started) if timezone.is_naive(sa.started) else sa.started
-            if sa_start_ts is not None:
-                sa_start_utc = timezone.make_aware(sa_start_ts) if timezone.is_naive(sa_start_ts) else sa_start_ts
-            else:
-                sa_start_utc = sa_end_utc - timedelta(days=7)
-
-            # Fetch from Polygon API
-            url = "https://api.polygon.io/v2/reference/news"
+            # Incremental: published_utc.gt last watermark. Bootstrap: last 1 hour through now.
             params = {
-                "published_utc.gte": sa_start_utc.isoformat(timespec="seconds"),
-                "published_utc.lte": sa_end_utc.isoformat(timespec="seconds"),
                 "sort": "published_utc",
                 "order": "desc",
                 "limit": 20,
                 "apiKey": polygon_key,
+                "published_utc.lte": now_utc.isoformat(timespec="seconds"),
             }
+            if watermark:
+                params["published_utc.gt"] = watermark
+            else:
+                params["published_utc.gte"] = (
+                    now_utc - timedelta(hours=1)
+                ).isoformat(timespec="seconds")
+
+            api_url = "https://api.polygon.io/v2/reference/news"
 
             try:
-                resp = requests.get(url, params=params, timeout=20)
+                resp = requests.get(api_url, params=params, timeout=20)
                 resp.raise_for_status()
                 articles = resp.json().get("results", [])
 
@@ -64,14 +66,16 @@ class Polygon(AdvisorBase):
                 logger.info("No Polygon news to process")
                 return
 
-            # 2. Process said articles
-            for idx, article in enumerate(articles, start=1):
+            for article in articles:
                 title = article.get("title", "")
-                url = article.get("article_url", "")
+                article_url = article.get("article_url", "")
+                self.news_flash(sa, title, article_url)
 
-                self.news_flash(sa, title, url)
+            newest_published = (articles[0] or {}).get("published_utc")
+            if newest_published:
+                state[POLYGON_NEWS_WATERMARK_KEY] = newest_published
+                self._save_advisor_blob_state(state)
 
-        # Problems
         except Exception as e:
             logger.error(f"Discovery error: {e}", exc_info=True)
 
