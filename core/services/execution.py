@@ -5,10 +5,23 @@ Executes buy/sell trades and updates holdings
 """
 
 import logging
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
+
 from core.models import Holding, Trade
 
 logger = logging.getLogger(__name__)
+
+
+def _fmt_usd(value) -> str:
+    """Format dollars for logs (2 dp; avoids float / long-Decimal string noise)."""
+    if value is None:
+        return "n/a"
+    try:
+        d = value if isinstance(value, Decimal) else Decimal(str(value))
+        d = d.quantize(Decimal("0.01"))
+    except (InvalidOperation, TypeError, ValueError):
+        return str(value)
+    return format(d, ".2f")
 
 
 # Sell all for now
@@ -16,7 +29,10 @@ def execute_sell(sa, fund, holding, explanation):
 
     # Latest price
     holding.stock.refresh()
-    logger.info(f"Trade: {fund.name} selling {holding.shares} shares of {holding.stock.symbol} at ${holding.stock.price}. {explanation}")
+    logger.info(
+        f"Trade: {fund.name} selling {holding.shares} shares of {holding.stock.symbol} "
+        f"at ${_fmt_usd(holding.stock.price)}. {explanation}"
+    )
 
     # Capture cost basis and references BEFORE deleting holding
     cost_basis = holding.average_price or Decimal('0')
@@ -59,7 +75,7 @@ def execute_buy(sa, fund, stock, allowance, explanation="", force = False, disco
 
     # Check cash
     if allowance > fund.cash:
-        logger.warning(f"{fund.name} low on cash ${fund.cash}")
+        logger.warning(f"{fund.name} low on cash ${_fmt_usd(fund.cash)}")
         allowance = fund.cash
 
     # Latest price
@@ -91,7 +107,10 @@ def execute_buy(sa, fund, stock, allowance, explanation="", force = False, disco
         logger.info(f"Trade: {fund.name} NOT buying shares of {stock.symbol}. Not enough cash")
         return
 
-    logger.info(f"Trade: {fund.name} buying {shares} shares of {stock.symbol} at ${stock.price}. Holding {holding.shares}")
+    logger.info(
+        f"Trade: {fund.name} buying {shares} shares of {stock.symbol} "
+        f"at ${_fmt_usd(stock.price)}. Holding {holding.shares}"
+    )
 
     fund.cash -= cost
 
