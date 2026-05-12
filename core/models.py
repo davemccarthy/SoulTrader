@@ -20,7 +20,7 @@ from django.db import models
 from django.contrib.auth.models import User
 from django.contrib.postgres.fields import ArrayField
 from django.utils import timezone
-from datetime import timedelta
+from datetime import timedelta, datetime as dt_class, date as date_class, time as time_class
 from decimal import Decimal
 
 import yfinance as yf
@@ -399,56 +399,86 @@ class Stock(models.Model):
 
     def peak_since(self, since_date):
         """
-        Get the peak (max high) price since a given date.
-        Uses daily bars plus intraday today's high to match downturned() logic.
+        Maximum high since since_date (anchor), aligned with downturned().
+
+        - Full trading days strictly after the anchor calendar day use daily highs.
+        - On the anchor calendar day, only hourly bars whose start time is >= anchor
+          (US/Eastern) contribute — so pre-discovery / pre-anchor session spikes do not
+          inflate the peak when since_date is a datetime.
+        - For a date-only anchor (no time), anchor is start of that calendar day in ET,
+          matching prior daily-bar coverage for that day.
+        - When the anchor day is before today, today's segment uses the full session so far.
 
         Returns:
             float or None: Peak price since since_date, or None if unavailable.
         """
         import yfinance as yf
-        from datetime import datetime
         import pytz
+
+        logger = logging.getLogger(__name__)
 
         try:
             et = pytz.timezone("US/Eastern")
-            today_et = datetime.now(et).date()
-            start_date = since_date.date() if isinstance(since_date, datetime) else since_date
+            today_et = timezone.now().astimezone(et).date()
 
+            if isinstance(since_date, dt_class):
+                dt = since_date
+                if timezone.is_naive(dt):
+                    dt = timezone.make_aware(dt, timezone.utc)
+                anchor_et = dt.astimezone(et)
+            elif isinstance(since_date, date_class):
+                anchor_et = et.localize(dt_class.combine(since_date, time_class.min))
+            else:
+                return None
+
+            anchor_date = anchor_et.date()
             ticker = yf.Ticker(self.symbol)
 
-            # Daily: peak from daily bars
-            days_back = (today_et - start_date).days + 5
-            period = f"{days_back}d" if days_back > 1 else "5d"
+            days_span = max((today_et - anchor_date).days + 5, 5)
+            period = f"{days_span}d"
+
+            # Full sessions strictly between anchor day and today (exclude anchor and today)
             hist_daily = ticker.history(period=period, interval="1d")
-            peak_daily = None
+            peak_middle = None
             if not hist_daily.empty and "High" in hist_daily.columns:
-                hist_daily = hist_daily[hist_daily.index.date >= start_date]
-                hist_daily = hist_daily[hist_daily.index.date < today_et]
-                if not hist_daily.empty:
-                    peak_daily = float(hist_daily["High"].max())
+                mask = (hist_daily.index.date > anchor_date) & (hist_daily.index.date < today_et)
+                mid = hist_daily[mask]
+                if not mid.empty:
+                    peak_middle = float(mid["High"].max())
 
-            # Intraday: today's high so far
-            today_high = None
-            hist_intraday = ticker.history(period="5d", interval="1h")
-            if not hist_intraday.empty and "High" in hist_intraday.columns:
-                today_mask = []
+            hist_intraday = ticker.history(period=period, interval="1h")
+            if hist_intraday.empty or "High" not in hist_intraday.columns:
+                return peak_middle
+
+            def bar_start_et(ts):
+                if getattr(ts, "tzinfo", None):
+                    return ts.astimezone(et)
+                py = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
+                return et.localize(py)
+
+            # Anchor calendar day: highs only from bars starting at or after anchor_et
+            highs_anchor = []
+            for ts in hist_intraday.index:
+                t_et = bar_start_et(ts)
+                if t_et.date() != anchor_date:
+                    continue
+                if t_et >= anchor_et:
+                    highs_anchor.append(float(hist_intraday.loc[ts, "High"]))
+            anchor_peak = max(highs_anchor) if highs_anchor else None
+
+            # Today (full session): only when anchor is before today's date
+            today_full = None
+            if anchor_date < today_et:
+                highs_today = []
                 for ts in hist_intraday.index:
-                    if getattr(ts, "tzinfo", None):
-                        d = ts.astimezone(et).date()
-                    else:
-                        d = ts.date() if hasattr(ts, "date") else ts
-                    today_mask.append(d == today_et)
-                if any(today_mask):
-                    hist_today = hist_intraday[today_mask]
-                    today_high = float(hist_today["High"].max())
+                    t_et = bar_start_et(ts)
+                    if t_et.date() == today_et:
+                        highs_today.append(float(hist_intraday.loc[ts, "High"]))
+                if highs_today:
+                    today_full = max(highs_today)
 
-            if peak_daily is not None and today_high is not None:
-                return max(peak_daily, today_high)
-            if peak_daily is not None:
-                return peak_daily
-            if today_high is not None:
-                return today_high
-            return None
+            candidates = [p for p in (peak_middle, anchor_peak, today_full) if p is not None and p > 0]
+            return max(candidates) if candidates else None
 
         except Exception as e:
             logger.warning(f"Error getting peak for {self.symbol}: {e}")
@@ -486,59 +516,6 @@ class Stock(models.Model):
         except Exception as e:
             logger.warning(f"Error checking upturn for {self.symbol}: {e}")
             return False
-
-    def peaked(self, since_date, target_price):
-        """
-        Check if stock reached a target price on or after a given date.
-
-        Args:
-            since_date: datetime or date object - check from this date onwards
-            target_price: Decimal or float - price to check if stock reached
-
-        Returns:
-            bool: True if stock's high reached target_price on or after since_date, False otherwise, None if can't determine
-        """
-        import yfinance as yf
-        from datetime import datetime, timedelta
-
-        logger = logging.getLogger(__name__)
-
-        try:
-            # Convert since_date to datetime if it's a date
-            if isinstance(since_date, datetime):
-                start_date = since_date.date()
-            else:
-                start_date = since_date
-
-            # Get enough history to cover since_date (add buffer for weekends/holidays)
-            days_back = (datetime.now().date() - start_date).days + 5
-            period = f"{days_back}d" if days_back > 1 else "5d"
-
-            ticker = yf.Ticker(self.symbol)
-            hist = ticker.history(period=period, interval="1d")
-
-            if hist.empty:
-                return None
-
-            # Convert target_price to float for comparison
-            target = float(target_price)
-
-            # Filter to dates on or after since_date
-            hist_dates = hist.index.date if hasattr(hist.index[0], 'date') else [d.date() for d in hist.index]
-
-            # Get highs for dates >= since_date
-            for i, date in enumerate(hist_dates):
-                if date >= start_date:
-                    high = float(hist['High'].iloc[i])
-                    if high >= target:
-                        return True
-
-            return False
-
-        except Exception as e:
-            logger.warning(f"Error checking peak for {self.symbol} (since {since_date}, target ${target_price}): {e}")
-            return None
-
 
     def refresh(self):
 
