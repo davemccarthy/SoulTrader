@@ -3,6 +3,7 @@ import SwiftUI
 struct HoldingsView: View {
     @ObservedObject var viewModel: AuthViewModel
     @State private var path = NavigationPath()
+    @State private var fundDescriptionSheetPresented = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -96,7 +97,61 @@ struct HoldingsView: View {
                         .padding()
                 }
             }
+            .sheet(isPresented: $fundDescriptionSheetPresented) {
+                Group {
+                    if let fund = viewModel.selectedFund {
+                        FundDescriptionSheetContent(
+                            fundName: fund.name,
+                            descriptionText: fund.description,
+                            onGotIt: {
+                                viewModel.markFundDescriptionSeenForSession(fund.id)
+                                fundDescriptionSheetPresented = false
+                            },
+                            onDismissAll: {
+                                viewModel.dismissAllFundDescriptionsForSession()
+                                fundDescriptionSheetPresented = false
+                            }
+                        )
+                        .presentationDetents([.medium, .large])
+                        .presentationDragIndicator(.visible)
+                    }
+                }
+            }
+            .onAppear {
+                maybeAutoPresentFundDescription()
+            }
+            // `onAppear` often runs before `selectFund`'s `refreshAll()` finishes; description arrives later.
+            .onChange(of: selectedFundDescriptionToken) { _, _ in
+                maybeAutoPresentFundDescription()
+            }
+            .task(id: selectedFundDescriptionToken) {
+                // Brief defer so funds array is stable after async refresh.
+                try? await Task.sleep(for: .milliseconds(80))
+                maybeAutoPresentFundDescription()
+            }
         }
+    }
+
+    /// Updates when selected fund row changes (including `description` after `refreshAll`).
+    private var selectedFundDescriptionToken: String {
+        guard let id = viewModel.selectedFundId,
+              let f = viewModel.funds.first(where: { $0.id == id }) else {
+            return ""
+        }
+        return "\(id)|\(f.description)"
+    }
+
+    private func trimmedFundDescription(_ fund: FundResponse) -> String {
+        fund.description.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// First visit per fund: show description sheet once (Holdings only). Empty description skips.
+    private func maybeAutoPresentFundDescription() {
+        guard let fund = viewModel.selectedFund else { return }
+        let text = trimmedFundDescription(fund)
+        guard !text.isEmpty else { return }
+        guard viewModel.shouldAutoPresentFundDescription(for: fund.id) else { return }
+        fundDescriptionSheetPresented = true
     }
 
     private func imageTickerPair(symbol: String) -> some View {
@@ -239,6 +294,62 @@ struct HoldingsView: View {
     private func equityPercent(totalValue: Double, portfolioValue: Double) -> Double? {
         guard totalValue > 0 else { return nil }
         return (portfolioValue / totalValue) * 100
+    }
+}
+
+// MARK: - Fund description sheet (Holdings only)
+
+private struct FundDescriptionSheetContent: View {
+    let fundName: String
+    let descriptionText: String
+    let onGotIt: () -> Void
+    let onDismissAll: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                ScrollView {
+                    Text(descriptionText)
+                        .font(.body)
+                        .foregroundStyle(Theme.valuePrimary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                }
+                .frame(maxWidth: .infinity)
+
+                VStack(spacing: 10) {
+                    Button {
+                        onGotIt()
+                    } label: {
+                        Text("GOT IT")
+                            .font(.headline)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    }
+                    .background(Theme.brandHeaderStart, in: RoundedRectangle(cornerRadius: 10))
+
+                    Button {
+                        onDismissAll()
+                    } label: {
+                        Text("DISMISS ALL")
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(Theme.secondaryText)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                    }
+                    .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+                }
+                .padding(16)
+                .background(Theme.appBackground)
+            }
+            .background(Theme.appBackground)
+            .navigationTitle(fundName.isEmpty ? "Fund" : fundName)
+            .navigationBarTitleDisplayMode(.inline)
+        }
     }
 }
 

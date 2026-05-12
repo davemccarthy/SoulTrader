@@ -56,10 +56,32 @@ struct FundDashboardResponse: Decodable {
 struct FundResponse: Decodable, Identifiable {
     let id: Int
     let name: String
+    let description: String
     let spread: String?
     let risk: String
     let advisors: [String]
     let dashboard: FundDashboardResponse
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case description
+        case spread
+        case risk
+        case advisors
+        case dashboard
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
+        spread = try c.decodeIfPresent(String.self, forKey: .spread)
+        risk = try c.decode(String.self, forKey: .risk)
+        advisors = try c.decode([String].self, forKey: .advisors)
+        dashboard = try c.decode(FundDashboardResponse.self, forKey: .dashboard)
+    }
 }
 
 struct GlobalDashboardResponse: Decodable {
@@ -650,6 +672,8 @@ struct APIClient {
         let url = endpoint("funds/")
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
+        // Avoid stale fund payloads (e.g. missing `description`) from URLSession disk cache.
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: request)
         try validate(response: response, data: data)
@@ -807,6 +831,10 @@ final class AuthViewModel: ObservableObject {
     @Published var statusMessage: String?
     @Published var returnPercentMode: ReturnPercentMode = .total
 
+    /// Holdings fund-description sheet: session-only (cleared on logout / cold launch). Not stored in UserDefaults.
+    private var fundDescriptionDismissAllSession = false
+    private var fundDescriptionSeenFundIdsSession = Set<Int>()
+
     private let tokenStore = TokenStore()
     private enum RememberedLoginKeys {
         static let username = "remembered_login_username"
@@ -850,6 +878,19 @@ final class AuthViewModel: ObservableObject {
 
     func toggleReturnPercentMode() {
         returnPercentMode = (returnPercentMode == .total) ? .invested : .total
+    }
+
+    /// Whether the fund description modal may auto-open for this fund (Holdings).
+    func shouldAutoPresentFundDescription(for fundId: Int) -> Bool {
+        !fundDescriptionDismissAllSession && !fundDescriptionSeenFundIdsSession.contains(fundId)
+    }
+
+    func markFundDescriptionSeenForSession(_ fundId: Int) {
+        fundDescriptionSeenFundIdsSession.insert(fundId)
+    }
+
+    func dismissAllFundDescriptionsForSession() {
+        fundDescriptionDismissAllSession = true
     }
 
     func totalPercentValue(for dashboard: GlobalDashboardResponse) -> Double? {
@@ -963,6 +1004,8 @@ final class AuthViewModel: ObservableObject {
         tokenStore.clear()
         currentUser = nil
         selectedFundId = nil
+        fundDescriptionDismissAllSession = false
+        fundDescriptionSeenFundIdsSession.removeAll()
         funds = []
         holdings = []
         trades = []

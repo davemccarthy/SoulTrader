@@ -3,7 +3,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime as dt, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, Dict
 
 from django.conf import settings
 from django.db.models import Count, F, Max, Sum
@@ -23,6 +23,57 @@ logger = logging.getLogger(__name__)
 
 # Mobile/API trades list: newest-first slice (avoid unbounded responses).
 _TRADES_LIST_LIMIT = 250
+
+
+def _compose_fund_description_for_api(fund: Profile, dashboard: Dict[str, Any]) -> str:
+    """
+    Automated intro (risk, spread, sentiment, age, equity share) + optional admin free text
+    from Profile.description.
+    """
+    name = (fund.name or "").strip() or "This fund"
+
+    raw_advisors = [a for a in (fund.advisors or []) if a and str(a).strip()]
+    advisor_kind = "multi-advisor" if len(raw_advisors) >= 2 else "single-advisor"
+
+    risk_label = (fund.risk or "MODERATE").replace("_", " ").lower()
+    spread_key = fund.spread or "MEDIUM"
+    spread_label = str(spread_key).replace("_", " ").lower()
+
+    sentiment_labels = {
+        "STRONG_BULL": "strong bull",
+        "BULL": "bull",
+        "STAG": "neutral",
+        "AUTO": "auto",
+        "BEAR": "bear",
+        "STRONG_BEAR": "strong bear",
+    }
+    sentiment_label = sentiment_labels.get(
+        fund.sentiment,
+        (fund.sentiment or "AUTO").replace("_", " ").lower(),
+    )
+
+    age_days = max(int(dashboard.get("estab_days") or 1), 1)
+
+    total_value = Decimal(str(dashboard.get("total_value") or "0"))
+    cash_dec = Decimal(str(dashboard.get("cash") or "0"))
+    if total_value > 0:
+        holdings_mv = total_value - cash_dec
+        if holdings_mv < 0:
+            holdings_mv = Decimal("0")
+        equity_pct = float((holdings_mv / total_value) * Decimal("100"))
+    else:
+        equity_pct = 0.0
+
+    intro = (
+        f"{name} is a {advisor_kind} fund with {risk_label} risk, {spread_label} spread "
+        f"and bull–bear sentiment of {sentiment_label}. The fund is {age_days} days old "
+        f"with equity representing {equity_pct:.1f}% of total portfolio."
+    )
+
+    body = (fund.description or "").strip()
+    if body:
+        return f"{intro}\n\n{body}"
+    return intro
 
 _ALLOWED_YF_PERIODS = frozenset({
     '1d', '5d', '1mo', '2mo', '3mo', '6mo', '1y', '2y', '5y', '10y', 'ytd', 'max',
@@ -203,14 +254,17 @@ def get_funds(request):
         payload.append({
             'id': fund.id,
             'name': fund.name,
-            'description': fund.description or '',
+            'description': _compose_fund_description_for_api(fund, dashboard),
             'spread': fund.spread,
             'risk': fund.risk,
             'advisors': fund.advisors,
             'dashboard': dashboard,
         })
 
-    return Response(payload)
+    response = Response(payload)
+    # Discourage any intermediary from caching fund JSON (schema evolves; iOS must see fresh fields).
+    response['Cache-Control'] = 'private, no-store'
+    return response
 
 
 @api_view(['GET'])
