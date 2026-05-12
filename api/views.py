@@ -203,6 +203,7 @@ def get_funds(request):
         payload.append({
             'id': fund.id,
             'name': fund.name,
+            'description': fund.description or '',
             'spread': fund.spread,
             'risk': fund.risk,
             'advisors': fund.advisors,
