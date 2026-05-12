@@ -1836,12 +1836,14 @@ class Edgar(AdvisorBase):
         # Valuation
         valuation = self.evaluate_stock(ticker)
 
-        if valuation >= 1.10:
-            penalties.append("Overvalued (-0.15)")
-            score -= 0.15
-        elif valuation < 0.90:
-            bonuses.append("Undervalued (+0.1)")
-            score += 0.1
+        if valuation > 1.0:
+            over = valuation - 1.0
+            penalties.append(f"Overvalued (ratio {valuation:.2f}, {-over:+.2f})")
+            score -= over
+        elif valuation < 1.0:
+            under = 1.0 - valuation
+            bonuses.append(f"Undervalued (ratio {valuation:.2f}, {under:+.2f})")
+            score += under
 
         # Sector (BAD_SECTOR / WATCH -0.2) and 52-week high/low
         try:
