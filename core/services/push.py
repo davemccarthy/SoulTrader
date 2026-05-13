@@ -31,6 +31,9 @@ except ImportError:  # pragma: no cover - optional dependency
 # FCM allows up to 500 tokens per multicast request.
 _FCM_MULTICAST_LIMIT = 500
 
+# Bundled in the iOS app; used when ``sound`` is omitted.
+_DEFAULT_IOS_ALERT_SOUND = 'soultrader.caf'
+
 
 @dataclass(frozen=True)
 class SendPushResult:
@@ -92,8 +95,9 @@ def push_user(user_id: int, title: str, body: str, *, sound: str | None = None) 
     """
     Send a notification to all FCM tokens registered for ``user_id``.
 
-    ``sound`` (optional): iOS bundled alert filename, e.g. ``\"good_sell.caf\"``.
-    Must exist in the app main bundle. Omitted / empty → system default sound.
+    ``sound`` (optional): iOS bundled ``.caf`` filename, e.g. ``\"good_sell.caf\"``.
+    If omitted or empty, ``soultrader.caf`` is used (must be in the app bundle).
+    Pass ``sound=\"default\"`` for the system default tri-tone.
 
     Invalid / unregistered tokens are removed from ``PushDevice``.
     """
@@ -142,9 +146,16 @@ def push_user(user_id: int, title: str, body: str, *, sound: str | None = None) 
     failed = 0
     revoked = 0
 
-    sound_name = (sound or '').strip() or None
+    raw = (sound or '').strip()
+    if raw.lower() == 'default':
+        sound_name = 'default'
+    elif raw:
+        sound_name = raw
+    else:
+        sound_name = _DEFAULT_IOS_ALERT_SOUND
+
     apns_cfg = None
-    if sound_name and messaging is not None:
+    if messaging is not None:
         apns_cfg = messaging.APNSConfig(
             payload=messaging.APNSPayload(aps=messaging.Aps(sound=sound_name)),
         )
