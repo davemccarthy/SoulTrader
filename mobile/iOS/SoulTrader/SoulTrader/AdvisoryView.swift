@@ -108,13 +108,13 @@ struct AdvisoryView: View {
                     .foregroundStyle(Theme.valuePrimary)
                 if !row.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text(row.description.trimmingCharacters(in: .whitespacesAndNewlines))
-                        .font(.subheadline)
+                        .font(.caption)
                         .foregroundStyle(Theme.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let s = stats {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("\(s.trades) \(s.trades == 1 ? "buy" : "buys") · \(String(format: "%.0f%%", s.winRate)) win · \(formatGainLoss(s.gainLossPct))")
+                        Text("\(s.trades) \(s.trades == 1 ? "buy" : "buys") · \(String(format: "%.0f%%", s.winRate)) win")
                             .font(.caption2)
                             .fontWeight(.semibold)
                             .foregroundStyle(Theme.labelAccent)
@@ -139,11 +139,6 @@ struct AdvisoryView: View {
         }
         .padding(10)
         .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
-    }
-
-    private func formatGainLoss(_ pct: Double) -> String {
-        let sign = pct > 0 ? "+" : ""
-        return "\(sign)\(String(format: "%.1f", pct))%"
     }
 
     @ViewBuilder
