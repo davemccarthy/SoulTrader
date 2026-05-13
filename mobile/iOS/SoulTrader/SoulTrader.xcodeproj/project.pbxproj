@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		B2FA00032FB39EE5007D87E5 /* FirebaseMessaging in Frameworks */ = {isa = PBXBuildFile; productRef = B2FA00022FB39EE5007D87E5 /* FirebaseMessaging */; };
 		87110EE82FB38A08007D87E5 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = 87110EE72FB38A08007D87E5 /* GoogleService-Info.plist */; };
 		871F04332F84F61A00039EE2 /* SoulTraderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 871F04322F84F61A00039EE2 /* SoulTraderApp.swift */; };
 		871F04352F84F61A00039EE2 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 871F04342F84F61A00039EE2 /* ContentView.swift */; };
@@ -16,6 +15,8 @@
 		871F04442F84F61D00039EE2 /* SoulTraderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 871F04432F84F61D00039EE2 /* SoulTraderTests.swift */; };
 		871F044E2F84F61D00039EE2 /* SoulTraderUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 871F044D2F84F61D00039EE2 /* SoulTraderUITests.swift */; };
 		871F04502F84F61D00039EE2 /* SoulTraderUITestsLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 871F044F2F84F61D00039EE2 /* SoulTraderUITestsLaunchTests.swift */; };
+		8747882F2FB4D4E800A9CEC7 /* bad_sell.caf in Resources */ = {isa = PBXBuildFile; fileRef = 8747882D2FB4D4E800A9CEC7 /* bad_sell.caf */; };
+		874788302FB4D4E800A9CEC7 /* good_sell.caf in Resources */ = {isa = PBXBuildFile; fileRef = 8747882E2FB4D4E800A9CEC7 /* good_sell.caf */; };
 		A10000112F84F61A00039EE2 /* AppCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000102F84F61A00039EE2 /* AppCore.swift */; };
 		A10000132F84F61A00039EE2 /* AppHeaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000122F84F61A00039EE2 /* AppHeaderView.swift */; };
 		A10000152F84F61A00039EE2 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000142F84F61A00039EE2 /* LoginView.swift */; };
@@ -29,6 +30,7 @@
 		A10000262F84F61A00039EE2 /* HealthHistoryRecordCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000232F84F61A00039EE2 /* HealthHistoryRecordCard.swift */; };
 		A10000272F84F61A00039EE2 /* DiscoveryDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000242F84F61A00039EE2 /* DiscoveryDetailView.swift */; };
 		A10000292F84F61A00039EE2 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000282F84F61A00039EE2 /* AppDelegate.swift */; };
+		B2FA00032FB39EE5007D87E5 /* FirebaseMessaging in Frameworks */ = {isa = PBXBuildFile; productRef = B2FA00022FB39EE5007D87E5 /* FirebaseMessaging */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -62,6 +64,8 @@
 		871F04492F84F61D00039EE2 /* SoulTraderUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SoulTraderUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		871F044D2F84F61D00039EE2 /* SoulTraderUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoulTraderUITests.swift; sourceTree = "<group>"; };
 		871F044F2F84F61D00039EE2 /* SoulTraderUITestsLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoulTraderUITestsLaunchTests.swift; sourceTree = "<group>"; };
+		8747882D2FB4D4E800A9CEC7 /* bad_sell.caf */ = {isa = PBXFileReference; lastKnownFileType = file; path = bad_sell.caf; sourceTree = "<group>"; };
+		8747882E2FB4D4E800A9CEC7 /* good_sell.caf */ = {isa = PBXFileReference; lastKnownFileType = file; path = good_sell.caf; sourceTree = "<group>"; };
 		A10000102F84F61A00039EE2 /* AppCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCore.swift; sourceTree = "<group>"; };
 		A10000122F84F61A00039EE2 /* AppHeaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppHeaderView.swift; sourceTree = "<group>"; };
 		A10000142F84F61A00039EE2 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
@@ -126,6 +130,8 @@
 		871F04312F84F61A00039EE2 /* SoulTrader */ = {
 			isa = PBXGroup;
 			children = (
+				8747882D2FB4D4E800A9CEC7 /* bad_sell.caf */,
+				8747882E2FB4D4E800A9CEC7 /* good_sell.caf */,
 				871F04322F84F61A00039EE2 /* SoulTraderApp.swift */,
 				A10000282F84F61A00039EE2 /* AppDelegate.swift */,
 				871F04342F84F61A00039EE2 /* ContentView.swift */,
@@ -286,7 +292,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				871F043A2F84F61C00039EE2 /* Preview Assets.xcassets in Resources */,
+				874788302FB4D4E800A9CEC7 /* good_sell.caf in Resources */,
 				871F04372F84F61C00039EE2 /* Assets.xcassets in Resources */,
+				8747882F2FB4D4E800A9CEC7 /* bad_sell.caf in Resources */,
 				87110EE82FB38A08007D87E5 /* GoogleService-Info.plist in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -488,9 +496,9 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CODE_SIGN_ENTITLEMENTS = "SoulTrader/SoulTrader-Debug.entitlements";
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CODE_SIGN_ENTITLEMENTS = SoulTrader/SoulTrader-Debug.entitlements;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"SoulTrader/Preview Content\"";
 				DEVELOPMENT_TEAM = 99RY7DMR6A;
@@ -524,9 +532,9 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CODE_SIGN_ENTITLEMENTS = "SoulTrader/SoulTrader-Release.entitlements";
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CODE_SIGN_ENTITLEMENTS = SoulTrader/SoulTrader-Release.entitlements;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"SoulTrader/Preview Content\"";
 				DEVELOPMENT_TEAM = 99RY7DMR6A;
@@ -671,14 +679,6 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCSwiftPackageProductDependency section */
-		B2FA00022FB39EE5007D87E5 /* FirebaseMessaging */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = B2FA00012FB39EE5007D87E5 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
-			productName = FirebaseMessaging;
-		};
-/* End XCSwiftPackageProductDependency section */
-
 /* Begin XCRemoteSwiftPackageReference section */
 		B2FA00012FB39EE5007D87E5 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -689,6 +689,14 @@
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		B2FA00022FB39EE5007D87E5 /* FirebaseMessaging */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B2FA00012FB39EE5007D87E5 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseMessaging;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 871F04272F84F61A00039EE2 /* Project object */;
 }

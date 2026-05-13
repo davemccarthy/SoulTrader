@@ -88,9 +88,12 @@ def _delete_token_if_unregistered(token: str, exc: BaseException) -> bool:
     return False
 
 
-def push_user(user_id: int, title: str, body: str) -> SendPushResult:
+def push_user(user_id: int, title: str, body: str, *, sound: str | None = None) -> SendPushResult:
     """
     Send a notification to all FCM tokens registered for ``user_id``.
+
+    ``sound`` (optional): iOS bundled alert filename, e.g. ``\"good_sell.caf\"``.
+    Must exist in the app main bundle. Omitted / empty → system default sound.
 
     Invalid / unregistered tokens are removed from ``PushDevice``.
     """
@@ -139,11 +142,19 @@ def push_user(user_id: int, title: str, body: str) -> SendPushResult:
     failed = 0
     revoked = 0
 
+    sound_name = (sound or '').strip() or None
+    apns_cfg = None
+    if sound_name and messaging is not None:
+        apns_cfg = messaging.APNSConfig(
+            payload=messaging.APNSPayload(aps=messaging.Aps(sound=sound_name)),
+        )
+
     for start in range(0, n, _FCM_MULTICAST_LIMIT):
         chunk = tokens[start : start + _FCM_MULTICAST_LIMIT]
         msg = messaging.MulticastMessage(
             notification=messaging.Notification(title=title, body=body),
             tokens=chunk,
+            apns=apns_cfg,
         )
         batch = messaging.send_each_for_multicast(msg, dry_run=False)
         for i, resp in enumerate(batch.responses):
