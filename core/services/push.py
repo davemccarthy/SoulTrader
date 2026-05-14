@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from django.conf import settings
+from django.contrib.auth.models import User
 
 from core.models import PushDevice
 
@@ -34,6 +35,9 @@ _FCM_MULTICAST_LIMIT = 500
 # Bundled in the iOS app; used when ``sound`` is omitted.
 _DEFAULT_IOS_ALERT_SOUND = 'soultrader.caf'
 
+# Alert title when omitted or empty (match app display name).
+_DEFAULT_PUSH_TITLE = 'SOULTRADER'
+
 
 @dataclass(frozen=True)
 class SendPushResult:
@@ -41,6 +45,18 @@ class SendPushResult:
 
     user_id: int
     device_count: int
+    sent: int
+    failed: int
+    revoked_tokens: int
+    skipped: bool
+    skip_reason: str
+
+
+@dataclass(frozen=True)
+class SendPushSuperResult:
+    """Outcome of ``push_super`` — one logical send to all active superusers."""
+
+    superuser_count: int
     sent: int
     failed: int
     revoked_tokens: int
@@ -99,9 +115,11 @@ def push_user(user_id: int, title: str, body: str, *, sound: str | None = None) 
     If omitted or empty, ``soultrader.caf`` is used (must be in the app bundle).
     Pass ``sound=\"default\"`` for the system default tri-tone.
 
+    If ``title`` is omitted or empty, ``SOULTRADER`` is used.
+
     Invalid / unregistered tokens are removed from ``PushDevice``.
     """
-    title = (title or '').strip() or 'SoulTrader'
+    title = (title or '').strip() or _DEFAULT_PUSH_TITLE
     body = (body or '').strip()
     if not body:
         return SendPushResult(
@@ -188,6 +206,64 @@ def push_user(user_id: int, title: str, body: str, *, sound: str | None = None) 
     return SendPushResult(
         user_id=user_id,
         device_count=n,
+        sent=sent,
+        failed=failed,
+        revoked_tokens=revoked,
+        skipped=False,
+        skip_reason='',
+    )
+
+
+def push_super(
+    content: str,
+    *,
+    title: str = _DEFAULT_PUSH_TITLE,
+    sound: str | None = None,
+) -> SendPushSuperResult:
+    """
+    Send a notification to each **active** Django superuser, using ``push_user``
+    per user (users with no registered devices simply yield zero sends).
+
+    ``content`` is the notification body. ``title`` defaults to ``SOULTRADER``.
+    """
+    body = (content or '').strip()
+    if not body:
+        return SendPushSuperResult(
+            superuser_count=0,
+            sent=0,
+            failed=0,
+            revoked_tokens=0,
+            skipped=True,
+            skip_reason='body is empty',
+        )
+
+    super_ids = list(
+        User.objects.filter(is_superuser=True, is_active=True).values_list('pk', flat=True)
+    )
+    n_supers = len(super_ids)
+    if n_supers == 0:
+        return SendPushSuperResult(
+            superuser_count=0,
+            sent=0,
+            failed=0,
+            revoked_tokens=0,
+            skipped=True,
+            skip_reason='no active superusers',
+        )
+
+    alert_title = (title or '').strip() or _DEFAULT_PUSH_TITLE
+    sent = 0
+    failed = 0
+    revoked = 0
+
+    for uid in super_ids:
+        r = push_user(uid, alert_title, body, sound=sound)
+        sent += r.sent
+        failed += r.failed
+        revoked += r.revoked_tokens
+
+    return SendPushSuperResult(
+        superuser_count=n_supers,
         sent=sent,
         failed=failed,
         revoked_tokens=revoked,

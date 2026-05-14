@@ -180,6 +180,19 @@ def home(request):
     return redirect('core:login')
 
 
+def _notify_superusers_web_login(user, request) -> None:
+    """Fire-and-forget superuser push on successful session login (must not break login)."""
+    try:
+        from core.services.push import push_super
+
+        when = timezone.localtime(timezone.now()).strftime('%Y-%m-%d %H:%M %Z')
+        ip = (request.META.get('REMOTE_ADDR') or '').strip() or 'unknown'
+        name = user.get_username()
+        push_super(f'Web login: {name} at {when} (IP {ip})')
+    except Exception:
+        logger.exception('push_super after web login failed')
+
+
 def login_view(request):
     """Login page"""
     if request.user.is_authenticated:
@@ -190,6 +203,7 @@ def login_view(request):
         user = authenticate(request, username=username, password=password)
         if user:
             login(request, user)
+            _notify_superusers_web_login(user, request)
             init_fund_session_after_login(request)
             return redirect('core:funds')
         else:
