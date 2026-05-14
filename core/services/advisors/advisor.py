@@ -689,7 +689,7 @@ class AdvisorBase:
                 logger.warning(f"Skipping health check for {stock.symbol}: confidence score is NaN (bad data)")
                 return None
             gemini_result = self._get_gemini_opinion(stock)
-            gemini_weight = Decimal('1.0')  # Default to neutral if Gemini fails
+            gemini_weight = Decimal('0.5')  # Default to neutral if Gemini fails
             gemini_recommendation = None
             gemini_explanation = None
 
@@ -700,7 +700,7 @@ class AdvisorBase:
                 logger.info(
                     f"Gemini opinion for {stock.symbol}: {gemini_recommendation} (weight: {gemini_weight})")
             else:
-                logger.warning(f"Gemini opinion failed for {stock.symbol}, using default weight 1.0")
+                logger.warning(f"Gemini opinion failed for {stock.symbol}, using weight 0.5")
 
             # 3. Calculate final score
             final_score = confidence_score * gemini_weight
@@ -967,14 +967,23 @@ class AdvisorBase:
                             overlay_reasons.append(f"bad sector/industry ({sector_sub}/{industry_sub}) -5")
                             break
 
-                # Valuation ratio using ROE-based notional fair value (evaluate_stock)
+                # ROE price/fair vs 1.0 (evaluate_stock): Edgar-style distance from 1.0, scaled ×10
+                # on buy_score overlay (0–100) for both over- and undervalued.
                 valuation_ratio = self.evaluate_stock(ticker_symbol=symbol, info=info_safe)
-                if valuation_ratio >= 1.10:
-                    overlay_points -= 5.0
-                    overlay_reasons.append(f"overvalued (ratio {valuation_ratio:.2f}) -5")
-                elif valuation_ratio < 0.90:
-                    overlay_points += 5.0
-                    overlay_reasons.append(f"undervalued (ratio {valuation_ratio:.2f}) +5")
+                if valuation_ratio > 1.0:
+                    over = valuation_ratio - 1.0
+                    adj_over = 10.0 * over
+                    overlay_points -= adj_over
+                    overlay_reasons.append(
+                        f"Overvalued (ratio {valuation_ratio:.2f}, {-adj_over:+.2f})"
+                    )
+                elif valuation_ratio < 1.0:
+                    under = 1.0 - valuation_ratio
+                    adj_under = 10.0 * under
+                    overlay_points += adj_under
+                    overlay_reasons.append(
+                        f"Undervalued (ratio {valuation_ratio:.2f}, {adj_under:+.2f})"
+                    )
 
                 # 52-week high/low proximity
                 price_now = info_safe.get("regularMarketPrice") or info_safe.get("currentPrice") or price
@@ -1148,7 +1157,7 @@ Respond with only a single valid JSON object, no other text.
             "NEUTRAL": 0.75,
             "AVOID": 0.00,
         }
-        gemini_weight = weight_mapping.get(recommendation, 1.0)  # Default to 1.0 (neutral) if unknown
+        gemini_weight = weight_mapping.get(recommendation, 0.75)  # Default to 0.75 (neutral) if unknown
         
         return {
             "recommendation": recommendation,
