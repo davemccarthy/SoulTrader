@@ -164,9 +164,15 @@ if _env_bool('USE_SECURE_PROXY_SSL_HEADER', default=not DEBUG):
 # Optional e.g. https://klynt.com — used for advisor logo URLs in API JSON when set (always HTTPS/public host).
 PUBLIC_BASE_URL = os.getenv('PUBLIC_BASE_URL', '').strip().rstrip('/')
 
-# Firebase Cloud Messaging (Django server). Path to the service account JSON from Firebase Console
-# → Project settings → Service accounts → Generate new private key. Not the iOS GoogleService-Info.plist.
-# Falls back to GOOGLE_APPLICATION_CREDENTIALS if unset.
+# Firebase Cloud Messaging (Django server). Not the iOS GoogleService-Info.plist.
+#
+# Use either:
+#   - FCM_SERVICE_ACCOUNT_JSON: full service account JSON as a string (common on PaaS / Docker secrets).
+#   - FCM_GOOGLE_APPLICATION_CREDENTIALS: path to the JSON file from Firebase Console
+#     → Project settings → Service accounts → Generate new private key.
+# If both are set, FCM_SERVICE_ACCOUNT_JSON is used first.
+# Falls back to GOOGLE_APPLICATION_CREDENTIALS when FCM_GOOGLE_APPLICATION_CREDENTIALS is unset.
+FCM_SERVICE_ACCOUNT_JSON = os.getenv('FCM_SERVICE_ACCOUNT_JSON', '').strip()
 FCM_GOOGLE_APPLICATION_CREDENTIALS = (
     os.getenv('FCM_GOOGLE_APPLICATION_CREDENTIALS', '').strip()
     or os.getenv('GOOGLE_APPLICATION_CREDENTIALS', '').strip()

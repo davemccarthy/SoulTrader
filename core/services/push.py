@@ -1,12 +1,14 @@
 """
 Firebase Cloud Messaging — send notifications to users' registered devices.
 
-Requires ``pip install firebase-admin`` and ``FCM_GOOGLE_APPLICATION_CREDENTIALS`` (or
-``GOOGLE_APPLICATION_CREDENTIALS``) pointing at a Firebase **service account** JSON file.
+Requires ``pip install firebase-admin`` and either ``FCM_SERVICE_ACCOUNT_JSON`` (full
+service account JSON string) or ``FCM_GOOGLE_APPLICATION_CREDENTIALS`` / ``GOOGLE_APPLICATION_CREDENTIALS``
+(path to the Firebase **service account** JSON file).
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from dataclasses import dataclass
@@ -72,19 +74,35 @@ def _ensure_firebase_app() -> tuple[bool, str]:
     if firebase_admin._apps:
         return True, ''
 
-    cred_path = getattr(settings, 'FCM_GOOGLE_APPLICATION_CREDENTIALS', '') or ''
-    if not cred_path:
-        return False, 'FCM_GOOGLE_APPLICATION_CREDENTIALS (or GOOGLE_APPLICATION_CREDENTIALS) is not set.'
+    json_blob = (getattr(settings, 'FCM_SERVICE_ACCOUNT_JSON', None) or '').strip()
+    cred_path = (getattr(settings, 'FCM_GOOGLE_APPLICATION_CREDENTIALS', None) or '').strip()
 
-    path = Path(cred_path).expanduser()
-    if not path.is_file():
-        return False, f'Service account file not found: {path}'
+    if not json_blob and not cred_path:
+        return (
+            False,
+            'No FCM credentials: set FCM_SERVICE_ACCOUNT_JSON (full JSON) or '
+            'FCM_GOOGLE_APPLICATION_CREDENTIALS / GOOGLE_APPLICATION_CREDENTIALS (path to JSON file).',
+        )
+
+    if json_blob:
+        try:
+            parsed = json.loads(json_blob)
+        except json.JSONDecodeError as exc:
+            return False, f'FCM_SERVICE_ACCOUNT_JSON is not valid JSON: {exc}'
+        if not isinstance(parsed, dict):
+            return False, 'FCM_SERVICE_ACCOUNT_JSON must decode to a JSON object.'
+        cred_source: dict | str = parsed
+    else:
+        path = Path(cred_path).expanduser()
+        if not path.is_file():
+            return False, f'Service account file not found: {path}'
+        cred_source = str(path)
 
     with _app_lock:
         if firebase_admin._apps:
             return True, ''
         try:
-            cred = credentials.Certificate(str(path))
+            cred = credentials.Certificate(cred_source)
             firebase_admin.initialize_app(cred)
         except Exception as exc:  # pragma: no cover - env-specific
             return False, f'Failed to initialize Firebase app: {exc}'
