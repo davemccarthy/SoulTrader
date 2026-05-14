@@ -35,8 +35,8 @@ _FCM_MULTICAST_LIMIT = 500
 # Bundled in the iOS app; used when ``sound`` is omitted.
 _DEFAULT_IOS_ALERT_SOUND = 'soultrader.caf'
 
-# Alert title when omitted or empty (match app display name).
-_DEFAULT_PUSH_TITLE = 'SOULTRADER'
+# Alert title when omitted or empty.
+_DEFAULT_PUSH_TITLE = 'SoulTrader'
 
 
 @dataclass(frozen=True)
@@ -115,7 +115,7 @@ def push_user(user_id: int, title: str, body: str, *, sound: str | None = None) 
     If omitted or empty, ``soultrader.caf`` is used (must be in the app bundle).
     Pass ``sound=\"default\"`` for the system default tri-tone.
 
-    If ``title`` is omitted or empty, ``SOULTRADER`` is used.
+    If ``title`` is omitted or empty, ``SoulTrader`` is used.
 
     Invalid / unregistered tokens are removed from ``PushDevice``.
     """
@@ -224,7 +224,7 @@ def push_super(
     Send a notification to each **active** Django superuser, using ``push_user``
     per user (users with no registered devices simply yield zero sends).
 
-    ``content`` is the notification body. ``title`` defaults to ``SOULTRADER``.
+    ``content`` is the notification body. ``title`` defaults to ``SoulTrader``.
     """
     body = (content or '').strip()
     if not body:
