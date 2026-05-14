@@ -90,7 +90,7 @@ struct HoldingsView: View {
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: Int.self) { holdingId in
                 if let holding = viewModel.holdings.first(where: { $0.id == holdingId }) {
-                    HoldingDetailView(holding: holding, baseURL: viewModel.selectedHost.baseURL, viewModel: viewModel)
+                    HoldingDetailView(holding: holding, baseURL: viewModel.apiBaseURL, viewModel: viewModel)
                 } else {
                     Text("This holding is no longer available.")
                         .foregroundStyle(Theme.secondaryText)

@@ -590,6 +590,9 @@ struct LoginRequest: Encodable {
 }
 
 struct APIEnvironment {
+    /// When `false`, login hides the host row and all API calls use `klynt.com` (LAN host is ignored).
+    static let showHostCredential = false
+
     enum HostOption: String, CaseIterable, Identifiable {
         case local = "192.168.1.21:8000"
         case klynt = "klynt.com"
@@ -897,8 +900,16 @@ final class AuthViewModel: ObservableObject {
     }
 
     private var apiClient: APIClient {
-        APIClient(baseURL: selectedHost.baseURL)
+        APIClient(baseURL: effectiveAPIHost.baseURL)
     }
+
+    /// Resolved host for requests: locked to production when the login host picker is hidden.
+    private var effectiveAPIHost: APIEnvironment.HostOption {
+        APIEnvironment.showHostCredential ? selectedHost : .klynt
+    }
+
+    /// Resolved API root (honours `APIEnvironment.showHostCredential` lock to klynt).
+    var apiBaseURL: URL { effectiveAPIHost.baseURL }
 
     var isAuthenticated: Bool { tokenStore.getAccessToken() != nil }
     var hasSelectedFund: Bool { selectedFundId != nil }
@@ -1126,7 +1137,7 @@ final class AuthViewModel: ObservableObject {
     func logout() {
         let access = tokenStore.getAccessToken()
         let lastFCM = UserDefaults.standard.string(forKey: PushKeys.lastRegisteredFCM)
-        let host = selectedHost
+        let host = effectiveAPIHost
         if let access, let lastFCM {
             Task {
                 try? await APIClient(baseURL: host.baseURL).unregisterPushDevice(accessToken: access, fcmToken: lastFCM)
@@ -1194,16 +1205,20 @@ final class AuthViewModel: ObservableObject {
         let defaults = UserDefaults.standard
         defaults.set(username, forKey: RememberedLoginKeys.username)
         defaults.set(password, forKey: RememberedLoginKeys.password)
-        defaults.set(selectedHost.rawValue, forKey: RememberedLoginKeys.host)
+        let hostToSave = APIEnvironment.showHostCredential ? selectedHost : .klynt
+        defaults.set(hostToSave.rawValue, forKey: RememberedLoginKeys.host)
     }
 
     private func loadRememberedLoginInputs() {
         let defaults = UserDefaults.standard
         username = defaults.string(forKey: RememberedLoginKeys.username) ?? ""
         password = defaults.string(forKey: RememberedLoginKeys.password) ?? ""
-        if let hostRaw = defaults.string(forKey: RememberedLoginKeys.host),
+        if APIEnvironment.showHostCredential,
+           let hostRaw = defaults.string(forKey: RememberedLoginKeys.host),
            let host = APIEnvironment.HostOption(rawValue: hostRaw) {
             selectedHost = host
+        } else {
+            selectedHost = .klynt
         }
     }
 }

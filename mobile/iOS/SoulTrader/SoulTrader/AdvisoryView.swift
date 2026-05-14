@@ -81,7 +81,7 @@ struct AdvisoryView: View {
             .navigationDestination(for: DiscoveryDetailNav.self) { nav in
                 DiscoveryDetailView(
                     discoveryId: nav.discoveryId,
-                    baseURL: viewModel.selectedHost.baseURL,
+                    baseURL: viewModel.apiBaseURL,
                     viewModel: viewModel
                 )
             }

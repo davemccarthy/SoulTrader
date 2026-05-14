@@ -2,9 +2,6 @@ import SwiftUI
 import UIKit
 
 struct LoginView: View {
-    /// Set to `true` to show the host row again.
-    private let showHostCredential = true
-
     @ObservedObject var viewModel: AuthViewModel
     @FocusState private var focusedField: LoginFocusedField?
 
@@ -81,7 +78,7 @@ struct LoginView: View {
                             .tint(Theme.valuePrimary)
                         }
 
-                        if showHostCredential {
+                        if APIEnvironment.showHostCredential {
                             CredentialFieldBlock(
                                 caption: "HOST",
                                 systemImage: "network",
