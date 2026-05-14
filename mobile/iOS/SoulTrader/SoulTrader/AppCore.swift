@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import Charts
+import CryptoKit
 import FirebaseMessaging
 
 let appBackground = Theme.appBackground
@@ -590,7 +591,7 @@ struct LoginRequest: Encodable {
 
 struct APIEnvironment {
     enum HostOption: String, CaseIterable, Identifiable {
-        case local = "192.168.1.6:8000"
+        case local = "192.168.1.21:8000"
         case klynt = "klynt.com"
 
         var id: String { rawValue }
@@ -598,7 +599,7 @@ struct APIEnvironment {
         var baseURL: URL {
             switch self {
             case .local:
-                return URL(string: "http://192.168.1.6:8000/api/")!
+                return URL(string: "http://192.168.1.21:8000/api/")!
             case .klynt:
                 return URL(string: "https://klynt.com/api/")!
             }
@@ -872,9 +873,8 @@ final class AuthViewModel: ObservableObject {
     @Published var statusMessage: String?
     @Published var returnPercentMode: ReturnPercentMode = .total
 
-    /// Holdings fund-description sheet: session-only (cleared on logout / cold launch). Not stored in UserDefaults.
+    /// Holdings fund-description sheet: "Dismiss all" skips auto-present until logout or cold launch.
     private var fundDescriptionDismissAllSession = false
-    private var fundDescriptionSeenFundIdsSession = Set<Int>()
 
     private let tokenStore = TokenStore()
     private enum RememberedLoginKeys {
@@ -885,6 +885,11 @@ final class AuthViewModel: ObservableObject {
 
     private enum PushKeys {
         static let lastRegisteredFCM = "push.last_registered_fcm_token"
+    }
+
+    /// Per-user, per-fund SHA256 (hex) of last acknowledged fund `description` text (normalized). Not the raw message.
+    private enum FundDescriptionAckKeys {
+        static let digestByUserFund = "fund_description_ack_sha256_v1"
     }
 
     init() {
@@ -925,17 +930,50 @@ final class AuthViewModel: ObservableObject {
         returnPercentMode = (returnPercentMode == .total) ? .invested : .total
     }
 
-    /// Whether the fund description modal may auto-open for this fund (Holdings).
-    func shouldAutoPresentFundDescription(for fundId: Int) -> Bool {
-        !fundDescriptionDismissAllSession && !fundDescriptionSeenFundIdsSession.contains(fundId)
+    /// Whether the fund description sheet may auto-open (Holdings): non-empty text, not session-dismiss-all,
+    /// and current description digest differs from last "Got it" digest for this user + fund.
+    func shouldAutoPresentFundDescription(for fundId: Int, description: String) -> Bool {
+        guard !fundDescriptionDismissAllSession else { return false }
+        guard let userId = currentUser?.id else { return false }
+        let normalized = Self.normalizedFundDescriptionForAcknowledgment(description)
+        guard !normalized.isEmpty else { return false }
+        let digest = Self.sha256HexDigest(of: normalized)
+        let key = Self.fundDescriptionAckStorageKey(userId: userId, fundId: fundId)
+        let stored = loadFundDescriptionAckDigestMap()[key]
+        return stored != digest
     }
 
-    func markFundDescriptionSeenForSession(_ fundId: Int) {
-        fundDescriptionSeenFundIdsSession.insert(fundId)
+    /// Persist digest of acknowledged description so auto-present skips until server text changes.
+    func markFundDescriptionAcknowledged(fundId: Int, description: String) {
+        guard let userId = currentUser?.id else { return }
+        let normalized = Self.normalizedFundDescriptionForAcknowledgment(description)
+        guard !normalized.isEmpty else { return }
+        let digest = Self.sha256HexDigest(of: normalized)
+        let key = Self.fundDescriptionAckStorageKey(userId: userId, fundId: fundId)
+        var map = loadFundDescriptionAckDigestMap()
+        map[key] = digest
+        UserDefaults.standard.set(map, forKey: FundDescriptionAckKeys.digestByUserFund)
     }
 
     func dismissAllFundDescriptionsForSession() {
         fundDescriptionDismissAllSession = true
+    }
+
+    private func loadFundDescriptionAckDigestMap() -> [String: String] {
+        UserDefaults.standard.dictionary(forKey: FundDescriptionAckKeys.digestByUserFund) as? [String: String] ?? [:]
+    }
+
+    private static func fundDescriptionAckStorageKey(userId: Int, fundId: Int) -> String {
+        "\(userId)|\(fundId)"
+    }
+
+    private static func normalizedFundDescriptionForAcknowledgment(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func sha256HexDigest(of string: String) -> String {
+        let digest = SHA256.hash(data: Data(string.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 
     func totalPercentValue(for dashboard: GlobalDashboardResponse) -> Double? {
@@ -1099,7 +1137,6 @@ final class AuthViewModel: ObservableObject {
         currentUser = nil
         selectedFundId = nil
         fundDescriptionDismissAllSession = false
-        fundDescriptionSeenFundIdsSession.removeAll()
         funds = []
         holdings = []
         trades = []

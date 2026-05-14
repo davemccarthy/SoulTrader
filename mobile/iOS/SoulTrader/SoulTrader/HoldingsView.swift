@@ -103,8 +103,8 @@ struct HoldingsView: View {
                         FundDescriptionSheetContent(
                             fundName: fund.name,
                             descriptionText: fund.description,
-                            onGotIt: {
-                                viewModel.markFundDescriptionSeenForSession(fund.id)
+                                onGotIt: {
+                                viewModel.markFundDescriptionAcknowledged(fundId: fund.id, description: fund.description)
                                 fundDescriptionSheetPresented = false
                             },
                             onDismissAll: {
@@ -145,12 +145,12 @@ struct HoldingsView: View {
         fund.description.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// First visit per fund: show description sheet once (Holdings only). Empty description skips.
+    /// Auto-open sheet when description is non-empty and digest differs from last "Got it" (per user + fund), unless session "Dismiss all".
     private func maybeAutoPresentFundDescription() {
         guard let fund = viewModel.selectedFund else { return }
         let text = trimmedFundDescription(fund)
         guard !text.isEmpty else { return }
-        guard viewModel.shouldAutoPresentFundDescription(for: fund.id) else { return }
+        guard viewModel.shouldAutoPresentFundDescription(for: fund.id, description: fund.description) else { return }
         fundDescriptionSheetPresented = true
     }
 
