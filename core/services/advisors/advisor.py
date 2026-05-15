@@ -1142,7 +1142,7 @@ Output a single JSON object only in this format:
 Respond with only a single valid JSON object, no other text.
 """
 
-        model, results = self.ask_gemini(prompt, use_search=False)
+        model, results = self.ask_llm(prompt)
         
         if not results:
             return None
