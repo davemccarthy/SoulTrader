@@ -1902,8 +1902,22 @@ class Edgar(AdvisorBase):
             recommendation_key = str(consensus.get("recommendation_key") or "")
 
             if upside_to_mean_pct < 0:
-                penalties.append("Above consensus mean (-0.2)")
-                score -= 0.2
+                penalties.append("Above consensus mean (-0.1)")
+                score -= 0.1
+
+            target_high = consensus.get("target_high")
+            current_price = consensus.get("current_price")
+            if target_high is not None and current_price is not None:
+                try:
+                    price = float(current_price)
+                    high = float(target_high)
+                    if price > 0 and high > 0:
+                        upside_to_high_pct = (high - price) / price * 100.0
+                        if upside_to_high_pct < 0:
+                            penalties.append("Above consensus high (-0.1)")
+                            score -= 0.1
+                except (TypeError, ValueError):
+                    pass
 
             if upside_to_low_pct > 0:
                 bonuses.append("Below consensus low (+0.1)")
