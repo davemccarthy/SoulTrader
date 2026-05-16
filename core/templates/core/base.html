@@ -2168,12 +2168,25 @@
                         const diffPercent = inst.current_price > 0 ? ((diff / inst.current_price) * 100) : 0;
                         extraInfo = ` (${diffPercent >= 0 ? '+' : ''}${diffPercent.toFixed(1)}% from current)`;
                     }
-                } else if (['TARGET_PRICE', 'TARGET_PERCENTAGE'].includes(inst.instruction) && inst.value != null) {
+                } else if (inst.instruction === 'TARGET_PRICE' && inst.value != null) {
                     valueDisplay = formatCurrency(inst.value);
                     if (inst.current_price != null) {
                         const upside = inst.value - inst.current_price;
                         const upsidePercent = inst.current_price > 0 ? ((upside / inst.current_price) * 100) : 0;
                         extraInfo = ` (+${upsidePercent.toFixed(1)}% upside)`;
+                    }
+                } else if (inst.instruction === 'TARGET_PERCENTAGE' && inst.value != null) {
+                    const targetPx = inst.target_price != null ? inst.target_price : null;
+                    valueDisplay = targetPx != null
+                        ? formatCurrency(targetPx)
+                        : `${inst.value}× avg`;
+                    if (inst.multiplier != null && targetPx != null) {
+                        extraInfo = ` (${inst.multiplier}× avg)`;
+                    }
+                    if (targetPx != null && inst.current_price != null) {
+                        const upside = targetPx - inst.current_price;
+                        const upsidePercent = inst.current_price > 0 ? ((upside / inst.current_price) * 100) : 0;
+                        extraInfo += ` (+${upsidePercent.toFixed(1)}% upside)`;
                     }
                 } else if (inst.instruction === 'AFTER_DAYS' && inst.value != null) {
                     valueDisplay = `${inst.value} days`;

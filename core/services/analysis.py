@@ -339,10 +339,25 @@ def analyze_holdings(sa, funds):
                                 execute_sell(sa, fund, holding, f"{holding.stock.symbol} fell to stop-loss of ${instruction.value1:.2f}")
                                 break
 
-                        elif instruction.instruction in ['TARGET_PRICE', 'TARGET_PERCENTAGE']:
+                        elif instruction.instruction == 'TARGET_PRICE':
                             if analyse_target(holding, instruction.value1, sentiment):
-                                execute_sell(sa, fund, holding, f"{holding.stock.symbol} reached target price of ${instruction.value1:.2f}")
+                                execute_sell(
+                                    sa, fund, holding,
+                                    f"{holding.stock.symbol} reached target price of ${instruction.value1:.2f}",
+                                )
                                 break
+
+                        elif instruction.instruction == 'TARGET_PERCENTAGE':
+                            avg = holding.average_price or discovery.price
+                            if instruction.value1 and avg:
+                                target_px = Decimal(str(instruction.value1)) * Decimal(str(avg))
+                                if analyse_target(holding, target_px, sentiment):
+                                    execute_sell(
+                                        sa, fund, holding,
+                                        f"{holding.stock.symbol} reached target "
+                                        f"${target_px:.2f} ({instruction.value1}× avg ${avg:.2f})",
+                                    )
+                                    break
 
                         elif instruction.instruction in ['TARGET_DIMINISHING', 'PERCENTAGE_DIMINISHING']:
                             # Calculate diminishing target: original_target → buy_price over max_days

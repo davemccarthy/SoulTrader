@@ -511,8 +511,17 @@ def holding_detail(request, stock_id):
                 if instruction.instruction in ['STOP_LOSS', 'STOP_PERCENTAGE', 'STOP_PRICE'] and instruction.value1:
                     instruction_data['status'] = 'active' if current_price <= instruction.value1 else 'pending'
                     instruction_data['current_price'] = float(current_price)
-                elif instruction.instruction in ['TARGET_PRICE', 'TARGET_PERCENTAGE'] and instruction.value1:
+                elif instruction.instruction == 'TARGET_PRICE' and instruction.value1:
                     instruction_data['status'] = 'active' if current_price >= instruction.value1 else 'pending'
+                    instruction_data['current_price'] = float(current_price)
+                elif instruction.instruction == 'TARGET_PERCENTAGE' and instruction.value1:
+                    basis = avg_price or discovery.price
+                    target_px = float(basis) * float(instruction.value1) if basis else None
+                    instruction_data['target_price'] = target_px
+                    instruction_data['multiplier'] = float(instruction.value1)
+                    instruction_data['status'] = (
+                        'active' if target_px is not None and float(current_price) >= target_px else 'pending'
+                    )
                     instruction_data['current_price'] = float(current_price)
                 elif instruction.instruction == 'AFTER_DAYS' and instruction.value1:
                     days_held = (timezone.now() - discovery.created).days
@@ -793,8 +802,17 @@ def holding_history(request, stock_id):
             if instruction.instruction in ['STOP_PRICE', 'STOP_PERCENTAGE'] and instruction.value1:
                 instruction_data['status'] = 'active' if current_price <= instruction.value1 else 'pending'
                 instruction_data['current_price'] = float(current_price)
-            elif instruction.instruction in ['TARGET_PRICE', 'TARGET_PERCENTAGE'] and instruction.value1:
+            elif instruction.instruction == 'TARGET_PRICE' and instruction.value1:
                 instruction_data['status'] = 'active' if current_price >= instruction.value1 else 'pending'
+                instruction_data['current_price'] = float(current_price)
+            elif instruction.instruction == 'TARGET_PERCENTAGE' and instruction.value1:
+                basis = avg_price or discovery_obj.price
+                target_px = float(basis) * float(instruction.value1) if basis else None
+                instruction_data['target_price'] = target_px
+                instruction_data['multiplier'] = float(instruction.value1)
+                instruction_data['status'] = (
+                    'active' if target_px is not None and float(current_price) >= target_px else 'pending'
+                )
                 instruction_data['current_price'] = float(current_price)
             elif instruction.instruction == 'AFTER_DAYS' and instruction.value1:
                 days_held = (timezone.now() - discovery_obj.created).days
