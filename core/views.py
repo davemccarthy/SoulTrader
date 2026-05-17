@@ -508,8 +508,18 @@ def holding_detail(request, stock_id):
                 }
                 
                 # Add status/context for each instruction type
-                if instruction.instruction in ['STOP_LOSS', 'STOP_PERCENTAGE', 'STOP_PRICE'] and instruction.value1:
+                if instruction.instruction in ['STOP_LOSS', 'STOP_PRICE'] and instruction.value1:
                     instruction_data['status'] = 'active' if current_price <= instruction.value1 else 'pending'
+                    instruction_data['current_price'] = float(current_price)
+                elif instruction.instruction == 'STOP_PERCENTAGE' and instruction.value1:
+                    basis = avg_price or discovery.price
+                    mult = float(instruction.value1)
+                    stop_px = (mult * float(basis)) if basis and mult <= 3 else float(instruction.value1)
+                    instruction_data['stop_price'] = stop_px
+                    instruction_data['multiplier'] = mult if mult <= 3 else None
+                    instruction_data['status'] = (
+                        'active' if float(current_price) <= stop_px else 'pending'
+                    )
                     instruction_data['current_price'] = float(current_price)
                 elif instruction.instruction == 'TARGET_PRICE' and instruction.value1:
                     instruction_data['status'] = 'active' if current_price >= instruction.value1 else 'pending'
@@ -799,8 +809,18 @@ def holding_history(request, stock_id):
             }
             
             # Add status/context for each instruction type
-            if instruction.instruction in ['STOP_PRICE', 'STOP_PERCENTAGE'] and instruction.value1:
+            if instruction.instruction == 'STOP_PRICE' and instruction.value1:
                 instruction_data['status'] = 'active' if current_price <= instruction.value1 else 'pending'
+                instruction_data['current_price'] = float(current_price)
+            elif instruction.instruction == 'STOP_PERCENTAGE' and instruction.value1:
+                basis = avg_price or discovery_obj.price
+                mult = float(instruction.value1)
+                stop_px = (mult * float(basis)) if basis and mult <= 3 else float(instruction.value1)
+                instruction_data['stop_price'] = stop_px
+                instruction_data['multiplier'] = mult if mult <= 3 else None
+                instruction_data['status'] = (
+                    'active' if float(current_price) <= stop_px else 'pending'
+                )
                 instruction_data['current_price'] = float(current_price)
             elif instruction.instruction == 'TARGET_PRICE' and instruction.value1:
                 instruction_data['status'] = 'active' if current_price >= instruction.value1 else 'pending'

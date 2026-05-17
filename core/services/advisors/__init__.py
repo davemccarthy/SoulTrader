@@ -23,6 +23,7 @@ _LAZY_MODULES = frozenset(
         "trash",
         "oscilla",
         "edgar",
+        "flux",
     }
 )
 

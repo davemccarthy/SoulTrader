@@ -334,10 +334,27 @@ def analyze_holdings(sa, funds):
                     buy_price = holding.average_price if holding.average_price else discovery.price
 
                     for instruction in instructions:
-                        if instruction.instruction in ['STOP_PRICE', 'STOP_PERCENTAGE']:
+                        if instruction.instruction == 'STOP_PRICE':
                             if instruction.value1 and holding.stock.price < instruction.value1:
                                 execute_sell(sa, fund, holding, f"{holding.stock.symbol} fell to stop-loss of ${instruction.value1:.2f}")
                                 break
+
+                        elif instruction.instruction == 'STOP_PERCENTAGE':
+                            avg = holding.average_price or discovery.price
+                            if instruction.value1 and avg:
+                                mult = Decimal(str(instruction.value1))
+                                # Legacy rows store dollar stop (price×mult at discovery); multipliers are ~0–2.
+                                if mult <= Decimal("3"):
+                                    stop_px = mult * Decimal(str(avg))
+                                else:
+                                    stop_px = mult
+                                if holding.stock.price < stop_px:
+                                    execute_sell(
+                                        sa, fund, holding,
+                                        f"{holding.stock.symbol} hit stop ${stop_px:.2f} "
+                                        f"({instruction.value1}× avg ${avg:.2f})",
+                                    )
+                                    break
 
                         elif instruction.instruction == 'TARGET_PRICE':
                             if analyse_target(holding, instruction.value1, sentiment):
@@ -411,25 +428,27 @@ def analyze_holdings(sa, funds):
                                     break
                             else:
                                 logger.warning(f"{instruction.instruction} invalid threshold (value1={instruction.value1}, buy_price={buy_price})")
-
                         elif instruction.instruction == 'PERCENTAGE_REBUY':
-                            # Rebuy on price drop (alternative to stop-loss)
-                            # value1 = drop percentage (e.g., 0.10 for 10% drop)
-                            # value2 = rebuy percentage of cost basis (e.g., 0.10 for 10% of cost basis)
-                            if instruction.value1 and instruction.value2 and holding.shares > 0:
+                            # value1 = drop fraction from average (e.g. 0.02 = 2%); add one fund tranche at current price.
+                            # value2 reserved for future max book (value2 × average_spend) — not enforced yet.
+                            if instruction.value1 and holding.shares > 0 and buy_price:
                                 drop_pct = Decimal(str(instruction.value1))
-                                rebuy_pct = Decimal(str(instruction.value2))
-                                cost_basis = Decimal(str(holding.average_price)) * Decimal(str(holding.shares))
-                                drop_threshold_price = Decimal(str(buy_price)) * (Decimal('1.0') - drop_pct)
-                                
-                                # Check if price has dropped by value1% from average_price
-                                if holding.stock.price <= drop_threshold_price:
-                                    rebuy_amount = cost_basis * rebuy_pct
-
-                                    # Force a REBUY
-                                    execute_buy(sa, fund, holding.stock, rebuy_amount, f"Rebuying {rebuy_pct*100:.0f}% after drop", True)
-                            else:
-                                logger.warning(f"PERCENTAGE_REBUY instruction {instruction.id} missing required fields (value1, value2, or shares)")
+                                drop_threshold = Decimal(str(buy_price)) * (Decimal("1.0") - drop_pct)
+                                if holding.stock.price <= drop_threshold:
+                                    rebuy_amount = fund.average_spend() * Decimal(str(sentiment))
+                                    execute_buy(
+                                        sa,
+                                        fund,
+                                        holding.stock,
+                                        rebuy_amount,
+                                        f"Rebuy ${rebuy_amount:.0f} after {drop_pct * 100:.0f}% drop vs avg",
+                                        True,
+                                    )
+                            elif instruction.value1 and holding.shares > 0:
+                                logger.warning(
+                                    "PERCENTAGE_REBUY instruction %s missing buy_price",
+                                    instruction.id,
+                                )
 
                         elif instruction.instruction == 'PROFIT_FLAT':
                             # Sell if price is flat (low volatility) and in profit
