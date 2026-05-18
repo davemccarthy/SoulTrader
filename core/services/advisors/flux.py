@@ -55,21 +55,6 @@ FLUX_REBUY_DROP = Decimal("0.02")
 FLUX_DISCOVERY_COOLDOWN_HOURS = 24
 
 
-def below_ma_up(closes: pd.Series, ma_period: int = ENTRY_MA_PERIOD) -> bool:
-    """True when latest close is below SMA(ma_period) and above prior close."""
-    if closes is None or len(closes) < ma_period + 1:
-        return False
-    series = closes.dropna()
-    if len(series) < ma_period + 1:
-        return False
-    ma = float(series.rolling(ma_period).mean().iloc[-1])
-    close = float(series.iloc[-1])
-    prev = float(series.iloc[-2])
-    if ma <= 0 or close <= 0:
-        return False
-    return close < ma and close > prev
-
-
 class Flux(AdvisorBase):
     """Fixed-universe Flux; discovers on below_ma_up entry."""
 
@@ -105,7 +90,7 @@ class Flux(AdvisorBase):
                 continue
 
             closes = hist["close"].astype(float)
-            if not below_ma_up(closes, ENTRY_MA_PERIOD):
+            if not self.below_ma_up(closes, ENTRY_MA_PERIOD):
                 continue
 
             ma = float(closes.rolling(ENTRY_MA_PERIOD).mean().iloc[-1])

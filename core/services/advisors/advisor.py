@@ -199,6 +199,11 @@ HEALTH_BAD_SECTOR_WEIGHT_LIST = (
     ("financial services", "insurance"),
 )
 
+# ROE notional valuation overlay on 0–100 buy_score (_get_buy_score).
+VALUATION_RATIO_TRUST_MAX = 5.0  # skip overlay if ratio outside [1/max, max]
+VALUATION_OVERLAY_POINTS_CAP = 15.0  # max +/- points from valuation overlay alone
+
+
 class AdvisorBase:
     # Class-level cache for Polygon stock list (shared across all advisor instances)
     _polygon_stocks_cache = None
@@ -221,6 +226,21 @@ class AdvisorBase:
         Convenience wrapper for normalized analyst consensus/target snapshot.
         """
         return financial_yahoo.get_consensus_snapshot(symbol)
+
+    @staticmethod
+    def below_ma_up(closes: pd.Series, ma_period: int = 20) -> bool:
+        """True when latest close is below SMA(ma_period) and above prior close."""
+        if closes is None or len(closes) < ma_period + 1:
+            return False
+        series = closes.dropna()
+        if len(series) < ma_period + 1:
+            return False
+        ma = float(series.rolling(ma_period).mean().iloc[-1])
+        close = float(series.iloc[-1])
+        prev = float(series.iloc[-2])
+        if ma <= 0 or close <= 0:
+            return False
+        return close < ma and close > prev
 
     def _advisor_blob_state(self) -> Dict[str, Any]:
         """Parse Advisor.blob as a dict; return empty dict on blank/invalid data."""
@@ -357,7 +377,16 @@ class AdvisorBase:
             if fair_value <= 0:
                 logger.warning("evaluate_stock %s: invalid fair value", ticker_symbol)
                 return 1.0
-            return float(current_price / fair_value)
+            ratio = float(current_price / fair_value)
+            trust_min = 1.0 / VALUATION_RATIO_TRUST_MAX
+            if ratio > VALUATION_RATIO_TRUST_MAX or ratio < trust_min:
+                logger.warning(
+                    "evaluate_stock %s: extreme ratio %.2f (neutral)",
+                    ticker_symbol,
+                    ratio,
+                )
+                return 1.0
+            return ratio
         except Exception as e:
             logger.warning("evaluate_stock %s: %s", ticker_symbol, e)
             return 1.0
@@ -970,19 +999,19 @@ class AdvisorBase:
                             overlay_reasons.append(f"bad sector/industry ({sector_sub}/{industry_sub}) -5")
                             break
 
-                # ROE price/fair vs 1.0 (evaluate_stock): Edgar-style distance from 1.0, scaled ×10
-                # on buy_score overlay (0–100) for both over- and undervalued.
+                # ROE price/fair vs 1.0 (evaluate_stock), scaled ×10 on buy_score overlay;
+                # extreme ratios are neutral in evaluate_stock(); applied delta is capped.
                 valuation_ratio = self.evaluate_stock(ticker_symbol=symbol, info=info_safe)
                 if valuation_ratio > 1.0:
                     over = valuation_ratio - 1.0
-                    adj_over = 10.0 * over
+                    adj_over = min(10.0 * over, VALUATION_OVERLAY_POINTS_CAP)
                     overlay_points -= adj_over
                     overlay_reasons.append(
                         f"Overvalued (ratio {valuation_ratio:.2f}, {-adj_over:+.2f})"
                     )
                 elif valuation_ratio < 1.0:
                     under = 1.0 - valuation_ratio
-                    adj_under = 10.0 * under
+                    adj_under = min(10.0 * under, VALUATION_OVERLAY_POINTS_CAP)
                     overlay_points += adj_under
                     overlay_reasons.append(
                         f"Undervalued (ratio {valuation_ratio:.2f}, {adj_under:+.2f})"
