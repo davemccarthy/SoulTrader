@@ -97,8 +97,8 @@ class Flux(AdvisorBase):
             ma = float(closes.rolling(ENTRY_MA_PERIOD).mean().iloc[-1])
             close = float(closes.iloc[-1])
             explanation = (
-                f"Flux below_ma_up | close ${close:.2f} < SMA{ENTRY_MA_PERIOD} ${ma:.2f}, "
-                f"up vs prior close"
+                f"Entering below the 20-day average on upturn | "
+                f"close ${close:.2f}, SMA{ENTRY_MA_PERIOD} ${ma:.2f}"
             )
 
             if self.discovered(
