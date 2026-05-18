@@ -23,6 +23,7 @@ from .serializers import (
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 
+from core.health_display import health_record_payload
 from core.models import Advisor, Discovery, Holding, Profile, PushDevice, Snapshot, Trade
 from core.portfolio_metrics import get_portfolio_dashboard_data
 
@@ -173,24 +174,10 @@ def get_holding_health_history(request, stock_id: int):
 
 def _health_record_payload(health):
     """JSON shape aligned with `HealthHistoryRecord` on iOS (holding health_history)."""
+    payload = health_record_payload(health)
     meta = health.meta or {}
-    overlay = meta.get('overlay') if isinstance(meta.get('overlay'), dict) else {}
-    return {
-        'id': health.id,
-        'score': float(health.score),
-        'created': health.created.isoformat() if health.created else None,
-        'meta': meta,
-        'confidence_score': meta.get('confidence_score'),
-        'health_score': meta.get('health_score'),
-        'valuation_score': meta.get('valuation_score'),
-        'piotroski': meta.get('piotroski'),
-        'altman_z': meta.get('altman_z'),
-        'gemini_weight': meta.get('gemini_weight'),
-        'gemini_rec': meta.get('gemini_recommendation'),
-        'gemini_explanation': meta.get('gemini_explanation'),
-        'overlay_points': overlay.get('points'),
-        'overlay_reasons': overlay.get('reasons') if isinstance(overlay.get('reasons'), list) else [],
-    }
+    payload['meta'] = meta
+    return payload
 
 
 def _advisor_logo_url(advisor):

@@ -22,6 +22,7 @@ from .fund_session import (
     set_current_fund,
     clear_fund_session,
 )
+from .health_display import format_health_score, health_record_template_context
 from .portfolio_metrics import get_portfolio_dashboard_data
 
 
@@ -1254,12 +1255,7 @@ def advisory_discoveries(request, advisor_id: int):
         pnl_pct = None
         if discovery_price and discovery_price > 0 and current_price is not None:
             pnl_pct = float((current_price - discovery_price) / discovery_price * 100)
-        if score is None:
-            score_display = "—"
-        elif abs(score) < 1e-9:
-            score_display = "AVOID"
-        else:
-            score_display = f"{score:.1f}"
+        score_display = format_health_score(score)
 
         discovery_rows.append({
             'id': discovery.id,
@@ -1276,6 +1272,7 @@ def advisory_discoveries(request, advisor_id: int):
             'explanation': discovery.explanation or '',
             'explanation_paragraphs': _discovery_paragraphs(discovery.explanation),
             'health_score_display': score_display,
+            'health': health_record_template_context(discovery.health) if discovery.health else None,
             'outcome': outcome,
         })
 

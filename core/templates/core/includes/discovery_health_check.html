@@ -1,0 +1,159 @@
+{% if health %}
+<div class="disc-health-section">
+    <div class="health-record disc-health-record">
+        <div class="health-record-header">
+            <h3 class="holdings-history-title">Health check</h3>
+            <div class="health-record-score">Score {{ health.score_display }}</div>
+        </div>
+        {% if health.created %}
+        <p class="disc-health-date">{{ health.created|date:"M j, Y, g:i a" }}</p>
+        {% endif %}
+
+        {% if health.render == "edgar" %}
+        <div class="health-record-meta health-record-meta-single">
+            <div class="health-meta-section">
+                <div class="health-meta-label">EDGAR Ex-99</div>
+                {% for label, text in health.justification_rows %}
+                <div class="health-meta-item holdings-history-text">
+                    <strong>{{ label }}:</strong> {{ text }}
+                </div>
+                {% empty %}
+                <div class="health-meta-item holdings-history-text">
+                    <span class="health-meta-value">No EX-99 justifications.</span>
+                </div>
+                {% endfor %}
+                {% for label, value in health.ex99_rows %}
+                <div class="health-meta-item holdings-history-text">
+                    <span class="health-meta-key">{{ label }}:</span>
+                    <span class="health-meta-value">{{ value }}</span>
+                </div>
+                {% endfor %}
+            </div>
+
+            {% if health.media_has_content %}
+            <div class="health-meta-section health-meta-divider">
+                <div class="health-meta-label">EDGAR Media</div>
+                {% if health.media.summary %}
+                <div class="health-meta-item holdings-history-text">{{ health.media.summary }}</div>
+                {% endif %}
+                {% for label, value in health.media_rows %}
+                <div class="health-meta-item holdings-history-text">
+                    <span class="health-meta-key">{{ label }}:</span>
+                    <span class="health-meta-value">{{ value }}</span>
+                </div>
+                {% endfor %}
+                {% for list_title, items in health.media_lists %}
+                <div class="health-meta-item holdings-history-text">
+                    <span class="health-meta-key">{{ list_title }}:</span>
+                    <ul class="health-overlay-list">
+                        {% for item in items %}
+                        <li>{{ item }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            <div class="health-meta-section">
+                {% if health.bonuses %}
+                <div class="health-meta-item holdings-history-text">
+                    <span class="health-meta-key">Bonuses:</span>
+                    <ul class="health-overlay-list">
+                        {% for item in health.bonuses|slice:":6" %}
+                        <li>{{ item }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+                {% if health.penalties %}
+                <div class="health-meta-item holdings-history-text">
+                    <span class="health-meta-key">Penalties:</span>
+                    <ul class="health-overlay-list">
+                        {% for item in health.penalties|slice:":6" %}
+                        <li>{{ item }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+                {% if not health.bonuses and not health.penalties %}
+                <div class="health-meta-item holdings-history-text">
+                    <span class="health-meta-value">No bonuses or penalties.</span>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        {% else %}
+        <div class="disc-health-metrics">
+            {% if health.confidence_score is not None %}
+            <div class="disc-health-metric">
+                <span class="disc-health-metric-label">Confidence</span>
+                <span class="disc-health-metric-value">{{ health.confidence_score }}</span>
+            </div>
+            {% endif %}
+            {% if health.health_score is not None %}
+            <div class="disc-health-metric">
+                <span class="disc-health-metric-label">Health</span>
+                <span class="disc-health-metric-value">{{ health.health_score }}</span>
+            </div>
+            {% endif %}
+            {% if health.valuation_score is not None %}
+            <div class="disc-health-metric">
+                <span class="disc-health-metric-label">Valuation</span>
+                <span class="disc-health-metric-value">{{ health.valuation_score }}</span>
+            </div>
+            {% endif %}
+            {% if health.piotroski_display %}
+            <div class="disc-health-metric">
+                <span class="disc-health-metric-label">Piotroski</span>
+                <span class="disc-health-metric-value">{{ health.piotroski_display }}</span>
+            </div>
+            {% endif %}
+            {% if health.altman_z is not None %}
+            <div class="disc-health-metric">
+                <span class="disc-health-metric-label">Altman Z</span>
+                <span class="disc-health-metric-value">{{ health.altman_z }}</span>
+            </div>
+            {% endif %}
+            {% if health.overlay_points_label or health.overlay_reasons %}
+            <div class="disc-health-metric">
+                <span class="disc-health-metric-label">Overlay</span>
+                <span class="disc-health-metric-value">{{ health.overlay_points_label|default:"—" }}</span>
+            </div>
+            {% if health.overlay_reasons %}
+            <ul class="health-overlay-list disc-health-overlay-list">
+                {% for reason in health.overlay_reasons %}
+                <li>{{ reason }}</li>
+                {% endfor %}
+            </ul>
+            {% endif %}
+            {% endif %}
+        </div>
+        {% endif %}
+
+        {% if health.has_gemini %}
+        <div class="disc-health-gemini">
+            {% if health.gemini_weight is not None %}
+            <div class="disc-health-metric">
+                <span class="disc-health-metric-label">Weight</span>
+                <span class="disc-health-metric-value">{{ health.gemini_weight }}</span>
+            </div>
+            {% endif %}
+            {% if health.gemini_rec %}
+            <div class="disc-health-metric">
+                <span class="disc-health-metric-label">Recommendation</span>
+                <span class="disc-health-metric-value">{{ health.gemini_rec }}</span>
+            </div>
+            {% endif %}
+            {% if health.gemini_explanation %}
+            <p class="disc-health-gemini-text">{{ health.gemini_explanation }}</p>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% else %}
+<div class="disc-health-section disc-health-section-empty">
+    <p>No health check recorded for this discovery.</p>
+</div>
+{% endif %}

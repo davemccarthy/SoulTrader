@@ -224,9 +224,47 @@
         .disc-value.outcome-disaster { color: #dc2626; }
         .disc-value.outcome-too-early,
         .disc-value.outcome-unknown { color: #64748b; }
+        .disc-details {
+            margin-top: 0.75rem;
+        }
+        .disc-details-summary {
+            list-style: none;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            font-size: 0.82rem;
+            font-weight: 600;
+            color: #00843D;
+            user-select: none;
+        }
+        .disc-details-summary::-webkit-details-marker {
+            display: none;
+        }
+        .disc-details-summary::marker {
+            content: "";
+        }
+        .disc-details-caret {
+            display: inline-block;
+            width: 0;
+            height: 0;
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-top: 5px solid currentColor;
+            transition: transform 0.15s ease;
+        }
+        .disc-details[open] .disc-details-caret {
+            transform: rotate(180deg);
+        }
+        .disc-detail-frame {
+            margin-top: 0.65rem;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            background: #fff;
+            padding: 0.85rem 0.95rem;
+        }
         .disc-detail-copy {
-            border-top: 1px solid #eef2f7;
-            padding-top: 0.75rem;
+            padding-top: 0;
         }
         .disc-detail-copy p {
             margin: 0 0 0.55rem 0;
@@ -249,6 +287,78 @@
             color: #00843D;
             text-decoration: underline;
             text-underline-offset: 0.12em;
+        }
+        .disc-health-section {
+            margin-top: 0.75rem;
+            padding-top: 0;
+        }
+        .disc-detail-frame .disc-health-section {
+            margin-top: 0.85rem;
+        }
+        .disc-health-section-empty p {
+            margin: 0;
+            color: #64748b;
+            font-size: 0.85rem;
+            line-height: 1.35;
+        }
+        .disc-detail-frame .disc-health-record {
+            margin-bottom: 0;
+            padding: 0;
+            border: none;
+            background: transparent;
+            box-shadow: none;
+        }
+        .disc-health-record .holdings-history-title {
+            font-size: 0.9rem;
+            margin: 0;
+        }
+        .disc-health-record .health-record-header {
+            margin-bottom: 0.35rem;
+        }
+        .disc-health-date {
+            margin: 0 0 0.65rem 0;
+            color: #64748b;
+            font-size: 0.82rem;
+            font-weight: 400;
+            line-height: 1.3;
+        }
+        .disc-health-metrics,
+        .disc-health-gemini {
+            display: grid;
+            gap: 0.35rem;
+        }
+        .disc-health-gemini {
+            margin-top: 0.55rem;
+            padding-top: 0.55rem;
+            border-top: 1px solid #eef2f7;
+        }
+        .disc-health-metric {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 0.75rem;
+            font-size: 0.86rem;
+            line-height: 1.35;
+        }
+        .disc-health-metric-label {
+            color: #64748b;
+            font-weight: 600;
+        }
+        .disc-health-metric-value {
+            color: #0f172a;
+            font-weight: 600;
+            text-align: right;
+        }
+        .disc-health-overlay-list {
+            margin: 0.15rem 0 0 0;
+            padding-left: 1.1rem;
+        }
+        .disc-health-gemini-text {
+            margin: 0.35rem 0 0 0;
+            color: #334155;
+            font-size: 0.86rem;
+            line-height: 1.4;
+            white-space: pre-line;
         }
         .disc-outcome-reason {
             border-top: 1px solid #eef2f7;
@@ -334,15 +444,24 @@
                 </div>
             </div>
 
-            <div class="disc-detail-copy">
-                {% if row.explanation_paragraphs %}
-                    {% for paragraph in row.explanation_paragraphs %}
-                <p>{% if paragraph.kind == 'link' %}<a href="{{ paragraph.url }}" target="_blank" rel="noopener noreferrer">{{ paragraph.label }}</a>{% else %}{{ paragraph.text }}{% endif %}</p>
-                    {% endfor %}
-                {% else %}
-                <p style="color: #64748b; font-size: 0.85rem;">No explanation available for this discovery.</p>
-                {% endif %}
-            </div>
+            <details class="disc-details">
+                <summary class="disc-details-summary">
+                    <span class="disc-details-caret" aria-hidden="true"></span>
+                    Details
+                </summary>
+                <div class="disc-detail-frame">
+                    <div class="disc-detail-copy">
+                        {% if row.explanation_paragraphs %}
+                            {% for paragraph in row.explanation_paragraphs %}
+                        <p>{% if paragraph.kind == 'link' %}<a href="{{ paragraph.url }}" target="_blank" rel="noopener noreferrer">{{ paragraph.label }}</a>{% else %}{{ paragraph.text }}{% endif %}</p>
+                            {% endfor %}
+                        {% else %}
+                        <p style="color: #64748b; font-size: 0.85rem;">No explanation available for this discovery.</p>
+                        {% endif %}
+                    </div>
+                    {% include 'core/includes/discovery_health_check.html' with health=row.health %}
+                </div>
+            </details>
             {% if row.outcome.reason_text %}
             <div class="disc-outcome-reason">
                 <p><strong>Outcome rationale:</strong> {{ row.outcome.reason_text }}</p>
