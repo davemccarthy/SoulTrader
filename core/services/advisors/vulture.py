@@ -232,12 +232,14 @@ class Vulture(AdvisorBase):
                     ("TARGET_PRICE", prev_close, None),
                     ("END_DAY", END_DAY_WINNER_MULTIPLIER, None),
                     ("AFTER_DAYS", MAX_HOLD_DAYS, None),
+                    ("STOP_PERCENTAGE", 0.98, None),
                 ]
             else:
                 sell_instructions = [
                     ("TARGET_PERCENTAGE", TARGET_PROFIT_MULTIPLIER, None),
                     ("END_DAY", END_DAY_WINNER_MULTIPLIER, None),
                     ("AFTER_DAYS", MAX_HOLD_DAYS, None),
+                    ("STOP_PERCENTAGE", 0.98, None),
                 ]
 
             self.discovered(
