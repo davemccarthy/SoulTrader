@@ -353,40 +353,19 @@ class AdvisorBase:
         If no usable EPS/ROE or on error, logs a warning and returns 1.0 (neutral).
         If info is provided, uses it instead of fetching yf.Ticker(ticker_symbol).info.
         """
+        from core.services.health.roe_fair_value import compute_roe_fair_value
+
         try:
-            if info is None:
-                ticker = yf.Ticker(ticker_symbol)
-                info = ticker.info or {}
-            eps = info.get("trailingEps")
-            roe = info.get("returnOnEquity")
-            payout = info.get("payoutRatio")
-            current_price = info.get("currentPrice") or info.get("regularMarketPrice")
-            if eps is None or eps <= 0 or roe is None or roe <= 0:
-                logger.warning("evaluate_stock %s: no usable EPS/ROE", ticker_symbol)
-                return 1.0
-            if current_price is None or current_price <= 0:
-                logger.warning("evaluate_stock %s: no usable price", ticker_symbol)
-                return 1.0
-            payout = 0 if payout is None or payout < 0 else min(max(payout, 0), 0.9)
-            adjusted_roe = min(roe, max_roe)
-            g = adjusted_roe * (1 - payout)
-            g = min(g, max_growth)
-            denominator = max(required_return - g, 0.01)
-            justified_pe = (adjusted_roe * (1 - payout)) / denominator
-            fair_value = eps * justified_pe
-            if fair_value <= 0:
-                logger.warning("evaluate_stock %s: invalid fair value", ticker_symbol)
-                return 1.0
-            ratio = float(current_price / fair_value)
-            trust_min = 1.0 / VALUATION_RATIO_TRUST_MAX
-            if ratio > VALUATION_RATIO_TRUST_MAX or ratio < trust_min:
-                logger.warning(
-                    "evaluate_stock %s: extreme ratio %.2f (neutral)",
-                    ticker_symbol,
-                    ratio,
-                )
-                return 1.0
-            return ratio
+            result = compute_roe_fair_value(
+                ticker_symbol,
+                info=info,
+                required_return=required_return,
+                max_growth=max_growth,
+                max_roe=max_roe,
+            )
+            if result.neutral_fallback and result.reason:
+                logger.warning("evaluate_stock %s: %s", ticker_symbol, result.reason)
+            return result.ratio
         except Exception as e:
             logger.warning("evaluate_stock %s: %s", ticker_symbol, e)
             return 1.0
