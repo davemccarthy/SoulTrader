@@ -517,8 +517,9 @@ class AdvisorBase:
         discovery = Discovery()
         discovery.sa = sa
         discovery.stock = stock
-        discovery.price = stock.price  # NEW: Capture price at discovery time
+        discovery.price = stock.price
         discovery.advisor = self.advisor
+        discovery.assessment = self.assess_stock(sa, stock)
         discovery.health = health
         discovery.explanation = explanation
         discovery.weight = weight
@@ -655,6 +656,51 @@ class AdvisorBase:
             where=["created + (days || ' days')::interval >= %s"],
             params=[now],
         ).exists()
+
+    def assess_stock(self, sa, stock):
+        """
+        Health v2: run six component scorers and persist an Assessment row.
+
+        Args:
+            sa: SmartAnalysis session (reserved for future use / logging)
+            stock: Stock model instance with symbol populated
+
+        Returns:
+            Assessment or None if all components failed
+        """
+        logger.info(
+            "Starting assess_stock for %s (sa=%s)",
+            stock.symbol,
+            getattr(sa, "id", None),
+        )
+        try:
+            from core.services.health.assess import create_assessment_for_stock
+
+            assessment = create_assessment_for_stock(stock)
+            if assessment:
+                logger.info(
+                    "Assessment created for %s: score=%s "
+                    "(financial=%s valuation=%s intrinsic=%s price=%s consensus=%s sector=%s)",
+                    stock.symbol,
+                    assessment.score,
+                    assessment.financial,
+                    assessment.valuation,
+                    assessment.intrinsic,
+                    assessment.price,
+                    assessment.consensus,
+                    assessment.sector,
+                )
+            else:
+                logger.warning("assess_stock returned no assessment for %s", stock.symbol)
+            return assessment
+        except Exception as e:
+            logger.error(
+                "assess_stock failed for %s: %s",
+                stock.symbol,
+                e,
+                exc_info=True,
+            )
+            return None
 
     def health_check(self, stock, sa):
         """

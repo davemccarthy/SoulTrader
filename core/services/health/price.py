@@ -1,5 +1,5 @@
 """
-Price position component (10% of final buy score in v2 model).
+Price position component (20% of final buy score in v2 model).
 
 Where the current price sits in the 52-week range (and optional 2-week high check).
 Lower in range → higher score for buy timing.
@@ -14,7 +14,7 @@ import yfinance as yf
 
 from core.services.health._util import safe_div, score_range_percentile
 
-COMPONENT_WEIGHT = 0.10
+COMPONENT_WEIGHT = 0.20
 
 METRIC_WEIGHTS = {
     "range_52w": 0.85,

@@ -1,8 +1,7 @@
 """
 Intrinsic valuation component (ROE fair-value model; AdvisorBase.evaluate_stock).
 
-Scores price vs model fair value. Temporary weight 10% in v2 combine (sector
-valuation remains separate at 25%).
+Scores price vs model fair value (15% of final model when combined).
 """
 
 from __future__ import annotations
@@ -13,7 +12,7 @@ from typing import Any, Dict, List, Optional
 from core.services.health._util import score_relative_multiple
 from core.services.health.roe_fair_value import compute_roe_fair_value
 
-COMPONENT_WEIGHT = 0.10
+COMPONENT_WEIGHT = 0.15
 NEUTRAL_FALLBACK_SCORE = 50.0
 
 

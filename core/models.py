@@ -22,6 +22,7 @@ from django.contrib.postgres.fields import ArrayField
 from django.utils import timezone
 from datetime import timedelta, datetime as dt_class, date as date_class, time as time_class
 from decimal import Decimal
+from typing import Optional
 
 import yfinance as yf
 import logging
@@ -585,6 +586,36 @@ class Health(models.Model):
         return f"{self.stock.symbol} - Health: {self.score}"
 
 
+class Assessment(models.Model):
+    """Health v2 snapshot: six component scores and composite (0–100)."""
+
+    stock = models.ForeignKey(Stock, on_delete=models.CASCADE, related_name='assessments')
+    created = models.DateTimeField(auto_now_add=True)
+
+    financial = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    valuation = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    intrinsic = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    price = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    consensus = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    sector = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+
+    score = models.DecimalField(
+        max_digits=5,
+        decimal_places=1,
+        null=True,
+        blank=True,
+        help_text="Weighted v2 composite (0–100) from component scores.",
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['stock', '-created']),
+        ]
+
+    def __str__(self):
+        return f"{self.stock.symbol} — assessment @ {self.created}"
+
+
 # Smart analysis session
 class SmartAnalysis(models.Model):
     started = models.DateTimeField(auto_now_add=True)
@@ -599,6 +630,7 @@ class Discovery(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     advisor = models.ForeignKey(Advisor, on_delete=models.DO_NOTHING)
     health = models.ForeignKey(Health, null=True, blank=True, on_delete=models.SET_NULL)
+    assessment = models.ForeignKey(Assessment, null=True, blank=True, on_delete=models.SET_NULL)
     created = models.DateTimeField(auto_now_add=True)
     weight = models.DecimalField(max_digits=5, decimal_places=2, default=1.0)
     explanation = models.TextField()

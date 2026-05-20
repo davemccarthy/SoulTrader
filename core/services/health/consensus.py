@@ -1,5 +1,5 @@
 """
-Analyst consensus component (10% of final buy score in v2 model).
+Analyst consensus component (15% of final buy score in v2 model).
 
 Street rating + target upside from yfinance (no LLM). Uses financial.yahoo.get_consensus_snapshot.
 """
@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 from core.services.financial.yahoo import get_consensus_snapshot
 from core.services.health._util import linear_map
 
-COMPONENT_WEIGHT = 0.10
+COMPONENT_WEIGHT = 0.15
 NEUTRAL_FALLBACK_SCORE = 50.0
 MIN_ANALYST_COUNT = 3
 

@@ -31,20 +31,19 @@ from core.services.health.valuation import score_valuation_health
 
 COMPONENTS = ("financial", "valuation", "intrinsic", "price", "consensus", "sector")
 
-# Order and planned final-model weights (LLM qualitative 20% not implemented yet).
-_COMPONENT_SPECS: List[Tuple[str, str, float, Callable[[str], Any]]] = [
-    ("financial", "Financial health", 0.25, score_financial_health),
-    ("valuation", "Valuation", 0.25, score_valuation_health),
-    ("intrinsic", "Intrinsic valuation", 0.10, score_intrinsic_health),
-    ("price", "Price position", 0.10, score_price_health),
-    ("consensus", "Analyst consensus", 0.10, score_consensus_health),
+# Final-model weights (100%; LLM lives in advisors, not health composite).
+_COMPONENT_SPECS: List[Tuple[str, str, float, Callable[..., Any]]] = [
+    ("financial", "Financial health", 0.20, score_financial_health),
+    ("valuation", "Valuation", 0.20, score_valuation_health),
+    ("intrinsic", "Intrinsic valuation", 0.15, score_intrinsic_health),
+    ("price", "Price position", 0.20, score_price_health),
+    ("consensus", "Analyst consensus", 0.15, score_consensus_health),
     ("sector", "Sector / industry", 0.10, score_sector_health),
 ]
 
-_SCORERS: Dict[str, tuple[str, Callable[[str], Any]]] = {
+_SCORERS: Dict[str, tuple[str, Callable[..., Any]]] = {
     key: (title, fn) for key, title, _wt, fn in _COMPONENT_SPECS
 }
-
 
 def _run_all_components(symbol: str) -> List[Tuple[str, str, float, Any]]:
     """Return (key, title, weight, result) for each component."""
@@ -89,7 +88,7 @@ def _print_summary(symbol: str, rows: List[Tuple[str, str, float, Any]]) -> None
     if preview is not None:
         note = ""
         if weight_sum < 0.99:
-            note = f"  (preview over {weight_sum * 100:.0f}% of model; LLM 20% not included)"
+            note = f"  (preview over {weight_sum * 100:.0f}% of model; some components missing)"
         print(f"  {'Weighted preview':<26} {'':>5}  {preview:>8}{note}")
     else:
         print("  Weighted preview: unavailable (all components failed)")
@@ -172,7 +171,7 @@ def main() -> None:
     )
     parser.add_argument(
         "symbols",
-        nargs="+",
+        nargs="*",
         help="Ticker symbol(s), e.g. AAPL MSFT",
     )
     parser.add_argument(
@@ -198,6 +197,9 @@ def main() -> None:
         help="Print rating band reference table and exit",
     )
     args = parser.parse_args()
+
+    if not args.symbols and not args.ratings_table:
+        parser.error("the following arguments are required: symbols (or use --ratings-table)")
 
     if args.ratings_table:
         print("Health v2 rating bands:")

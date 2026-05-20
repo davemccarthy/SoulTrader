@@ -1,5 +1,11 @@
-"""Multi-factor health scoring (v2). Built component-by-component; not wired to discovery yet."""
+"""Multi-factor health scoring (v2)."""
 
+from core.services.health.assess import (
+    composite_from_scores,
+    create_assessment_for_stock,
+    discovery_adjusted_score,
+    run_component_scores,
+)
 from core.services.health.consensus import score_consensus_health
 from core.services.health.ratings import HealthRating, score_to_rating
 from core.services.health.financial import score_financial_health
@@ -10,6 +16,10 @@ from core.services.health.valuation import score_valuation_health
 
 __all__ = [
     "HealthRating",
+    "composite_from_scores",
+    "discovery_adjusted_score",
+    "create_assessment_for_stock",
+    "run_component_scores",
     "score_consensus_health",
     "score_to_rating",
     "score_financial_health",

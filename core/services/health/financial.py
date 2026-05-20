@@ -1,5 +1,5 @@
 """
-Financial health component (25% of final buy score in v2 model).
+Financial health component (20% of final buy score in v2 model).
 
 Measures business quality independent of share price.
 Data: yfinance statements + info (no LLM).
@@ -24,7 +24,7 @@ METRIC_WEIGHTS = {
     "return_on_equity": 0.10,
 }
 
-COMPONENT_WEIGHT = 0.25  # share of final buy score when all components exist
+COMPONENT_WEIGHT = 0.20  # share of final buy score when all components exist
 
 
 @dataclass

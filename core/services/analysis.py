@@ -601,7 +601,9 @@ def analyze_discovery(sa, funds, advisors):
                 continue
 
         # 3. Get filtered discoveries
-        filtered_discoveries = list(discoveries_qs.select_related('advisor', 'stock'))
+        filtered_discoveries = list(
+            discoveries_qs.select_related('advisor', 'stock', 'assessment')
+        )
         
         if not filtered_discoveries:
             continue
@@ -622,19 +624,31 @@ def analyze_discovery(sa, funds, advisors):
         base_allowance = fund.average_spend()
 
         # 4. Iterate through unique discoveries and calculate allowance per discovery
+        from core.services.health.assess import discovery_adjusted_score
+
         for discovery in unique_discoveries:
-            # Get health for this discovery
+            # v2 assessment (grading); adjusted score uses discovery.weight at analysis time
+            assessment = discovery.assessment
+            v2_score = assessment.score if assessment else None
+            v2_adjusted = discovery_adjusted_score(discovery)
+
+            # Get health for this discovery (v1 gate until retired)
             health = discovery.health
-            min_score = fund.min_score()
-            health_score = health.score
-
-            # Factor in sentiment
-            health_score *= Decimal(str(sentiment))
-
-            if health and health_score < min_score:
+            if not health:
                 logger.info(
                     f"User {fund.name}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "
-                    f"health check score ({health_score}) below threshold ({min_score})"
+                    f"skipped (no v1 health) v2_score={v2_score} v2_adjusted={v2_adjusted}"
+                )
+                continue
+
+            min_score = fund.min_score()
+            health_score = health.score * Decimal(str(sentiment))
+
+            if health_score < min_score:
+                logger.info(
+                    f"User {fund.name}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "
+                    f"health check score ({health_score}) below threshold ({min_score}) "
+                    f"v2_score={v2_score} v2_adjusted={v2_adjusted} discovery_weight={discovery.weight}"
                 )
                 continue
 
@@ -644,17 +658,15 @@ def analyze_discovery(sa, funds, advisors):
             combined_weight = advisor_weight * discovery_weight
 
             # Calculate allowance with weighting
-            if combined_weight > Decimal('1.0'):
-                allowance = base_allowance * combined_weight
-            else:
-                allowance = base_allowance * combined_weight
+            allowance = base_allowance * combined_weight
 
             # Factor in sentiment
             allowance *= sentiment
 
             logger.info(
                 f"User {fund.name}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "
-                f"(Weight={combined_weight:.3f} allowance=${allowance:.2f})"
+                f"(Weight={combined_weight:.3f} allowance=${allowance:.2f} "
+                f"v2_score={v2_score} v2_adjusted={v2_adjusted})"
             )
 
             # Extract first clause from discovery explanation as summary

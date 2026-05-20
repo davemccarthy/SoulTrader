@@ -1,5 +1,5 @@
 """
-Valuation component (25% of final buy score in v2 model).
+Valuation component (20% of final buy score in v2 model).
 
 Scores how expensive the stock is vs sector norms and absolute PEG.
 Lower relative multiples → higher score. No LLM.
@@ -22,7 +22,7 @@ METRIC_WEIGHTS = {
     "price_sales_vs_sector": 0.15,
 }
 
-COMPONENT_WEIGHT = 0.25
+COMPONENT_WEIGHT = 0.20
 
 
 @dataclass
