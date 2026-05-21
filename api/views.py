@@ -23,6 +23,7 @@ from .serializers import (
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 
+from core.discovery_scoring import discovery_scoring_context
 from core.health_display import health_record_payload
 from core.models import Advisor, Discovery, Holding, Profile, PushDevice, Snapshot, Trade
 from core.portfolio_metrics import get_portfolio_dashboard_data
@@ -503,12 +504,13 @@ def get_advisor_discoveries(request, advisor_id: int):
     cutoff = timezone.now() - timedelta(days=days)
     discoveries = (
         Discovery.objects.filter(advisor_id=advisor_id, created__gte=cutoff)
-        .select_related('stock', 'health')
+        .select_related('stock', 'health', 'assessment')
         .order_by('-id')[:250]
     )
     out = []
     for d in discoveries:
         stock = d.stock
+        scoring = discovery_scoring_context(d, for_api=True)
         out.append({
             'id': d.id,
             'stock': {
@@ -517,7 +519,8 @@ def get_advisor_discoveries(request, advisor_id: int):
                 'price': str(stock.price),
             },
             'explanation_line': _discovery_comment(d.explanation) or '',
-            'health_score': float(d.health.score) if d.health else None,
+            'health_score': scoring.get('composite_score'),
+            'scoring': scoring,
         })
     return Response({'advisor_id': advisor_id, 'days': days, 'discoveries': out})
 
@@ -530,11 +533,12 @@ def get_discovery_detail(request, discovery_id: int):
     GET /api/discoveries/<id>/
     """
     d = get_object_or_404(
-        Discovery.objects.select_related('stock', 'advisor', 'health'),
+        Discovery.objects.select_related('stock', 'advisor', 'health', 'assessment'),
         pk=discovery_id,
     )
     stock = d.stock
-    health_payload = _health_record_payload(d.health) if d.health else None
+    scoring = discovery_scoring_context(d, for_api=True)
+    health_payload = scoring.get('health_v1')
 
     return Response({
         'id': d.id,
@@ -555,6 +559,7 @@ def get_discovery_detail(request, discovery_id: int):
             'logo_url': _advisor_logo_absolute_url(request, d.advisor) if d.advisor else None,
         },
         'health': health_payload,
+        'scoring': scoring,
     })
 
 

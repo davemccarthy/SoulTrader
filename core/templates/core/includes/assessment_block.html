@@ -1,0 +1,102 @@
+{% comment %}
+Reusable Assessment panel (v2). Pass scoring from discovery_scoring_context(discovery).
+
+Usage:
+  {% include 'core/includes/assessment_block.html' with scoring=scoring %}
+{% endcomment %}
+{% if scoring and scoring.source == "v2" %}
+<div class="assess-block holdings-history-panel">
+    <div class="health-record-header">
+        <h3 class="holdings-history-title">Assessment</h3>
+        <div class="health-record-score assess-block-score">
+            {% if scoring.adjusted_score is not None %}{{ scoring.adjusted_score|floatformat:1 }}{% elif scoring.composite_score is not None %}{{ scoring.composite_score|floatformat:1 }}{% else %}—{% endif %}
+        </div>
+    </div>
+    {% if scoring.summary %}
+    <table class="assess-block-table assess-block-summary-table">
+        <thead>
+            <tr>
+                <th>Summary</th>
+                <th>Results</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Score</td>
+                <td>{% if scoring.summary.assessment_score is not None %}{{ scoring.summary.assessment_score|floatformat:1 }}{% else %}—{% endif %}</td>
+            </tr>
+            <tr>
+                <td>Weight</td>
+                <td>{{ scoring.summary.discovery_weight_display }}</td>
+            </tr>
+            <tr>
+                <td>Grade</td>
+                <td>{% if scoring.summary.grade %}{{ scoring.summary.grade.letter }}{% else %}—{% endif %}</td>
+            </tr>
+            {% if scoring.summary.adjusted_grade %}
+            <tr>
+                <td>Adjusted</td>
+                <td>{{ scoring.summary.adjusted_grade.letter }}</td>
+            </tr>
+            {% endif %}
+        </tbody>
+    </table>
+    {% endif %}
+    <table class="assess-block-table assess-block-components-table">
+        <thead>
+            <tr>
+                <th>Details</th>
+                <th>Wt</th>
+                <th>Results</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for comp in scoring.components %}
+            <tr>
+                <td>{{ comp.label }}</td>
+                <td>{{ comp.weight_percent }}%</td>
+                <td>{% if comp.score is not None %}{{ comp.score|floatformat:1 }}{% else %}—{% endif %}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+<style>
+    .assess-block .health-record-header {
+        margin-bottom: 0;
+    }
+    .assess-block-score {
+        font-size: 0.95rem;
+        font-weight: 600;
+    }
+    .assess-block-table {
+        width: 100%;
+        font-size: 0.85rem;
+        border-collapse: collapse;
+    }
+    .assess-block-summary-table {
+        margin-top: 0.75rem;
+    }
+    .assess-block-components-table {
+        margin-top: 0.65rem;
+        padding-top: 0.65rem;
+        border-top: 1px solid #eef2f7;
+    }
+    .assess-block-table th,
+    .assess-block-table td {
+        padding: 0.25rem 0;
+    }
+    .assess-block-table th:first-child,
+    .assess-block-table td:first-child {
+        text-align: left;
+    }
+    .assess-block-table th:last-child,
+    .assess-block-table td:last-child {
+        text-align: right;
+    }
+    .assess-block-components-table th:nth-child(2),
+    .assess-block-components-table td:nth-child(2) {
+        text-align: right;
+    }
+</style>
+{% endif %}

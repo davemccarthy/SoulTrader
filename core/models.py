@@ -42,12 +42,12 @@ class Profile(models.Model):
         "MICRO": 10
     }
 
-    # Risky business
+    # Minimum v2 grade letter per profile; min_score() maps via ratings.RATING_BANDS.
     RISK = {
-        "CONSERVATIVE": 40,
-        "MODERATE": 30,
-        "AGGRESSIVE": 20,
-        "RECKLESS": 10
+        "CONSERVATIVE": "B",
+        "MODERATE": "C",
+        "AGGRESSIVE": "D",
+        "RECKLESS": "F",
     }
 
     # But / sell sentiment
@@ -76,9 +76,15 @@ class Profile(models.Model):
         num_stocks = Decimal(Profile.SPREAD[self.spread])
         return self.investment / num_stocks
 
+    def min_grade(self) -> str:
+        """Minimum allowed v2 letter grade for this profile."""
+        return Profile.RISK[self.risk]
+
     def min_score(self):
-        min_score = Decimal(Profile.RISK[self.risk])
-        return min_score
+        """Minimum v2 composite (0–100) for profile min grade."""
+        from core.services.health.ratings import min_composite_for_letter
+
+        return Decimal(str(min_composite_for_letter(self.min_grade())))
 
 
 # External advisor services (pairs with python class)

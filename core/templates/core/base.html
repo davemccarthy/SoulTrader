@@ -2257,6 +2257,7 @@
                 priceHistory
             );
             const discoverySection = renderDiscoverySection(data.discovery);
+            const assessmentSection = data.assessment_html || '';
             const healthHistorySection = renderHealthHistorySection(data.health_history || []);
             const tradeHistorySection = renderTradeHistorySection(data.trades || []);
             const sellInstructionsSection = renderSellInstructionsSection(
@@ -2267,6 +2268,7 @@
             const html =
                 headingSection +
                 discoverySection +
+                assessmentSection +
                 healthHistorySection +
                 tradeHistorySection +
                 sellInstructionsSection;

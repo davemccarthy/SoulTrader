@@ -19,6 +19,16 @@ RATING_BANDS: List[Tuple[float, str, str]] = [
     (0.0, "F", "Strong avoid"),
 ]
 
+# Best (A) → worst (F); used for profile min-grade checks.
+LETTER_RANK: Dict[str, int] = {
+    "A": 6,
+    "B": 5,
+    "C": 4,
+    "D": 3,
+    "E": 2,
+    "F": 1,
+}
+
 
 @dataclass(frozen=True)
 class HealthRating:
@@ -44,6 +54,24 @@ class HealthRating:
             "display_short": self.display_short,
             "display_line": self.display_line,
         }
+
+
+def min_composite_for_letter(letter: str) -> float:
+    """Minimum composite score (inclusive) for a grade letter; from RATING_BANDS."""
+    key = (letter or "").strip().upper()
+    for min_score, band_letter, _label in RATING_BANDS:
+        if band_letter == key:
+            return min_score
+    raise ValueError(f"Unknown grade letter: {letter!r}")
+
+
+def grade_at_least(letter: str, min_letter: str) -> bool:
+    """True if letter meets or exceeds min_letter (e.g. C meets D)."""
+    a = LETTER_RANK.get((letter or "").strip().upper())
+    b = LETTER_RANK.get((min_letter or "").strip().upper())
+    if a is None or b is None:
+        return False
+    return a >= b
 
 
 def score_to_rating(score: Optional[float]) -> Optional[HealthRating]:

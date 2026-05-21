@@ -27,7 +27,6 @@ from django.conf import settings
 from edgar import Company, find, set_identity, get_filings, get_latest_filings
 from datetime import date, datetime, time as dt_time, timedelta, timezone as dt_timezone
 
-from core.models import Profile, Health
 from core.services.advisors.advisor import AdvisorBase, register
 
 logger = logging.getLogger(__name__)
@@ -971,6 +970,112 @@ def _first_media_headline_for_explanation(media: dict) -> str:
     return ""
 
 
+_EXPLANATION_SEGMENT_MAX_LEN = 500
+_EXPLANATION_LIST_ITEM_MAX = 4
+
+
+def _sanitize_explanation_segment(text: str, max_len: int = _EXPLANATION_SEGMENT_MAX_LEN) -> str:
+    """Flatten text for a single pipe-delimited discovery explanation segment."""
+    s = str(text or "").strip()
+    if not s:
+        return ""
+    s = s.replace("|", "·").replace("\n", " ")
+    s = re.sub(r"\s+", " ", s).strip()
+    if len(s) > max_len:
+        s = s[: max_len - 1].rstrip() + "…"
+    return s
+
+
+def _edgar_detail_explanation_segments(
+    ex99: dict,
+    media: dict,
+    form4: dict,
+    bonuses: list,
+    penalties: list,
+) -> List[str]:
+    """Extra explanation segments after the lead (EX-99, media, scoring, Form4)."""
+    segments: List[str] = []
+
+    ex99_pairs = []
+    for key in ("expectation", "guidance", "past_performance", "market_reaction"):
+        value = ex99.get(key)
+        if value is not None and str(value).strip():
+            ex99_pairs.append(f"{key}={value}")
+    if ex99_pairs:
+        segments.append(f"EX-99: {' '.join(ex99_pairs)}")
+
+    justifications = ex99.get("justifications") if isinstance(ex99.get("justifications"), dict) else {}
+    note_parts = []
+    for key, label in (
+        ("past_performance", "Past Performance"),
+        ("guidance", "Guidance"),
+        ("expectation", "Expectation"),
+        ("market_reaction", "Market Reaction"),
+    ):
+        text = justifications.get(key)
+        if text:
+            clean = _sanitize_explanation_segment(text, max_len=220)
+            if clean:
+                note_parts.append(f"{label}: {clean}")
+    if note_parts:
+        segments.append(f"EX-99 notes: {' | '.join(note_parts)}")
+
+    media_pairs = []
+    for key in ("sentiment", "eps", "revenue", "broker"):
+        value = media.get(key)
+        if value is not None and str(value).strip():
+            media_pairs.append(f"{key}={value}")
+    if media_pairs:
+        segments.append(f"Media: {' '.join(media_pairs)}")
+
+    summary = _sanitize_explanation_segment(media.get("summary") or "")
+    if summary:
+        segments.append(f"Media summary: {summary}")
+
+    headlines = media.get("headlines") if isinstance(media.get("headlines"), list) else []
+    headline_bits = []
+    for item in headlines[:_EXPLANATION_LIST_ITEM_MAX]:
+        clean = _sanitize_explanation_segment(item, max_len=160)
+        if clean:
+            headline_bits.append(clean)
+    if headline_bits:
+        segments.append(f"Headlines: {'; '.join(headline_bits)}")
+
+    red_flags = media.get("red_flags") if isinstance(media.get("red_flags"), list) else []
+    flag_bits = []
+    for item in red_flags[:_EXPLANATION_LIST_ITEM_MAX]:
+        clean = _sanitize_explanation_segment(item, max_len=160)
+        if clean:
+            flag_bits.append(clean)
+    if flag_bits:
+        segments.append(f"Red flags: {'; '.join(flag_bits)}")
+
+    if bonuses:
+        bits = [_sanitize_explanation_segment(b, max_len=120) for b in bonuses]
+        bits = [b for b in bits if b]
+        if bits:
+            segments.append(f"Bonuses: {'; '.join(bits)}")
+
+    if penalties:
+        bits = [_sanitize_explanation_segment(p, max_len=120) for p in penalties]
+        bits = [b for b in bits if b]
+        if bits:
+            segments.append(f"Penalties: {'; '.join(bits)}")
+
+    if isinstance(form4, dict) and form4:
+        form4_bits = []
+        kind = form4.get("watch_kind")
+        if kind:
+            form4_bits.append(f"kind={kind}")
+        total = form4.get("total")
+        if total is not None:
+            form4_bits.append(f"total={total}")
+        if form4_bits:
+            segments.append(f"Form4: {' '.join(form4_bits)}")
+
+    return segments
+
+
 # ---------------------------------------------------------------------------
 # ED-8 advisor class and command entry
 # ---------------------------------------------------------------------------
@@ -1662,8 +1767,8 @@ class Edgar(AdvisorBase):
         )
         return result
 
-    def build_info(self, filing, advanced: dict) -> dict:
-
+    def build_info(self, filing, advanced: dict) -> List[str]:
+        """Build pipe-delimited discovery explanation segments (segment 0 = trade lead)."""
         cik = str(getattr(filing, "cik", "") or "")
         accession = (
             getattr(filing, "accession_no", None)
@@ -1671,7 +1776,6 @@ class Edgar(AdvisorBase):
             or ""
         )
 
-        """Build discovery explanation & health from advanced result (weight, ex99, media)."""
         weight = advanced.get("weight")
         if weight is None or not isinstance(weight, (int, float)):
             weight = 1.0
@@ -1682,7 +1786,6 @@ class Edgar(AdvisorBase):
         bonuses = advanced.get("bonuses") or []
         penalties = advanced.get("penalties") or []
 
-        # Explanation info (first segment: form label + optional first media headline for list UIs)
         headline = _first_media_headline_for_explanation(media)
         if headline:
             lead = (
@@ -1694,32 +1797,12 @@ class Edgar(AdvisorBase):
                 f"8-K earnings filing | Accession: {accession} | Weight:{weight:.2f} | "
                 f"https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude "
             )
-        explanation_parts = [lead]
 
-        # Health info
-        health_meta = {
-            "render": "edgar",
-            "ex99": {
-                "past_performance": ex99.get("past_performance"),
-                "guidance": ex99.get("guidance"),
-                "expectation": ex99.get("expectation"),
-                "market_reaction": ex99.get("market_reaction"),
-                "justifications": ex99.get("justifications") or {},
-            },
-            "media": {
-                "sentiment": media.get("sentiment"),
-                "eps": media.get("eps"),
-                "revenue": media.get("revenue"),
-                "broker": media.get("broker"),
-                "summary": media.get("summary"),
-                "headlines": media.get("headlines") or [],
-                "red_flags": media.get("red_flags") or [],
-            },
-            "form4": form4,
-            "bonuses": bonuses,
-            "penalties": penalties,
-        }
-        return {"explanation": explanation_parts, "health_meta": health_meta}
+        parts = [lead]
+        parts.extend(
+            _edgar_detail_explanation_segments(ex99, media, form4, bonuses, penalties)
+        )
+        return parts
 
 
     def score_results(self, filing, ex99, media, form4):
@@ -1986,41 +2069,24 @@ class Edgar(AdvisorBase):
 
         score, bonuses, penalties = self.score_results(filing, ex99, media, form4)
 
-        # Calculate weight and health
-        weight = score + 1.0
-        base = float(Profile.RISK["MODERATE"])
-        health = base * weight
+        # Minimize score impact
+        weight = (score / 2) + 1.0
 
-        # Good to go: weight = half / normal / double triage
-        info = self.build_info(filing, {
-            "weight": weight,
-            "health": health,
-            "bonuses": bonuses,
-            "penalties": penalties,
-            "ex99": ex99,
-            "media": media,
-            "form4": form4,
-        })
-
-        explanation = " | ".join(info["explanation"])
-        health_meta = info["health_meta"]
-
-        if (stock := self.get_stock(ticker)) is None:
-            return True
-
-        # Create health ourselves
-        weight = Decimal(weight)
-        target = 1.20
-
-        health = Health.objects.create(
-            stock=stock,
-            sa=sa,
-            score=Decimal(str(health)),
-            meta=health_meta,
+        explanation = " | ".join(
+            self.build_info(
+                filing,
+                {
+                    "weight": weight,
+                    "bonuses": bonuses,
+                    "penalties": penalties,
+                    "ex99": ex99,
+                    "media": media,
+                    "form4": form4,
+                },
+            )
         )
 
-        # Keeper
-        self.discovered(sa, ticker, explanation, None, weight=weight, health=health)
+        self.discovered(sa, ticker, explanation=explanation, weight=Decimal(weight))
         return True
 
     def analyze_8k_pharma(self, filing, cik, ticker, accession, sa):
@@ -2177,7 +2243,7 @@ class Edgar(AdvisorBase):
             if sentiment == "strong_positive":
                 weight = Decimal("1.10")
             elif sentiment == "positive":
-                weight = Decimal("0.90")
+                weight = Decimal("1.00")
 
             if weight is not None:
                 explanation = (

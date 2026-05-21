@@ -619,58 +619,21 @@ def analyze_discovery(sa, funds, advisors):
         if not unique_discoveries:
             continue
 
-        # 3. Base allowance
-        # Base allowance is derived from the fund's aspirational spread.
-        base_allowance = fund.average_spend()
-
-        # 4. Iterate through unique discoveries and calculate allowance per discovery
-        from core.services.health.assess import discovery_adjusted_score
+        allowance = fund.average_spend()
+        allowance *= sentiment
 
         for discovery in unique_discoveries:
-            # v2 assessment (grading); adjusted score uses discovery.weight at analysis time
-            assessment = discovery.assessment
-            v2_score = assessment.score if assessment else None
-            v2_adjusted = discovery_adjusted_score(discovery)
 
-            # Get health for this discovery (v1 gate until retired)
-            health = discovery.health
-            if not health:
-                logger.info(
-                    f"User {fund.name}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "
-                    f"skipped (no v1 health) v2_score={v2_score} v2_adjusted={v2_adjusted}"
-                )
-                continue
+            if discovery.assessment is None or discovery.assessment.score is None:
+                continue  # or log skip
 
-            min_score = fund.min_score()
-            health_score = health.score * Decimal(str(sentiment))
+            score = discovery.assessment.score
+            minimum = fund.min_score()
 
-            if health_score < min_score:
-                logger.info(
-                    f"User {fund.name}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "
-                    f"health check score ({health_score}) below threshold ({min_score}) "
-                    f"v2_score={v2_score} v2_adjusted={v2_adjusted} discovery_weight={discovery.weight}"
-                )
-                continue
+            if score >= minimum:
+                explanation = discovery.explanation.split(" | ")[0].strip()
+                execute_buy(sa, fund, discovery.stock, allowance, explanation, discovery=discovery)
+            else:
+                logger.info(f"{fund.name}: {discovery.advisor.name} discovery {discovery.stock.symbol} score ({score}) below minimum ({minimum})")
 
-            # Get advisor weight (normalized)
-            advisor_weight = discovery.advisor.weight
-            discovery_weight = discovery.weight
-            combined_weight = advisor_weight * discovery_weight
 
-            # Calculate allowance with weighting
-            allowance = base_allowance * combined_weight
-
-            # Factor in sentiment
-            allowance *= sentiment
-
-            logger.info(
-                f"User {fund.name}: Discovery {discovery.stock.symbol} by {discovery.advisor.name} "
-                f"(Weight={combined_weight:.3f} allowance=${allowance:.2f} "
-                f"v2_score={v2_score} v2_adjusted={v2_adjusted})"
-            )
-
-            # Extract first clause from discovery explanation as summary
-            explanation = discovery.explanation.split(" | ")[0].strip()
-
-            # Call execute_buy
-            execute_buy(sa, fund, discovery.stock, allowance, explanation, discovery=discovery)

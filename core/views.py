@@ -22,6 +22,7 @@ from .fund_session import (
     set_current_fund,
     clear_fund_session,
 )
+from .discovery_scoring import render_assessment_block_html
 from .health_display import format_health_score, health_record_template_context
 from .portfolio_metrics import get_portfolio_dashboard_data
 
@@ -767,12 +768,16 @@ def holding_history(request, stock_id):
     sell_instructions = []
     discovery_obj = (
         Discovery.objects
-        .select_related('advisor', 'sa')
+        .select_related('advisor', 'sa', 'assessment', 'health')
         .filter(stock=stock)
         .order_by('-created')
         .first()
     )
-    
+
+    assessment_html = ''
+    if discovery_obj:
+        assessment_html = render_assessment_block_html(discovery_obj)
+
     if discovery_obj:
         discovery_payload = {
             'id': discovery_obj.id,
@@ -986,6 +991,7 @@ def holding_history(request, stock_id):
     payload = {
         'heading': heading,
         'discovery': discovery_payload,
+        'assessment_html': assessment_html,
         'health_history': health_history,
         'trades': trades_data,
         'sell_instructions': sell_instructions,

@@ -7,7 +7,12 @@ from core.services.health.assess import (
     run_component_scores,
 )
 from core.services.health.consensus import score_consensus_health
-from core.services.health.ratings import HealthRating, score_to_rating
+from core.services.health.ratings import (
+    HealthRating,
+    grade_at_least,
+    min_composite_for_letter,
+    score_to_rating,
+)
 from core.services.health.financial import score_financial_health
 from core.services.health.intrinsic import score_intrinsic_health
 from core.services.health.price import score_price_health
@@ -16,6 +21,8 @@ from core.services.health.valuation import score_valuation_health
 
 __all__ = [
     "HealthRating",
+    "grade_at_least",
+    "min_composite_for_letter",
     "composite_from_scores",
     "discovery_adjusted_score",
     "create_assessment_for_stock",

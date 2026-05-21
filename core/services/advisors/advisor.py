@@ -490,28 +490,13 @@ class AdvisorBase:
     def analyze(self, sa, stock):
         return
 
-    def discovered(self, sa, symbol, explanation, sell_instructions = None, weight = 1.0, health = None):
+    def discovered(self, sa, symbol, explanation, sell_instructions = None, weight = 1.0):
 
         if (stock := self.get_stock(symbol)) is None:
             return None
 
         if sell_instructions is None:
             sell_instructions = list(self.sell_instructions)
-
-        if not health:
-            # Attempt health check (graceful failure - don't block discovery)
-            logger.info(f"Attempting health check for {stock.symbol}...")
-            try:
-                health = self.health_check(stock, sa)
-                if health:
-                    logger.info(f"Successfully created health check for {stock.symbol}")
-                else:
-                    logger.error(f"Health check returned None for {stock.symbol}")
-                    return None
-
-            except Exception as e:
-                logger.error(f"Health check failed for {stock.symbol} during discovery: {e}", exc_info=True)
-                return None
 
         # Create new Discovery record
         discovery = Discovery()
@@ -520,7 +505,7 @@ class AdvisorBase:
         discovery.price = stock.price
         discovery.advisor = self.advisor
         discovery.assessment = self.assess_stock(sa, stock)
-        discovery.health = health
+        #discovery.health = health
         discovery.explanation = explanation
         discovery.weight = weight
         discovery.save()
@@ -1359,7 +1344,7 @@ Respond with only a single valid JSON object, no other text.
 
         if self.allow_discovery(ticker, period=168):
             self.discovered(sa, ticker, f"Article: {title} | {url} | {explanation} | Approved by {model} {recommendation}",
-                None, 1.5 if recommendation == "STRONG_BUY" else 1.0)
+                None, 1.2 if recommendation == "STRONG_BUY" else 1.0)
 
 
     def _extract_json(self, text):
