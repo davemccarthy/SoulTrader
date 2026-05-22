@@ -87,6 +87,21 @@ def analyse_target(holding, target, sentiment):
     return False
 
 
+def _session_exit_threshold_px(value1, avg) -> Decimal | None:
+    """
+    Dollar sell threshold for END_DAY / END_WEEK.
+    value1 is a multiplier (e.g. 1.01) applied to avg at sell-check time.
+    Legacy rows store a fixed dollar threshold when value1 > 3.
+    """
+    if value1 is None or not avg:
+        return None
+    mult = Decimal(str(value1))
+    avg_d = Decimal(str(avg))
+    if mult <= Decimal("3"):
+        return mult * avg_d
+    return mult
+
+
 def _build_drop_prompt(context_block: str) -> str:
     return f"""
 You are a live risk triage assistant for equity positions.
@@ -538,21 +553,31 @@ def analyze_holdings(sa, funds):
                                 break
 
                         elif instruction.instruction == 'END_DAY' and end_day:
-                            if instruction.value1 and holding.stock.price >= instruction.value1:
-                                execute_sell(sa, fund, holding, f"{holding.stock.symbol} end of day sell target: ${instruction.value1:.2f}")
+                            avg = holding.average_price or discovery.price
+                            target_px = _session_exit_threshold_px(instruction.value1, avg)
+                            if target_px and holding.stock.price >= target_px:
+                                execute_sell(
+                                    sa, fund, holding,
+                                    f"{holding.stock.symbol} end of day "
+                                    f"${holding.stock.price:.2f} >= ${target_px:.2f} "
+                                    f"({instruction.value1}× avg ${avg:.2f})",
+                                )
                                 break
 
-                        elif instruction.instruction == 'END_WEEK' and end_week:
-                            # Only apply END_WEEK if holding has been held for at least 7 days
+                        elif instruction.instruction == 'END_WEEK' and end_day and end_week:
                             if holding.created:
-                                days_held = (timezone.now() - holding.created).days
-                                if days_held >= 7:
-                                    if instruction.value1 and holding.stock.price >= instruction.value1:
-                                        execute_sell(sa, fund, holding,
-                                            f"{holding.stock.symbol} end of week sell target: ${instruction.value1:.2f} (held {days_held} days)"
+                                week_days_held = (timezone.now() - holding.created).days
+                                if week_days_held >= 7:
+                                    avg = holding.average_price or discovery.price
+                                    target_px = _session_exit_threshold_px(instruction.value1, avg)
+                                    if target_px and holding.stock.price >= target_px:
+                                        execute_sell(
+                                            sa, fund, holding,
+                                            f"{holding.stock.symbol} end of week "
+                                            f"${holding.stock.price:.2f} >= ${target_px:.2f} "
+                                            f"({instruction.value1}× avg ${avg:.2f}, held {week_days_held}d)",
                                         )
                                         break
-                            # If holding.created is None, skip END_WEEK (edge case - no BUY trade found)
 
                 except Exception as e:
                     logger.error(

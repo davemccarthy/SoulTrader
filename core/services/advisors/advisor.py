@@ -520,10 +520,10 @@ class AdvisorBase:
                 instruction.discovery = discovery
                 instruction.instruction = instruction_type
 
-                if instruction_type in ('TARGET_PERCENTAGE', 'STOP_PERCENTAGE'):
-                    # Multiplier vs average price (e.g. 1.02 TP, 0.94 stop); evaluated at sell-check time.
+                if instruction_type in ('TARGET_PERCENTAGE', 'STOP_PERCENTAGE', 'END_DAY', 'END_WEEK'):
+                    # Multiplier vs average price at sell-check (e.g. 1.02 TP, 0.94 stop, 1.01 EOD).
                     instruction.value1 = Decimal(str(instruction_value)) if instruction_value is not None else None
-                elif instruction_type in ['END_DAY', 'PERCENTAGE_DIMINISHING', 'PERCENTAGE_AUGMENTING']:
+                elif instruction_type in ['PERCENTAGE_DIMINISHING', 'PERCENTAGE_AUGMENTING']:
                     # instruction_value is a percentage multiplier → dollar threshold at discovery
                     instruction.value1 = Decimal(str(stock.price)) * Decimal(str(instruction_value)) if instruction_value is not None else None
                 elif instruction_type in ['TARGET_DIMINISHING', 'STOP_AUGMENTING']:
