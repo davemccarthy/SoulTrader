@@ -54,6 +54,7 @@ FLUX_STOP_MULT = Decimal("0.94")
 FLUX_REBUY_DROP = Decimal("0.02")
 FLUX_DISCOVERY_COOLDOWN_HOURS = 24
 FLUX_ENDDAY_TAKE = Decimal(1.01)
+FLUX_ENDWEEK_TAKE = Decimal(1.00)
 
 class Flux(AdvisorBase):
     """Fixed-universe Flux; discovers on below_ma_up entry."""
@@ -73,6 +74,7 @@ class Flux(AdvisorBase):
             ("TARGET_PERCENTAGE", FLUX_TP_MULT, None),
             ("PERCENTAGE_REBUY", FLUX_REBUY_DROP, None),
             ("END_DAY", FLUX_ENDDAY_TAKE, None),
+            ("END_WEEK",FLUX_ENDWEEK_TAKE, None),
         ]
 
         for symbol in FLUX_UNIVERSE:
