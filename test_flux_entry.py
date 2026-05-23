@@ -25,9 +25,9 @@ import yfinance as yf
 
 # Flux production watchlist (duplicated here; not imported from core).
 ENTRY_UNIVERSE: Tuple[str, ...] = (
-    "AAPL", "AMD", "AMZN", "ARM", "AVGO", "CAT", "COIN", "COST", "CRWD",
-    "GOOGL", "JPM", "KO", "LLY", "MA", "META", "MSFT", "MSTR", "NET", "NVDA",
-    "PG", "PLTR", "TSM", "TSLA", "UNH", "V",
+    "AAPL", "AMD", "AMZN", "ARM", "AVGO", "CAT", "COST", "CRWD",
+    "GOOGL", "JPM", "LLY", "MA", "META", "MSFT", "MU", "NET", "NFLX", "NOW",
+    "NVDA", "PLTR", "TSM", "TSLA", "UNH", "V",
 )
 
 ENTRY_MODES = (

@@ -19,7 +19,8 @@ from core.services.financial import yahoo as financial_yahoo
 
 logger = logging.getLogger(__name__)
 
-# Default 20-name book ∪ momentum list, minus BRK-B and RXRX. Not shared with test_flux_backtest.py.
+# Mega-cap / growth watchlist for below_ma_up mean-reversion (24 names).
+# Dropped MSTR, KO, PG, COIN; added MU, NFLX, NOW. Not shared with test_flux_backtest.py.
 FLUX_UNIVERSE: Final[Tuple[str, ...]] = (
     "AAPL",
     "AMD",
@@ -27,20 +28,19 @@ FLUX_UNIVERSE: Final[Tuple[str, ...]] = (
     "ARM",
     "AVGO",
     "CAT",
-    "COIN",
     "COST",
     "CRWD",
     "GOOGL",
     "JPM",
-    "KO",
     "LLY",
     "MA",
     "META",
     "MSFT",
-    "MSTR",
+    "MU",
     "NET",
+    "NFLX",
+    "NOW",
     "NVDA",
-    "PG",
     "PLTR",
     "TSM",
     "TSLA",
