@@ -19,16 +19,18 @@ from core.services.financial import yahoo as financial_yahoo
 
 logger = logging.getLogger(__name__)
 
-# Mega-cap / growth watchlist for below_ma_up mean-reversion (24 names).
-# Dropped MSTR, KO, PG, COIN; added MU, NFLX, NOW. Not shared with test_flux_backtest.py.
+# Mega-cap / growth watchlist for below_ma_up mean-reversion (27 names).
+# Dropped MSTR, KO, PG, COIN; added MU, NFLX, NOW, ADBE, CRM, UBER. Not shared with test_flux_backtest.py.
 FLUX_UNIVERSE: Final[Tuple[str, ...]] = (
     "AAPL",
+    "ADBE",
     "AMD",
     "AMZN",
     "ARM",
     "AVGO",
     "CAT",
     "COST",
+    "CRM",
     "CRWD",
     "GOOGL",
     "JPM",
@@ -44,6 +46,7 @@ FLUX_UNIVERSE: Final[Tuple[str, ...]] = (
     "PLTR",
     "TSM",
     "TSLA",
+    "UBER",
     "UNH",
     "V",
 )
