@@ -420,6 +420,16 @@ def _advisor_logo_url(advisor):
     return static(filename)
 
 
+def _position_discovery(holding, trades_for_position=()):
+    """Provenance discovery for a position: holding.discovery, else first BUY trade's discovery."""
+    if holding is not None and holding.discovery_id:
+        return holding.discovery
+    for trade in trades_for_position:
+        if trade.action == 'BUY' and trade.discovery_id:
+            return trade.discovery
+    return None
+
+
 @login_required
 def holding_detail(request, stock_id):
     from django.utils import timezone
@@ -659,7 +669,13 @@ def holding_history(request, stock_id):
 
     holding = (
         Holding.objects
-        .select_related('stock')
+        .select_related(
+            'stock',
+            'discovery__advisor',
+            'discovery__sa',
+            'discovery__assessment',
+            'discovery__health',
+        )
         .filter(fund=fund, stock_id=stock_id)
         .first()
     )
@@ -668,7 +684,13 @@ def holding_history(request, stock_id):
     # closed positions (no active Holding row) still render from historical trades.
     trades_for_position = list(
         Trade.objects
-        .select_related('stock')
+        .select_related(
+            'stock',
+            'discovery__advisor',
+            'discovery__sa',
+            'discovery__assessment',
+            'discovery__health',
+        )
         .filter(fund=fund, stock_id=stock_id)
         .order_by('created', 'id')
     )
@@ -763,16 +785,10 @@ def holding_history(request, stock_id):
         'beta': float(stock.beta) if stock.beta is not None else None,
     }
 
-    # Discovery data (most recent)
+    # Discovery data (position provenance — matches holdings list)
     discovery_payload = None
     sell_instructions = []
-    discovery_obj = (
-        Discovery.objects
-        .select_related('advisor', 'sa', 'assessment', 'health')
-        .filter(stock=stock)
-        .order_by('-created')
-        .first()
-    )
+    discovery_obj = _position_discovery(holding, trades_for_position)
 
     assessment_html = ''
     if discovery_obj:

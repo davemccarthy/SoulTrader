@@ -150,7 +150,13 @@ def get_holding_health_history(request, stock_id: int):
 
     # Match get_holdings when fund_id is set: scope by fund only, not user.
     # (Many deployments use fund-scoped rows where user may differ from JWT user.)
-    if not Holding.objects.filter(fund_id=fund_id, stock_id=stock_id).exists():
+    holding = (
+        Holding.objects
+        .select_related('discovery__advisor', 'discovery__health', 'discovery__assessment')
+        .filter(fund_id=fund_id, stock_id=stock_id)
+        .first()
+    )
+    if holding is None:
         raise Http404('Holding not found')
 
     health_history = []
@@ -170,7 +176,13 @@ def get_holding_health_history(request, stock_id: int):
 
         health_history.append(_health_record_payload(health))
 
-    return Response({'health_history': health_history})
+    # Position provenance discovery (web holding_history parity): v2 assessment scoring.
+    scoring = discovery_scoring_context(holding.discovery, for_api=True)
+
+    return Response({
+        'health_history': health_history,
+        'scoring': scoring,
+    })
 
 
 def _health_record_payload(health):
