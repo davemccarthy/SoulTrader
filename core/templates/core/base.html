@@ -1490,21 +1490,21 @@
         <div class="portfolio-widget-content">
             <div class="portfolio-stat">
                 <div class="portfolio-stat-header">Wealth</div>
-                <div class="portfolio-stat-value">${{ portfolio_widget.total_value|default:"0"|floatformat:"-2" }}</div>
+                <div class="portfolio-stat-value">${{ portfolio_widget.total_value|default:"0"|floatformat:0 }}</div>
             </div>
             <div class="portfolio-stat">
                 <div class="portfolio-stat-header">Return</div>
                 <div class="portfolio-stat-value {% if portfolio_widget.return_percent >= 0 %}positive{% else %}negative{% endif %}">
-                    ${{ portfolio_widget.return_amount|default:"0"|floatformat:"-2" }}
+                    ${{ portfolio_widget.return_amount|default:"0"|floatformat:0 }}
                 </div>
             </div>
             <div class="portfolio-stat">
                 <div class="portfolio-stat-header">Portfolio</div>
-                <div class="portfolio-stat-value">${{ portfolio_widget.invested|default:"0"|floatformat:"-2" }}</div>
+                <div class="portfolio-stat-value">${{ portfolio_widget.invested|default:"0"|floatformat:0 }}</div>
             </div>
             <div class="portfolio-stat">
                 <div class="portfolio-stat-header">Cash</div>
-                <div class="portfolio-stat-value">${{ portfolio_widget.cash|default:"0"|floatformat:"-2" }}</div>
+                <div class="portfolio-stat-value">${{ portfolio_widget.cash|default:"0"|floatformat:0 }}</div>
             </div>
             <div class="portfolio-stat">
                 <div class="portfolio-stat-header">Holdings</div>
