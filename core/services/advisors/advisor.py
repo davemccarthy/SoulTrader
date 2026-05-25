@@ -1208,14 +1208,21 @@ Respond with only a single valid JSON object, no other text.
             "model": model,
         }
 
-    def ask_llm(self, prompt, use_search=False):
+    def ask_llm(self, prompt, use_search=False, timeout=120.0):
+        """Gemini first (optional search grounding), then DeepSeek on failure."""
 
-        model, results = self.ask_gemini(prompt,use_search=use_search)
+        model, results = self.ask_gemini(
+            prompt, use_search=use_search, timeout=timeout
+        )
 
         if results:
             return model, results
 
-        return self.ask_deepseek(prompt)
+        logger.info(
+            "%s: Gemini unavailable; falling back to DeepSeek",
+            self.advisor.name,
+        )
+        return self.ask_deepseek(prompt, timeout=timeout)
 
     def ask_gemini(self, prompt, timeout=120.0, use_search=False):
         """

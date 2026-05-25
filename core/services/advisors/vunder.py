@@ -611,9 +611,9 @@ class Vunder(AdvisorBase):
     ) -> Optional[Dict[str, Any]]:
         context = self._build_context_block(symbol, entry, trigger)
         prompt = INVESTIGATION_PROMPT.format(context_block=context)
-        model, results = self.ask_gemini(prompt, timeout=180.0, use_search=True)
+        model, results = self.ask_llm(prompt, use_search=True, timeout=180.0)
         if not results or not isinstance(results, dict):
-            logger.info("Vunder: investigation failed for %s", symbol)
+            logger.info("Vunder: investigation failed for %s (Gemini+DeepSeek)", symbol)
             return None
         results["_model"] = model
         results["_symbol"] = symbol
