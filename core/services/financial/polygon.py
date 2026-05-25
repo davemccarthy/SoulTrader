@@ -13,10 +13,11 @@ _polygon_stocks_cache: Optional[pd.DataFrame] = None
 
 def get_last_trading_day(test_date: Optional[str] = None) -> Optional[str]:
     """
-    Get the previous working day (Mon-Fri) for Polygon API.
+    Get the most recent US equity session date for Polygon grouped daily aggs.
 
-    Only works Tue-Fri (skips Mon/Sat/Sun discoveries).
-    Returns None if today is Mon/Sat/Sun or if last day was a holiday.
+    Uses calendar rollback (Sat/Sun → Friday; Mon → prior Friday). Returns None
+    only when ``test_date`` is invalid or when today is Saturday/Sunday (no
+    weekday anchor). Does not detect exchange holidays.
     """
     if test_date:
         try:
@@ -29,9 +30,6 @@ def get_last_trading_day(test_date: Optional[str] = None) -> Optional[str]:
     today = datetime.now().date()
     weekday = today.weekday()  # Monday=0, Sunday=6
 
-    if weekday == 0:
-        logger.info("Skipping discovery on Monday")
-        return None
     if weekday >= 5:
         logger.info("Skipping discovery on weekend")
         return None

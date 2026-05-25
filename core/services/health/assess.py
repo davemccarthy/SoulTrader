@@ -6,7 +6,7 @@ Used by AdvisorBase.assess_stock and the health_score lab.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from core.services.health.consensus import score_consensus_health
 from core.services.health.financial import score_financial_health
@@ -73,11 +73,30 @@ def discovery_adjusted_score(discovery: Optional["Discovery"]) -> Optional[Decim
     return (assessment.score * w).quantize(Decimal("0.1"))
 
 
-def run_component_scores(symbol: str) -> Dict[str, Optional[float]]:
-    """Run all v2 component scorers; return {key: score or None}."""
+def run_component_scores(
+    symbol: str,
+    *,
+    components: Optional[Iterable[str]] = None,
+) -> Dict[str, Optional[float]]:
+    """
+    Run v2 component scorers; return {key: score or None}.
+
+    components: if set, only run these keys (others omitted from dict).
+    Default None runs all components (core / discovery behavior).
+    """
     sym = (symbol or "").strip().upper()
+    if components is None:
+        active = {key for key, _ in COMPONENT_SCORERS}
+    else:
+        active = {c.strip().lower() for c in components if c}
+        unknown = active - set(COMPONENT_MODEL_WEIGHTS.keys())
+        if unknown:
+            raise ValueError(f"Unknown assessment components: {sorted(unknown)}")
+
     out: Dict[str, Optional[float]] = {}
     for key, scorer in COMPONENT_SCORERS:
+        if key not in active:
+            continue
         try:
             result = scorer(sym)
             out[key] = result.score if result is not None else None
