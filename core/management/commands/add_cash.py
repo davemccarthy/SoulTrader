@@ -37,11 +37,6 @@ class Command(BaseCommand):
             help="Show the change without saving",
         )
         parser.add_argument(
-            "--allow-negative",
-            action="store_true",
-            help="Allow cash to go below zero after the adjustment",
-        )
-        parser.add_argument(
             "--list-funds",
             action="store_true",
             help="List profiles and cash balances, then exit",
@@ -69,12 +64,6 @@ class Command(BaseCommand):
         delta = Decimal(amount_k) * Decimal("1000")
         cash_before = fund.cash or Decimal("0")
         cash_after = cash_before + delta
-
-        if cash_after < 0 and not options.get("allow_negative"):
-            raise CommandError(
-                f"Cash would become ${cash_after:,.2f}. "
-                f"Use --allow-negative to permit, or use a smaller withdrawal."
-            )
 
         holdings_value = self._holdings_market_value(fund)
         wealth_before = cash_before + holdings_value
