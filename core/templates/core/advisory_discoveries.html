@@ -288,12 +288,19 @@
             text-decoration: underline;
             text-underline-offset: 0.12em;
         }
+        .disc-detail-frame .assess-block {
+            margin-top: 0.85rem;
+            margin-bottom: 0;
+        }
         .disc-health-section {
             margin-top: 0.75rem;
             padding-top: 0;
         }
         .disc-detail-frame .disc-health-section {
             margin-top: 0.85rem;
+        }
+        .disc-detail-frame .assess-block + .disc-health-section {
+            margin-top: 1rem;
         }
         .disc-health-section-empty p {
             margin: 0;
@@ -414,8 +421,8 @@
                     </div>
                 </div>
                 <div class="disc-score">
-                    <div class="disc-kicker">Score</div>
-                    <div class="disc-value">{{ row.health_score_display }}</div>
+                    <div class="disc-kicker">{{ row.score_kicker }}</div>
+                    <div class="disc-value">{{ row.score_value }}</div>
                 </div>
             </div>
 
@@ -459,7 +466,16 @@
                         <p style="color: #64748b; font-size: 0.85rem;">No explanation available for this discovery.</p>
                         {% endif %}
                     </div>
+                    {% if row.has_v2_assessment %}
+                    {% include 'core/includes/assessment_block.html' with scoring=row.scoring %}
+                    {% endif %}
+                    {% if row.health %}
                     {% include 'core/includes/discovery_health_check.html' with health=row.health %}
+                    {% elif not row.has_v2_assessment %}
+                    <div class="disc-health-section disc-health-section-empty">
+                        <p>No assessment or health check recorded for this discovery.</p>
+                    </div>
+                    {% endif %}
                 </div>
             </details>
             {% if row.outcome.reason_text %}

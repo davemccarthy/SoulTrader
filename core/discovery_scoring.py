@@ -238,6 +238,39 @@ def _headline_v1(score: Optional[float]) -> str:
     return f"{score:.1f}"
 
 
+def discovery_list_score_column(scoring: Dict[str, Any]) -> Dict[str, str]:
+    """Kicker + value for list score column (v2 → Grade letter when available)."""
+    if scoring.get("source") == "v2":
+        summary = scoring.get("summary") or {}
+        grade = summary.get("adjusted_grade") or summary.get("grade")
+        if isinstance(grade, dict) and grade.get("letter"):
+            return {"kicker": "Grade", "value": grade["letter"]}
+        headline = (scoring.get("headline_display") or "").strip()
+        if headline and headline != "—":
+            return {"kicker": "Score", "value": headline}
+        return {"kicker": "Score", "value": "—"}
+
+    from core.health_display import format_health_score
+
+    comp = scoring.get("composite_score")
+    if comp is not None:
+        return {"kicker": "Score", "value": format_health_score(float(comp))}
+    return {"kicker": "Score", "value": "—"}
+
+
+def discovery_outcome_score(scoring: Dict[str, Any]) -> Optional[float]:
+    """Numeric score for outcome heuristics (prefer discovery-adjusted when present)."""
+    if not scoring:
+        return None
+    adjusted = scoring.get("adjusted_score")
+    if adjusted is not None:
+        return float(adjusted)
+    composite = scoring.get("composite_score")
+    if composite is not None:
+        return float(composite)
+    return None
+
+
 def render_assessment_block_html(discovery: Optional["Discovery"]) -> str:
     """Server-render assessment_block.html for AJAX detail panels (e.g. holdings history)."""
     from django.template.loader import render_to_string

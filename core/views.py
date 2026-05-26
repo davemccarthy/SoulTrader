@@ -22,7 +22,12 @@ from .fund_session import (
     set_current_fund,
     clear_fund_session,
 )
-from .discovery_scoring import render_assessment_block_html
+from .discovery_scoring import (
+    discovery_list_score_column,
+    discovery_outcome_score,
+    discovery_scoring_context,
+    render_assessment_block_html,
+)
 from .health_display import format_health_score, health_record_template_context
 from .portfolio_metrics import get_portfolio_dashboard_data
 
@@ -1261,7 +1266,7 @@ def advisory_discoveries(request, advisor_id: int):
     discoveries_qs = (
         Discovery.objects
         .filter(advisor_id=advisor.id, created__gte=cutoff)
-        .select_related('stock', 'health')
+        .select_related('stock', 'health', 'assessment')
         .order_by('-id')
     )
 
@@ -1270,14 +1275,14 @@ def advisory_discoveries(request, advisor_id: int):
     discovery_rows = []
     for discovery in discoveries:
         company = (discovery.stock.company or '').strip()
-        score = float(discovery.health.score) if discovery.health else None
-        outcome = _discovery_outcome(discovery, score)
+        scoring = discovery_scoring_context(discovery)
+        score_column = discovery_list_score_column(scoring)
+        outcome = _discovery_outcome(discovery, discovery_outcome_score(scoring))
         discovery_price = discovery.price
         current_price = discovery.stock.price
         pnl_pct = None
         if discovery_price and discovery_price > 0 and current_price is not None:
             pnl_pct = float((current_price - discovery_price) / discovery_price * 100)
-        score_display = format_health_score(score)
 
         discovery_rows.append({
             'id': discovery.id,
@@ -1293,7 +1298,10 @@ def advisory_discoveries(request, advisor_id: int):
             'created': discovery.created,
             'explanation': discovery.explanation or '',
             'explanation_paragraphs': _discovery_paragraphs(discovery.explanation),
-            'health_score_display': score_display,
+            'score_kicker': score_column['kicker'],
+            'score_value': score_column['value'],
+            'scoring': scoring,
+            'has_v2_assessment': scoring.get('source') == 'v2',
             'health': health_record_template_context(discovery.health) if discovery.health else None,
             'outcome': outcome,
         })
