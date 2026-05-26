@@ -102,7 +102,10 @@ struct HoldingsView: View {
                             fundName: fund.name,
                             descriptionText: fund.description,
                                 onGotIt: {
-                                viewModel.markFundDescriptionAcknowledged(fundId: fund.id, description: fund.description)
+                                viewModel.markFundDescriptionAcknowledged(
+                                    fundId: fund.id,
+                                    profileDescription: fund.profileDescription
+                                )
                                 fundDescriptionSheetPresented = false
                             },
                             onDismissAll: {
@@ -130,25 +133,28 @@ struct HoldingsView: View {
         }
     }
 
-    /// Updates when selected fund row changes (including `description` after `refreshAll`).
+    /// Updates when selected fund or admin copy changes (not the live intro stats).
     private var selectedFundDescriptionToken: String {
         guard let id = viewModel.selectedFundId,
               let f = viewModel.funds.first(where: { $0.id == id }) else {
             return ""
         }
-        return "\(id)|\(f.description)"
+        return "\(id)|\(f.profileDescription)"
     }
 
     private func trimmedFundDescription(_ fund: FundResponse) -> String {
         fund.description.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Auto-open sheet when description is non-empty and digest differs from last "Got it" (per user + fund), unless session "Dismiss all".
+    /// Auto-open sheet when composed text is non-empty and admin-copy digest differs from last "Got it".
     private func maybeAutoPresentFundDescription() {
         guard let fund = viewModel.selectedFund else { return }
         let text = trimmedFundDescription(fund)
         guard !text.isEmpty else { return }
-        guard viewModel.shouldAutoPresentFundDescription(for: fund.id, description: fund.description) else { return }
+        guard viewModel.shouldAutoPresentFundDescription(
+            for: fund.id,
+            profileDescription: fund.profileDescription
+        ) else { return }
         fundDescriptionSheetPresented = true
     }
 

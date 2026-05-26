@@ -262,6 +262,8 @@ def get_funds(request):
             'id': fund.id,
             'name': fund.name,
             'description': _compose_fund_description_for_api(fund, dashboard),
+            # Admin copy only — iOS uses this for "already read" digest (not the live intro).
+            'profile_description': (fund.description or '').strip(),
             'spread': fund.spread,
             'risk': fund.risk,
             'advisors': fund.advisors,

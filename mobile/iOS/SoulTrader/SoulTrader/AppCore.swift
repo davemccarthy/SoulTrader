@@ -58,7 +58,10 @@ struct FundDashboardResponse: Decodable {
 struct FundResponse: Decodable, Identifiable {
     let id: Int
     let name: String
+    /// Full sheet text: auto intro + optional admin copy.
     let description: String
+    /// Admin `Profile.description` only — used for read/ack digest, not the live intro.
+    let profileDescription: String
     let spread: String?
     let risk: String
     let advisors: [String]
@@ -68,6 +71,7 @@ struct FundResponse: Decodable, Identifiable {
         case id
         case name
         case description
+        case profileDescription = "profile_description"
         case spread
         case risk
         case advisors
@@ -79,6 +83,7 @@ struct FundResponse: Decodable, Identifiable {
         id = try c.decode(Int.self, forKey: .id)
         name = try c.decode(String.self, forKey: .name)
         description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
+        profileDescription = try c.decodeIfPresent(String.self, forKey: .profileDescription) ?? ""
         spread = try c.decodeIfPresent(String.self, forKey: .spread)
         risk = try c.decode(String.self, forKey: .risk)
         advisors = try c.decode([String].self, forKey: .advisors)
@@ -1011,9 +1016,9 @@ final class AuthViewModel: ObservableObject {
         static let lastRegisteredFCM = "push.last_registered_fcm_token"
     }
 
-    /// Per-user, per-fund SHA256 (hex) of last acknowledged fund `description` text (normalized). Not the raw message.
+    /// Per-user, per-fund SHA256 (hex) of last acknowledged admin `profile_description` (normalized).
     private enum FundDescriptionAckKeys {
-        static let digestByUserFund = "fund_description_ack_sha256_v1"
+        static let digestByUserFund = "fund_description_ack_sha256_v2"
     }
 
     init() {
@@ -1062,25 +1067,21 @@ final class AuthViewModel: ObservableObject {
         returnPercentMode = (returnPercentMode == .total) ? .invested : .total
     }
 
-    /// Whether the fund description sheet may auto-open (Holdings): non-empty text, not session-dismiss-all,
-    /// and current description digest differs from last "Got it" digest for this user + fund.
-    func shouldAutoPresentFundDescription(for fundId: Int, description: String) -> Bool {
+    /// Whether the fund description sheet may auto-open (Holdings): not session-dismiss-all,
+    /// and admin `profile_description` digest differs from last "Got it" for this user + fund.
+    func shouldAutoPresentFundDescription(for fundId: Int, profileDescription: String) -> Bool {
         guard !fundDescriptionDismissAllSession else { return false }
         guard let userId = currentUser?.id else { return false }
-        let normalized = Self.normalizedFundDescriptionForAcknowledgment(description)
-        guard !normalized.isEmpty else { return false }
-        let digest = Self.sha256HexDigest(of: normalized)
+        let digest = Self.fundProfileDescriptionAckDigest(profileDescription)
         let key = Self.fundDescriptionAckStorageKey(userId: userId, fundId: fundId)
         let stored = loadFundDescriptionAckDigestMap()[key]
         return stored != digest
     }
 
-    /// Persist digest of acknowledged description so auto-present skips until server text changes.
-    func markFundDescriptionAcknowledged(fundId: Int, description: String) {
+    /// Persist digest of acknowledged admin copy so auto-present skips until that text changes.
+    func markFundDescriptionAcknowledged(fundId: Int, profileDescription: String) {
         guard let userId = currentUser?.id else { return }
-        let normalized = Self.normalizedFundDescriptionForAcknowledgment(description)
-        guard !normalized.isEmpty else { return }
-        let digest = Self.sha256HexDigest(of: normalized)
+        let digest = Self.fundProfileDescriptionAckDigest(profileDescription)
         let key = Self.fundDescriptionAckStorageKey(userId: userId, fundId: fundId)
         var map = loadFundDescriptionAckDigestMap()
         map[key] = digest
@@ -1101,6 +1102,10 @@ final class AuthViewModel: ObservableObject {
 
     private static func normalizedFundDescriptionForAcknowledgment(_ raw: String) -> String {
         raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func fundProfileDescriptionAckDigest(_ profileDescription: String) -> String {
+        sha256HexDigest(of: normalizedFundDescriptionForAcknowledgment(profileDescription))
     }
 
     private static func sha256HexDigest(of string: String) -> String {
