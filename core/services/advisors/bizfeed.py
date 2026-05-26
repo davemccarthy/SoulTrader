@@ -9,7 +9,7 @@ Purpose:
   executive, guidance, offering_dilution) via substring match on title+summary.
 - Uncategorized rows are dismissed from the catalyst path but still sampled in logs so
   you can spot missing keywords.
-- Tagged catalyst rows pass a stricter non-LLM shortlist score (PHARM-style) before LLM. LLM output includes
+- All tagged catalyst rows are sent to ask_llm (Gemini, then DeepSeek fallback) each run (optional BIZFEED_LLM_MAX cap). LLM output includes
   PHARM-style significance/surprise; a Discovery is created after positive+bullish gate, composite score floor,
   national listing, allow_discovery, and a passing health_check (same pattern as PHARM).
 - With no previous SmartAnalysis timestamp, the feed window defaults to the last 1 day.
@@ -22,6 +22,7 @@ Optional env:
     BIZFEED_LOG_ROW_SAMPLE        (default 60) — how many rows to log per discover run
     BIZFEED_LOG_ONLY_CATEGORIES      (optional) — comma list (e.g. earnings,ma); catalyst sample logs only rows matching any tag
     BIZFEED_LOG_UNCATEGORIZED_SAMPLE (default 25) — how many no-tag rows to log for monitoring (0 = count only)
+    BIZFEED_LLM_MAX             (optional) — if set to a positive integer, cap LLM calls per run; default = all tagged catalyst rows
     BIZFEED_SKIP_NATIONAL_EXCHANGE_CHECK — set 1/true to log OTC/non-national tickers instead of rejecting (debug only)
     BIZFEED_DISCOVER         — default 1; set 0/false/off to skip Discovery creation (LLM + listing logs still run)
 
@@ -107,7 +108,6 @@ BIZFEED_DEFAULT_FEEDS: tuple[tuple[str, str], ...] = (
 _DEFAULT_LIMIT_PER_FEED = 50
 _LOG_ROW_SAMPLE = 60
 _LOG_UNCATEGORIZED_SAMPLE = 25
-BIZFEED_SHORTLIST_SCORE_MIN = 1
 
 # Catalyst buckets (substring match on title + summary, lowercased). Order = reporting priority.
 BIZFEED_CATEGORY_ORDER: tuple[str, ...] = (
@@ -242,82 +242,6 @@ BIZFEED_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
 }
 
 _CATEGORY_RANK = {k: i for i, k in enumerate(BIZFEED_CATEGORY_ORDER)}
-
-BIZFEED_GREEN_TERMS_STRONG: tuple[str, ...] = (
-    "raises guidance",
-    "increases guidance",
-    "upgrades guidance",
-    "beat estimates",
-    "beats estimates",
-    "record revenue",
-    "record earnings",
-    "share repurchase authorization",
-    "authorized repurchase",
-    "special dividend",
-    "definitive merger agreement",
-    "definitive agreement to acquire",
-    "all-cash transaction",
-)
-
-BIZFEED_GREEN_TERMS_WEAK: tuple[str, ...] = (
-    "financial results",
-    "quarterly results",
-    "earnings per share",
-    "declares dividend",
-    "dividend increase",
-    "updates guidance",
-    "strategic review",
-    "acquisition of",
-)
-
-BIZFEED_RED_TERMS_STRONG: tuple[str, ...] = (
-    "withdraws guidance",
-    "lowers guidance",
-    "profit warning",
-    "public offering",
-    "secondary offering",
-    "at the market offering",
-    "at-the-market",
-    "convertible notes",
-    "registered direct",
-    "chapter 11",
-    "bankruptcy",
-)
-
-BIZFEED_RED_TERMS_WEAK: tuple[str, ...] = (
-    "appoints",
-    "appointed",
-    "conference call",
-    "webcast",
-    "participation in",
-    "investor day",
-    "presentation at",
-)
-
-BIZFEED_SUPPRESS_TERMS: tuple[str, ...] = (
-    "conference call",
-    "webcast",
-    "investor presentation",
-    "participation in",
-    "fireside chat",
-    "ring the opening bell",
-)
-
-BIZFEED_HARD_TRIGGERS: tuple[str, ...] = (
-    "raises guidance",
-    "withdraws guidance",
-    "lowers guidance",
-    "definitive merger agreement",
-    "take-private transaction",
-    "successful closing of",
-    "closing of acquisition",
-    "closing of merger",
-    "all-cash transaction",
-    "share repurchase authorization",
-    "special dividend",
-    "chapter 11",
-    "bankruptcy",
-)
 
 # --- LLM: shared schema + per-category task text (routed by categories[0]) ---
 
@@ -776,28 +700,19 @@ def _bizfeed_format_explanation_value(value: Any) -> str:
     return str(value)
 
 
-def _bizfeed_article_label(feed_title: str | None, headline: str) -> str:
-    """Prefer RSS/feed headline for UI; fallback to heuristic '{category} catalyst'."""
-    if isinstance(feed_title, str):
-        t = " ".join(feed_title.split()).strip()
-        if t:
-            return t
-    return headline
-
-
 def _bizfeed_build_discovery_explanation(
     parsed: dict[str, Any],
     *,
     primary_category: str | None,
     article_link: str,
-    feed_title: str | None,
     resolved_symbol: str,
     yahoo_exchange: str,
 ) -> str:
+    company = parsed.get("company_name")
+    c = company.strip() if isinstance(company, str) and company.strip() else "Unknown"
     pc = (primary_category or "catalyst").strip().lower()
-    headline = f"{pc} catalyst"
-    article_label = _bizfeed_article_label(feed_title, headline)
-    trade_lead = discovery_trade_explanation_lead(article_label)
+    headline = f"BIZFEED {pc} - {c}"
+    trade_lead = discovery_trade_explanation_lead(headline)
 
     def _clean_sentence(value: Any, *, max_len: int = 180) -> str | None:
         if not isinstance(value, str):
@@ -815,14 +730,12 @@ def _bizfeed_build_discovery_explanation(
 
     segments: list[str] = []
     if article_link:
-        segments.append(discovery_trade_explanation_lead(f"Article: {article_label}"))
+        segments.append(discovery_trade_explanation_lead(f"Article: {headline}"))
         segments.append(article_link)
     else:
         segments.append(trade_lead)
-    if trade_lead != article_label:
-        segments.append(f"headline: {article_label}")
-    if article_label != headline:
-        segments.append(f"catalyst: {headline}")
+    if trade_lead != headline:
+        segments.append(f"headline: {headline}")
 
     field_specs: tuple[tuple[str, str], ...] = (
         ("summary", "summary"),
@@ -1050,67 +963,6 @@ def tag_bizfeed_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
-def _bizfeed_has_term(blob: str, term: str) -> bool:
-    """
-    Case-insensitive term match with loose word boundaries so short/common words
-    don't accidentally match inside unrelated tokens.
-    """
-    t = (term or "").strip().lower()
-    if not t:
-        return False
-    if re.search(r"[^\w\s]", t):
-        return t in blob
-    pattern = r"(?<!\w)" + re.escape(t).replace(r"\ ", r"\s+") + r"(?!\w)"
-    return re.search(pattern, blob, flags=re.IGNORECASE) is not None
-
-
-def _score_bizfeed_row(row: dict[str, Any]) -> dict[str, Any]:
-    title = row.get("title") or ""
-    summary = row.get("summary") or ""
-    blob = f"{title} {summary}".lower()
-
-    score = 0
-    green_hits: list[str] = []
-    red_hits: list[str] = []
-
-    for term in BIZFEED_GREEN_TERMS_STRONG:
-        if _bizfeed_has_term(blob, term):
-            green_hits.append(term)
-            score += 2
-    for term in BIZFEED_GREEN_TERMS_WEAK:
-        if _bizfeed_has_term(blob, term):
-            green_hits.append(term)
-            score += 1
-    for term in BIZFEED_RED_TERMS_STRONG:
-        if _bizfeed_has_term(blob, term):
-            red_hits.append(term)
-            score -= 3
-    for term in BIZFEED_RED_TERMS_WEAK:
-        if _bizfeed_has_term(blob, term):
-            red_hits.append(term)
-            score -= 1
-
-    suppressed = any(_bizfeed_has_term(blob, t) for t in BIZFEED_SUPPRESS_TERMS)
-    hard_trigger = any(_bizfeed_has_term(blob, t) for t in BIZFEED_HARD_TRIGGERS)
-
-    return {
-        **row,
-        "score": score,
-        "green_hits": green_hits,
-        "red_hits": red_hits,
-        "suppressed": suppressed,
-        "hard_trigger": hard_trigger,
-    }
-
-
-def _is_bizfeed_shortlist_candidate(scored: dict[str, Any]) -> bool:
-    if bool(scored.get("suppressed")):
-        return False
-    if bool(scored.get("hard_trigger")):
-        return True
-    return int(scored.get("score") or 0) >= BIZFEED_SHORTLIST_SCORE_MIN
-
-
 def fetch_bizfeed_rows(
     *,
     limit_per_feed: int = 25,
@@ -1260,22 +1112,32 @@ class Bizfeed(AdvisorBase):
                     len(uncat_rows),
                 )
 
-        scored_catalyst = [_score_bizfeed_row(r) for r in catalyst_rows]
-        shortlist = [r for r in scored_catalyst if _is_bizfeed_shortlist_candidate(r)]
-        shortlist.sort(key=lambda r: (int(r.get("score") or 0), r.get("published_at") or ""), reverse=True)
-        suppressed_n = sum(1 for r in scored_catalyst if r.get("suppressed"))
-        hard_trigger_n = sum(1 for r in shortlist if r.get("hard_trigger"))
-        logger.info(
-            "BIZFEED shortlist | tagged=%d scored=%d shortlisted=%d suppressed=%d hard_trigger=%d min_score=%d",
-            len(catalyst_rows),
-            len(scored_catalyst),
-            len(shortlist),
-            suppressed_n,
-            hard_trigger_n,
-            BIZFEED_SHORTLIST_SCORE_MIN,
-        )
-        llm_batch = shortlist
-        logger.info("BIZFEED_LLM | batch=%d shortlisted catalyst rows", len(llm_batch))
+        llm_pool = list(catalyst_rows)
+        llm_pool.sort(key=lambda r: r.get("published_at") or "", reverse=True)
+        cap_raw = (os.getenv("BIZFEED_LLM_MAX") or "").strip()
+        if cap_raw:
+            try:
+                cap_n = int(cap_raw)
+            except ValueError:
+                cap_n = 0
+            if cap_n > 0:
+                llm_batch = llm_pool[:cap_n]
+                logger.info(
+                    "BIZFEED_LLM | batch=%d of %d catalyst rows (BIZFEED_LLM_MAX=%d)",
+                    len(llm_batch),
+                    len(llm_pool),
+                    cap_n,
+                )
+            else:
+                llm_batch = llm_pool
+                logger.info(
+                    "BIZFEED_LLM | batch=%d catalyst rows (BIZFEED_LLM_MAX=%r ignored; not positive)",
+                    len(llm_batch),
+                    cap_raw,
+                )
+        else:
+            llm_batch = llm_pool
+            logger.info("BIZFEED_LLM | batch=%d catalyst rows (no cap)", len(llm_batch))
 
         for i, row in enumerate(llm_batch, start=1):
             task_key = _bizfeed_llm_task_key_for_row(row)
@@ -1376,16 +1238,22 @@ class Bizfeed(AdvisorBase):
                 parsed,
                 primary_category=primary,
                 article_link=(row.get("link") or "").strip(),
-                feed_title=(row.get("title") or "").strip() or None,
                 resolved_symbol=listed_sym,
                 yahoo_exchange=listed_ex or "",
             )
+
+            sell_instructions = [
+                ("PERCENTAGE_DIMINISHING", 1.30, 7),
+                ("PERCENTAGE_AUGMENTING", 0.90, 20),
+                ("DESCENDING_TREND", -0.20, None),
+                ("NOT_TRENDING", None, None),
+            ]
 
             stock = self.discovered(
                 sa,
                 listed_sym,
                 explanation,
-                None,
+                sell_instructions,
                 weight=weight,
             )
             if stock:
