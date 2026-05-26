@@ -204,9 +204,17 @@ struct HoldingResponse: Decodable, Identifiable {
 
 struct HoldingHealthHistoryResponse: Decodable {
     let healthHistory: [HealthHistoryRecord]
+    let scoring: DiscoveryScoring?
 
     private enum CodingKeys: String, CodingKey {
         case healthHistory = "health_history"
+        case scoring
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        healthHistory = try c.decodeIfPresent([HealthHistoryRecord].self, forKey: .healthHistory) ?? []
+        scoring = try c.decodeIfPresent(DiscoveryScoring.self, forKey: .scoring)
     }
 }
 
@@ -526,12 +534,23 @@ struct AdvisorDiscoveryRow: Decodable, Identifiable {
     let stock: AdvisorDiscoveryStock
     let explanationLine: String
     let healthScore: Double?
+    let scoring: DiscoveryScoring?
 
     private enum CodingKeys: String, CodingKey {
         case id
         case stock
         case explanationLine = "explanation_line"
         case healthScore = "health_score"
+        case scoring
+    }
+
+    /// SCORE column: prefer unified scoring headline, else legacy health_score.
+    var listScoreText: String {
+        if let scoring {
+            let text = scoring.displayScoreText
+            if text != "—" { return text }
+        }
+        return DiscoveryScoring.formatOptionalScore(healthScore)
     }
 }
 
@@ -558,6 +577,104 @@ struct DiscoveryDetailAdvisor: Decodable {
     }
 }
 
+// MARK: - Discovery scoring (API `discovery_scoring_context`, v2 assessment + v1 health fallback)
+
+struct DiscoveryScoringRating: Decodable {
+    let letter: String
+    let label: String?
+
+    var displayLetter: String {
+        let l = letter.trimmingCharacters(in: .whitespacesAndNewlines)
+        return l.isEmpty ? "—" : l
+    }
+}
+
+struct DiscoveryScoringSummary: Decodable {
+    let assessmentScore: Double?
+    let discoveryWeightDisplay: String?
+    let grade: DiscoveryScoringRating?
+    let adjustedGrade: DiscoveryScoringRating?
+
+    private enum CodingKeys: String, CodingKey {
+        case assessmentScore = "assessment_score"
+        case discoveryWeightDisplay = "discovery_weight_display"
+        case grade
+        case adjustedGrade = "adjusted_grade"
+    }
+}
+
+struct DiscoveryScoringComponent: Decodable, Identifiable {
+    let key: String
+    let label: String
+    let weightPercent: Int
+    let score: Double?
+
+    var id: String { key }
+
+    private enum CodingKeys: String, CodingKey {
+        case key, label, score
+        case weightPercent = "weight_percent"
+    }
+}
+
+struct DiscoveryScoring: Decodable {
+    let source: String?
+    let compositeScore: Double?
+    let adjustedScore: Double?
+    let discoveryWeight: Double?
+    let headlineDisplay: String?
+    let summary: DiscoveryScoringSummary?
+    let components: [DiscoveryScoringComponent]
+
+    private enum CodingKeys: String, CodingKey {
+        case source
+        case compositeScore = "composite_score"
+        case adjustedScore = "adjusted_score"
+        case discoveryWeight = "discovery_weight"
+        case headlineDisplay = "headline_display"
+        case summary, components
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        source = try c.decodeIfPresent(String.self, forKey: .source)
+        compositeScore = try c.decodeIfPresent(Double.self, forKey: .compositeScore)
+        adjustedScore = try c.decodeIfPresent(Double.self, forKey: .adjustedScore)
+        discoveryWeight = try c.decodeIfPresent(Double.self, forKey: .discoveryWeight)
+        headlineDisplay = try c.decodeIfPresent(String.self, forKey: .headlineDisplay)
+        summary = try c.decodeIfPresent(DiscoveryScoringSummary.self, forKey: .summary)
+        components = try c.decodeIfPresent([DiscoveryScoringComponent].self, forKey: .components) ?? []
+    }
+
+    var isV2: Bool { source == "v2" }
+    var isV1: Bool { source == "v1" }
+
+    /// List/header score text (matches API `headline_display` and web assessment header).
+    var displayScoreText: String {
+        if let headline = headlineDisplay?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !headline.isEmpty, headline != "—" {
+            return headline
+        }
+        if let adjusted = adjustedScore {
+            return DiscoveryScoring.formatScore(adjusted)
+        }
+        if let composite = compositeScore {
+            return DiscoveryScoring.formatScore(composite)
+        }
+        return "—"
+    }
+
+    static func formatScore(_ value: Double) -> String {
+        if abs(value) < 1e-9 { return "AVOID" }
+        return String(format: "%.1f", value)
+    }
+
+    static func formatOptionalScore(_ value: Double?) -> String {
+        guard let value else { return "—" }
+        return formatScore(value)
+    }
+}
+
 struct DiscoveryDetailResponse: Decodable {
     let id: Int
     let explanation: String
@@ -566,9 +683,10 @@ struct DiscoveryDetailResponse: Decodable {
     let stock: StockInfo
     let advisor: DiscoveryDetailAdvisor
     let health: HealthHistoryRecord?
+    let scoring: DiscoveryScoring?
 
     private enum CodingKeys: String, CodingKey {
-        case id, explanation, created, stock, advisor, health
+        case id, explanation, created, stock, advisor, health, scoring
         case discoveryPrice = "discovery_price"
     }
 }
@@ -591,18 +709,21 @@ struct LoginRequest: Encodable {
 
 struct APIEnvironment {
     /// When `false`, login hides the host row and all API calls use `klynt.com` (LAN host is ignored).
-    static let showHostCredential = false
+    static let showHostCredential = true
 
     enum HostOption: String, CaseIterable, Identifiable {
-        case local = "192.168.1.21:8000"
+        case local1 = "192.168.1.21:8000"
+        case local2 = "192.168.1.6:8000"
         case klynt = "klynt.com"
 
         var id: String { rawValue }
 
         var baseURL: URL {
             switch self {
-            case .local:
+            case .local1:
                 return URL(string: "http://192.168.1.21:8000/api/")!
+            case .local2:
+                return URL(string: "http://192.168.1.6:8000/api/")!
             case .klynt:
                 return URL(string: "https://klynt.com/api/")!
             }
@@ -862,7 +983,7 @@ struct APIClient {
 final class AuthViewModel: ObservableObject {
     @Published var username = ""
     @Published var password = ""
-    @Published var selectedHost: APIEnvironment.HostOption = .local
+    @Published var selectedHost: APIEnvironment.HostOption = .local1
     @Published var selectedTab: AppTab = .funds
     @Published var selectedFundId: Int?
     @Published var currentUser: UserProfile?
@@ -1060,18 +1181,18 @@ final class AuthViewModel: ObservableObject {
         }
     }
 
-    func loadHoldingHealthHistory(stockId: Int) async -> [HealthHistoryRecord] {
+    func loadHoldingHealthHistory(stockId: Int) async -> (history: [HealthHistoryRecord], scoring: DiscoveryScoring?) {
         guard let access = tokenStore.getAccessToken(),
-              let fundId = selectedFundId else { return [] }
+              let fundId = selectedFundId else { return ([], nil) }
         do {
             let response = try await apiClient.fetchHoldingHealthHistory(
                 accessToken: access,
                 fundId: fundId,
                 stockId: stockId
             )
-            return response.healthHistory
+            return (response.healthHistory, response.scoring)
         } catch {
-            return []
+            return ([], nil)
         }
     }
 
@@ -1242,15 +1363,11 @@ private struct SummaryMetricCard: View {
     var body: some View {
         HStack(spacing: 8) {
             ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                VStack(alignment: item.alignment == .leading ? .leading : .trailing, spacing: 2) {
+                VStack(alignment: item.alignment == .leading ? .leading : .trailing, spacing: Theme.metricSpacing) {
                     Text(item.title)
-                        .font(.caption2)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(Theme.labelAccent)
+                        .appStyle(.metricLabel)
                     Text(item.value)
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(item.color)
+                        .appStyle(.metricValue, color: item.color)
                         .lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: item.alignment == .leading ? .leading : .trailing)
@@ -1262,7 +1379,7 @@ private struct SummaryMetricCard: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 10)
-        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: Theme.cardCornerRadius))
     }
 }
 
@@ -1289,13 +1406,13 @@ struct FundSummaryCard: View {
             SummaryMetricItem(
                 title: "PORTFOLIO",
                 value: formatCurrency(fund.dashboard.holdingsMarketValue),
-                color: percentColor(fund.dashboard.holdingsPnl),
+                color: Theme.signedColor(for: fund.dashboard.holdingsPnl),
                 alignment: .trailing
             ),
             SummaryMetricItem(
                 title: totalPercentTitle,
                 value: formatPercent(totalPercentValue),
-                color: percentColor(totalPercentValue),
+                color: Theme.signedColor(for: totalPercentValue),
                 alignment: .trailing
             ),
         ])
@@ -1320,13 +1437,6 @@ struct FundSummaryCard: View {
         return String(format: "%.2f%%", normalized)
     }
 
-    private func percentColor(_ value: Double?) -> Color {
-        guard let value else { return Theme.valuePrimary }
-        let normalized = abs(value) < 0.005 ? 0.0 : value
-        if normalized > 0 { return .green }
-        if normalized < 0 { return .red }
-        return Theme.valuePrimary
-    }
 }
 
 /// Advisory tab strip: matches `FundSecondarySummaryCard` alignment (leading first column, trailing others).
@@ -1348,13 +1458,13 @@ struct AdvisoryTopSummaryCard: View {
             SummaryMetricItem(
                 title: "WINNERS",
                 value: String(winners),
-                color: .green,
+                color: Theme.positive,
                 alignment: .trailing
             ),
             SummaryMetricItem(
                 title: "LOSERS",
                 value: String(losers),
-                color: .red,
+                color: Theme.negative,
                 alignment: .trailing
             ),
             SummaryMetricItem(
@@ -1388,7 +1498,7 @@ struct FundSecondarySummaryCard: View {
             SummaryMetricItem(
                 title: "EQUITY",
                 value: formatPercent(equityPercent),
-                color: percentColor(equityPercent),
+                color: Theme.signedColor(for: equityPercent),
                 alignment: .trailing
             ),
             SummaryMetricItem(
@@ -1400,7 +1510,7 @@ struct FundSecondarySummaryCard: View {
             SummaryMetricItem(
                 title: "TODAY",
                 value: formatPercent(todayPercent),
-                color: percentColor(todayPercent),
+                color: Theme.signedColor(for: todayPercent),
                 alignment: .trailing
             ),
         ])
@@ -1412,13 +1522,6 @@ struct FundSecondarySummaryCard: View {
         return String(format: "%.2f%%", normalized)
     }
 
-    private func percentColor(_ value: Double?) -> Color {
-        guard let value else { return Theme.valuePrimary }
-        let normalized = abs(value) < 0.005 ? 0.0 : value
-        if normalized > 0 { return .green }
-        if normalized < 0 { return .red }
-        return Theme.valuePrimary
-    }
 }
 
 struct GlobalSummaryCard: View {
@@ -1444,13 +1547,13 @@ struct GlobalSummaryCard: View {
             SummaryMetricItem(
                 title: "PORTFOLIO",
                 value: formatCurrency(dashboard.holdingsMarketValue),
-                color: percentColor(dashboard.holdingsPnl),
+                color: Theme.signedColor(for: dashboard.holdingsPnl),
                 alignment: .trailing
             ),
             SummaryMetricItem(
                 title: totalPercentTitle,
                 value: formatPercent(totalPercentValue),
-                color: percentColor(totalPercentValue),
+                color: Theme.signedColor(for: totalPercentValue),
                 alignment: .trailing
             ),
         ])
@@ -1475,13 +1578,6 @@ struct GlobalSummaryCard: View {
         return String(format: "%.2f%%", normalized)
     }
 
-    private func percentColor(_ value: Double?) -> Color {
-        guard let value else { return Theme.valuePrimary }
-        let normalized = abs(value) < 0.005 ? 0.0 : value
-        if normalized > 0 { return .green }
-        if normalized < 0 { return .red }
-        return Theme.valuePrimary
-    }
 }
 
 struct WealthChartCard: View {

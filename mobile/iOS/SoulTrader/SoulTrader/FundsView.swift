@@ -34,7 +34,7 @@ struct FundsView: View {
                         ),
                         middleTitle: "RETURN",
                         middleValue: formatCurrency(dashboard.returnAmount),
-                        middleColor: amountColor(dashboard.returnAmount),
+                        middleColor: Theme.signedColor(for: dashboard.returnAmount),
                         todayPercent: dashboard.todayPercent
                     )
                     .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 8, trailing: 6))
@@ -45,51 +45,49 @@ struct FundsView: View {
                 ForEach(viewModel.funds) { fund in
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(alignment: .top, spacing: 0) {
-                        metricPair(
+                        MetricColumn(
                             title: "FUND",
                             value: fund.name.isEmpty ? "Unnamed" : fund.name,
-                            alignment: .leading,
-                            isFlexible: false
+                            expands: false
                         )
                         .frame(width: 64, alignment: .leading)
 
-                        metricPair(
+                        MetricColumn(
                             title: "WEALTH",
-                            value: formatCurrency(fund.dashboard.totalValue),
-                            alignment: .leading
+                            value: formatCurrency(fund.dashboard.totalValue)
                         )
                         .frame(width: 128, alignment: .leading)
 
-                        metricPair(
+                        MetricColumn(
                             title: "PORTFOLIO",
                             value: formatCurrency(fund.dashboard.holdingsMarketValue),
-                            color: percentColor(fund.dashboard.holdingsPnl),
-                            alignment: .trailing
+                            valueColor: Theme.signedColor(for: fund.dashboard.holdingsPnl),
+                            alignment: .trailing,
+                            expands: true
                         )
 
-                        metricPair(
+                        MetricColumn(
                             title: viewModel.totalPercentTitle,
                             value: formatPercent(viewModel.totalPercentValue(for: fund.dashboard)),
-                            color: percentColor(viewModel.totalPercentValue(for: fund.dashboard)),
-                            alignment: .trailing
+                            valueColor: Theme.signedColor(for: viewModel.totalPercentValue(for: fund.dashboard)),
+                            alignment: .trailing,
+                            expands: true
                         )
                         }
 
                         HStack(spacing: 10) {
                         Text("\(fund.dashboard.holdingsCount) stocks")
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(Theme.valuePrimary)
+                            .appStyle(.inlineMetricValue)
                         Spacer()
-                        miniPair(
+                        InlineMetricPair(
                             title: "ABV:",
                             value: formatPercent(fund.dashboard.estAbvPercent),
-                            color: percentColor(fund.dashboard.estAbvPercent)
+                            valueColor: Theme.signedColor(for: fund.dashboard.estAbvPercent)
                         )
-                        miniPair(
+                        InlineMetricPair(
                             title: "TODAY:",
                             value: formatPercent(fund.dashboard.todayPercent),
-                            color: percentColor(fund.dashboard.todayPercent)
+                            valueColor: Theme.signedColor(for: fund.dashboard.todayPercent)
                         )
                         }
                     }
@@ -103,7 +101,7 @@ struct FundsView: View {
                         viewModel.selectedFundId == fund.id
                             ? Color.green.opacity(0.08)
                             : Theme.rowBackground,
-                        in: RoundedRectangle(cornerRadius: 10)
+                        in: RoundedRectangle(cornerRadius: Theme.cardCornerRadius)
                     )
                     .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
                     .listRowBackground(Color.clear)
@@ -118,43 +116,6 @@ struct FundsView: View {
         }
         .background(Theme.appBackground)
         .toolbar(.hidden, for: .navigationBar)
-    }
-
-    private func metricPair(
-        title: String,
-        value: String,
-        color: Color = Theme.valuePrimary,
-        alignment: Alignment,
-        isFlexible: Bool = true
-    ) -> some View {
-        VStack(alignment: alignment == .leading ? .leading : .trailing, spacing: 2) {
-            Text(title)
-                .font(.caption2)
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.labelAccent)
-            Text(value)
-                .font(.headline)
-                .fontWeight(.semibold)
-                .foregroundStyle(color)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: isFlexible ? .infinity : nil, alignment: alignment)
-    }
-
-    private func miniPair(
-        title: String,
-        value: String,
-        color: Color = Theme.valuePrimary
-    ) -> some View {
-        HStack(spacing: 4) {
-            Text(title)
-                .font(.caption2)
-                .foregroundStyle(Theme.labelAccent)
-            Text(value)
-                .font(.caption)
-                .fontWeight(.semibold)
-                .foregroundStyle(color)
-        }
     }
 
     private func formatCurrency(_ value: Double) -> String {
@@ -172,22 +133,8 @@ struct FundsView: View {
         return String(format: "%.2f%%", normalized)
     }
 
-    private func percentColor(_ value: Double?) -> Color {
-        guard let value else { return Theme.valuePrimary }
-        let normalized = normalizedPercent(value)
-        if normalized > 0 { return .green }
-        if normalized < 0 { return .red }
-        return Theme.valuePrimary
-    }
-
     private func normalizedPercent(_ value: Double) -> Double {
         abs(value) < 0.005 ? 0.0 : value
-    }
-
-    private func amountColor(_ value: Double) -> Color {
-        if value > 0 { return .green }
-        if value < 0 { return .red }
-        return Theme.valuePrimary
     }
 
     private func equityPercent(totalValue: Double, portfolioValue: Double) -> Double? {

@@ -1,6 +1,10 @@
 import SwiftUI
 
 enum Theme {
+    // Layout
+    static let cardCornerRadius: CGFloat = 10
+    static let metricSpacing: CGFloat = 2
+
     // Base surfaces
     static let appBackground = LinearGradient(
         stops: [
@@ -22,4 +26,23 @@ enum Theme {
     static let labelAccent = Color(red: 0.96, green: 0.84, blue: 0.50)
     static let valuePrimary = Color(red: 0.96, green: 0.96, blue: 0.96)
     static let secondaryText = Color.white.opacity(0.75)
+    static let positive = Color.green
+    static let negative = Color.red
+    static let link = Color(red: 0.45, green: 0.78, blue: 1.0)
+
+    /// Color for signed percent or currency deltas (green / red / neutral).
+    static func signedColor(for value: Double?) -> Color {
+        guard let value else { return valuePrimary }
+        let normalized = abs(value) < 0.005 ? 0.0 : value
+        if normalized > 0 { return positive }
+        if normalized < 0 { return negative }
+        return valuePrimary
+    }
+
+    static func signedColor(for value: Decimal?) -> Color {
+        guard let value else { return valuePrimary }
+        if value > 0 { return positive }
+        if value < 0 { return negative }
+        return valuePrimary
+    }
 }

@@ -14,8 +14,7 @@ struct DiscoveryDetailView: View {
         Group {
             if let loadError, detail == nil {
                 Text(loadError)
-                    .font(.footnote)
-                    .foregroundStyle(Theme.secondaryText)
+                    .appStyle(.emptyStateMessage)
                     .padding()
             } else if let detail {
                 discoveryContent(detail)
@@ -43,7 +42,11 @@ struct DiscoveryDetailView: View {
                 )
                 secondaryMetaCard(detail)
                 explanationCard(detail)
-                healthSection(detail)
+                AssessmentAndHealthSectionView(
+                    scoring: detail.scoring,
+                    healthRecords: detail.health.map { [$0] } ?? [],
+                    emptyMessage: "No assessment recorded for this discovery."
+                )
             }
             .padding(.horizontal, 6)
             .padding(.top, 6)
@@ -52,21 +55,12 @@ struct DiscoveryDetailView: View {
         .background(Theme.appBackground)
     }
 
-    private func healthSection(_ detail: DiscoveryDetailResponse) -> some View {
-        Group {
-            if let h = detail.health {
-                HealthHistoryRecordCard(record: h, checkNumber: nil)
-            } else {
-                Text("No health check recorded for this discovery.")
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Theme.secondaryText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 8)
-                    .padding(.horizontal, 10)
-                    .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
-            }
+    private func headerScoreText(for detail: DiscoveryDetailResponse) -> String {
+        if let scoring = detail.scoring {
+            let text = scoring.displayScoreText
+            if text != "—" { return text }
         }
+        return formatOptionalScore(detail.health?.score)
     }
 
     private func headerCard(_ detail: DiscoveryDetailResponse) -> some View {
@@ -93,15 +87,11 @@ struct DiscoveryDetailView: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("\(stock.symbol) · \(stock.company ?? stock.symbol)")
-                        .font(.headline)
-                        .fontWeight(.bold)
-                        .foregroundStyle(.white)
+                        .appStyle(.screenHeadline)
                         .lineLimit(1)
 
                     Text(discoveredLine)
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(Theme.secondaryText)
+                        .appStyle(.screenSubline)
                         .lineLimit(1)
                 }
 
@@ -111,33 +101,21 @@ struct DiscoveryDetailView: View {
             }
 
             HStack(alignment: .top, spacing: 10) {
-                snapshotMetric(
-                    title: "CURRENT",
-                    value: formatCurrency(current),
-                    valueColor: Theme.valuePrimary
-                )
-                snapshotMetric(
+                MetricColumn(title: "CURRENT", value: formatCurrency(current))
+                MetricColumn(
                     title: "CHG %",
                     value: formatPercent(chg),
-                    valueColor: percentColor(for: chg)
+                    valueColor: Theme.signedColor(for: chg)
                 )
-                snapshotMetric(
-                    title: "AT DISC",
-                    value: formatCurrency(disc),
-                    valueColor: Theme.valuePrimary
-                )
-                snapshotMetric(
-                    title: "SCORE",
-                    value: formatOptionalScore(detail.health?.score),
-                    valueColor: Theme.valuePrimary
-                )
+                MetricColumn(title: "AT DISC", value: formatCurrency(disc))
+                MetricColumn(title: "SCORE", value: headerScoreText(for: detail))
                 Spacer()
             }
             .padding(.top, 10.4)
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
-        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: Theme.cardCornerRadius))
     }
 
     private func explanationCard(_ detail: DiscoveryDetailResponse) -> some View {
@@ -156,24 +134,16 @@ struct DiscoveryDetailView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 5))
                 }
                 Text(advisor)
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Theme.valuePrimary)
+                    .appStyle(.cardTitle)
                     .lineLimit(1)
             }
 
             Text(DiscoveryExplanationFormatting.attributed(from: explRaw))
-                .font(.subheadline)
-                .fontWeight(.light)
-                .foregroundStyle(Theme.valuePrimary.opacity(0.95))
-                .tint(Color(red: 0.45, green: 0.78, blue: 1.0))
+                .detailBody()
+                .tint(Theme.link)
                 .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 10)
-        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+        .cardSurface()
     }
 
     private func advisorLogoURL(_ logo: String?) -> URL? {
@@ -187,26 +157,24 @@ struct DiscoveryDetailView: View {
     private func secondaryMetaCard(_ detail: DiscoveryDetailResponse) -> some View {
         let stock = detail.stock
         return HStack(alignment: .top, spacing: 10) {
-            snapshotMetric(
+            MetricColumn(
                 title: "EXCHANGE",
                 value: normalizedMeta(stock.exchange),
                 valueColor: Theme.secondaryText
             )
-            snapshotMetric(
+            MetricColumn(
                 title: "SECTOR",
                 value: normalizedMeta(stock.sector),
                 valueColor: Theme.secondaryText
             )
-            snapshotMetric(
+            MetricColumn(
                 title: "INDUSTRY",
                 value: normalizedMeta(stock.industry),
                 valueColor: Theme.secondaryText
             )
             Spacer()
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 10)
-        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+        .cardSurface()
     }
 
     private func stockLogo(symbol: String, size: CGFloat) -> some View {
@@ -217,20 +185,6 @@ struct DiscoveryDetailView: View {
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: 5))
-    }
-
-    private func snapshotMetric(title: String, value: String, valueColor: Color) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.caption2)
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.labelAccent)
-            Text(value)
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundStyle(valueColor)
-                .lineLimit(1)
-        }
     }
 
     private func normalizedMeta(_ value: String?) -> String {
@@ -284,13 +238,6 @@ struct DiscoveryDetailView: View {
         out.dateStyle = .medium
         out.timeStyle = .short
         return out.string(from: date)
-    }
-
-    private func percentColor(for value: Double?) -> Color {
-        guard let value else { return Theme.valuePrimary }
-        if value > 0 { return .green }
-        if value < 0 { return .red }
-        return Theme.valuePrimary
     }
 
     private func load() async {

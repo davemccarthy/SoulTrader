@@ -36,7 +36,7 @@ struct TradesView: View {
                             ),
                             middleTitle: "TRADE %",
                             middleValue: formatPercent(fund.dashboard.tradePnl),
-                            middleColor: percentColor(fund.dashboard.tradePnl),
+                            middleColor: Theme.signedColor(for: fund.dashboard.tradePnl),
                             todayPercent: fund.dashboard.todayPercent
                         )
                         .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 8, trailing: 6))
@@ -47,11 +47,9 @@ struct TradesView: View {
                     if viewModel.trades.isEmpty {
                         VStack(spacing: 8) {
                             Text("No trades to show.")
-                                .font(.headline)
-                                .foregroundStyle(.white)
+                                .appStyle(.emptyStateTitle)
                             Text("Select a fund to view its trade history.")
-                                .font(.footnote)
-                                .foregroundStyle(Theme.secondaryText)
+                                .appStyle(.emptyStateMessage)
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 24)
@@ -71,7 +69,7 @@ struct TradesView: View {
                                 }
                                 .padding(.vertical, 4)
                                 .padding(.horizontal, 6)
-                                .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+                                .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: Theme.cardCornerRadius))
                             }
                             .buttonStyle(.plain)
                             .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
@@ -109,8 +107,7 @@ struct TradesView: View {
             .frame(width: 26, height: 26)
 
             Text(symbol)
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(Theme.valuePrimary)
+                .appStyle(.tickerSymbol)
                 .lineLimit(1)
         }
         .frame(width: 50, alignment: .leading)
@@ -120,16 +117,12 @@ struct TradesView: View {
         let datePrefix = tradeDatePrefix(from: trade.created)
         return VStack(alignment: .leading, spacing: 3) {
             Text(trade.stock.company ?? trade.stock.symbol)
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.valuePrimary)
+                .appStyle(.listHeadline)
                 .lineLimit(1)
                 .truncationMode(.tail)
 
             Text("\(datePrefix) - \(trade.shares) @ \(formatCurrency(decimal(from: trade.price)))")
-                .font(.caption)
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.valuePrimary)
+                .appStyle(.inlineMetricValue)
                 .lineLimit(1)
                 .truncationMode(.tail)
         }
@@ -140,27 +133,20 @@ struct TradesView: View {
         let priceDecimal = decimal(from: trade.price) ?? 0
         let total = Decimal(trade.shares) * priceDecimal
         let isBuy = trade.action.uppercased() == "BUY"
-        let actionColor: Color = isBuy ? .green : .red
-        let amountColor: Color = {
+        let actionColor: Color = isBuy ? Theme.positive : Theme.negative
+        let totalColor: Color = {
             guard !isBuy else { return Theme.valuePrimary }
             guard let cost = decimal(from: trade.cost), cost != 0 else { return Theme.valuePrimary }
-            let pnlPerShare = priceDecimal - cost
-            if pnlPerShare > 0 { return .green }
-            if pnlPerShare < 0 { return .red }
-            return Theme.valuePrimary
+            return Theme.signedColor(for: priceDecimal - cost)
         }()
 
-        return VStack(alignment: .trailing, spacing: 2) {
+        return VStack(alignment: .trailing, spacing: Theme.metricSpacing) {
             Text(formatCurrency(total))
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundStyle(amountColor)
+                .appStyle(.metricValue, color: totalColor)
                 .lineLimit(1)
 
             Text(trade.action.uppercased())
-                .font(.caption)
-                .fontWeight(.semibold)
-                .foregroundStyle(actionColor)
+                .appStyle(.inlineMetricValue, color: actionColor)
                 .lineLimit(1)
         }
         .frame(minWidth: 78, alignment: .trailing)
@@ -182,13 +168,6 @@ struct TradesView: View {
     private func formatPercent(_ value: Double?) -> String {
         guard let value else { return "0.00%" }
         return String(format: "%.2f%%", value)
-    }
-
-    private func percentColor(_ value: Double?) -> Color {
-        guard let value else { return Theme.valuePrimary }
-        if value > 0 { return .green }
-        if value < 0 { return .red }
-        return Theme.valuePrimary
     }
 
     private func equityPercent(totalValue: Double, portfolioValue: Double) -> Double? {
@@ -332,20 +311,14 @@ struct TradeDetailView: View {
     private func explanationCard(title: String, text: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.caption2)
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.labelAccent)
+                .appStyle(.metricLabel)
             Text(text)
-                .font(.subheadline)
-                .fontWeight(.medium)
-                .foregroundStyle(Theme.valuePrimary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
+                .detailBody()
         }
         .padding(.vertical, 10)
         .padding(.horizontal, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: Theme.cardCornerRadius))
     }
 
     private var headerCard: some View {
@@ -362,15 +335,11 @@ struct TradeDetailView: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("\(trade.stock.symbol) · \(trade.stock.company ?? trade.stock.symbol)")
-                        .font(.headline)
-                        .fontWeight(.bold)
-                        .foregroundStyle(.white)
+                        .appStyle(.screenHeadline)
                         .lineLimit(1)
 
                     Text(formatTradeDateTime(trade.created))
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(Theme.secondaryText)
+                        .appStyle(.screenSubline)
                         .lineLimit(1)
                 }
 
@@ -384,13 +353,13 @@ struct TradeDetailView: View {
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
-        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: Theme.cardCornerRadius))
     }
 
     private var tradeMetricsRow: some View {
         HStack(alignment: .top, spacing: 10) {
             ForEach(Array(topTradeMetricCells.enumerated()), id: \.offset) { _, cell in
-                snapshotMetric(title: cell.title, value: cell.value, valueColor: cell.color)
+                MetricColumn(title: cell.title, value: cell.value, valueColor: cell.color)
             }
             Spacer()
         }
@@ -412,8 +381,8 @@ struct TradeDetailView: View {
             return [
                 ("BUY", formatCurrency(px), Theme.valuePrimary),
                 ("CURRENT", formatCurrency(current), Theme.valuePrimary),
-                ("P&L $", pnlDollars.map(formatSignedCurrency) ?? "—", amountColor(for: pnlDollars)),
-                ("P&L %", formatPercent(pnl), percentColor(for: pnl)),
+                ("P&L $", pnlDollars.map(formatSignedCurrency) ?? "—", Theme.signedColor(for: pnlDollars)),
+                ("P&L %", formatPercent(pnl), Theme.signedColor(for: pnl)),
             ]
         case "SELL":
             let pnl = pnlPercentSell(sellPrice: px, avgCost: avgBuy)
@@ -424,8 +393,8 @@ struct TradeDetailView: View {
             return [
                 ("BUY", formatCurrency(avgBuy), Theme.valuePrimary),
                 ("SELL", formatCurrency(px), Theme.valuePrimary),
-                ("P&L $", pnlDollars.map(formatSignedCurrency) ?? "—", amountColor(for: pnlDollars)),
-                ("P&L %", formatPercent(pnl), percentColor(for: pnl)),
+                ("P&L $", pnlDollars.map(formatSignedCurrency) ?? "—", Theme.signedColor(for: pnlDollars)),
+                ("P&L %", formatPercent(pnl), Theme.signedColor(for: pnl)),
             ]
         default:
             let pnlDollars: Decimal? = {
@@ -436,8 +405,8 @@ struct TradeDetailView: View {
             return [
                 ("PRICE", formatCurrency(px), Theme.valuePrimary),
                 ("CURRENT", formatCurrency(current), Theme.valuePrimary),
-                ("P&L $", pnlDollars.map(formatSignedCurrency) ?? "—", amountColor(for: pnlDollars)),
-                ("P&L %", formatPercent(pnl), percentColor(for: pnl)),
+                ("P&L $", pnlDollars.map(formatSignedCurrency) ?? "—", Theme.signedColor(for: pnlDollars)),
+                ("P&L %", formatPercent(pnl), Theme.signedColor(for: pnl)),
             ]
         }
     }
@@ -454,45 +423,21 @@ struct TradeDetailView: View {
         }()
 
         return HStack(alignment: .top, spacing: 10) {
-            snapshotMetric(
-                title: "VALUE",
-                value: formatCurrency(value),
-                valueColor: Theme.valuePrimary
-            )
-            snapshotMetric(
+            MetricColumn(title: "VALUE", value: formatCurrency(value))
+            MetricColumn(
                 title: "EXCHANGE",
                 value: normalizedMeta(trade.stock.exchange),
                 valueColor: Theme.secondaryText
             )
-            snapshotMetric(
+            MetricColumn(
                 title: "SECTOR",
                 value: normalizedMeta(trade.stock.sector),
                 valueColor: Theme.secondaryText
             )
-            snapshotMetric(
-                title: "SHARES",
-                value: String(trade.shares),
-                valueColor: Theme.valuePrimary
-            )
+            MetricColumn(title: "SHARES", value: String(trade.shares))
             Spacer()
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 10)
-        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
-    }
-
-    private func snapshotMetric(title: String, value: String, valueColor: Color) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.caption2)
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.labelAccent)
-            Text(value)
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundStyle(valueColor)
-                .lineLimit(1)
-        }
+        .cardSurface()
     }
 
     private func pnlPercentBuy(buyPrice: Decimal?, currentPrice: Decimal?) -> Double? {
@@ -505,20 +450,6 @@ struct TradeDetailView: View {
         guard let sellPrice, let avgCost, avgCost != 0 else { return nil }
         let pct = ((sellPrice / avgCost) - 1) * 100
         return NSDecimalNumber(decimal: pct).doubleValue
-    }
-
-    private func percentColor(for value: Double?) -> Color {
-        guard let value else { return Theme.valuePrimary }
-        if value > 0 { return .green }
-        if value < 0 { return .red }
-        return Theme.valuePrimary
-    }
-
-    private func amountColor(for value: Decimal?) -> Color {
-        guard let value else { return Theme.valuePrimary }
-        if value > 0 { return .green }
-        if value < 0 { return .red }
-        return Theme.valuePrimary
     }
 
     private func normalizedMeta(_ value: String?) -> String {

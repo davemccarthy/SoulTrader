@@ -37,7 +37,7 @@ struct HoldingsView: View {
                             ),
                             middleTitle: "PORT %",
                             middleValue: formatPercent(fund.dashboard.holdingsPnl),
-                            middleColor: percentColor(fund.dashboard.holdingsPnl),
+                            middleColor: Theme.signedColor(for: fund.dashboard.holdingsPnl),
                             todayPercent: fund.dashboard.todayPercent
                         )
                             .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 8, trailing: 6))
@@ -48,11 +48,9 @@ struct HoldingsView: View {
                     if viewModel.holdings.isEmpty {
                         VStack(spacing: 8) {
                             Text("No holdings to show.")
-                                .font(.headline)
-                                .foregroundStyle(.white)
+                                .appStyle(.emptyStateTitle)
                             Text("Select a fund with holdings on the FUNDS tab.")
-                                .font(.footnote)
-                                .foregroundStyle(Theme.secondaryText)
+                                .appStyle(.emptyStateMessage)
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 24)
@@ -164,8 +162,7 @@ struct HoldingsView: View {
             .frame(width: 26, height: 26)
 
             Text(symbol)
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(Theme.valuePrimary)
+                .appStyle(.tickerSymbol)
                 .lineLimit(1)
         }
         .frame(width: 50, alignment: .leading)
@@ -180,22 +177,17 @@ struct HoldingsView: View {
 
         return VStack(alignment: .leading, spacing: 3) {
             Text(holding.stock.company ?? holding.stock.symbol)
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.valuePrimary)
+                .appStyle(.listHeadline)
                 .lineLimit(2)
                 .truncationMode(.tail)
 
             if let expl, !expl.isEmpty {
                 Text(expl)
-                    .font(.caption)
-                    .foregroundStyle(Theme.secondaryText)
+                    .appStyle(.listSubline)
                     .lineLimit(2)
             } else {
                 Text(formatCurrency(investment))
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Theme.valuePrimary)
+                    .appStyle(.inlineMetricValue)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -237,24 +229,13 @@ struct HoldingsView: View {
         let priceDecimal = decimal(from: holding.stock.price)
         let avgDecimal = decimal(from: holding.averagePrice)
         let pnlPercent = computePnlPercent(price: priceDecimal, average: avgDecimal)
-        let pnlColor: Color = {
-            guard let pnlPercent else { return Theme.valuePrimary }
-            if pnlPercent > 0 { return .green }
-            if pnlPercent < 0 { return .red }
-            return Theme.valuePrimary
-        }()
-
-        return VStack(alignment: .trailing, spacing: 2) {
+        return VStack(alignment: .trailing, spacing: Theme.metricSpacing) {
             Text(formatCurrency(priceDecimal))
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.valuePrimary)
+                .appStyle(.metricValue)
                 .lineLimit(1)
 
             Text(formatPercent(pnlPercent))
-                .font(.caption)
-                .fontWeight(.semibold)
-                .foregroundStyle(pnlColor)
+                .appStyle(.inlineMetricValue, color: Theme.signedColor(for: pnlPercent))
                 .lineLimit(1)
         }
         .frame(minWidth: 62, alignment: .trailing)
@@ -282,13 +263,6 @@ struct HoldingsView: View {
     private func formatPercent(_ value: Double?) -> String {
         guard let value else { return "0.00%" }
         return String(format: "%.2f%%", value)
-    }
-
-    private func percentColor(_ value: Double?) -> Color {
-        guard let value else { return Theme.valuePrimary }
-        if value > 0 { return .green }
-        if value < 0 { return .red }
-        return Theme.valuePrimary
     }
 
     private func equityPercent(totalValue: Double, portfolioValue: Double) -> Double? {
@@ -359,6 +333,7 @@ struct HoldingDetailView: View {
     @ObservedObject var viewModel: AuthViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var healthHistory: [HealthHistoryRecord] = []
+    @State private var holdingScoring: DiscoveryScoring?
     @State private var sharePricePoints: [StockPriceChartPoint] = []
 
     var body: some View {
@@ -372,7 +347,11 @@ struct HoldingDetailView: View {
                 )
                 secondaryMetaCard
                 discoveryCard
-                healthSection
+                AssessmentAndHealthSectionView(
+                    scoring: holdingScoring,
+                    healthRecords: healthHistory,
+                    emptyMessage: "No health checks recorded yet."
+                )
             }
             .padding(.horizontal, 6)
             .padding(.top, 6)
@@ -382,32 +361,12 @@ struct HoldingDetailView: View {
         .navigationTitle("")
         .navigationBarBackButtonHidden(true)
         .task(id: holding.id) {
-            async let health = viewModel.loadHoldingHealthHistory(stockId: holding.stockId)
+            async let panel = viewModel.loadHoldingHealthHistory(stockId: holding.stockId)
             async let prices = viewModel.fetchTradeSymbolPriceHistory(symbol: holding.stock.symbol)
-            healthHistory = await health
+            let loaded = await panel
+            healthHistory = loaded.history
+            holdingScoring = loaded.scoring
             sharePricePoints = await prices
-        }
-    }
-
-    private var healthSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if healthHistory.isEmpty {
-                Text("No health checks recorded yet.")
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Theme.secondaryText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 8)
-                    .padding(.horizontal, 10)
-                    .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
-            } else {
-                ForEach(Array(healthHistory.enumerated()), id: \.element.id) { index, record in
-                    HealthHistoryRecordCard(
-                        record: record,
-                        checkNumber: healthHistory.count > 1 ? index + 1 : nil
-                    )
-                }
-            }
         }
     }
 
@@ -425,24 +384,16 @@ struct HoldingDetailView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 5))
                 }
                 Text(advisor)
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Theme.valuePrimary)
+                    .appStyle(.cardTitle)
                     .lineLimit(1)
             }
 
             Text(DiscoveryExplanationFormatting.attributed(from: holding.discoveryExplanation))
-                .font(.subheadline)
-                .fontWeight(.light)
-                .foregroundStyle(Theme.valuePrimary.opacity(0.95))
-                .tint(Color(red: 0.45, green: 0.78, blue: 1.0))
+                .detailBody()
+                .tint(Theme.link)
                 .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 10)
-        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+        .cardSurface()
     }
 
     private var discoveryLogoURL: URL? {
@@ -474,15 +425,11 @@ struct HoldingDetailView: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("\(holding.stock.symbol) · \(holding.stock.company ?? holding.stock.symbol)")
-                        .font(.headline)
-                        .fontWeight(.bold)
-                        .foregroundStyle(.white)
+                        .appStyle(.screenHeadline)
                         .lineLimit(1)
 
                     Text(normalizedMeta(holding.stock.industry))
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(Theme.secondaryText)
+                        .appStyle(.screenSubline)
                         .lineLimit(1)
                 }
 
@@ -492,25 +439,17 @@ struct HoldingDetailView: View {
             }
 
             HStack(alignment: .top, spacing: 10) {
-                snapshotMetric(
-                    title: "BUY",
-                    value: formatCurrency(average),
-                    valueColor: Theme.valuePrimary
-                )
-                snapshotMetric(
-                    title: "CURRENT",
-                    value: formatCurrency(current),
-                    valueColor: Theme.valuePrimary
-                )
-                snapshotMetric(
+                MetricColumn(title: "BUY", value: formatCurrency(average))
+                MetricColumn(title: "CURRENT", value: formatCurrency(current))
+                MetricColumn(
                     title: "P&L $",
                     value: formatSignedCurrency(pnlAmount),
-                    valueColor: amountColor(for: pnlAmount)
+                    valueColor: Theme.signedColor(for: pnlAmount)
                 )
-                snapshotMetric(
+                MetricColumn(
                     title: "P&L %",
                     value: formatPercent(pnlPercent),
-                    valueColor: percentColor(for: pnlPercent)
+                    valueColor: Theme.signedColor(for: pnlPercent)
                 )
                 Spacer()
             }
@@ -518,7 +457,7 @@ struct HoldingDetailView: View {
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
-        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: Theme.cardCornerRadius))
     }
 
     private var secondaryMetaCard: some View {
@@ -526,31 +465,21 @@ struct HoldingDetailView: View {
         let shares = Decimal(holding.shares)
         let value = (current ?? 0) * shares
         return HStack(alignment: .top, spacing: 10) {
-            snapshotMetric(
-                title: "VALUE",
-                value: formatCurrency(value),
-                valueColor: Theme.valuePrimary
-            )
-            snapshotMetric(
+            MetricColumn(title: "VALUE", value: formatCurrency(value))
+            MetricColumn(
                 title: "EXCHANGE",
                 value: normalizedMeta(holding.stock.exchange),
                 valueColor: Theme.secondaryText
             )
-            snapshotMetric(
+            MetricColumn(
                 title: "SECTOR",
                 value: normalizedMeta(holding.stock.sector),
                 valueColor: Theme.secondaryText
             )
-            snapshotMetric(
-                title: "SHARES",
-                value: String(holding.shares),
-                valueColor: Theme.valuePrimary
-            )
+            MetricColumn(title: "SHARES", value: String(holding.shares))
             Spacer()
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 10)
-        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+        .cardSurface()
     }
 
     private func imageTickerPair(symbol: String) -> some View {
@@ -563,8 +492,7 @@ struct HoldingDetailView: View {
             .frame(width: 30, height: 30)
 
             Text(symbol)
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(Theme.valuePrimary)
+                .appStyle(.tickerSymbol)
                 .lineLimit(1)
         }
         .frame(width: 54, alignment: .leading)
@@ -580,39 +508,11 @@ struct HoldingDetailView: View {
         .clipShape(RoundedRectangle(cornerRadius: 5))
     }
 
-    private func snapshotMetric(title: String, value: String, valueColor: Color) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.caption2)
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.labelAccent)
-            Text(value)
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundStyle(valueColor)
-                .lineLimit(1)
-        }
-    }
-
     private func normalizedMeta(_ value: String?) -> String {
         guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return "—"
         }
         return value
-    }
-
-    private func percentColor(for value: Double?) -> Color {
-        guard let value else { return Theme.valuePrimary }
-        if value > 0 { return .green }
-        if value < 0 { return .red }
-        return Theme.valuePrimary
-    }
-
-    private func amountColor(for value: Decimal?) -> Color {
-        guard let value else { return Theme.valuePrimary }
-        if value > 0 { return .green }
-        if value < 0 { return .red }
-        return Theme.valuePrimary
     }
 
     private func decimal(from text: String?) -> Decimal? {

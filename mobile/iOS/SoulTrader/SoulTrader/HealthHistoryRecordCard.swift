@@ -10,20 +10,14 @@ struct HealthHistoryRecordCard: View {
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Text(checkTitle)
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Theme.labelAccent)
+                    .appStyle(.cardTitle)
                 Spacer()
                 Text(String(format: "Score %.1f", record.score))
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Theme.valuePrimary)
+                    .appStyle(.metricValue)
             }
 
             Text(formatHealthDate(record.created))
-                .font(.subheadline)
-                .fontWeight(.light)
-                .foregroundStyle(Theme.secondaryText)
+                .appStyle(.detailMeta)
 
             if record.renderKind == "edgar", record.hasEdgarStructuredPayload {
                 edgarStructuredHealthSections()
@@ -31,9 +25,7 @@ struct HealthHistoryRecordCard: View {
                 advisorHealthSections()
             }
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 10)
-        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+        .cardSurface()
     }
 
     @ViewBuilder
@@ -44,30 +36,20 @@ struct HealthHistoryRecordCard: View {
         let penalties = record.meta?.penalties ?? []
 
         Text("EDGAR Ex-99")
-            .font(.subheadline)
-            .fontWeight(.semibold)
-            .foregroundStyle(Theme.labelAccent)
+            .appStyle(.cardTitle)
 
         let justificationPairs = edgarJustificationParagraphs(ex?.justifications)
         if justificationPairs.isEmpty {
             Text("No EX-99 justifications.")
-                .font(.subheadline)
-                .fontWeight(.light)
-                .foregroundStyle(Theme.secondaryText)
+                .appStyle(.detailBodyMuted)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else {
             ForEach(Array(justificationPairs.enumerated()), id: \.offset) { _, pair in
                 VStack(alignment: .leading, spacing: 2) {
                     Text("\(pair.0):")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(Theme.labelAccent)
+                        .appStyle(.detailFieldLabel)
                     Text(pair.1)
-                        .font(.subheadline)
-                        .fontWeight(.light)
-                        .foregroundStyle(Theme.valuePrimary.opacity(0.92))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .detailBody()
                 }
             }
         }
@@ -84,18 +66,12 @@ struct HealthHistoryRecordCard: View {
 
         if media?.hasStructuredContent == true {
             Text("EDGAR Media")
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.labelAccent)
+                .appStyle(.cardTitle)
                 .padding(.top, 10)
 
             if let s = media?.summary?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty {
                 Text(s)
-                    .font(.subheadline)
-                    .fontWeight(.light)
-                    .foregroundStyle(Theme.valuePrimary.opacity(0.92))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .detailBody()
             }
 
             edgarKeyValueRow(label: "Sentiment", value: media?.sentiment)
@@ -108,16 +84,12 @@ struct HealthHistoryRecordCard: View {
         }
 
         Text("Bonuses / Penalties")
-            .font(.subheadline)
-            .fontWeight(.semibold)
-            .foregroundStyle(Theme.labelAccent)
+            .appStyle(.cardTitle)
             .padding(.top, 10)
 
         if bonuses.isEmpty && penalties.isEmpty {
             Text("No bonuses or penalties.")
-                .font(.subheadline)
-                .fontWeight(.light)
-                .foregroundStyle(Theme.secondaryText)
+                .appStyle(.detailBodyMuted)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else {
             edgarBulletList(title: "Bonuses", items: bonuses, maxItems: 6)
@@ -161,15 +133,9 @@ struct HealthHistoryRecordCard: View {
         if trimmed.isEmpty { EmptyView() } else {
             VStack(alignment: .leading, spacing: 2) {
                 Text("\(label):")
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Theme.labelAccent)
+                    .appStyle(.detailFieldLabel)
                 Text(trimmed)
-                    .font(.subheadline)
-                    .fontWeight(.light)
-                    .foregroundStyle(Theme.valuePrimary.opacity(0.92))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .detailBody()
             }
         }
     }
@@ -179,22 +145,17 @@ struct HealthHistoryRecordCard: View {
         let trimmed = items.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         if trimmed.isEmpty { EmptyView() } else {
             Text("\(title):")
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.labelAccent)
+                .appStyle(.detailFieldLabel)
                 .padding(.top, 4)
             let shown = Array(trimmed.prefix(maxItems))
             ForEach(Array(shown.enumerated()), id: \.offset) { _, line in
                 Text("• \(line)")
-                    .font(.subheadline)
-                    .fontWeight(.light)
-                    .foregroundStyle(Theme.secondaryText)
+                    .appStyle(.detailBodyMuted)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             if trimmed.count > shown.count {
                 Text("… +\(trimmed.count - shown.count) more")
-                    .font(.caption)
-                    .foregroundStyle(Theme.secondaryText)
+                    .appStyle(.listSubline)
             }
         }
     }
@@ -214,9 +175,7 @@ struct HealthHistoryRecordCard: View {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(Array(record.overlayReasons.enumerated()), id: \.offset) { _, reason in
                         Text("• \(reason)")
-                            .font(.subheadline)
-                            .fontWeight(.light)
-                            .foregroundStyle(Theme.secondaryText)
+                            .appStyle(.detailBodyMuted)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
@@ -234,11 +193,7 @@ struct HealthHistoryRecordCard: View {
             healthMetricRow(label: "Recommendation", value: record.geminiRec?.display)
             if let gem = record.geminiExplanation?.display, gem != "—" {
                 Text(gem)
-                    .font(.subheadline)
-                    .fontWeight(.light)
-                    .foregroundStyle(Theme.valuePrimary.opacity(0.95))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .detailBody()
             }
         }
     }
@@ -246,14 +201,10 @@ struct HealthHistoryRecordCard: View {
     private func healthMetricRow(label: String, value: String?) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Text(label)
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.labelAccent)
+                .appStyle(.detailRowLabel)
             Spacer()
             Text(value ?? "—")
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.valuePrimary)
+                .appStyle(.detailRowValue)
                 .multilineTextAlignment(.trailing)
         }
     }

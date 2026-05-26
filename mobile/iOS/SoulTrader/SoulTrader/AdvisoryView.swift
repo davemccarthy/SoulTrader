@@ -20,13 +20,11 @@ struct AdvisoryView: View {
                         .tint(.white)
                 } else if let loadError {
                     Text(loadError)
-                        .font(.footnote)
-                        .foregroundStyle(Theme.secondaryText)
+                        .appStyle(.emptyStateMessage)
                         .padding()
                 } else if advisors.isEmpty {
                     Text("No advisors for this fund.")
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.secondaryText)
+                        .appStyle(.emptyStateMessage)
                         .padding()
                 } else {
                     List {
@@ -104,20 +102,16 @@ struct AdvisoryView: View {
                 .frame(width: 44, height: 44)
             VStack(alignment: .leading, spacing: 4) {
                 Text(row.name)
-                    .font(.headline)
-                    .foregroundStyle(Theme.valuePrimary)
+                    .appStyle(.listHeadline)
                 if !row.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text(row.description.trimmingCharacters(in: .whitespacesAndNewlines))
-                        .font(.caption)
-                        .foregroundStyle(Theme.secondaryText)
+                        .appStyle(.listSubline)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let s = stats {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("\(s.trades) \(s.trades == 1 ? "buy" : "buys") · \(String(format: "%.0f%%", s.winRate)) win")
-                            .font(.caption2)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(Theme.labelAccent)
+                            .appStyle(.metricLabel)
                         AdvisorWinRateBar(winRate: s.winRate)
                             .frame(maxWidth: 200)
                     }
@@ -125,20 +119,15 @@ struct AdvisoryView: View {
                 }
             }
             Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 2) {
-                Text("DISCOVERED")
-                    .font(.caption2)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Theme.labelAccent)
-                Text("\(row.discoveryCount)")
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Theme.valuePrimary)
-            }
+            MetricColumn(
+                title: "DISCOVERED",
+                value: "\(row.discoveryCount)",
+                alignment: .trailing
+            )
             .frame(minWidth: 44, alignment: .trailing)
         }
         .padding(10)
-        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: Theme.cardCornerRadius))
     }
 
     @ViewBuilder
@@ -250,13 +239,11 @@ struct AdvisorDiscoveriesView: View {
                     ProgressView().tint(.white)
                 } else if let loadError {
                     Text(loadError)
-                        .font(.footnote)
-                        .foregroundStyle(Theme.secondaryText)
+                        .appStyle(.emptyStateMessage)
                         .padding()
                 } else if discoveries.isEmpty {
                     Text("No discoveries yet.")
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.secondaryText)
+                        .appStyle(.emptyStateMessage)
                         .padding()
                 } else {
                     List {
@@ -302,16 +289,12 @@ struct AdvisorDiscoveriesView: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(advisorName)
-                        .font(.headline)
-                        .fontWeight(.bold)
-                        .foregroundStyle(.white)
+                        .appStyle(.screenHeadline)
                         .lineLimit(2)
 
                     if !desc.isEmpty {
                         Text(desc)
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(Theme.secondaryText)
+                            .appStyle(.screenSubline)
                             .lineLimit(4)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -333,57 +316,36 @@ struct AdvisorDiscoveriesView: View {
         let winRate = advisorStats?.winRate
         let pnlPct = advisorStats?.gainLossPct
         return HStack(alignment: .top, spacing: 10) {
-            discoverySummaryMetric(
+            MetricColumn(
                 title: "FINDS",
                 value: String(discoveries.count),
-                valueColor: Theme.valuePrimary
+                expands: true
             )
-            discoverySummaryMetric(
+            MetricColumn(
                 title: "BUYS",
                 value: buys.map(String.init) ?? "—",
-                valueColor: Theme.valuePrimary
+                expands: true
             )
-            discoverySummaryMetric(
+            MetricColumn(
                 title: "WINS",
                 value: winRate.map { String(format: "%.0f%%", $0) } ?? "—",
-                valueColor: Theme.valuePrimary
+                expands: true
             )
-            discoverySummaryMetric(
+            MetricColumn(
                 title: "P&L %",
                 value: pnlPct.map(formatPnlPercent) ?? "—",
-                valueColor: pnlPercentColor(pnlPct)
+                valueColor: Theme.signedColor(for: pnlPct),
+                expands: true
             )
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 10)
-        .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardSurface()
     }
 
-    private func discoverySummaryMetric(title: String, value: String, valueColor: Color) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.caption2)
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.labelAccent)
-            Text(value)
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundStyle(valueColor)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
 
     private func formatPnlPercent(_ pct: Double) -> String {
         let sign = pct > 0 ? "+" : ""
         return "\(sign)\(String(format: "%.1f", pct))%"
-    }
-
-    private func pnlPercentColor(_ pct: Double?) -> Color {
-        guard let pct else { return Theme.valuePrimary }
-        if pct > 0 { return .green }
-        if pct < 0 { return .red }
-        return Theme.valuePrimary
     }
 
     @ViewBuilder
@@ -414,21 +376,18 @@ struct AdvisorDiscoveriesView: View {
             discoveryImageTicker(symbol: row.stock.symbol)
             VStack(alignment: .leading, spacing: 3) {
                 Text(primaryTitle(for: row.stock))
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Theme.valuePrimary)
+                    .appStyle(.listHeadline)
                     .lineLimit(2)
                 let expl = row.explanationLine.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !expl.isEmpty {
                     Text(expl)
-                        .font(.caption)
-                        .foregroundStyle(Theme.secondaryText)
+                        .appStyle(.listSubline)
                         .lineLimit(2)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Spacer(minLength: 4)
-            healthScoreColumn(health: row.healthScore)
+            healthScoreColumn(scoreText: row.listScoreText)
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 6)
@@ -451,35 +410,15 @@ struct AdvisorDiscoveriesView: View {
             .frame(width: 26, height: 26)
 
             Text(symbol)
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(Theme.valuePrimary)
+                .appStyle(.tickerSymbol)
                 .lineLimit(1)
         }
         .frame(width: 50, alignment: .leading)
     }
 
-    private func healthScoreColumn(health: Double?) -> some View {
-        VStack(alignment: .trailing, spacing: 2) {
-            Text("SCORE")
-                .font(.caption2)
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.labelAccent)
-            Text(formatOptionalScore(health))
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.valuePrimary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-        }
-        .frame(minWidth: 56, alignment: .trailing)
-    }
-
-    private func formatOptionalScore(_ v: Double?) -> String {
-        guard let v else { return "—" }
-        if abs(v) < 1e-9 {
-            return "AVOID"
-        }
-        return String(format: "%.1f", v)
+    private func healthScoreColumn(scoreText: String) -> some View {
+        MetricColumn(title: "SCORE", value: scoreText, alignment: .trailing)
+            .frame(minWidth: 56, alignment: .trailing)
     }
 
     private func load() async {
