@@ -1044,8 +1044,8 @@ final class AuthViewModel: ObservableObject {
     var activeHistory: [WealthChartPoint] { selectedTab == .funds ? globalHistory : selectedFundHistory }
     var totalPercentTitle: String {
         switch returnPercentMode {
-        case .total: return "TOTAL %"
-        case .invested: return "INVST %"
+        case .total: return "PROFIT"
+        case .invested: return "INVST"
         }
     }
 
@@ -1397,7 +1397,7 @@ struct FundSummaryCard: View {
     var body: some View {
         SummaryMetricCard(items: [
             SummaryMetricItem(
-                title: "WEALTH",
+                title: "PORTFOLIO",
                 value: formatCurrency(fund.dashboard.totalValue),
                 color: Theme.valuePrimary,
                 alignment: .leading
@@ -1409,7 +1409,7 @@ struct FundSummaryCard: View {
                 alignment: .trailing
             ),
             SummaryMetricItem(
-                title: "PORTFOLIO",
+                title: "HOLDINGS",
                 value: formatCurrency(fund.dashboard.holdingsMarketValue),
                 color: Theme.signedColor(for: fund.dashboard.holdingsPnl),
                 alignment: .trailing
@@ -1444,8 +1444,8 @@ struct FundSummaryCard: View {
 
 }
 
-/// Advisory tab strip: matches `FundSecondarySummaryCard` alignment (leading first column, trailing others).
-struct AdvisoryTopSummaryCard: View {
+/// Advisory scoreboard (lookback winners/losers); shown below advisor list on Advisory tab.
+struct AdvisoryScoreboardCard: View {
     let advisorCount: Int
     let winners: Int
     let losers: Int
@@ -1538,7 +1538,7 @@ struct GlobalSummaryCard: View {
     var body: some View {
         SummaryMetricCard(items: [
             SummaryMetricItem(
-                title: "WEALTH",
+                title: "PORTFOLIO",
                 value: formatCurrency(dashboard.totalValue),
                 color: Theme.valuePrimary,
                 alignment: .leading
@@ -1550,7 +1550,7 @@ struct GlobalSummaryCard: View {
                 alignment: .trailing
             ),
             SummaryMetricItem(
-                title: "PORTFOLIO",
+                title: "HOLDINGS",
                 value: formatCurrency(dashboard.holdingsMarketValue),
                 color: Theme.signedColor(for: dashboard.holdingsPnl),
                 alignment: .trailing

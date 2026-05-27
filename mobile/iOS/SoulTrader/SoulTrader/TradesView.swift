@@ -34,7 +34,7 @@ struct TradesView: View {
                                 totalValue: fund.dashboard.totalValue,
                                 portfolioValue: fund.dashboard.holdingsMarketValue
                             ),
-                            middleTitle: "TRADE %",
+                            middleTitle: "TRADE",
                             middleValue: formatPercent(fund.dashboard.tradePnl),
                             middleColor: Theme.signedColor(for: fund.dashboard.tradePnl),
                             todayPercent: fund.dashboard.todayPercent

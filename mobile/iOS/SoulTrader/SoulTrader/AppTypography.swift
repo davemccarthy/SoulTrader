@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Semantic text styles — single source of truth for fonts, weights, and default colors.
 enum AppTextStyle {
-    /// Uppercase metric label (CURRENT, SCORE, WEALTH).
+    /// Uppercase metric label (CURRENT, SCORE, PORTFOLIO).
     case metricLabel
     /// Metric value under a label.
     case metricValue

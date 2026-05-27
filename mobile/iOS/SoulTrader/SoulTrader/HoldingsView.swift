@@ -35,7 +35,7 @@ struct HoldingsView: View {
                                 totalValue: fund.dashboard.totalValue,
                                 portfolioValue: fund.dashboard.holdingsMarketValue
                             ),
-                            middleTitle: "PORT %",
+                            middleTitle: "HOLD",
                             middleValue: formatPercent(fund.dashboard.holdingsPnl),
                             middleColor: Theme.signedColor(for: fund.dashboard.holdingsPnl),
                             todayPercent: fund.dashboard.todayPercent

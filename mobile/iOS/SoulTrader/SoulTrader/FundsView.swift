@@ -53,13 +53,13 @@ struct FundsView: View {
                         .frame(width: 64, alignment: .leading)
 
                         MetricColumn(
-                            title: "WEALTH",
+                            title: "PORTFOLIO",
                             value: formatCurrency(fund.dashboard.totalValue)
                         )
                         .frame(width: 128, alignment: .leading)
 
                         MetricColumn(
-                            title: "PORTFOLIO",
+                            title: "HOLDINGS",
                             value: formatCurrency(fund.dashboard.holdingsMarketValue),
                             valueColor: Theme.signedColor(for: fund.dashboard.holdingsPnl),
                             alignment: .trailing,

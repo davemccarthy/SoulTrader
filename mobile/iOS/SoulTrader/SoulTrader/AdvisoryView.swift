@@ -14,53 +14,78 @@ struct AdvisoryView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            Group {
-                if isLoading && advisors.isEmpty && loadError == nil {
-                    ProgressView()
-                        .tint(.white)
-                } else if let loadError {
-                    Text(loadError)
-                        .appStyle(.emptyStateMessage)
-                        .padding()
-                } else if advisors.isEmpty {
-                    Text("No advisors for this fund.")
-                        .appStyle(.emptyStateMessage)
-                        .padding()
-                } else {
-                    List {
-                        AdvisoryTopSummaryCard(
-                            advisorCount: advisors.count,
-                            winners: statsByAdvisorId.values.reduce(0) { $0 + $1.winners },
-                            losers: statsByAdvisorId.values.reduce(0) { $0 + $1.losers },
-                            lookbackDays: selectedLookbackDays,
-                            onTapLookback: cycleLookback
-                        )
-                        .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 8, trailing: 6))
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
-
-                        ForEach(advisors) { row in
-                            Button {
-                                path.append(
-                                    AdvisorNav(
-                                        id: row.id,
-                                        name: row.name,
-                                        description: row.description,
-                                        imageUrl: row.imageUrl
-                                    )
-                                )
-                            } label: {
-                                advisorRow(row, stats: statsByAdvisorId[row.id])
-                            }
-                            .buttonStyle(.plain)
-                            .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
+            VStack(spacing: 8) {
+                if let fund = viewModel.selectedFund {
+                    FundSummaryCard(
+                        fund: fund,
+                        totalPercentTitle: viewModel.totalPercentTitle,
+                        totalPercentValue: viewModel.totalPercentValue(for: fund.dashboard),
+                        onTap: {
+                            viewModel.toggleReturnPercentMode()
                         }
-                    }
-                    .listStyle(.plain)
-                    .scrollContentBackground(.hidden)
+                    )
+                    .padding(.horizontal, 6)
+                    .padding(.top, 6)
                 }
+
+                if loadError == nil, !advisors.isEmpty {
+                    AdvisoryScoreboardCard(
+                        advisorCount: advisors.count,
+                        winners: statsByAdvisorId.values.reduce(0) { $0 + $1.winners },
+                        losers: statsByAdvisorId.values.reduce(0) { $0 + $1.losers },
+                        lookbackDays: selectedLookbackDays,
+                        onTapLookback: cycleLookback
+                    )
+                    .padding(.horizontal, 6)
+                }
+
+                Group {
+                    if isLoading && advisors.isEmpty && loadError == nil {
+                        ProgressView()
+                            .tint(.white)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        List {
+                            if let loadError {
+                                Text(loadError)
+                                    .appStyle(.emptyStateMessage)
+                                    .frame(maxWidth: .infinity, alignment: .center)
+                                    .listRowInsets(EdgeInsets(top: 16, leading: 8, bottom: 16, trailing: 8))
+                                    .listRowBackground(Color.clear)
+                                    .listRowSeparator(.hidden)
+                            } else if advisors.isEmpty {
+                                Text("No advisors for this fund.")
+                                    .appStyle(.emptyStateMessage)
+                                    .frame(maxWidth: .infinity, alignment: .center)
+                                    .listRowInsets(EdgeInsets(top: 16, leading: 8, bottom: 16, trailing: 8))
+                                    .listRowBackground(Color.clear)
+                                    .listRowSeparator(.hidden)
+                            } else {
+                                ForEach(advisors) { row in
+                                    Button {
+                                        path.append(
+                                            AdvisorNav(
+                                                id: row.id,
+                                                name: row.name,
+                                                description: row.description,
+                                                imageUrl: row.imageUrl
+                                            )
+                                        )
+                                    } label: {
+                                        advisorRow(row, stats: statsByAdvisorId[row.id])
+                                    }
+                                    .buttonStyle(.plain)
+                                    .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
+                                    .listRowBackground(Color.clear)
+                                    .listRowSeparator(.hidden)
+                                }
+                            }
+                        }
+                        .listStyle(.plain)
+                        .scrollContentBackground(.hidden)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.appBackground)
