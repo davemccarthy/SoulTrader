@@ -25,6 +25,10 @@ Optional env:
     BIZFEED_LLM_MAX             (optional) — if set to a positive integer, cap LLM calls per run; default = all tagged catalyst rows
     BIZFEED_SKIP_NATIONAL_EXCHANGE_CHECK — set 1/true to log OTC/non-national tickers instead of rejecting (debug only)
     BIZFEED_DISCOVER         — default 1; set 0/false/off to skip Discovery creation (LLM + listing logs still run)
+    BIZFEED_FETCH_ARTICLE    — default 1; set 0/false/off to skip HTTP fetch of link HTML for LLM input
+    BIZFEED_ARTICLE_MAX_CHARS — max chars of fetched body in LLM INPUT (default 12000)
+    BIZFEED_LLM_LOG_DETAIL   — set 1/true/on to log materiality/significance/surprise reasons and catalyst_facts
+    BIZFEED_EARNINGS_DENSITY_MIN — minimum metric-density hits before LLM on earnings rows (default 5)
 
 After a valid LLM JSON + national listing: allow_discovery(symbol, 24h) then discovered() (same pattern as PHARM).
 
@@ -109,7 +113,7 @@ _DEFAULT_LIMIT_PER_FEED = 50
 _LOG_ROW_SAMPLE = 60
 _LOG_UNCATEGORIZED_SAMPLE = 25
 
-# Catalyst buckets (substring match on title + summary, lowercased). Order = reporting priority.
+# Catalyst buckets (title + summary heuristics). Order = reporting priority.
 BIZFEED_CATEGORY_ORDER: tuple[str, ...] = (
     "earnings",
     "ma",
@@ -243,6 +247,47 @@ BIZFEED_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
 
 _CATEGORY_RANK = {k: i for i, k in enumerate(BIZFEED_CATEGORY_ORDER)}
 
+# Regex patterns complement keyword lists for common phrasing variants.
+BIZFEED_CATEGORY_REGEX: dict[str, tuple[str, ...]] = {
+    "earnings": (
+        r"\breports?\s+(?:[a-z]+\s+){0,3}(?:first|second|third|fourth|q[1-4])\s+(?:quarter|qtr)\s+(?:fiscal\s+)?(?:\d{4}\s+)?results?\b",
+        r"\b(?:announces?|reported?)\s+(?:[a-z]+\s+){0,2}(?:unaudited\s+)?(?:first|second|third|fourth|q[1-4])\s+(?:quarter|qtr)\s+(?:\d{4}\s+)?(?:financial\s+)?results?\b",
+        r"\b(?:q[1-4]|first quarter|second quarter|third quarter|fourth quarter)\b.*\b(?:revenue|eps|earnings|financial results?)\b",
+    ),
+    "ma": (
+        r"\b(?:definitive\s+)?(?:merger|business combination)\s+agreement\b",
+        r"\bto\s+list\s+on\s+the\s+nasdaq\s+through\s+a\s+merger\b",
+        r"\bacquires?\b",
+    ),
+}
+
+_BIZFEED_MA_STRONG_TITLE_MARKERS: tuple[str, ...] = (
+    "acquires ",
+    "acquisition of",
+    "to acquire ",
+    "will acquire ",
+    "merger agreement",
+    "business combination",
+    "definitive agreement",
+    "to list on the nasdaq through a merger",
+    "tender offer",
+    "going private",
+    "take-private",
+)
+
+_BIZFEED_EARNINGS_DENSITY_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("percent", r"\b\d+(?:\.\d+)?\s*%"),
+    ("money", r"\b(?:usd|us\$|\$|rmb|eur|gbp|cad|aud)\s*\d"),
+    ("scale", r"\b\d+(?:\.\d+)?\s*(?:million|billion|bn|m)\b"),
+    ("yoy_qoq", r"\b(?:yoy|qoq|year[- ]over[- ]year|quarter[- ]over[- ]quarter)\b"),
+    ("period", r"\b(?:q[1-4]|first quarter|second quarter|third quarter|fourth quarter|fiscal)\b"),
+    ("revenue", r"\b(?:revenue|revenues|sales)\b"),
+    ("profit_loss", r"\b(?:net income|net loss|operating income|operating loss)\b"),
+    ("margin", r"\b(?:gross margin|operating margin|ebitda margin)\b"),
+    ("eps", r"\b(?:eps|earnings per share)\b"),
+    ("guide", r"\b(?:guidance|outlook)\b"),
+)
+
 # --- LLM: shared schema + per-category task text (routed by categories[0]) ---
 
 TASK_BIZFEED_EARNINGS = "BIZFEED_TASK_EARNINGS"
@@ -370,6 +415,8 @@ PRIMARY_CATALYST:
 
 EVIDENCE RULE:
 - Base every field ONLY on INPUT. Do not use outside knowledge, tickers not in the text, or imagined figures.
+- When INPUT.article_body is present, treat it as the primary source (full press release fetched from link); use title/summary as supplemental.
+- When article_body is absent, rely on title and summary only.
 - ticker_symbol: use a bare symbol only (e.g. AIRS, MSBI). If the text shows an exchange prefix like "NASDAQ: AIRS" or "NYSE: X",
   strip the prefix and return just the letters; if no symbol is stated, use null. Never invent a ticker.
 - If the article omits key facts, set insufficient_event_info=true and use nulls where allowed.
@@ -641,6 +688,96 @@ def _bizfeed_discovery_gate_fail(parsed: dict[str, Any]) -> str | None:
         return f"company={company_txt}, impact_direction is not bullish -> gate fail"
 
     return None
+
+
+def _bizfeed_llm_log_detail_enabled() -> bool:
+    return (os.getenv("BIZFEED_LLM_LOG_DETAIL") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _bizfeed_log_llm_result(
+    *,
+    index: int,
+    batch_size: int,
+    task_key: str,
+    model: str | None,
+    row: dict[str, Any],
+    parsed: dict[str, Any] | None,
+    json_fails: list[str] | None = None,
+    gate_fail: str | None = None,
+) -> None:
+    """Log LLM verdict for every catalyst row (including gate/json failures)."""
+    link = (row.get("link") or "").strip()
+    title = (row.get("title") or "").strip()
+    prefix = f"BIZFEED_LLM result {index}/{batch_size}"
+
+    if parsed is None:
+        logger.info(
+            "%s | model=%s | status=parse_failed | task=%s | title=%r | link=%s",
+            prefix,
+            model or "—",
+            task_key,
+            title[:120],
+            link or "—",
+        )
+        for reason in json_fails or []:
+            logger.info("%s | json: %s", prefix, reason)
+        return
+
+    if json_fails:
+        status = "json_invalid"
+    elif gate_fail:
+        status = "gate_fail"
+    else:
+        status = "gate_pass"
+
+    conf = parsed.get("confidence")
+    conf_txt = f"{float(conf):.2f}" if isinstance(conf, (int, float)) else conf
+
+    logger.info(
+        "%s | model=%s | status=%s | task=%s | company=%r ticker=%r | "
+        "outcome=%s dir=%s mag=%s | mat=%s sig=%s sur=%s conf=%s insufficient=%s | "
+        "summary=%s | title=%r | link=%s",
+        prefix,
+        model or "—",
+        status,
+        task_key,
+        parsed.get("company_name"),
+        parsed.get("ticker_symbol"),
+        parsed.get("event_outcome"),
+        parsed.get("impact_direction"),
+        parsed.get("impact_magnitude"),
+        parsed.get("materiality_score"),
+        parsed.get("significance_score"),
+        parsed.get("surprise_score"),
+        conf_txt,
+        parsed.get("insufficient_event_info"),
+        (parsed.get("summary") or "")[:320],
+        title[:120],
+        link or "—",
+    )
+
+    if gate_fail:
+        logger.info("%s | gate: %s", prefix, gate_fail)
+
+    if json_fails:
+        for reason in json_fails:
+            logger.info("%s | json: %s", prefix, reason)
+
+    if _bizfeed_llm_log_detail_enabled() and isinstance(parsed, dict):
+        for field in (
+            "materiality_reason",
+            "significance_reason",
+            "surprise_reason",
+            "catalyst_facts",
+        ):
+            val = parsed.get(field)
+            if isinstance(val, str) and val.strip():
+                logger.info("%s | %s: %s", prefix, field, val.strip()[:600])
 
 
 def _bizfeed_skip_national_exchange_check() -> bool:
@@ -942,16 +1079,223 @@ def _clean_title(title: str) -> str:
     return " ".join(text.split()).strip()
 
 
+def _bizfeed_earnings_density_min() -> int:
+    raw = (os.getenv("BIZFEED_EARNINGS_DENSITY_MIN") or "5").strip()
+    try:
+        return max(1, min(12, int(raw)))
+    except ValueError:
+        return 5
+
+
+def _bizfeed_metric_density(text: str) -> tuple[int, list[str]]:
+    hits: list[str] = []
+    blob = (text or "").lower()
+    if not blob:
+        return 0, hits
+    for label, pattern in _BIZFEED_EARNINGS_DENSITY_PATTERNS:
+        if re.search(pattern, blob, flags=re.I):
+            hits.append(label)
+    return len(hits), hits
+
+
+# Truncate fetched HTML text before boilerplate / related-articles blocks (saves tokens).
+_BIZFEED_ARTICLE_TRUNC_MARKERS: tuple[str, ...] = (
+    "Safe Harbor Statement",
+    "Safe Harbor statement",
+    "Forward-looking statements",
+    "Also from this source",
+    "More Releases From This Source",
+    "Explore\n",
+    "Request a Demo",
+    "SOURCE ",
+)
+
+# CSS selectors for common wire hosts (first match with enough text wins).
+_BIZFEED_ARTICLE_BODY_SELECTORS: tuple[str, ...] = (
+    "section.release-body",
+    "div.release-body",
+    "div.article-body",
+    "div#main-content article",
+    "article",
+    "main",
+    "div.field--name-body",
+    "div.region-content",
+)
+
+
+def _bizfeed_fetch_article_enabled() -> bool:
+    return (os.getenv("BIZFEED_FETCH_ARTICLE") or "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _bizfeed_article_max_chars() -> int:
+    raw = (os.getenv("BIZFEED_ARTICLE_MAX_CHARS") or "12000").strip()
+    try:
+        return max(500, min(20000, int(raw)))
+    except ValueError:
+        return 12000
+
+
+def _bizfeed_trim_article_boilerplate(text: str) -> str:
+    out = " ".join((text or "").split())
+    if not out:
+        return ""
+    lower = out.lower()
+    cut = len(out)
+    for marker in _BIZFEED_ARTICLE_TRUNC_MARKERS:
+        idx = lower.find(marker.lower())
+        if idx >= 200:
+            cut = min(cut, idx)
+    return out[:cut].strip()
+
+
+def _bizfeed_http_get(url: str, *, timeout: float = 25.0) -> tuple[int, bytes]:
+    headers = dict(_strict_newswire_headers())
+    headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    try:
+        import requests
+
+        r = requests.get(url, headers=headers, timeout=timeout)
+        return int(r.status_code), r.content or b""
+    except Exception:
+        pass
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return int(resp.status), resp.read()
+
+
+def fetch_bizfeed_article_body(url: str) -> tuple[str | None, str]:
+    """
+    Fetch press-release HTML and return plain text for LLM INPUT.article_body.
+
+    Returns (text_or_none, log_detail) e.g. ("8421 chars", "fetch_disabled").
+    """
+    link = (url or "").strip()
+    if not link:
+        return None, "no_link"
+    if not _bizfeed_fetch_article_enabled():
+        return None, "fetch_disabled"
+    parsed = urlparse(link)
+    if parsed.scheme not in ("http", "https"):
+        return None, "bad_scheme"
+
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return None, "bs4_missing"
+
+    try:
+        status, body = _bizfeed_http_get(link)
+    except Exception as exc:
+        return None, f"http_error:{exc.__class__.__name__}"
+
+    if status != 200 or not body:
+        return None, f"http_{status}"
+
+    soup = BeautifulSoup(body, "html.parser")
+    for tag in soup(["script", "style", "noscript", "nav", "footer", "header"]):
+        tag.decompose()
+
+    extracted: str | None = None
+    for sel in _BIZFEED_ARTICLE_BODY_SELECTORS:
+        node = soup.select_one(sel)
+        if node is None:
+            continue
+        txt = " ".join(node.get_text(" ", strip=True).split())
+        if len(txt) >= 200:
+            extracted = txt
+            break
+
+    if not extracted:
+        txt = " ".join(soup.get_text(" ", strip=True).split())
+        extracted = txt if len(txt) >= 200 else None
+
+    if not extracted:
+        return None, "body_too_short"
+
+    trimmed = _bizfeed_trim_article_boilerplate(extracted)
+    cap = _bizfeed_article_max_chars()
+    if len(trimmed) > cap:
+        trimmed = trimmed[:cap].rstrip() + "…"
+
+    return trimmed, f"ok_{len(trimmed)}_chars"
+
+
+def _bizfeed_article_body_for_row(
+    row: dict[str, Any],
+    cache: dict[str, tuple[str | None, str]],
+) -> tuple[str | None, str]:
+    link = (row.get("link") or "").strip()
+    if not link:
+        return None, "no_link"
+    if link in cache:
+        return cache[link]
+    text, detail = fetch_bizfeed_article_body(link)
+    cache[link] = (text, detail)
+    return text, detail
+
+
+def _bizfeed_build_llm_article_payload(
+    row: dict[str, Any],
+    cache: dict[str, tuple[str | None, str]],
+) -> tuple[dict[str, Any], str]:
+    """LLM INPUT dict plus fetch status string for logs."""
+    primary = (row.get("categories") or [None])[0]
+    payload: dict[str, Any] = {
+        "source": row.get("source"),
+        "published_at": row.get("published_at"),
+        "title": row.get("title"),
+        "summary": row.get("summary"),
+        "link": row.get("link"),
+        "categories": row.get("categories"),
+        "primary_category": primary,
+    }
+    body, detail = _bizfeed_article_body_for_row(row, cache)
+    if body:
+        payload["article_body"] = body
+    return payload, detail
+
+
 def classify_bizfeed_row(row: dict[str, Any]) -> list[str]:
     """
     Tag a row by catalyst type (title + summary, case-insensitive substring match).
     Returns category keys in BIZFEED_CATEGORY_ORDER (may be empty).
     """
-    hay = f"{row.get('title') or ''} {row.get('summary') or ''}".lower()
+    title = (row.get("title") or "").strip()
+    summary = (row.get("summary") or "").strip()
+    title_hay = title.lower()
+    hay = f"{title} {summary}".lower()
     matched: list[str] = []
-    for cat, phrases in BIZFEED_CATEGORY_KEYWORDS.items():
-        if any(p in hay for p in phrases):
+
+    for cat in BIZFEED_CATEGORY_ORDER:
+        kw = BIZFEED_CATEGORY_KEYWORDS.get(cat, ())
+        rx = BIZFEED_CATEGORY_REGEX.get(cat, ())
+        kw_hit = any(p in hay for p in kw)
+        rx_hit = any(re.search(p, hay, flags=re.I) for p in rx)
+        if kw_hit or rx_hit:
             matched.append(cat)
+
+    ma_title_strong = (
+        any(p in title_hay for p in _BIZFEED_MA_STRONG_TITLE_MARKERS)
+        or any(re.search(p, title_hay, flags=re.I) for p in BIZFEED_CATEGORY_REGEX.get("ma", ()))
+    )
+    # Avoid M&A tagging when only body/summary casually mentions a transaction.
+    if "ma" in matched and not ma_title_strong:
+        matched = [c for c in matched if c != "ma"]
+
+    # If this is clearly an earnings headline, avoid misrouting to M&A due body mentions.
+    earnings_title = (
+        any(p in title_hay for p in BIZFEED_CATEGORY_KEYWORDS["earnings"])
+        or any(re.search(p, title_hay, flags=re.I) for p in BIZFEED_CATEGORY_REGEX["earnings"])
+    )
+    if "earnings" in matched and "ma" in matched:
+        if earnings_title and not ma_title_strong:
+            matched = [c for c in matched if c != "ma"]
+
     matched.sort(key=lambda c: _CATEGORY_RANK.get(c, 99))
     return matched
 
@@ -1139,29 +1483,76 @@ class Bizfeed(AdvisorBase):
             llm_batch = llm_pool
             logger.info("BIZFEED_LLM | batch=%d catalyst rows (no cap)", len(llm_batch))
 
+        article_body_cache: dict[str, tuple[str | None, str]] = {}
+        fetch_on = _bizfeed_fetch_article_enabled()
+        logger.info(
+            "BIZFEED article fetch for LLM: %s (max_chars=%d)",
+            "on" if fetch_on else "off",
+            _bizfeed_article_max_chars(),
+        )
+        logger.info(
+            "BIZFEED earnings density gate: min_hits=%d",
+            _bizfeed_earnings_density_min(),
+        )
+
         for i, row in enumerate(llm_batch, start=1):
             task_key = _bizfeed_llm_task_key_for_row(row)
             primary = (row.get("categories") or [None])[0]
-            article_payload = {
-                "source": row.get("source"),
-                "published_at": row.get("published_at"),
-                "title": row.get("title"),
-                "summary": row.get("summary"),
-                "link": row.get("link"),
-                "categories": row.get("categories"),
-                "primary_category": primary,
-            }
+            article_payload, fetch_detail = _bizfeed_build_llm_article_payload(row, article_body_cache)
+            body_len = len(article_payload.get("article_body") or "")
+            summ_len = len(article_payload.get("summary") or "")
+            logger.info(
+                "BIZFEED_LLM input | %s | fetch=%s | summary=%d chars | article_body=%d chars",
+                (row.get("link") or "")[:80],
+                fetch_detail,
+                summ_len,
+                body_len,
+            )
+
+            if primary == "earnings":
+                density_blob = " ".join(
+                    [
+                        str(row.get("title") or ""),
+                        str(row.get("summary") or ""),
+                        str(article_payload.get("article_body") or ""),
+                    ]
+                )
+                density_count, density_hits = _bizfeed_metric_density(density_blob)
+                if density_count < _bizfeed_earnings_density_min():
+                    logger.info(
+                        "BIZFEED density skip | task=%s | hits=%d < %d | labels=%s | title=%.120s",
+                        task_key,
+                        density_count,
+                        _bizfeed_earnings_density_min(),
+                        ",".join(density_hits) or "none",
+                        (row.get("title") or "")[:120],
+                    )
+                    continue
+                logger.info(
+                    "BIZFEED density pass | task=%s | hits=%d | labels=%s",
+                    task_key,
+                    density_count,
+                    ",".join(density_hits),
+                )
+
             prompt = _build_bizfeed_llm_prompt(task_key=task_key, article_json=article_payload)
-            _model, parsed = self.ask_llm(prompt)
+            llm_model, parsed = self.ask_llm(prompt)
             parsed = _bizfeed_llm_normalize_parsed(parsed)
             fails = _bizfeed_llm_hard_failures(parsed)
+            gate_fail = _bizfeed_discovery_gate_fail(parsed) if not fails else None
+            _bizfeed_log_llm_result(
+                index=i,
+                batch_size=len(llm_batch),
+                task_key=task_key,
+                model=llm_model,
+                row=row,
+                parsed=parsed if isinstance(parsed, dict) else None,
+                json_fails=fails or None,
+                gate_fail=gate_fail,
+            )
             if fails:
-                for reason in fails:
-                    logger.info("BIZFEED_LLM_JSON_INVALID: %s", reason)
                 continue
-            gate_fail = _bizfeed_discovery_gate_fail(parsed)
             if gate_fail:
-                logger.info("BIZFEED gate: %s", gate_fail)
                 continue
             exp_pc = primary
             got_pc = parsed.get("primary_catalyst")
@@ -1172,21 +1563,6 @@ class Bizfeed(AdvisorBase):
                     exp_pc,
                     (row.get("title") or "")[:80],
                 )
-            logger.info(
-                "BIZFEED_LLM %d/%d | task=%s | company=%r ticker=%r | outcome=%s dir=%s | "
-                "mat=%s sig=%s sur=%s | %s",
-                i,
-                len(llm_batch),
-                task_key,
-                parsed.get("company_name"),
-                parsed.get("ticker_symbol"),
-                parsed.get("event_outcome"),
-                parsed.get("impact_direction"),
-                parsed.get("materiality_score"),
-                parsed.get("significance_score"),
-                parsed.get("surprise_score"),
-                (parsed.get("summary") or "")[:160],
-            )
             cn_res = parsed.get("company_name")
             if isinstance(cn_res, str):
                 cn_res = cn_res.strip() or None
@@ -1290,7 +1666,8 @@ def run_bizfeed_standalone():
     module = getattr(advisor_modules, module_name)
     python_class = getattr(module, advisor_row.python_class)
 
-    sa = SmartAnalysis()
+    sa = SmartAnalysis(username="run_bizfeed")
+    sa.save()
     impl = python_class(advisor_row)
     impl.discover(sa)
 
