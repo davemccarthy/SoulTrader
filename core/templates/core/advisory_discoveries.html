@@ -7,11 +7,51 @@
     <style>
         .advisory-header {
             display: flex;
-            justify-content: flex-start;
+            justify-content: space-between;
             align-items: center;
             gap: 0.75rem;
             margin-bottom: 1rem;
             flex-wrap: wrap;
+        }
+        .advisory-pagination {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            margin-left: auto;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+        .advisory-page-link,
+        .advisory-page-current,
+        .advisory-page-ellipsis {
+            min-width: 2rem;
+            height: 2rem;
+            padding: 0 0.55rem;
+            border-radius: 6px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.82rem;
+            font-weight: 600;
+            text-decoration: none;
+            line-height: 1;
+        }
+        .advisory-page-link {
+            border: 1px solid #d6dbe1;
+            color: #475569;
+            background: #fff;
+        }
+        .advisory-page-link:hover {
+            border-color: #00843D;
+            color: #00843D;
+        }
+        .advisory-page-current {
+            border: 1px solid #00843D;
+            background: #00843D;
+            color: #fff;
+        }
+        .advisory-page-ellipsis {
+            color: #94a3b8;
         }
         .advisory-switch {
             display: inline-flex;
@@ -402,6 +442,25 @@
             </button>
             {% endfor %}
         </form>
+        {% if page_obj and page_obj.paginator.num_pages > 1 %}
+        <nav class="advisory-pagination" aria-label="Discovery pages">
+            {% if page_obj.has_previous %}
+            <a class="advisory-page-link" href="?days={{ lookback_days }}&page={{ page_obj.previous_page_number }}">Prev</a>
+            {% endif %}
+            {% for num in pagination_range %}
+                {% if num == '…' %}
+            <span class="advisory-page-ellipsis">{{ num }}</span>
+                {% elif num == page_obj.number %}
+            <span class="advisory-page-current">{{ num }}</span>
+                {% else %}
+            <a class="advisory-page-link" href="?days={{ lookback_days }}&page={{ num }}">{{ num }}</a>
+                {% endif %}
+            {% endfor %}
+            {% if page_obj.has_next %}
+            <a class="advisory-page-link" href="?days={{ lookback_days }}&page={{ page_obj.next_page_number }}">Next</a>
+            {% endif %}
+        </nav>
+        {% endif %}
     </div>
 
     {% include 'core/includes/advisor_summary_card.html' with row=header_row %}

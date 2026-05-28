@@ -2,6 +2,7 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import login, authenticate, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib import messages
+from django.core.paginator import Paginator
 from django.db.models import F, Q, Case, When, Value, CharField, Max, Count
 from django.http import JsonResponse, Http404
 from django.templatetags.static import static
@@ -33,6 +34,65 @@ from .portfolio_metrics import get_portfolio_dashboard_data
 
 
 logger = logging.getLogger(__name__)
+
+
+def _refresh_prices_for_advisory_discoveries(discoveries: list[Discovery]) -> None:
+    """
+    Refresh stale/zero prices for advisory discoveries and backfill empty discovery prices.
+
+    This keeps advisory rows readable for never-bought discoveries, which otherwise may
+    remain at 0.00 if they were never touched by holdings/trade refresh flows.
+    """
+    if not discoveries:
+        return
+
+    seen_stock_ids: set[int] = set()
+    stock_by_id: dict[int, object] = {}
+
+    for discovery in discoveries:
+        stock = discovery.stock
+        if stock is None or stock.id in seen_stock_ids:
+            continue
+        seen_stock_ids.add(stock.id)
+        stock_by_id[stock.id] = stock
+
+    # Refresh only stocks that are stale or missing a usable price.
+    refresh_before = timezone.now() - datetime.timedelta(hours=6)
+    refreshed_stock_ids: set[int] = set()
+    for stock in stock_by_id.values():
+        price = stock.price
+        updated = getattr(stock, "updated", None)
+        needs_refresh = (
+            price is None
+            or price <= 0
+            or updated is None
+            or updated < refresh_before
+        )
+        if not needs_refresh:
+            continue
+        try:
+            stock.refresh()
+            refreshed_stock_ids.add(stock.id)
+        except Exception:
+            logger.warning("Advisory price refresh failed for %s", stock.symbol, exc_info=True)
+
+    # Backfill discovery.price when the discovery snapshot is empty/zero and we now
+    # have a valid stock quote.
+    for discovery in discoveries:
+        discovery_price = discovery.price
+        if discovery_price is not None and discovery_price > 0:
+            continue
+
+        stock = discovery.stock
+        if stock is None or stock.id not in refreshed_stock_ids:
+            continue
+
+        stock_price = stock.price
+        if stock_price is None or stock_price <= 0:
+            continue
+
+        discovery.price = stock_price
+        discovery.save(update_fields=["price"])
 
 
 def _scoreboard_cutoff_lookback(days: int):
@@ -1270,7 +1330,10 @@ def advisory_discoveries(request, advisor_id: int):
         .order_by('-id')
     )
 
-    discoveries = list(discoveries_qs)
+    paginator = Paginator(discoveries_qs, 20)
+    page_obj = paginator.get_page(request.GET.get('page') or 1)
+    discoveries = list(page_obj.object_list)
+    _refresh_prices_for_advisory_discoveries(discoveries)
 
     discovery_rows = []
     for discovery in discoveries:
@@ -1314,7 +1377,7 @@ def advisory_discoveries(request, advisor_id: int):
             'name': advisor.name,
             'description': advisor.description or '',
             'logo_url': _advisor_logo_url(advisor),
-            'discovery_count': len(discovery_rows),
+            'discovery_count': paginator.count,
             'trades': advisor_stats.get('trades', 0) if advisor_stats else 0,
             'winners': advisor_stats.get('winners', 0) if advisor_stats else 0,
             'losers': advisor_stats.get('losers', 0) if advisor_stats else 0,
@@ -1329,6 +1392,12 @@ def advisory_discoveries(request, advisor_id: int):
         },
         'advisor_stats': advisor_stats,
         'discovery_rows': discovery_rows,
+        'page_obj': page_obj,
+        'pagination_range': paginator.get_elided_page_range(
+            page_obj.number,
+            on_each_side=1,
+            on_ends=1,
+        ),
     }
     return render(request, 'core/advisory_discoveries.html', context)
 
