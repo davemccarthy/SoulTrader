@@ -53,8 +53,9 @@ FLUX_UNIVERSE: Final[Tuple[str, ...]] = (
 
 ENTRY_MA_PERIOD = 20
 FLUX_TP_MULT = Decimal("1.01")
-FLUX_STOP_MULT = Decimal("0.94")
+FLUX_STOP_MULT = Decimal("0.96")
 FLUX_REBUY_DROP = Decimal("0.02")
+FLUX_MAX_TRANCHES = Decimal("4")
 FLUX_DISCOVERY_COOLDOWN_HOURS = 24
 FLUX_ENDDAY_TAKE = Decimal(1.01)
 FLUX_ENDWEEK_TAKE = Decimal(1.00)
@@ -75,7 +76,7 @@ class Flux(AdvisorBase):
         sell_instructions = [
             ("STOP_PERCENTAGE", FLUX_STOP_MULT, None),
             ("TARGET_PERCENTAGE", FLUX_TP_MULT, None),
-            ("PERCENTAGE_REBUY", FLUX_REBUY_DROP, None),
+            ("PERCENTAGE_REBUY", FLUX_REBUY_DROP, FLUX_MAX_TRANCHES),
             ("END_DAY", FLUX_ENDDAY_TAKE, None),
             ("END_WEEK",FLUX_ENDWEEK_TAKE, None),
         ]

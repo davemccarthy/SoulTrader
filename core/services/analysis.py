@@ -450,12 +450,29 @@ def analyze_holdings(sa, funds):
                                 logger.warning(f"{instruction.instruction} invalid threshold (value1={instruction.value1}, buy_price={buy_price})")
                         elif instruction.instruction == 'PERCENTAGE_REBUY':
                             # value1 = drop fraction from average (e.g. 0.02 = 2%); add one fund tranche at current price.
-                            # value2 reserved for future max book (value2 × average_spend) — not enforced yet.
+                            # value2 = optional max tranche count cap (default 3).
                             if instruction.value1 and holding.shares > 0 and buy_price:
                                 drop_pct = Decimal(str(instruction.value1))
                                 drop_threshold = Decimal(str(buy_price)) * (Decimal("1.0") - drop_pct)
                                 if holding.stock.price <= drop_threshold:
-                                    rebuy_amount = fund.average_spend() * Decimal(str(sentiment))
+                                    tranche_amount = fund.average_spend() * Decimal(str(sentiment))
+                                    max_tranches = Decimal(str(instruction.value2 or 3))
+                                    current_book = Decimal(str(holding.average_price)) * Decimal(str(holding.shares))
+                                    max_book = tranche_amount * max_tranches
+
+                                    if current_book >= max_book:
+                                        logger.info(
+                                            "%s rebuy skipped: max tranches reached (book=$%.2f cap=$%.2f tranches=%s)",
+                                            holding.stock.symbol,
+                                            float(current_book),
+                                            float(max_book),
+                                            int(max_tranches),
+                                        )
+                                        continue
+
+                                    rebuy_amount = min(tranche_amount, max_book - current_book)
+                                    if rebuy_amount <= 0:
+                                        continue
                                     execute_buy(
                                         sa,
                                         fund,
