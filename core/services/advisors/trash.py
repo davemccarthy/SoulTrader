@@ -18,7 +18,7 @@ from core.services.financial import yahoo as financial_yahoo
 
 logger = logging.getLogger(__name__)
 
-LOSS_THRESHOLD_PCT = Decimal("-5.0")
+LOSS_THRESHOLD_PCT = Decimal("-2.0")
 WATCH_DAYS = 21
 ENTRY_MA_PERIOD = 20
 TRASH_DISCOVERY_COOLDOWN_HOURS = 24
