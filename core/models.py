@@ -183,7 +183,7 @@ class Stock(models.Model):
 
         return stock
 
-    def calc_trend(self, period="1d", interval="15m", hours=12):
+    def calc_trend(self, period="1d", interval="15m", hours=12, latest_price=None):
         """
         Calculate trend using linear regression slope on price history.
         
@@ -191,6 +191,7 @@ class Stock(models.Model):
             period: Time period for history (default: "1d" for 1 day)
             interval: Data interval (default: "15m" for 15 minutes)
             hours: Optional - limit to last N hours of data (default: 12 hours)
+            latest_price: Optional latest quote to replace most recent close before regression
         
         Returns:
             Decimal: normalized slope value (positive = uptrend, negative = downtrend, ~0 = sideways) or None if calculation fails or markets closed
@@ -278,7 +279,16 @@ class Stock(models.Model):
                     hist = hist.tail(num_intervals)
 
             # Get price array
-            prices = hist['Close'].values
+            prices = hist['Close'].astype(float).values
+
+            # Optionally replace the most recent close with the freshest app quote.
+            if latest_price is not None and len(prices) > 0:
+                try:
+                    latest = float(latest_price)
+                    if latest > 0:
+                        prices[-1] = latest
+                except (TypeError, ValueError):
+                    pass
 
             if len(prices) < 2:
                 logger.warning(f"Not enough data points for {self.symbol}")
@@ -293,7 +303,7 @@ class Stock(models.Model):
             slope = model.coef_[0]
 
             # Normalize by average price
-            avg_price = hist['Close'].mean()
+            avg_price = y.mean()
             normalized_slope = (slope / avg_price) * 100
 
             return Decimal(str(normalized_slope))

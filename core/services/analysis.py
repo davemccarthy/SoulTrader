@@ -73,7 +73,12 @@ def analyse_target(holding, target, sentiment):
         return False
 
     # Case 3: At/above target, only hold if trend is clearly positive
-    trend = holding.stock.calc_trend(period="1d", interval="15m", hours=2)
+    trend = holding.stock.calc_trend(
+        period="1d",
+        interval="15m",
+        hours=2,
+        latest_price=current,
+    )
     if trend is None:
         return True  # in doubt sell
 
