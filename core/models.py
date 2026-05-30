@@ -39,7 +39,8 @@ class Profile(models.Model):
         "LARGE": 60,
         "MEDIUM": 40,
         "SMALL": 20,
-        "MICRO": 10
+        "MICRO": 15,
+        "NANO": 10,
     }
 
     # Minimum v2 grade letter per profile; min_score() maps via ratings.RATING_BANDS.

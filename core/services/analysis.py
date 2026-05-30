@@ -76,17 +76,17 @@ def analyse_target(holding, target, sentiment):
     trend = holding.stock.calc_trend(
         period="1d",
         interval="15m",
-        hours=2,
+        hours=1,
         latest_price=current,
     )
     if trend is None:
         return True  # in doubt sell
 
-    if trend < Decimal("0.03"):  # tune threshold
+    if trend < Decimal("0.05"):
         return True  # weak/negative momentum => take profit
 
     logger.info(
-        "Delaying TP SELL. %s trending upward (trend=%.4f >= 0.03, current=%s, target=%s)",
+        "Delaying TP SELL. %s trending upward (trend=%.4f >= 0.05, current=%s, target=%s)",
         holding.stock.symbol, float(trend), current, target,
     )
     return False
@@ -96,6 +96,7 @@ def _session_exit_threshold_px(value1, avg) -> Decimal | None:
     """
     Dollar sell threshold for END_DAY / END_WEEK.
     value1 is a multiplier (e.g. 1.01) applied to avg at sell-check time.
+    END_WEEK value2 = optional min days held (holding.created); default 0.
     Legacy rows store a fixed dollar threshold when value1 > 3.
     """
     if value1 is None or not avg:
@@ -587,19 +588,23 @@ def analyze_holdings(sa, funds):
                                 break
 
                         elif instruction.instruction == 'END_WEEK' and end_day and end_week:
-                            if holding.created:
-                                week_days_held = (timezone.now() - holding.created).days
-                                if week_days_held >= 7:
-                                    avg = holding.average_price or discovery.price
-                                    target_px = _session_exit_threshold_px(instruction.value1, avg)
-                                    if target_px and holding.stock.price >= target_px:
-                                        execute_sell(
-                                            sa, fund, holding,
-                                            f"{holding.stock.symbol} end of week "
-                                            f"${holding.stock.price:.2f} >= ${target_px:.2f} "
-                                            f"({instruction.value1}× avg ${avg:.2f}, held {week_days_held}d)",
-                                        )
-                                        break
+                            min_days = int(instruction.value2) if instruction.value2 is not None else 0
+                            days_in_holding = (
+                                (timezone.now() - holding.created).days
+                                if holding.created
+                                else 0
+                            )
+                            if days_in_holding >= min_days:
+                                avg = holding.average_price or discovery.price
+                                target_px = _session_exit_threshold_px(instruction.value1, avg)
+                                if target_px and holding.stock.price >= target_px:
+                                    execute_sell(
+                                        sa, fund, holding,
+                                        f"{holding.stock.symbol} end of week "
+                                        f"${holding.stock.price:.2f} >= ${target_px:.2f} "
+                                        f"({instruction.value1}× avg ${avg:.2f}, held {days_in_holding}d)",
+                                    )
+                                    break
 
                 except Exception as e:
                     logger.error(

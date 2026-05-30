@@ -38,7 +38,8 @@ SPREAD = {
     "LARGE": 60,
     "MEDIUM": 40,
     "SMALL": 20,
-    "MICRO": 10,
+    "MICRO": 15,
+    "NANO": 10,
 }
 
 SENTIMENT = {
