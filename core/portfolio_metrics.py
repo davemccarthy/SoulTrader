@@ -25,10 +25,9 @@ EMPTY_PORTFOLIO_DASHBOARD: Dict[str, Any] = {
     "trades_count": 0,
     "trade_pnl": 0.0,
     "holdings_pnl": 0.0,
-    # "Estimated Annualized Basis" (dummy naming for now):
-    # ABV is an annualized version of current return, based on fund age.
+    # Estimated annualized return from current return and fund age.
     "estab_days": 0,
-    "est_abv_percent": 0.0,
+    "est_apr_percent": 0.0,
     "today_percent": 0.0,
 }
 
@@ -184,7 +183,7 @@ def get_portfolio_dashboard_data(fund: FundArg) -> Dict[str, Any]:
         return_amount = Decimal("0.0")
         return_percent = Decimal("0.0")
 
-    # Fund age drives EST ABV annualization.
+    # Fund age drives estimated APR annualization.
     # `Profile.created` is nullable, so we defensively handle missing values.
     if getattr(fund, "created", None):
         days_active = (timezone.now() - fund.created).days
@@ -194,7 +193,7 @@ def get_portfolio_dashboard_data(fund: FundArg) -> Dict[str, Any]:
 
     # Annualize the current return% over the observed time window.
     # Linear annualization: return_percent * (365 / days_active).
-    est_abv_percent = (return_percent * (Decimal(365) / Decimal(days_active)))
+    est_apr_percent = (return_percent * (Decimal(365) / Decimal(days_active)))
 
     trades_count = Trade.objects.filter(fund=fund).count()
 
@@ -240,6 +239,6 @@ def get_portfolio_dashboard_data(fund: FundArg) -> Dict[str, Any]:
         "holdings_pnl": float(holdings_pnl_pct),
         "return_percent": float(return_percent),
         "estab_days": days_active,
-        "est_abv_percent": float(est_abv_percent),
+        "est_apr_percent": float(est_apr_percent),
         "today_percent": float(today_percent),
     }

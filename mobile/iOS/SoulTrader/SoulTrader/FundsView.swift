@@ -80,9 +80,9 @@ struct FundsView: View {
                             .appStyle(.inlineMetricValue)
                         Spacer()
                         InlineMetricPair(
-                            title: "ABV:",
-                            value: formatPercent(fund.dashboard.estAbvPercent),
-                            valueColor: Theme.signedColor(for: fund.dashboard.estAbvPercent)
+                            title: "APR:",
+                            value: formatPercent(fund.dashboard.estAprPercent),
+                            valueColor: Theme.signedColor(for: fund.dashboard.estAprPercent)
                         )
                         InlineMetricPair(
                             title: "TODAY:",

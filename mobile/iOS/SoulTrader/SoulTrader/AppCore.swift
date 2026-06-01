@@ -37,7 +37,7 @@ struct FundDashboardResponse: Decodable {
     let tradePnl: Double
     let holdingsPnl: Double
     let returnPercent: Double
-    let estAbvPercent: Double
+    let estAprPercent: Double
     let estabDays: Int
     let todayPercent: Double
 
@@ -49,7 +49,7 @@ struct FundDashboardResponse: Decodable {
         case tradePnl = "trade_pnl"
         case holdingsPnl = "holdings_pnl"
         case returnPercent = "return_percent"
-        case estAbvPercent = "est_abv_percent"
+        case estAprPercent = "est_apr_percent"
         case estabDays = "estab_days"
         case todayPercent = "today_percent"
     }

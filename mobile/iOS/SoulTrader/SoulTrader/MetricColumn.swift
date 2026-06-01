@@ -24,7 +24,7 @@ struct MetricColumn: View {
     }
 }
 
-/// Compact inline label:value (e.g. "ABV: +1.2%").
+/// Compact inline label:value (e.g. "APR: +1.2%").
 struct InlineMetricPair: View {
     let title: String
     let value: String

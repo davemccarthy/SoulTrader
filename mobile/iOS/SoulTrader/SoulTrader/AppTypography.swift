@@ -6,7 +6,7 @@ enum AppTextStyle {
     case metricLabel
     /// Metric value under a label.
     case metricValue
-    /// Inline label prefix (e.g. "ABV:").
+    /// Inline label prefix (e.g. "APR:").
     case inlineMetricLabel
     /// Inline value beside a prefix.
     case inlineMetricValue
