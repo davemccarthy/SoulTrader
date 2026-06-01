@@ -10,6 +10,7 @@ from django.utils import timezone
 from core.models import Holding, Discovery, Advisor, Profile
 from core.services.execution import execute_buy, execute_sell
 from core.services.llm.gemini import ask_gemini as llm_ask_gemini
+from core.services.health.assess import discovery_adjusted_score
 
 logger = logging.getLogger(__name__)
 DT_EXIT_CONFIDENCE_MIN = 0.70
@@ -676,10 +677,10 @@ def analyze_discovery(sa, funds, advisors):
 
         for discovery in unique_discoveries:
 
-            if discovery.assessment is None or discovery.assessment.score is None:
-                continue  # or log skip
+            score = discovery_adjusted_score(discovery)
+            if score is None:
+                continue
 
-            score = discovery.assessment.score
             minimum = fund.min_score()
 
             if score >= minimum:
