@@ -169,7 +169,7 @@ class Command(BaseCommand):
                 explanation = options.get('explanation')
 
                 for symbol in symbols:
-                    adv.discovered( sa=sa, symbol=symbol, explanation=explanation)
+                    adv.discovered( sa=sa, symbol=symbol, explanation=explanation or "User discovery")
 
 
         # Lets go
@@ -194,14 +194,11 @@ class Command(BaseCommand):
 
             cash_value = fund.cash or Decimal('0')
 
-            # Calculate holdings value (refresh prices first to ensure accuracy)
+            # Holdings prices were refreshed in analyze_holdings earlier in this SA run.
             holdings_value = Decimal('0')
             for holding in Holding.objects.filter(fund=fund).select_related('stock'):
-                if holding.stock and holding.shares:
-                    # Refresh stock price to get current market value
-                    holding.stock.refresh()
-                    if holding.stock.price:
-                        holdings_value += holding.stock.price * Decimal(holding.shares)
+                if holding.stock and holding.shares and holding.stock.price:
+                    holdings_value += holding.stock.price * Decimal(holding.shares)
 
             # Calculate Trade P&L percentages
             trade_cumulative, trade_daily = calculate_trade_pnl_percentages(fund, today)
