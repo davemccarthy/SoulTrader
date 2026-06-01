@@ -45,13 +45,21 @@ def _to_decimal(score: Optional[float]) -> Optional[Decimal]:
 
 
 def composite_from_scores(scores: Dict[str, Optional[float]]) -> Optional[Decimal]:
-    """Weighted mean over components that returned a score; renormalizes if some are missing."""
+    """
+    Weighted mean over components that returned a score; renormalizes if some are missing.
+
+    Missing valuation is treated as 0 (full 20% weight) so unvaluable names are not
+    boosted by renormalization. Assessment.valuation stays NULL for UI display (—).
+    """
     num = Decimal("0")
     den = Decimal("0")
     for key, w in COMPONENT_MODEL_WEIGHTS.items():
         raw = scores.get(key)
         if raw is None:
-            continue
+            if key == "valuation":
+                raw = 0.0
+            else:
+                continue
         num += Decimal(str(float(raw))) * w
         den += w
     if den <= 0:
