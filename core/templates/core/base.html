@@ -1007,6 +1007,21 @@
             font-weight: 400;
         }
 
+        .holding-headlines-list {
+            margin: 0.5rem 0 0;
+            padding-left: 1.25rem;
+        }
+
+        .holding-headlines-list li {
+            margin-bottom: 0.35rem;
+        }
+
+        .holding-headlines-footnote {
+            margin: 0.5rem 0 0;
+            font-size: 0.75rem;
+            color: #64748b;
+        }
+
         .holdings-history-text {
             font-size: 0.9375rem;
             line-height: 1.6;
@@ -1831,6 +1846,26 @@
         }
 
         // Render discovery section
+        function renderHeadlinesSection(headlines) {
+            if (!Array.isArray(headlines) || !headlines.length) {
+                return '';
+            }
+
+            const items = headlines
+                .map((title) => `<li>${escapeHtml(title)}</li>`)
+                .join('');
+
+            return `
+                <div class="holdings-history-panel holding-headlines-section">
+                    <h3 class="holdings-history-title">Recent headlines (7 days)</h3>
+                    <ul class="holding-headlines-list holdings-history-text">
+                        ${items}
+                    </ul>
+                    <p class="holding-headlines-footnote">Yahoo Finance · titles only · not investment advice</p>
+                </div>
+            `;
+        }
+
         function renderDiscoverySection(discovery) {
             if (!discovery) return '';
             const advisor = escapeHtml(discovery.advisor || '');
@@ -2256,6 +2291,7 @@
                 data.heading,
                 priceHistory
             );
+            const headlinesSection = renderHeadlinesSection(data.headlines || []);
             const discoverySection = renderDiscoverySection(data.discovery);
             const assessmentSection = data.assessment_html || '';
             const healthHistorySection = renderHealthHistorySection(data.health_history || []);
@@ -2269,6 +2305,7 @@
                 headingSection +
                 discoverySection +
                 assessmentSection +
+                headlinesSection +
                 healthHistorySection +
                 tradeHistorySection +
                 sellInstructionsSection;

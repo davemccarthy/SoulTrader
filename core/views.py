@@ -31,6 +31,7 @@ from .discovery_scoring import (
 )
 from .health_display import format_health_score, health_record_template_context
 from .portfolio_metrics import get_portfolio_dashboard_data
+from .services.financial.yahoo import latest_headlines
 
 
 logger = logging.getLogger(__name__)
@@ -1071,6 +1072,7 @@ def holding_history(request, stock_id):
 
     payload = {
         'heading': heading,
+        'headlines': latest_headlines(stock.symbol, limit=3, max_age_days=7),
         'discovery': discovery_payload,
         'assessment_html': assessment_html,
         'health_history': health_history,
