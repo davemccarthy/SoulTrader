@@ -1351,7 +1351,7 @@ Respond with only a single valid JSON object, no other text.
 
         if self.allow_discovery(ticker, period=168):
             self.discovered(sa, ticker, f"Article: {title} | {url} | {explanation} | Approved by {model} {recommendation}",
-                None, 1.2 if recommendation == "STRONG_BUY" else 1.0)
+                None, 1.15 if recommendation == "STRONG_BUY" else 1.0)
 
 
     def _extract_json(self, text):
