@@ -53,7 +53,7 @@ FLUX_UNIVERSE: Final[Tuple[str, ...]] = (
 
 ENTRY_MA_PERIOD = 20
 FLUX_TP_MULT = Decimal("1.01")
-FLUX_STOP_MULT = Decimal("0.96")
+FLUX_STOP_MULT = Decimal("0.94")
 FLUX_REBUY_DROP = Decimal("0.02")
 FLUX_MAX_TRANCHES = Decimal("4")
 FLUX_DISCOVERY_COOLDOWN_HOURS = 24
