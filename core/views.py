@@ -496,6 +496,13 @@ def _position_discovery(holding, trades_for_position=()):
     return None
 
 
+def _trade_discovery(trade, discoveries_map):
+    """Provenance discovery for a trade row (matches holdings: trade FK, not stock.advisor)."""
+    if trade.discovery_id:
+        return trade.discovery
+    return discoveries_map.get((trade.stock_id, trade.sa_id))
+
+
 @login_required
 def holding_detail(request, stock_id):
     from django.utils import timezone
@@ -1094,11 +1101,11 @@ def trades(request):
     trade_qs = (
         Trade.objects
         .filter(fund=fund)
-        .select_related('stock', 'stock__advisor', 'sa')
+        .select_related('stock', 'stock__advisor', 'discovery__advisor', 'sa')
         .order_by('sa__started', 'id')
     )
 
-    # Prefetch discoveries for all trades by (stock_id, sa_id)
+    # Legacy fallback when trade.discovery is unset: first discovery per (stock, SA).
     sa_ids = {t.sa_id for t in trade_qs if t.sa_id}
     stock_ids = {t.stock_id for t in trade_qs}
 
@@ -1108,9 +1115,12 @@ def trades(request):
             Discovery.objects
             .select_related('advisor')
             .filter(sa_id__in=sa_ids, stock_id__in=stock_ids)
+            .order_by('stock_id', 'sa_id', 'created')
         )
         for discovery in discoveries:
-            discoveries_map[(discovery.stock_id, discovery.sa_id)] = discovery
+            key = (discovery.stock_id, discovery.sa_id)
+            if key not in discoveries_map:
+                discoveries_map[key] = discovery
 
     inventory = defaultdict(lambda: {'shares': Decimal('0'), 'avg_cost': Decimal('0')})
     metrics = {}
@@ -1173,9 +1183,7 @@ def trades(request):
         else:
             price_class = 'neutral'
 
-        # For BUY trades, prefer the specific discovery tied to this SA.
-        # For SELL or trades without a matching discovery, fall back to stock.advisor.
-        discovery_obj = discoveries_map.get((trade.stock_id, trade.sa_id)) if trade.action == 'BUY' else None
+        discovery_obj = _trade_discovery(trade, discoveries_map)
 
         if discovery_obj and discovery_obj.advisor:
             advisor_obj = discovery_obj.advisor

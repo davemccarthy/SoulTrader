@@ -481,7 +481,8 @@ def analyze_holdings(sa, funds):
                                         holding.stock,
                                         rebuy_amount,
                                         f"Rebuy ${rebuy_amount:.0f} after {drop_pct * 100:.0f}% drop vs avg",
-                                        True,
+                                        force=True,
+                                        discovery=holding.discovery,
                                     )
                             elif instruction.value1 and holding.shares > 0:
                                 logger.warning(
