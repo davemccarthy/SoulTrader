@@ -27,6 +27,7 @@ from core.discovery_scoring import discovery_scoring_context
 from core.health_display import health_record_payload
 from core.models import Advisor, Discovery, Holding, Profile, PushDevice, Snapshot, Trade
 from core.portfolio_metrics import get_portfolio_dashboard_data
+from core.services.financial.yahoo import latest_headlines
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +183,32 @@ def get_holding_health_history(request, stock_id: int):
     return Response({
         'health_history': health_history,
         'scoring': scoring,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_holding_headlines(request, stock_id: int):
+    """
+    Recent Yahoo news titles for a holding's stock (web holding_history headlines parity).
+    Query: fund_id (required).
+    """
+    fund_id = request.query_params.get('fund_id')
+    if not fund_id:
+        return Response({'error': 'fund_id is required.'}, status=400)
+
+    holding = (
+        Holding.objects
+        .select_related('stock')
+        .filter(fund_id=fund_id, stock_id=stock_id)
+        .first()
+    )
+    if holding is None:
+        raise Http404('Holding not found')
+
+    symbol = holding.stock.symbol if holding.stock else ''
+    return Response({
+        'headlines': latest_headlines(symbol, limit=3, max_age_days=7),
     })
 
 

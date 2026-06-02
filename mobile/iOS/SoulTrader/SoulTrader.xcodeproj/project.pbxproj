@@ -25,15 +25,16 @@
 		A10000192F84F61A00039EE2 /* HoldingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000182F84F61A00039EE2 /* HoldingsView.swift */; };
 		A100001B2F84F61A00039EE2 /* TradesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100001A2F84F61A00039EE2 /* TradesView.swift */; };
 		A100001D2F84F61A00039EE2 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100001C2F84F61A00039EE2 /* Theme.swift */; };
-		A10000312F84F61A00039EE2 /* AppTypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000302F84F61A00039EE2 /* AppTypography.swift */; };
-		A10000332F84F61A00039EE2 /* MetricColumn.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000322F84F61A00039EE2 /* MetricColumn.swift */; };
 		A100001F2F84F61A00039EE2 /* BrandHeaderTitleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100001E2F84F61A00039EE2 /* BrandHeaderTitleView.swift */; };
 		A10000212F84F61A00039EE2 /* AdvisoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000202F84F61A00039EE2 /* AdvisoryView.swift */; };
 		A10000252F84F61A00039EE2 /* DiscoveryExplanationFormatting.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000222F84F61A00039EE2 /* DiscoveryExplanationFormatting.swift */; };
 		A10000262F84F61A00039EE2 /* HealthHistoryRecordCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000232F84F61A00039EE2 /* HealthHistoryRecordCard.swift */; };
 		A10000272F84F61A00039EE2 /* DiscoveryDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000242F84F61A00039EE2 /* DiscoveryDetailView.swift */; };
-		A100002A2F84F61A00039EE2 /* AssessmentBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100002B2F84F61A00039EE2 /* AssessmentBlockView.swift */; };
 		A10000292F84F61A00039EE2 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000282F84F61A00039EE2 /* AppDelegate.swift */; };
+		A100002A2F84F61A00039EE2 /* AssessmentBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100002B2F84F61A00039EE2 /* AssessmentBlockView.swift */; };
+		A10000362F84F61A00039EE2 /* HoldingHeadlinesCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000372F84F61A00039EE2 /* HoldingHeadlinesCard.swift */; };
+		A10000312F84F61A00039EE2 /* AppTypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000302F84F61A00039EE2 /* AppTypography.swift */; };
+		A10000332F84F61A00039EE2 /* MetricColumn.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000322F84F61A00039EE2 /* MetricColumn.swift */; };
 		B2FA00032FB39EE5007D87E5 /* FirebaseMessaging in Frameworks */ = {isa = PBXBuildFile; productRef = B2FA00022FB39EE5007D87E5 /* FirebaseMessaging */; };
 /* End PBXBuildFile section */
 
@@ -80,15 +81,16 @@
 		A10000182F84F61A00039EE2 /* HoldingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoldingsView.swift; sourceTree = "<group>"; };
 		A100001A2F84F61A00039EE2 /* TradesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TradesView.swift; sourceTree = "<group>"; };
 		A100001C2F84F61A00039EE2 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
-		A10000302F84F61A00039EE2 /* AppTypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTypography.swift; sourceTree = "<group>"; };
-		A10000322F84F61A00039EE2 /* MetricColumn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricColumn.swift; sourceTree = "<group>"; };
 		A100001E2F84F61A00039EE2 /* BrandHeaderTitleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrandHeaderTitleView.swift; sourceTree = "<group>"; };
 		A10000202F84F61A00039EE2 /* AdvisoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdvisoryView.swift; sourceTree = "<group>"; };
 		A10000222F84F61A00039EE2 /* DiscoveryExplanationFormatting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryExplanationFormatting.swift; sourceTree = "<group>"; };
 		A10000232F84F61A00039EE2 /* HealthHistoryRecordCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthHistoryRecordCard.swift; sourceTree = "<group>"; };
 		A10000242F84F61A00039EE2 /* DiscoveryDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryDetailView.swift; sourceTree = "<group>"; };
-		A100002B2F84F61A00039EE2 /* AssessmentBlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssessmentBlockView.swift; sourceTree = "<group>"; };
 		A10000282F84F61A00039EE2 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		A100002B2F84F61A00039EE2 /* AssessmentBlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssessmentBlockView.swift; sourceTree = "<group>"; };
+		A10000372F84F61A00039EE2 /* HoldingHeadlinesCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoldingHeadlinesCard.swift; sourceTree = "<group>"; };
+		A10000302F84F61A00039EE2 /* AppTypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTypography.swift; sourceTree = "<group>"; };
+		A10000322F84F61A00039EE2 /* MetricColumn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricColumn.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -158,6 +160,7 @@
 				A10000222F84F61A00039EE2 /* DiscoveryExplanationFormatting.swift */,
 				A10000232F84F61A00039EE2 /* HealthHistoryRecordCard.swift */,
 				A100002B2F84F61A00039EE2 /* AssessmentBlockView.swift */,
+				A10000372F84F61A00039EE2 /* HoldingHeadlinesCard.swift */,
 				A10000242F84F61A00039EE2 /* DiscoveryDetailView.swift */,
 				A100001C2F84F61A00039EE2 /* Theme.swift */,
 				A10000302F84F61A00039EE2 /* AppTypography.swift */,
@@ -354,6 +357,7 @@
 				A10000252F84F61A00039EE2 /* DiscoveryExplanationFormatting.swift in Sources */,
 				A10000262F84F61A00039EE2 /* HealthHistoryRecordCard.swift in Sources */,
 				A100002A2F84F61A00039EE2 /* AssessmentBlockView.swift in Sources */,
+				A10000362F84F61A00039EE2 /* HoldingHeadlinesCard.swift in Sources */,
 				A10000272F84F61A00039EE2 /* DiscoveryDetailView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -519,7 +523,7 @@
 				CODE_SIGN_ENTITLEMENTS = "SoulTrader/SoulTrader-Debug.entitlements";
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_ASSET_PATHS = "\"SoulTrader/Preview Content\"";
 				DEVELOPMENT_TEAM = 99RY7DMR6A;
 				ENABLE_PREVIEWS = YES;
@@ -534,7 +538,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.klynt.SoulTrader;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -555,7 +559,7 @@
 				CODE_SIGN_ENTITLEMENTS = "SoulTrader/SoulTrader-Release.entitlements";
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_ASSET_PATHS = "\"SoulTrader/Preview Content\"";
 				DEVELOPMENT_TEAM = 99RY7DMR6A;
 				ENABLE_PREVIEWS = YES;
@@ -570,7 +574,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.klynt.SoulTrader;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";

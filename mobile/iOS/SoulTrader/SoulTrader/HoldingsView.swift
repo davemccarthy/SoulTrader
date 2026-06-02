@@ -340,6 +340,7 @@ struct HoldingDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var healthHistory: [HealthHistoryRecord] = []
     @State private var holdingScoring: DiscoveryScoring?
+    @State private var holdingHeadlines: [String] = []
     @State private var sharePricePoints: [StockPriceChartPoint] = []
 
     var body: some View {
@@ -356,6 +357,7 @@ struct HoldingDetailView: View {
                 AssessmentAndHealthSectionView(
                     scoring: holdingScoring,
                     healthRecords: healthHistory,
+                    headlines: holdingHeadlines,
                     emptyMessage: "No health checks recorded yet."
                 )
             }
@@ -368,10 +370,12 @@ struct HoldingDetailView: View {
         .navigationBarBackButtonHidden(true)
         .task(id: holding.id) {
             async let panel = viewModel.loadHoldingHealthHistory(stockId: holding.stockId)
+            async let headlines = viewModel.loadHoldingHeadlines(stockId: holding.stockId)
             async let prices = viewModel.fetchTradeSymbolPriceHistory(symbol: holding.stock.symbol)
             let loaded = await panel
             healthHistory = loaded.history
             holdingScoring = loaded.scoring
+            holdingHeadlines = await headlines
             sharePricePoints = await prices
         }
     }

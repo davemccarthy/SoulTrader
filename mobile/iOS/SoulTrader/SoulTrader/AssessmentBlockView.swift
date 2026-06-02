@@ -95,17 +95,22 @@ struct AssessmentBlockView: View {
 struct AssessmentAndHealthSectionView: View {
     let scoring: DiscoveryScoring?
     let healthRecords: [HealthHistoryRecord]
+    var headlines: [String] = []
     var emptyMessage: String = "No assessment recorded."
 
     var body: some View {
         let showAssessment = scoring?.isV2 == true
         let showHealth = !healthRecords.isEmpty
+        let showHeadlines = !headlines.isEmpty
 
         Group {
-            if showAssessment || showHealth {
+            if showAssessment || showHealth || showHeadlines {
                 VStack(spacing: 10) {
                     if let scoring, scoring.isV2 {
                         AssessmentBlockView(scoring: scoring)
+                    }
+                    if showHeadlines {
+                        HoldingHeadlinesCard(headlines: headlines)
                     }
                     ForEach(Array(healthRecords.enumerated()), id: \.element.id) { index, record in
                         HealthHistoryRecordCard(

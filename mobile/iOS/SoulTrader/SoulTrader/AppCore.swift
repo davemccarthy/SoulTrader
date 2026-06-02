@@ -223,6 +223,19 @@ struct HoldingHealthHistoryResponse: Decodable {
     }
 }
 
+struct HoldingHeadlinesResponse: Decodable {
+    let headlines: [String]
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        headlines = try c.decodeIfPresent([String].self, forKey: .headlines) ?? []
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case headlines
+    }
+}
+
 struct HealthHistoryRecord: Decodable, Identifiable {
     let id: Int
     let score: Double
@@ -885,6 +898,18 @@ struct APIClient {
         return try JSONDecoder().decode(HoldingHealthHistoryResponse.self, from: data)
     }
 
+    func fetchHoldingHeadlines(accessToken: String, fundId: Int, stockId: Int) async throws -> HoldingHeadlinesResponse {
+        let path = "holdings/\(stockId)/headlines/"
+        var components = URLComponents(url: endpoint(path), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "fund_id", value: String(fundId))]
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(HoldingHeadlinesResponse.self, from: data)
+    }
+
     func fetchTrades(accessToken: String, fundId: Int?) async throws -> [TradeResponse] {
         let base = endpoint("trades/")
         var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
@@ -1198,6 +1223,21 @@ final class AuthViewModel: ObservableObject {
             return (response.healthHistory, response.scoring)
         } catch {
             return ([], nil)
+        }
+    }
+
+    func loadHoldingHeadlines(stockId: Int) async -> [String] {
+        guard let access = tokenStore.getAccessToken(),
+              let fundId = selectedFundId else { return [] }
+        do {
+            let response = try await apiClient.fetchHoldingHeadlines(
+                accessToken: access,
+                fundId: fundId,
+                stockId: stockId
+            )
+            return response.headlines
+        } catch {
+            return []
         }
     }
 
