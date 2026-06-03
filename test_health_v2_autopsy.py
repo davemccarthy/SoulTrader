@@ -3,7 +3,7 @@
 Health v2 assessment autopsy: discovery cohort vs 7-trading-day forward return.
 
 Only discoveries with a linked Assessment (v2). Discoveries must be at least
-7 calendar days old so the forward window can complete.
+~11 calendar days old so a 7 trading-day forward window can complete.
 
 Grade/score source (default: stored full-model composite):
   --score-component price     # 100% Price position (assessment.price)
@@ -30,7 +30,8 @@ import pandas as pd
 import yfinance as yf
 
 HORIZON_TRADING_DAYS = 7
-MIN_AGE_CALENDAR_DAYS = 7
+# Calendar buffer so 7 trading-day forward return can complete (~9–11 sessions).
+MIN_AGE_CALENDAR_DAYS = 11
 
 COMPONENT_KEYS: Tuple[str, ...] = (
     "financial",
@@ -397,6 +398,11 @@ def main() -> None:
         help="Max table rows (0 = all; default 50)",
     )
     parser.add_argument("--csv", default=None, help="Optional CSV output path")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print skip reason breakdown (yfinance vs entry vs incomplete horizon)",
+    )
     args = parser.parse_args()
 
     from_date = date.fromisoformat(args.from_date)
@@ -419,28 +425,35 @@ def main() -> None:
     if args.advisor:
         print(f"  advisor filter: {args.advisor}")
     print(f"  loaded: {len(rows_in)} discoveries")
+    if rows_in:
+        print(
+            f"  created range: {min(r.created for r in rows_in)} .. "
+            f"{max(r.created for r in rows_in)}"
+        )
 
     if not rows_in:
         return
 
     start = min(r.created for r in rows_in) - timedelta(days=5)
-    end = max(r.created for r in rows_in) + timedelta(days=HORIZON_TRADING_DAYS + 15)
+    end = max(r.created for r in rows_in) + timedelta(days=HORIZON_TRADING_DAYS + 20)
     cache: Dict[Tuple[str, date, date], pd.Series] = {}
 
     records: List[dict] = []
-    skipped_price = 0
+    skip_no_hist = 0
+    skip_no_entry = 0
+    skip_incomplete = 0
     for r in rows_in:
         close = _fetch_close_series(r.symbol, start, end, cache)
         if close is None:
-            skipped_price += 1
+            skip_no_hist += 1
             continue
         eidx = _entry_index(close, r.created)
         if eidx is None:
-            skipped_price += 1
+            skip_no_entry += 1
             continue
         ret = _forward_return(close, eidx, r.entry_price, HORIZON_TRADING_DAYS)
         if ret is None:
-            skipped_price += 1
+            skip_incomplete += 1
             continue
 
         records.append(
@@ -461,8 +474,19 @@ def main() -> None:
         )
 
     df = pd.DataFrame(records)
-    if skipped_price:
-        print(f"  skipped (no price data / incomplete {HORIZON_TRADING_DAYS}td): {skipped_price}")
+    skipped_total = skip_no_hist + skip_no_entry + skip_incomplete
+    if skipped_total:
+        print(f"  skipped: {skipped_total} total")
+        if args.verbose or not len(records):
+            print(f"    no yfinance history: {skip_no_hist}")
+            print(f"    no entry bar on/after created date: {skip_no_entry}")
+            print(
+                f"    incomplete {HORIZON_TRADING_DAYS} trading-day horizon: {skip_incomplete}"
+            )
+        if skip_no_hist == skipped_total and skipped_total:
+            print(
+                "  hint: all skips are missing yfinance data — check outbound network on this host."
+            )
 
     _summarize_by_grade(df, scoring.label)
     if args.table:
