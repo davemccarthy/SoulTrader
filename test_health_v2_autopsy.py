@@ -224,6 +224,25 @@ class DiscoveryRow:
     entry_price: float
 
 
+@dataclass
+class LoadStats:
+    queryset_count: int
+    skip_no_symbol: int = 0
+    skip_not_v2: int = 0
+    skip_no_test_score: int = 0
+    skip_no_entry_price: int = 0
+
+    @property
+    def loaded(self) -> int:
+        return (
+            self.queryset_count
+            - self.skip_no_symbol
+            - self.skip_not_v2
+            - self.skip_no_test_score
+            - self.skip_no_entry_price
+        )
+
+
 def _diagnose_empty_load(
     window_start: datetime,
     window_end: datetime,
@@ -276,7 +295,7 @@ def _load_discoveries(
     days: int,
     advisor: Optional[str],
     scoring: ScoringMode,
-) -> List[DiscoveryRow]:
+) -> Tuple[List[DiscoveryRow], LoadStats]:
     from core.discovery_scoring import discovery_scoring_context
     from core.models import Discovery
 
@@ -294,14 +313,17 @@ def _load_discoveries(
     if advisor:
         qs = qs.filter(advisor__name=advisor)
 
+    stats = LoadStats(queryset_count=qs.count())
     out: List[DiscoveryRow] = []
     for d in qs:
         symbol = (d.stock.symbol or "").strip().upper()
         if not symbol:
+            stats.skip_no_symbol += 1
             continue
 
         ctx = discovery_scoring_context(d)
         if ctx.get("source") != "v2":
+            stats.skip_not_v2 += 1
             continue
 
         assessment = d.assessment
@@ -312,10 +334,12 @@ def _load_discoveries(
         test_score = scoring.test_score(assessment, model_composite)
         if scoring.component or scoring.weights:
             if test_score is None:
+                stats.skip_no_test_score += 1
                 continue
 
         entry = d.price
         if entry is None or float(entry) <= 0:
+            stats.skip_no_entry_price += 1
             continue
 
         w = float(d.weight) if d.weight is not None else 1.0
@@ -333,7 +357,26 @@ def _load_discoveries(
                 entry_price=float(entry),
             )
         )
-    return out
+    return out, stats
+
+
+def _print_load_stats(
+    stats: LoadStats,
+    window_start: datetime,
+    window_end: datetime,
+    *,
+    verbose: bool,
+) -> None:
+    print(f"  queryset (assessment, UTC window): {stats.queryset_count}")
+    if verbose:
+        print(f"  window UTC: [{window_start.isoformat()}, {window_end.isoformat()})")
+    if stats.queryset_count != stats.loaded:
+        print(
+            f"  load funnel: kept {stats.loaded} | "
+            f"no symbol {stats.skip_no_symbol} | not v2 {stats.skip_not_v2} | "
+            f"no blend score {stats.skip_no_test_score} | "
+            f"no discovery.price {stats.skip_no_entry_price}"
+        )
 
 
 def _summarize_by_grade(df: pd.DataFrame, score_label: str) -> None:
@@ -472,7 +515,7 @@ def main() -> None:
 
     _setup_django()
     window_start, window_end, to_date = _cohort_window(from_date, args.days)
-    rows_in = _load_discoveries(from_date, args.days, args.advisor, scoring)
+    rows_in, load_stats = _load_discoveries(from_date, args.days, args.advisor, scoring)
 
     print(
         f"Health v2 autopsy — discoveries {from_date} .. {to_date} (UTC window) "
@@ -481,6 +524,7 @@ def main() -> None:
     print(f"  score for grade: {scoring.label}")
     if args.advisor:
         print(f"  advisor filter: {args.advisor}")
+    _print_load_stats(load_stats, window_start, window_end, verbose=args.verbose)
     print(f"  loaded: {len(rows_in)} discoveries")
     if rows_in:
         print(
