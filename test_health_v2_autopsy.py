@@ -266,6 +266,19 @@ def _newest_assessed_overall() -> Optional[datetime]:
     )
 
 
+def _assessed_discovery_span() -> Tuple[int, Optional[datetime], Optional[datetime]]:
+    """Count and created range of discoveries that have assessment_id set."""
+    from django.db.models import Count, Max, Min
+    from core.models import Discovery
+
+    agg = Discovery.objects.filter(assessment__isnull=False).aggregate(
+        n=Count("id"),
+        oldest=Min("created"),
+        newest=Max("created"),
+    )
+    return int(agg["n"] or 0), agg["oldest"], agg["newest"]
+
+
 def _diagnose_empty_load(
     window_start: datetime,
     window_end: datetime,
@@ -288,8 +301,29 @@ def _diagnose_empty_load(
         ).count()
         print(f"  diagnose: Polygon-like advisor rows in window: {alt}")
 
-    print(f"  diagnose: discoveries in window: {base.count()}")
-    print(f"  diagnose: with assessment: {base.filter(assessment__isnull=False).count()}")
+    in_window = base.count()
+    with_assessment = base.filter(assessment__isnull=False).count()
+    print(f"  diagnose: discoveries in window: {in_window}")
+    print(f"  diagnose: with assessment: {with_assessment}")
+
+    assessed_n, assessed_old, assessed_new = _assessed_discovery_span()
+    if assessed_n:
+        print(
+            f"  diagnose: assessed discoveries on this DB (all dates): {assessed_n} "
+            f"({_format_discovery_ts(assessed_old)} .. {_format_discovery_ts(assessed_new)})"
+        )
+    else:
+        print("  diagnose: no discoveries with assessment_id on this DB")
+
+    if in_window and with_assessment == 0:
+        print(
+            "  diagnose: discoveries exist in this UTC window but none have v2 Assessment "
+            "linked — autopsy only includes rows with discovery.assessment_id set."
+        )
+        if assessed_new:
+            print(
+                "  diagnose: try a later window that overlaps assessed dates (see range above)."
+            )
 
     need_components = bool(scoring.component or scoring.weights)
     if need_components:
@@ -555,6 +589,30 @@ def main() -> None:
     if args.advisor:
         print(f"  advisor filter: {args.advisor}")
     _print_load_stats(load_stats, window_start, window_end, verbose=args.verbose)
+    if load_stats.queryset_count == 0:
+        from core.models import Discovery
+
+        in_window = Discovery.objects.filter(
+            created__gte=window_start,
+            created__lt=window_end,
+        ).count()
+        if args.advisor:
+            in_window = Discovery.objects.filter(
+                created__gte=window_start,
+                created__lt=window_end,
+                advisor__name=args.advisor,
+            ).count()
+        if in_window:
+            assessed_n, assessed_old, assessed_new = _assessed_discovery_span()
+            print(
+                f"  note: {in_window} discovery/ies in window, 0 with assessment — "
+                f"v2 autopsy requires discovery.assessment_id"
+            )
+            if assessed_n:
+                print(
+                    f"  note: assessed on this DB: {assessed_n} total, "
+                    f"{_format_discovery_ts(assessed_old)} .. {_format_discovery_ts(assessed_new)}"
+                )
     print(f"  loaded: {len(rows_in)} discoveries")
     if load_stats.cohort_oldest or load_stats.cohort_newest:
         print(
@@ -579,8 +637,7 @@ def main() -> None:
         )
 
     if not rows_in:
-        if args.verbose:
-            _diagnose_empty_load(window_start, window_end, args.advisor, scoring)
+        _diagnose_empty_load(window_start, window_end, args.advisor, scoring)
         return
 
     start = min(r.created for r in rows_in) - timedelta(days=5)
