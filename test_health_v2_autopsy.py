@@ -14,6 +14,7 @@ Examples:
   python test_health_v2_autopsy.py --from-date 2026-05-15 --days 30 --advisor Polygon.io
   python test_health_v2_autopsy.py --from-date 2026-05-15 --days 30 --score-component price --table
   python test_health_v2_autopsy.py --from-date 2026-05-15 --days 30 --weights price=1.0
+  python test_health_v2_autopsy.py --from-date 2026-05-25 --days 10 --horizon 5 --weights consensus=0.5,price=0.5 --table
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import yfinance as yf
 
-HORIZON_TRADING_DAYS = 7
+DEFAULT_HORIZON_TRADING_DAYS = 7
 
 COMPONENT_KEYS: Tuple[str, ...] = (
     "financial",
@@ -501,13 +502,17 @@ def _print_load_stats(
         )
 
 
-def _summarize_by_grade(df: pd.DataFrame, score_label: str) -> None:
+def _ret_column(horizon: int) -> str:
+    return f"ret_{horizon}d"
+
+
+def _summarize_by_grade(df: pd.DataFrame, score_label: str, horizon: int, ret_col: str) -> None:
     if df.empty:
         return
 
-    print(f"\n=== By grade — {score_label} (7d forward return) ===")
+    print(f"\n=== By grade — {score_label} ({horizon}d forward return) ===")
     for grade, g in df.groupby("grade", dropna=False):
-        vals = g["ret_7d"].dropna()
+        vals = g[ret_col].dropna()
         if len(vals) == 0:
             print(f"  {grade}: n=0")
             continue
@@ -518,9 +523,9 @@ def _summarize_by_grade(df: pd.DataFrame, score_label: str) -> None:
         )
 
     print("\n=== Overall ===")
-    vals = df["ret_7d"].dropna()
+    vals = df[ret_col].dropna()
     if len(vals) == 0:
-        print("  No complete 7d returns.")
+        print(f"  No complete {horizon}d returns.")
         return
     pos = int((vals > 0).sum())
     print(
@@ -529,7 +534,12 @@ def _summarize_by_grade(df: pd.DataFrame, score_label: str) -> None:
     )
 
 
-def _print_table(df: pd.DataFrame, limit: int, show_model_composite: bool) -> None:
+def _print_table(
+    df: pd.DataFrame,
+    limit: int,
+    show_model_composite: bool,
+    ret_col: str,
+) -> None:
     if df.empty:
         print("\nNo rows to display.")
         return
@@ -543,7 +553,7 @@ def _print_table(df: pd.DataFrame, limit: int, show_model_composite: bool) -> No
     ]
     if show_model_composite:
         cols.append("model_composite")
-    cols.extend(["weight", "adjusted", "entry_price", "ret_7d"])
+    cols.extend(["weight", "adjusted", "entry_price", ret_col])
     table = df.copy()
     for c in cols:
         if c not in table.columns:
@@ -635,11 +645,21 @@ def main() -> None:
             "Default: UTC midnight instants (matches created >= YYYY-MM-DD in UTC SQL)."
         ),
     )
+    parser.add_argument(
+        "--horizon",
+        type=int,
+        default=DEFAULT_HORIZON_TRADING_DAYS,
+        help=f"Forward return in trading days (default {DEFAULT_HORIZON_TRADING_DAYS})",
+    )
     args = parser.parse_args()
 
     from_date = date.fromisoformat(args.from_date)
     if args.days <= 0:
         raise SystemExit("--days must be positive")
+    if args.horizon <= 0:
+        raise SystemExit("--horizon must be a positive integer")
+    horizon = args.horizon
+    ret_col = _ret_column(horizon)
 
     scoring = _build_scoring_mode(args)
     show_model = scoring.component is not None or scoring.weights is not None
@@ -650,7 +670,7 @@ def main() -> None:
 
     print(
         f"Health v2 autopsy — discoveries {from_date} .. {window.to_date} ({window.label}) "
-        f"(assessment required, horizon={HORIZON_TRADING_DAYS}td)"
+        f"(assessment required, horizon={horizon}td)"
     )
     print(f"  score for grade: {scoring.label}")
     if args.advisor:
@@ -705,7 +725,7 @@ def main() -> None:
         return
 
     start = min(r.created for r in rows_in) - timedelta(days=5)
-    end = max(r.created for r in rows_in) + timedelta(days=HORIZON_TRADING_DAYS + 20)
+    end = max(r.created for r in rows_in) + timedelta(days=horizon + 20)
     cache: Dict[Tuple[str, date, date], pd.Series] = {}
 
     records: List[dict] = []
@@ -721,7 +741,7 @@ def main() -> None:
         if eidx is None:
             skip_no_entry += 1
             continue
-        ret = _forward_return(close, eidx, r.entry_price, HORIZON_TRADING_DAYS)
+        ret = _forward_return(close, eidx, r.entry_price, horizon)
         if ret is None:
             skip_incomplete += 1
             continue
@@ -739,7 +759,7 @@ def main() -> None:
                 "adjusted": r.adjusted,
                 "weight": r.weight,
                 "entry_price": round(r.entry_price, 4),
-                "ret_7d": round(ret, 2),
+                ret_col: round(ret, 2),
             }
         )
 
@@ -751,7 +771,7 @@ def main() -> None:
             print(f"    no yfinance history: {skip_no_hist}")
             print(f"    no entry bar on/after created date: {skip_no_entry}")
             print(
-                f"    incomplete {HORIZON_TRADING_DAYS} trading-day horizon: {skip_incomplete}"
+                f"    incomplete {horizon} trading-day horizon: {skip_incomplete}"
             )
         if skip_no_hist == skipped_total and skipped_total:
             print(
@@ -762,7 +782,7 @@ def main() -> None:
                 max(r.created for r in rows_in) if rows_in else None
             )
             print(
-                f"  hint: too recent for {HORIZON_TRADING_DAYS}td forward returns "
+                f"  hint: too recent for {horizon}td forward returns "
                 f"(newest assessed in window: {_format_discovery_ts(newest_in_window)}; "
                 f"today {date.today()})."
             )
@@ -783,9 +803,9 @@ def main() -> None:
                     "fix filters or use --score-component on full composite."
                 )
 
-    _summarize_by_grade(df, scoring.label)
+    _summarize_by_grade(df, scoring.label, horizon, ret_col)
     if args.table:
-        _print_table(df, args.table_limit, show_model)
+        _print_table(df, args.table_limit, show_model, ret_col)
 
     if args.csv:
         out_path = Path(args.csv).expanduser().resolve()
