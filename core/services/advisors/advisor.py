@@ -1294,7 +1294,10 @@ Respond with only a single valid JSON object, no other text.
         filter_phrases = [
             "stock market", "market today", "today nasdaq", "nasdaq futures", "futures slip", "analyst questions", "stocks",
             "microsoft", "alphabet", "google", "amazon", "meta", "apple", "tesla", "nvidia", "broadcom inc",
-            "msft", "googl", "goog", "amzn", "meta", "aapl", "tsla", "avgo"
+            "msft", "googl", "goog", "amzn", "meta", "aapl", "tsla", "avgo",
+            "surges", "soars", "soar ", "jumps", "rallies", "rally ", "spikes", "climbs", "rockets",
+            "hits record", "hits new high", "stock rises", "shares rise", "shares jump", "stock jumps",
+            "up %", "gains %", "rises %",
         ]
 
 
@@ -1316,18 +1319,26 @@ Respond with only a single valid JSON object, no other text.
 
         # Carefully worded script for the robot
         prompt = f"""
-            You are an expert on analyzing business articles
-            How do you interpret this article by way of speculation of rising share prices? Supply a recommendation.
-            
-            DISMISS immediately if article content refers to multiple ticker / companies.
+            You are an expert at analyzing business news for actionable stock ideas.
 
-            Please respond in JSON only choosing one of the below recommendations and supply one relevant company symbol / ticker 
+            Goal: identify a good buy opportunity GOING FORWARD from the current price — not stories that only
+            report a move that already happened (e.g. "shares surge", "stock jumps X%", "rallies on earnings").
+
+            DISMISS immediately if:
+            - The article refers to multiple tickers / companies.
+            - The main signal is retrospective price action with little forward catalyst.
+            - The piece is generic market commentary without a single clear company catalyst.
+
+            BUY or STRONG_BUY only if there is a durable forward catalyst (deal, approval, guidance, product,
+            restructuring, etc.) and upside is plausible from here — not because the stock already rose in the article.
+
+            Please respond in JSON only with one relevant US-listed ticker.
 
             RETURN JSON:
             {{
                 "recommendation": "DISMISS|BUY|MODERATE_BUY|STRONG_BUY",
                 "ticker": "SYM1",
-                "explanation": "A brief reason you came to your descion"
+                "explanation": "Brief reason focused on forward catalyst, not past price move"
             }}
 
             url: {url}"""
@@ -1347,6 +1358,18 @@ Respond with only a single valid JSON object, no other text.
 
         # Anything better than DISMISS is put forward for consensus
         if recommendation != "BUY" and recommendation != "STRONG_BUY":
+            return
+
+        from core.services.health.price import NEWS_FLASH_MIN_PRICE_SCORE, score_price_health
+
+        price_health = score_price_health(ticker)
+        if price_health.score is None or price_health.score < NEWS_FLASH_MIN_PRICE_SCORE:
+            ch = price_health.change_1d
+            ch_disp = f"{ch * 100:+.1f}%" if ch is not None else "n/a"
+            logger.info(
+                f"{self.advisor.name} price gate skip {ticker}: score={price_health.score} "
+                f"(min {NEWS_FLASH_MIN_PRICE_SCORE}), 1d={ch_disp} | {title[:80]}"
+            )
             return
 
         if self.allow_discovery(ticker, period=168):

@@ -1,8 +1,9 @@
 """
 Price position component (20% of final buy score in v2 model).
 
-Where the current price sits in the 52-week range (and optional 2-week high check).
-Lower in range → higher score for buy timing.
+Where the current price sits in the 52-week range, vs the 2-week high, and
+same-session move (anti-chase for headline-driven buys).
+Lower in range / smaller same-day rip → higher score for buy timing.
 """
 
 from __future__ import annotations
@@ -12,13 +13,17 @@ from typing import Any, Dict, List, Optional
 
 import yfinance as yf
 
-from core.services.health._util import safe_div, score_range_percentile
+from core.services.health._util import linear_map, pct_change, safe_div, score_range_percentile
 
 COMPONENT_WEIGHT = 0.20
 
+# Minimum composite price score for news_flash discoveries (after LLM BUY).
+NEWS_FLASH_MIN_PRICE_SCORE = 60.0
+
 METRIC_WEIGHTS = {
-    "range_52w": 0.85,
+    "range_52w": 0.70,
     "near_2w_high": 0.15,
+    "change_1d": 0.15,
 }
 
 
@@ -54,6 +59,7 @@ class PriceHealthResult:
     week52_high: Optional[float] = None
     range_percentile: Optional[float] = None
     week2_high: Optional[float] = None
+    change_1d: Optional[float] = None
     metrics: List[MetricResult] = field(default_factory=list)
     missing: List[str] = field(default_factory=list)
     error: Optional[str] = None
@@ -69,6 +75,7 @@ class PriceHealthResult:
             "week52_high": self.week52_high,
             "range_percentile": self.range_percentile,
             "week2_high": self.week2_high,
+            "change_1d": self.change_1d,
             "metrics": [m.to_dict() for m in self.metrics],
             "missing": self.missing,
             "error": self.error,
@@ -104,6 +111,25 @@ def _score_near_2w_high(price: float, high_2w: float) -> float:
     return 85.0
 
 
+def _score_change_1d(change_frac: Optional[float]) -> Optional[float]:
+    """
+    Penalize chasing a same-day rip; mild moves and down days score higher.
+    change_frac is fractional (+0.08 = +8%).
+    """
+    if change_frac is None:
+        return None
+    c = float(change_frac)
+    if c > 0.15:
+        return 15.0
+    if c > 0.08:
+        return linear_map(c, in_lo=0.08, in_hi=0.15, out_lo=25, out_hi=15)
+    if c > 0.03:
+        return linear_map(c, in_lo=0.03, in_hi=0.08, out_lo=70, out_hi=25)
+    if c >= -0.05:
+        return linear_map(c, in_lo=-0.05, in_hi=0.03, out_lo=75, out_hi=90)
+    return 72.0
+
+
 def fetch_price_inputs(symbol: str) -> Dict[str, Any]:
     sym = (symbol or "").strip().upper()
     t = yf.Ticker(sym)
@@ -125,6 +151,13 @@ def fetch_price_inputs(symbol: str) -> Dict[str, Any]:
     except Exception:
         pass
 
+    prev_close = _f(info, "previousClose", "regularMarketPreviousClose")
+    change_1d = pct_change(price, prev_close)
+    if change_1d is None:
+        ch_pct = _f(info, "regularMarketChangePercent")
+        if ch_pct is not None:
+            change_1d = ch_pct / 100.0
+
     return {
         "symbol": sym,
         "price": price,
@@ -132,6 +165,7 @@ def fetch_price_inputs(symbol: str) -> Dict[str, Any]:
         "week52_high": high_52,
         "range_percentile": percentile,
         "week2_high": high_2w,
+        "change_1d": change_1d,
     }
 
 
@@ -150,6 +184,7 @@ def score_price_health(symbol: str) -> PriceHealthResult:
     high_52 = raw["week52_high"]
     percentile = raw["range_percentile"]
     high_2w = raw["week2_high"]
+    change_1d = raw["change_1d"]
 
     metrics: List[MetricResult] = []
     missing: List[str] = []
@@ -196,6 +231,26 @@ def score_price_health(symbol: str) -> PriceHealthResult:
         missing.append("near_2w_high")
     metrics.append(m2w)
 
+    m1d = MetricResult(
+        key="change_1d",
+        label="1-day change",
+        weight=METRIC_WEIGHTS["change_1d"],
+    )
+    ch_score = _score_change_1d(change_1d)
+    if change_1d is not None:
+        m1d.raw = change_1d
+        m1d.raw_display = f"{change_1d * 100:+.1f}%"
+    else:
+        m1d.raw_display = "N/A"
+    if ch_score is None:
+        m1d.note = "1-day change unavailable"
+        missing.append("change_1d")
+    else:
+        m1d.score = round(ch_score, 1)
+        weighted_sum += ch_score * m1d.weight
+        weight_total += m1d.weight
+    metrics.append(m1d)
+
     if weight_total <= 0:
         return PriceHealthResult(
             symbol=sym,
@@ -205,12 +260,12 @@ def score_price_health(symbol: str) -> PriceHealthResult:
             week52_high=high_52,
             range_percentile=percentile,
             week2_high=high_2w,
+            change_1d=change_1d,
             metrics=metrics,
             missing=missing,
             error="no scorable price metrics",
         )
 
-    # If 52w missing but 2w present, renormalize happened via weight_total
     composite = weighted_sum / weight_total
 
     return PriceHealthResult(
@@ -221,6 +276,7 @@ def score_price_health(symbol: str) -> PriceHealthResult:
         week52_high=high_52,
         range_percentile=percentile,
         week2_high=high_2w,
+        change_1d=change_1d,
         metrics=metrics,
         missing=missing,
     )
