@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import zoneinfo
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -57,19 +58,72 @@ def _setup_django() -> None:
     django.setup()
 
 
-def _cohort_window(from_date: date, days: int) -> Tuple[datetime, datetime, date]:
-    """
-    Inclusive start, exclusive end as aware datetimes (UTC with default settings).
+@dataclass(frozen=True)
+class CohortWindow:
+    from_date: date
+    to_date: date
+    label: str
+    window_tz: Optional[str]
+    # Instant bounds (UTC mode) or None when using calendar-date ORM lookup
+    start: Optional[datetime] = None
+    end: Optional[datetime] = None
 
-    Matches SQL ``created >= from_date`` and ``created < from_date + days`` at midnight,
-    instead of ``created__date`` which can drop rows when DB timestamps are UTC+1.
+    @property
+    def uses_calendar_dates(self) -> bool:
+        return self.window_tz is not None
+
+
+def _cohort_window(from_date: date, days: int, window_tz: Optional[str] = None) -> CohortWindow:
+    """
+    Cohort selection:
+
+    - Default (window_tz None): ``created`` in [from_date 00:00 UTC, to_date 00:00 UTC).
+      Matches ``created >= 'YYYY-MM-DD'`` in SQL when timestamps are interpreted as UTC.
+
+    - ``--window-tz Europe/Dublin`` (etc.): ``created__date`` in [from_date, to_date) using that
+      zone — matches psql ``created::date`` / UI dates in local time.
     """
     from django.utils import timezone as dj_tz
 
     to_date = from_date + timedelta(days=days)
+    if window_tz:
+        tz = zoneinfo.ZoneInfo(window_tz)
+        start = datetime.combine(from_date, time.min, tzinfo=tz)
+        end = datetime.combine(to_date, time.min, tzinfo=tz)
+        return CohortWindow(
+            from_date=from_date,
+            to_date=to_date,
+            label=f"calendar dates in {window_tz}",
+            window_tz=window_tz,
+            start=start,
+            end=end,
+        )
+
     start = dj_tz.make_aware(datetime.combine(from_date, time.min))
     end = dj_tz.make_aware(datetime.combine(to_date, time.min))
-    return start, end, to_date
+    return CohortWindow(
+        from_date=from_date,
+        to_date=to_date,
+        label="UTC midnight instants",
+        window_tz=None,
+        start=start,
+        end=end,
+    )
+
+
+def _filter_discoveries_in_window(qs, window: CohortWindow):
+    """Apply cohort date/window filters to a Discovery queryset."""
+    from django.utils import timezone as dj_tz
+
+    if window.uses_calendar_dates:
+        assert window.window_tz is not None
+        with dj_tz.override(zoneinfo.ZoneInfo(window.window_tz)):
+            return qs.filter(
+                created__date__gte=window.from_date,
+                created__date__lt=window.to_date,
+            )
+    assert window.start is not None and window.end is not None
+    return qs.filter(created__gte=window.start, created__lt=window.end)
 
 
 def _fetch_close_series(
@@ -280,31 +334,33 @@ def _assessed_discovery_span() -> Tuple[int, Optional[datetime], Optional[dateti
 
 
 def _diagnose_empty_load(
-    window_start: datetime,
-    window_end: datetime,
+    window: CohortWindow,
     advisor: Optional[str],
     scoring: ScoringMode,
 ) -> None:
     """Help when loaded=0: counts in DB without component/price filters."""
     from core.models import Discovery
 
-    base = Discovery.objects.filter(
-        created__gte=window_start,
-        created__lt=window_end,
-    )
+    base = _filter_discoveries_in_window(Discovery.objects.all(), window)
     if advisor:
         base = base.filter(advisor__name=advisor)
-        alt = Discovery.objects.filter(
-            created__gte=window_start,
-            created__lt=window_end,
-            advisor__name__icontains="polygon",
+        alt = _filter_discoveries_in_window(
+            Discovery.objects.filter(advisor__name__icontains="polygon"),
+            window,
         ).count()
         print(f"  diagnose: Polygon-like advisor rows in window: {alt}")
 
     in_window = base.count()
-    with_assessment = base.filter(assessment__isnull=False).count()
+    with_assessment_fk = base.filter(assessment__isnull=False).count()
+    with_assessment_id = base.filter(assessment_id__isnull=False).count()
     print(f"  diagnose: discoveries in window: {in_window}")
-    print(f"  diagnose: with assessment: {with_assessment}")
+    print(f"  diagnose: assessment_id set (column): {with_assessment_id}")
+    print(f"  diagnose: assessment FK linked (ORM): {with_assessment_fk}")
+    if with_assessment_id > with_assessment_fk:
+        print(
+            f"  diagnose: {with_assessment_id - with_assessment_fk} row(s) have assessment_id "
+            "but no Assessment row (orphaned id?)"
+        )
 
     assessed_n, assessed_old, assessed_new = _assessed_discovery_span()
     if assessed_n:
@@ -315,15 +371,24 @@ def _diagnose_empty_load(
     else:
         print("  diagnose: no discoveries with assessment_id on this DB")
 
-    if in_window and with_assessment == 0:
+    if in_window and with_assessment_fk == 0 and with_assessment_id > 0:
         print(
-            "  diagnose: discoveries exist in this UTC window but none have v2 Assessment "
-            "linked — autopsy only includes rows with discovery.assessment_id set."
+            "  diagnose: assessment_id is set but Django cannot resolve Assessment FK — "
+            "check orphaned ids or DB replica lag."
         )
-        if assessed_new:
+    elif in_window and with_assessment_fk == 0:
+        print(
+            "  diagnose: discoveries in window but none have assessment FK — "
+            "autopsy requires discovery.assessment (v2)."
+        )
+        if assessed_new and not window.uses_calendar_dates:
             print(
-                "  diagnose: try a later window that overlaps assessed dates (see range above)."
+                "  diagnose: if you filter by calendar date in SQL (+01), retry with "
+                f"--window-tz Europe/Dublin (window is UTC instants: "
+                f"{window.start.isoformat()} .. {window.end.isoformat()})."
             )
+        elif assessed_new:
+            print("  diagnose: try a later --from-date/--days overlapping assessed range above.")
 
     need_components = bool(scoring.component or scoring.weights)
     if need_components:
@@ -337,10 +402,7 @@ def _diagnose_empty_load(
 
     if advisor and base.count() == 0:
         names = (
-            Discovery.objects.filter(
-                created__gte=window_start,
-                created__lt=window_end,
-            )
+            _filter_discoveries_in_window(Discovery.objects.all(), window)
             .values_list("advisor__name", flat=True)
             .distinct()
         )
@@ -348,25 +410,17 @@ def _diagnose_empty_load(
 
 
 def _load_discoveries(
-    from_date: date,
-    days: int,
+    window: CohortWindow,
     advisor: Optional[str],
     scoring: ScoringMode,
 ) -> Tuple[List[DiscoveryRow], LoadStats]:
     from core.discovery_scoring import discovery_scoring_context
     from core.models import Discovery
 
-    window_start, window_end, _to_date = _cohort_window(from_date, days)
-
-    qs = (
-        Discovery.objects.filter(
-            assessment__isnull=False,
-            created__gte=window_start,
-            created__lt=window_end,
-        )
-        .select_related("stock", "advisor", "assessment")
-        .order_by("created")
-    )
+    qs = _filter_discoveries_in_window(
+        Discovery.objects.filter(assessment__isnull=False),
+        window,
+    ).select_related("stock", "advisor", "assessment").order_by("created")
     if advisor:
         qs = qs.filter(advisor__name=advisor)
 
@@ -426,14 +480,18 @@ def _load_discoveries(
 
 def _print_load_stats(
     stats: LoadStats,
-    window_start: datetime,
-    window_end: datetime,
+    window: CohortWindow,
     *,
     verbose: bool,
 ) -> None:
-    print(f"  queryset (assessment, UTC window): {stats.queryset_count}")
+    print(f"  queryset (assessment, {window.label}): {stats.queryset_count}")
     if verbose:
-        print(f"  window UTC: [{window_start.isoformat()}, {window_end.isoformat()})")
+        if window.uses_calendar_dates:
+            print(
+                f"  window dates: [{window.from_date}, {window.to_date}) in {window.window_tz}"
+            )
+        elif window.start and window.end:
+            print(f"  window instants: [{window.start.isoformat()}, {window.end.isoformat()})")
     if stats.queryset_count != stats.loaded:
         print(
             f"  load funnel: kept {stats.loaded} | "
@@ -568,6 +626,15 @@ def main() -> None:
         action="store_true",
         help="Print skip reason breakdown (yfinance vs entry vs incomplete horizon)",
     )
+    parser.add_argument(
+        "--window-tz",
+        default=None,
+        metavar="ZONE",
+        help=(
+            "Select cohort by calendar date in this timezone (e.g. Europe/Dublin). "
+            "Default: UTC midnight instants (matches created >= YYYY-MM-DD in UTC SQL)."
+        ),
+    )
     args = parser.parse_args()
 
     from_date = date.fromisoformat(args.from_date)
@@ -578,30 +645,27 @@ def main() -> None:
     show_model = scoring.component is not None or scoring.weights is not None
 
     _setup_django()
-    window_start, window_end, to_date = _cohort_window(from_date, args.days)
-    rows_in, load_stats = _load_discoveries(from_date, args.days, args.advisor, scoring)
+    window = _cohort_window(from_date, args.days, args.window_tz)
+    rows_in, load_stats = _load_discoveries(window, args.advisor, scoring)
 
     print(
-        f"Health v2 autopsy — discoveries {from_date} .. {to_date} (UTC window) "
+        f"Health v2 autopsy — discoveries {from_date} .. {window.to_date} ({window.label}) "
         f"(assessment required, horizon={HORIZON_TRADING_DAYS}td)"
     )
     print(f"  score for grade: {scoring.label}")
     if args.advisor:
         print(f"  advisor filter: {args.advisor}")
-    _print_load_stats(load_stats, window_start, window_end, verbose=args.verbose)
+    _print_load_stats(load_stats, window, verbose=args.verbose)
     if load_stats.queryset_count == 0:
         from core.models import Discovery
 
-        in_window = Discovery.objects.filter(
-            created__gte=window_start,
-            created__lt=window_end,
-        ).count()
+        in_window = _filter_discoveries_in_window(Discovery.objects.all(), window).count()
         if args.advisor:
-            in_window = Discovery.objects.filter(
-                created__gte=window_start,
-                created__lt=window_end,
-                advisor__name=args.advisor,
-            ).count()
+            in_window = (
+                _filter_discoveries_in_window(Discovery.objects.all(), window)
+                .filter(advisor__name=args.advisor)
+                .count()
+            )
         if in_window:
             assessed_n, assessed_old, assessed_new = _assessed_discovery_span()
             print(
@@ -637,7 +701,7 @@ def main() -> None:
         )
 
     if not rows_in:
-        _diagnose_empty_load(window_start, window_end, args.advisor, scoring)
+        _diagnose_empty_load(window, args.advisor, scoring)
         return
 
     start = min(r.created for r in rows_in) - timedelta(days=5)
