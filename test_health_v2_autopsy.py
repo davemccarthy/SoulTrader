@@ -227,6 +227,8 @@ class DiscoveryRow:
 @dataclass
 class LoadStats:
     queryset_count: int
+    cohort_oldest: Optional[datetime] = None
+    cohort_newest: Optional[datetime] = None
     skip_no_symbol: int = 0
     skip_not_v2: int = 0
     skip_no_test_score: int = 0
@@ -241,6 +243,27 @@ class LoadStats:
             - self.skip_no_test_score
             - self.skip_no_entry_price
         )
+
+
+def _format_discovery_ts(dt: Optional[datetime]) -> str:
+    if dt is None:
+        return "—"
+    from django.utils import timezone as dj_tz
+
+    if dj_tz.is_aware(dt):
+        return dj_tz.localtime(dt).strftime("%Y-%m-%d %H:%M %Z")
+    return dt.strftime("%Y-%m-%d %H:%M")
+
+
+def _newest_assessed_overall() -> Optional[datetime]:
+    from core.models import Discovery
+
+    return (
+        Discovery.objects.filter(assessment__isnull=False)
+        .order_by("-created")
+        .values_list("created", flat=True)
+        .first()
+    )
 
 
 def _diagnose_empty_load(
@@ -313,7 +336,14 @@ def _load_discoveries(
     if advisor:
         qs = qs.filter(advisor__name=advisor)
 
-    stats = LoadStats(queryset_count=qs.count())
+    from django.db.models import Max, Min
+
+    bounds = qs.aggregate(oldest=Min("created"), newest=Max("created"))
+    stats = LoadStats(
+        queryset_count=qs.count(),
+        cohort_oldest=bounds["oldest"],
+        cohort_newest=bounds["newest"],
+    )
     out: List[DiscoveryRow] = []
     for d in qs:
         symbol = (d.stock.symbol or "").strip().upper()
@@ -526,10 +556,26 @@ def main() -> None:
         print(f"  advisor filter: {args.advisor}")
     _print_load_stats(load_stats, window_start, window_end, verbose=args.verbose)
     print(f"  loaded: {len(rows_in)} discoveries")
+    if load_stats.cohort_oldest or load_stats.cohort_newest:
+        print(
+            f"  cohort range (assessed in window): "
+            f"{_format_discovery_ts(load_stats.cohort_oldest)} .. "
+            f"{_format_discovery_ts(load_stats.cohort_newest)}"
+        )
     if rows_in:
         print(
-            f"  created range: {min(r.created for r in rows_in)} .. "
-            f"{max(r.created for r in rows_in)}"
+            f"  loaded range (blend-ready dates): "
+            f"{min(r.created for r in rows_in)} .. {max(r.created for r in rows_in)}"
+        )
+    overall_newest = _newest_assessed_overall()
+    if (
+        overall_newest
+        and load_stats.cohort_newest
+        and overall_newest > load_stats.cohort_newest
+    ):
+        print(
+            f"  newer assessed discoveries exist outside window (newest overall: "
+            f"{_format_discovery_ts(overall_newest)}) — widen --days or --from-date"
         )
 
     if not rows_in:
@@ -590,14 +636,31 @@ def main() -> None:
             print(
                 "  hint: all skips are missing yfinance data — check outbound network on this host."
             )
-        elif skip_incomplete == skipped_total and skipped_total and rows_in:
-            latest = max(r.created for r in rows_in)
-            print(
-                f"  hint: cohort too recent for {HORIZON_TRADING_DAYS}td forward returns "
-                f"(newest discovery {latest}; today {date.today()}). "
-                f"Use an earlier --from-date (e.g. {(date.today() - timedelta(days=21)).isoformat()}) "
-                f"and wider --days."
+        elif skip_incomplete == skipped_total and skipped_total:
+            newest_in_window = load_stats.cohort_newest or (
+                max(r.created for r in rows_in) if rows_in else None
             )
+            print(
+                f"  hint: too recent for {HORIZON_TRADING_DAYS}td forward returns "
+                f"(newest assessed in window: {_format_discovery_ts(newest_in_window)}; "
+                f"today {date.today()})."
+            )
+            if overall_newest and newest_in_window:
+                from django.utils import timezone as dj_tz
+
+                ow = overall_newest
+                nw = newest_in_window
+                if dj_tz.is_aware(ow) and dj_tz.is_aware(nw) and ow > nw:
+                    print(
+                        f"        window ends before latest DB discovery "
+                        f"({_format_discovery_ts(ow)}); try --from-date "
+                        f"{from_date.isoformat()} --days {(date.today() - from_date).days + 1} or more"
+                    )
+            elif not rows_in and load_stats.queryset_count:
+                print(
+                    "        rows in window failed blend load (see load funnel); "
+                    "fix filters or use --score-component on full composite."
+                )
 
     _summarize_by_grade(df, scoring.label)
     if args.table:
