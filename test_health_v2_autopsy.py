@@ -2,8 +2,8 @@
 """
 Health v2 assessment autopsy: discovery cohort vs 7-trading-day forward return.
 
-Only discoveries with a linked Assessment (v2). Discoveries must be at least
-~11 calendar days old so a 7 trading-day forward window can complete.
+Only discoveries with a linked Assessment (v2). Rows without a full
+7 trading-day forward window are skipped when returns are computed (see --verbose).
 
 Grade/score source (default: stored full-model composite):
   --score-component price     # 100% Price position (assessment.price)
@@ -30,8 +30,6 @@ import pandas as pd
 import yfinance as yf
 
 HORIZON_TRADING_DAYS = 7
-# Calendar buffer so 7 trading-day forward return can complete (~9–11 sessions).
-MIN_AGE_CALENDAR_DAYS = 11
 
 COMPONENT_KEYS: Tuple[str, ...] = (
     "financial",
@@ -211,6 +209,53 @@ class DiscoveryRow:
     entry_price: float
 
 
+def _diagnose_empty_load(
+    from_date: date,
+    to_date: date,
+    advisor: Optional[str],
+    scoring: ScoringMode,
+) -> None:
+    """Help when loaded=0: counts in DB without component/price filters."""
+    from core.models import Discovery
+
+    base = Discovery.objects.filter(
+        created__date__gte=from_date,
+        created__date__lt=to_date,
+    )
+    if advisor:
+        base = base.filter(advisor__name=advisor)
+        alt = Discovery.objects.filter(
+            created__date__gte=from_date,
+            created__date__lt=to_date,
+            advisor__name__icontains="polygon",
+        ).count()
+        print(f"  diagnose: Polygon-like advisor rows in window: {alt}")
+
+    print(f"  diagnose: discoveries in window: {base.count()}")
+    print(f"  diagnose: with assessment: {base.filter(assessment__isnull=False).count()}")
+
+    need_components = bool(scoring.component or scoring.weights)
+    if need_components:
+        kept = 0
+        for d in base.filter(assessment__isnull=False).select_related("assessment")[:500]:
+            if scoring.test_score(d.assessment, None) is not None:
+                kept += 1
+        print(
+            f"  diagnose: with scores for {scoring.label} (sample<=500): {kept}"
+        )
+
+    if advisor and base.count() == 0:
+        names = (
+            Discovery.objects.filter(
+                created__date__gte=from_date,
+                created__date__lt=to_date,
+            )
+            .values_list("advisor__name", flat=True)
+            .distinct()
+        )
+        print(f"  diagnose: advisor names in window: {', '.join(sorted(set(names))) or '(none)'}")
+
+
 def _load_discoveries(
     from_date: date,
     days: int,
@@ -221,14 +266,12 @@ def _load_discoveries(
     from core.models import Discovery
 
     to_date = from_date + timedelta(days=days)
-    max_created = date.today() - timedelta(days=MIN_AGE_CALENDAR_DAYS)
 
     qs = (
         Discovery.objects.filter(
             assessment__isnull=False,
             created__date__gte=from_date,
             created__date__lt=to_date,
-            created__date__lte=max_created,
         )
         .select_related("stock", "advisor", "assessment")
         .order_by("created")
@@ -415,11 +458,10 @@ def main() -> None:
     _setup_django()
     rows_in = _load_discoveries(from_date, args.days, args.advisor, scoring)
     to_date = from_date + timedelta(days=args.days)
-    max_created = date.today() - timedelta(days=MIN_AGE_CALENDAR_DAYS)
 
     print(
         f"Health v2 autopsy — discoveries {from_date} .. {to_date} "
-        f"(created <= {max_created}), assessment required, horizon={HORIZON_TRADING_DAYS}td"
+        f"(assessment required, horizon={HORIZON_TRADING_DAYS}td)"
     )
     print(f"  score for grade: {scoring.label}")
     if args.advisor:
@@ -432,6 +474,8 @@ def main() -> None:
         )
 
     if not rows_in:
+        if args.verbose:
+            _diagnose_empty_load(from_date, to_date, args.advisor, scoring)
         return
 
     start = min(r.created for r in rows_in) - timedelta(days=5)
