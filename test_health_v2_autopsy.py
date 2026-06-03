@@ -21,7 +21,7 @@ from __future__ import annotations
 import argparse
 import os
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -55,6 +55,21 @@ def _setup_django() -> None:
     import django
 
     django.setup()
+
+
+def _cohort_window(from_date: date, days: int) -> Tuple[datetime, datetime, date]:
+    """
+    Inclusive start, exclusive end as aware datetimes (UTC with default settings).
+
+    Matches SQL ``created >= from_date`` and ``created < from_date + days`` at midnight,
+    instead of ``created__date`` which can drop rows when DB timestamps are UTC+1.
+    """
+    from django.utils import timezone as dj_tz
+
+    to_date = from_date + timedelta(days=days)
+    start = dj_tz.make_aware(datetime.combine(from_date, time.min))
+    end = dj_tz.make_aware(datetime.combine(to_date, time.min))
+    return start, end, to_date
 
 
 def _fetch_close_series(
@@ -210,8 +225,8 @@ class DiscoveryRow:
 
 
 def _diagnose_empty_load(
-    from_date: date,
-    to_date: date,
+    window_start: datetime,
+    window_end: datetime,
     advisor: Optional[str],
     scoring: ScoringMode,
 ) -> None:
@@ -219,14 +234,14 @@ def _diagnose_empty_load(
     from core.models import Discovery
 
     base = Discovery.objects.filter(
-        created__date__gte=from_date,
-        created__date__lt=to_date,
+        created__gte=window_start,
+        created__lt=window_end,
     )
     if advisor:
         base = base.filter(advisor__name=advisor)
         alt = Discovery.objects.filter(
-            created__date__gte=from_date,
-            created__date__lt=to_date,
+            created__gte=window_start,
+            created__lt=window_end,
             advisor__name__icontains="polygon",
         ).count()
         print(f"  diagnose: Polygon-like advisor rows in window: {alt}")
@@ -247,8 +262,8 @@ def _diagnose_empty_load(
     if advisor and base.count() == 0:
         names = (
             Discovery.objects.filter(
-                created__date__gte=from_date,
-                created__date__lt=to_date,
+                created__gte=window_start,
+                created__lt=window_end,
             )
             .values_list("advisor__name", flat=True)
             .distinct()
@@ -265,13 +280,13 @@ def _load_discoveries(
     from core.discovery_scoring import discovery_scoring_context
     from core.models import Discovery
 
-    to_date = from_date + timedelta(days=days)
+    window_start, window_end, _to_date = _cohort_window(from_date, days)
 
     qs = (
         Discovery.objects.filter(
             assessment__isnull=False,
-            created__date__gte=from_date,
-            created__date__lt=to_date,
+            created__gte=window_start,
+            created__lt=window_end,
         )
         .select_related("stock", "advisor", "assessment")
         .order_by("created")
@@ -456,11 +471,11 @@ def main() -> None:
     show_model = scoring.component is not None or scoring.weights is not None
 
     _setup_django()
+    window_start, window_end, to_date = _cohort_window(from_date, args.days)
     rows_in = _load_discoveries(from_date, args.days, args.advisor, scoring)
-    to_date = from_date + timedelta(days=args.days)
 
     print(
-        f"Health v2 autopsy — discoveries {from_date} .. {to_date} "
+        f"Health v2 autopsy — discoveries {from_date} .. {to_date} (UTC window) "
         f"(assessment required, horizon={HORIZON_TRADING_DAYS}td)"
     )
     print(f"  score for grade: {scoring.label}")
@@ -475,7 +490,7 @@ def main() -> None:
 
     if not rows_in:
         if args.verbose:
-            _diagnose_empty_load(from_date, to_date, args.advisor, scoring)
+            _diagnose_empty_load(window_start, window_end, args.advisor, scoring)
         return
 
     start = min(r.created for r in rows_in) - timedelta(days=5)
