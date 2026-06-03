@@ -531,6 +531,14 @@ def main() -> None:
             print(
                 "  hint: all skips are missing yfinance data — check outbound network on this host."
             )
+        elif skip_incomplete == skipped_total and skipped_total and rows_in:
+            latest = max(r.created for r in rows_in)
+            print(
+                f"  hint: cohort too recent for {HORIZON_TRADING_DAYS}td forward returns "
+                f"(newest discovery {latest}; today {date.today()}). "
+                f"Use an earlier --from-date (e.g. {(date.today() - timedelta(days=21)).isoformat()}) "
+                f"and wider --days."
+            )
 
     _summarize_by_grade(df, scoring.label)
     if args.table:
