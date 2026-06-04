@@ -368,7 +368,7 @@ def compute_filter2_pass(filing, verbose: bool = False) -> bool:
 # FILTER3: generic sanity checks (valuation / cap / price band)
 # -----------------------------
 FILTER3_PE_MAX = 100  # Overvalued definitive: fail if trailing P/E > this
-FILTER3_MIN_CAP = 300e6  # Exclude nano/micro: fail if market_cap < 300M
+FILTER3_MIN_CAP = 150e6  # Exclude nano/micro: fail if market_cap < 150M (aligned with edgar.py)
 FILTER3_MAX_CAP = 200e9  # Exclused mega cap
 FILTER3_PRICE_MIN = 5.0
 FILTER3_PRICE_MAX = 200.0

@@ -617,7 +617,7 @@ def _filter4_has_comparables(text: str) -> bool:
 
 # Financial filter (Filter 3)
 FILTER3_PE_MAX = 100
-FILTER3_MIN_CAP = 300e6
+FILTER3_MIN_CAP = 150e6
 FILTER3_PRICE_MIN = 5.0
 FILTER3_PRICE_MAX = 200.0
 FILTER3_PREV_DAY_GAIN_FAIL_PCT = 10.0
@@ -1186,7 +1186,7 @@ class Edgar(AdvisorBase):
 
         cap = info.get("marketCap")
         if cap is not None and isinstance(cap, (int, float)) and cap < FILTER3_MIN_CAP:
-            return _fail("market cap too low (< $300M)")
+            return _fail(f"market cap too low (< ${FILTER3_MIN_CAP / 1e6:.0f}M)")
 
         price = info.get("regularMarketPrice") or info.get("currentPrice") or info.get("previousClose")
         if price is not None and isinstance(price, (int, float)):
