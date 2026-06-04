@@ -24,6 +24,7 @@ _LAZY_MODULES = frozenset(
         "oscilla",
         "edgar",
         "flux",
+        "noise",
     }
 )
 
