@@ -3,7 +3,7 @@ Noise advisor — v2 entry on a fixed watchlist (A/B vs Flux).
 
 Entry: pullback off 20d high + relative weakness band vs QQQ/SPY; top N per session.
 Runs only during regular session (AdvisorBase.market_open).
-Exit/add: no stop-loss; TARGET, DESCENDING_TREND, PERCENTAGE_REBUY, END_DAY, END_WEEK.
+Exit/add: no stop-loss; unlimited rebuys (PERCENTAGE_REBUY value2=0); TARGET, DESCENDING_TREND, END_DAY, END_WEEK.
 """
 
 from __future__ import annotations
@@ -82,7 +82,8 @@ MAX_DISCOVERIES_PER_SESSION = 5
 
 NOISE_TP_MULT = Decimal("1.01")
 NOISE_REBUY_DROP = Decimal("0.02")
-NOISE_MAX_TRANCHES = Decimal("4")
+# PERCENTAGE_REBUY value2: <= 0 means unlimited tranches (capped only by fund cash).
+NOISE_REBUY_MAX_TRANCHES = Decimal("0")
 NOISE_DISCOVERY_COOLDOWN_HOURS = 48
 NOISE_ENDDAY_TAKE = Decimal("1.01")
 NOISE_ENDWEEK_TAKE = Decimal("1.00")
@@ -136,7 +137,7 @@ class Noise(AdvisorBase):
         sell_instructions = [
             ("TARGET_PERCENTAGE", NOISE_TP_MULT, None),
             ("DESCENDING_TREND", NOISE_DESCENDING_TREND, None),
-            ("PERCENTAGE_REBUY", NOISE_REBUY_DROP, NOISE_MAX_TRANCHES),
+            ("PERCENTAGE_REBUY", NOISE_REBUY_DROP, NOISE_REBUY_MAX_TRANCHES),
             ("END_DAY", NOISE_ENDDAY_TAKE, None),
             ("END_WEEK", NOISE_ENDWEEK_TAKE, None),
         ]
