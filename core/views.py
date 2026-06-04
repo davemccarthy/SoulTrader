@@ -25,7 +25,6 @@ from .fund_session import (
 )
 from .discovery_scoring import (
     discovery_list_score_column,
-    discovery_outcome_score,
     discovery_scoring_context,
     render_assessment_block_html,
 )
@@ -1350,7 +1349,6 @@ def advisory_discoveries(request, advisor_id: int):
         company = (discovery.stock.company or '').strip()
         scoring = discovery_scoring_context(discovery)
         score_column = discovery_list_score_column(scoring)
-        outcome = _discovery_outcome(discovery, discovery_outcome_score(scoring))
         discovery_price = discovery.price
         current_price = discovery.stock.price
         pnl_pct = None
@@ -1376,7 +1374,6 @@ def advisory_discoveries(request, advisor_id: int):
             'scoring': scoring,
             'has_v2_assessment': scoring.get('source') == 'v2',
             'health': health_record_template_context(discovery.health) if discovery.health else None,
-            'outcome': outcome,
         })
 
     context = {
@@ -1479,114 +1476,3 @@ def _discovery_paragraphs(explanation: str | None) -> list[dict[str, str]]:
         i += 1
 
     return blocks
-
-
-def _discovery_outcome(discovery: Discovery, score: float | None) -> dict[str, object]:
-    """Classify discovery quality from score, age, and mark-to-market return."""
-    now = timezone.now()
-    age = now - discovery.created if discovery.created else datetime.timedelta.max
-    age_hours = age.total_seconds() / 3600
-    discovery_price = discovery.price
-    current_price = discovery.stock.price if discovery.stock else None
-
-    # TOO EARLY means "no fresh price signal yet", not simply elapsed time.
-    if age < datetime.timedelta(days=1):
-        has_fresh_price_signal = (
-            discovery_price is not None
-            and current_price is not None
-            and discovery_price > 0
-            and current_price > 0
-            and abs(float(current_price - discovery_price)) > 1e-9
-        )
-        if not has_fresh_price_signal:
-            return {
-                "label": "TOO EARLY",
-                "state": "TOO_EARLY",
-                "reason_code": "too_early_no_fresh_price",
-                "reason_text": "Waiting for updated market prices before judging outcome.",
-                "css_class": "outcome-too-early",
-                "return_pct": None,
-                "age_hours": round(age_hours, 2),
-            }
-
-    if score is None:
-        return {
-            "label": "UNKNOWN",
-            "state": "UNKNOWN",
-            "reason_code": "missing_health_score",
-            "reason_text": "Health score is unavailable.",
-            "css_class": "outcome-unknown",
-            "return_pct": None,
-            "age_hours": round(age_hours, 2),
-        }
-    if discovery_price is None or discovery_price <= 0:
-        return {
-            "label": "UNKNOWN",
-            "state": "UNKNOWN",
-            "reason_code": "missing_discovery_price",
-            "reason_text": "Discovery price is missing.",
-            "css_class": "outcome-unknown",
-            "return_pct": None,
-            "age_hours": round(age_hours, 2),
-        }
-    if current_price is None or current_price <= 0:
-        return {
-            "label": "UNKNOWN",
-            "state": "UNKNOWN",
-            "reason_code": "missing_current_price",
-            "reason_text": "Current price is missing.",
-            "css_class": "outcome-unknown",
-            "return_pct": None,
-            "age_hours": round(age_hours, 2),
-        }
-
-    return_pct = float((current_price - discovery_price) / discovery_price * 100)
-    score_midpoint = 25.0
-
-    # Missed opportunity: strong gain despite below-average score.
-    if score < score_midpoint and return_pct >= 8.0:
-        label = "DISASTER"
-        reason_code = "low_score_high_return"
-        css_class = "outcome-disaster"
-        reason_text = "Below-average score missed a strong upside move."
-    # Rule: otherwise flat or positive return is at least ADEQUATE.
-    elif return_pct >= 0 and score >= score_midpoint and return_pct >= 8.0:
-        label = "PERFECT"
-        reason_code = "high_score_high_return"
-        css_class = "outcome-perfect"
-        reason_text = "High conviction and strong return aligned well."
-    elif return_pct >= 0:
-        label = "ADEQUATE"
-        reason_code = "non_negative_return"
-        css_class = "outcome-adequate"
-        reason_text = "Return is flat or positive without a major score/return mismatch."
-    elif score >= score_midpoint and return_pct <= -4.0:
-        label = "DISASTER"
-        reason_code = "high_score_low_return"
-        css_class = "outcome-disaster"
-        reason_text = "High conviction but the return moved sharply against the call."
-    elif score >= score_midpoint:
-        label = "DISAPPOINTING"
-        reason_code = "high_score_subpar_return"
-        css_class = "outcome-disappointing"
-        reason_text = "High conviction has not produced the expected upside yet."
-    elif return_pct <= -8.0:
-        label = "DISAPPOINTING"
-        reason_code = "deep_negative_return"
-        css_class = "outcome-disappointing"
-        reason_text = "Return is materially negative versus discovery price."
-    else:
-        label = "ADEQUATE"
-        reason_code = "middle_band_alignment"
-        css_class = "outcome-adequate"
-        reason_text = "Score and return are broadly in line."
-
-    return {
-        "label": label,
-        "state": "FINAL",
-        "reason_code": reason_code,
-        "reason_text": reason_text,
-        "css_class": css_class,
-        "return_pct": round(return_pct, 2),
-        "age_hours": round(age_hours, 2),
-    }
