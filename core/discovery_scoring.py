@@ -92,6 +92,41 @@ def _build_summary(
     }
 
 
+def _apply_risk_matrix_context(ctx: Dict[str, Any], discovery: "Discovery") -> None:
+    from core.services.health.risk_matrix import (
+        RISK_LEVELS,
+        discovery_axes,
+        interpret_axes,
+        opportunity_adjusted,
+        risk_fit_all,
+        risk_floors_for,
+    )
+    from core.services.health.so_ratings import (
+        score_to_opportunity_grade,
+        score_to_stability_grade,
+        so_grade_pair,
+    )
+
+    symbol = (discovery.stock.symbol or "").strip() if discovery.stock else ""
+    stability, opportunity = discovery_axes(discovery)
+    weight = discovery.weight if discovery.weight is not None else Decimal("1.0")
+    opp_adj = opportunity_adjusted(opportunity, weight)
+    stab_grade = score_to_stability_grade(stability)
+    opp_grade = score_to_opportunity_grade(opportunity)
+    opp_adj_grade = score_to_opportunity_grade(opp_adj)
+    ctx["stability"] = stability
+    ctx["opportunity"] = opportunity
+    ctx["opportunity_adjusted"] = opp_adj
+    ctx["stability_grade"] = stab_grade.to_dict() if stab_grade else None
+    ctx["opportunity_grade"] = opp_grade.to_dict() if opp_grade else None
+    ctx["opportunity_adjusted_grade"] = opp_adj_grade.to_dict() if opp_adj_grade else None
+    # Second letter uses opp × weight — same input as matrix fit gates.
+    ctx["so_grade"] = so_grade_pair(stab_grade, opp_adj_grade)
+    ctx["interpretation"] = interpret_axes(stability, opportunity)
+    ctx["risk_matrix"] = risk_fit_all(stability, opportunity, weight=weight)
+    ctx["risk_floors"] = {risk: risk_floors_for(risk) for risk in RISK_LEVELS}
+
+
 def assessment_payload(
     assessment: "Assessment",
     discovery_weight: Optional[Decimal] = None,
@@ -162,6 +197,16 @@ def discovery_scoring_context(
         "summary": None,
         "headline_display": "—",
         "health_v1": None,
+        "stability": None,
+        "opportunity": None,
+        "opportunity_adjusted": None,
+        "stability_grade": None,
+        "opportunity_grade": None,
+        "opportunity_adjusted_grade": None,
+        "so_grade": None,
+        "interpretation": None,
+        "risk_matrix": None,
+        "risk_floors": None,
     }
     if discovery is None:
         return empty
@@ -171,6 +216,7 @@ def discovery_scoring_context(
 
     if assessment is not None:
         ctx = assessment_payload(assessment, discovery_weight=weight)
+        _apply_risk_matrix_context(ctx, discovery)
         ctx["headline_display"] = _headline_from_scoring(ctx)
         if discovery.health:
             ctx["health_v1"] = (

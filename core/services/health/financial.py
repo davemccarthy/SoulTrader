@@ -100,8 +100,10 @@ def _score_operating_margin(margin: Optional[float]) -> Optional[float]:
     if pct <= 20:
         return linear_map(pct, in_lo=10, in_hi=20, out_lo=60, out_hi=80)
     if pct <= 35:
-        return linear_map(pct, in_lo=20, in_hi=35, out_lo=80, out_hi=95)
-    return 95.0
+        return linear_map(pct, in_lo=20, in_hi=35, out_lo=80, out_hi=92)
+    if pct <= 50:
+        return linear_map(pct, in_lo=35, in_hi=50, out_lo=92, out_hi=97)
+    return 97.0
 
 
 def _score_fcf_margin(margin: Optional[float]) -> Optional[float]:
@@ -115,8 +117,10 @@ def _score_fcf_margin(margin: Optional[float]) -> Optional[float]:
     if pct <= 15:
         return linear_map(pct, in_lo=5, in_hi=15, out_lo=60, out_hi=80)
     if pct <= 25:
-        return linear_map(pct, in_lo=15, in_hi=25, out_lo=80, out_hi=95)
-    return 95.0
+        return linear_map(pct, in_lo=15, in_hi=25, out_lo=80, out_hi=92)
+    if pct <= 40:
+        return linear_map(pct, in_lo=25, in_hi=40, out_lo=92, out_hi=97)
+    return 97.0
 
 
 def _score_debt_to_equity(dte: Optional[float]) -> Optional[float]:
@@ -126,7 +130,7 @@ def _score_debt_to_equity(dte: Optional[float]) -> Optional[float]:
     if dte < 0:
         dte = 0.0
     if dte <= 0.3:
-        return linear_map(dte, in_lo=0, in_hi=0.3, out_lo=95, out_hi=88)
+        return linear_map(dte, in_lo=0, in_hi=0.3, out_lo=98, out_hi=88)
     if dte <= 1.0:
         return linear_map(dte, in_lo=0.3, in_hi=1.0, out_lo=88, out_hi=70)
     if dte <= 2.5:

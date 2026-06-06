@@ -108,7 +108,7 @@ struct DiscoveryDetailView: View {
                     valueColor: Theme.signedColor(for: chg)
                 )
                 MetricColumn(title: "AT DISC", value: formatCurrency(disc))
-                MetricColumn(title: "SCORE", value: headerScoreText(for: detail))
+                MetricColumn(title: "GRADE", value: headerScoreText(for: detail))
                 Spacer()
             }
             .padding(.top, 10.4)

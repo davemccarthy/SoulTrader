@@ -442,7 +442,7 @@ struct AdvisorDiscoveriesView: View {
     }
 
     private func healthScoreColumn(scoreText: String) -> some View {
-        MetricColumn(title: "SCORE", value: scoreText, alignment: .trailing)
+        MetricColumn(title: "GRADE", value: scoreText, alignment: .trailing)
             .frame(minWidth: 56, alignment: .trailing)
     }
 

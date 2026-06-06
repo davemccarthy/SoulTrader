@@ -24,6 +24,8 @@ from datetime import timedelta, datetime as dt_class, date as date_class, time a
 from decimal import Decimal
 from typing import Optional
 
+from core.services.health.risk_matrix import RISK_LEVELS
+
 import yfinance as yf
 import logging
 
@@ -43,14 +45,6 @@ class Profile(models.Model):
         "NANO": 10,
     }
 
-    # Minimum v2 grade letter per profile; min_score() maps via ratings.RATING_BANDS.
-    RISK = {
-        "CONSERVATIVE": "B",
-        "MODERATE": "C",
-        "AGGRESSIVE": "D",
-        "RECKLESS": "F",
-    }
-
     # But / sell sentiment
     SENTIMENT = {
         "STRONG_BULL": 1.2,
@@ -67,7 +61,7 @@ class Profile(models.Model):
     description = models.TextField(blank=True, default="")
     enabled = models.BooleanField(default=True)
     advisors = ArrayField(models.CharField(max_length=100), default=list, blank=True)
-    risk = models.CharField(max_length=20, choices=[(key, key) for key in RISK.keys()], default='MODERATE')
+    risk = models.CharField(max_length=20, choices=[(key, key) for key in RISK_LEVELS], default='MODERATE')
     spread = models.CharField(max_length=10, choices=[(key, key) for key in SPREAD.keys()], null=True, blank=True)
     sentiment = models.CharField(max_length=16, choices=[(key, key) for key in SENTIMENT.keys()], null=False, default='AUTO')
     investment = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('100000.00'))
@@ -77,15 +71,17 @@ class Profile(models.Model):
         num_stocks = Decimal(Profile.SPREAD[self.spread])
         return self.investment / num_stocks
 
-    def min_grade(self) -> str:
-        """Minimum allowed v2 letter grade for this profile."""
-        return Profile.RISK[self.risk]
+    def risk_floors(self) -> dict:
+        """min_stability and min_opportunity for this profile's risk band."""
+        from core.services.health.risk_matrix import risk_floors_for
 
-    def min_score(self):
-        """Minimum v2 composite (0–100) for profile min grade."""
-        from core.services.health.ratings import min_composite_for_letter
+        return risk_floors_for(self.risk)
 
-        return Decimal(str(min_composite_for_letter(self.min_grade())))
+    def min_stability(self) -> float:
+        return self.risk_floors()["min_stability_score"]
+
+    def min_opportunity(self) -> float:
+        return self.risk_floors()["min_opportunity_score"]
 
 
 # External advisor services (pairs with python class)

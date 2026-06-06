@@ -6,6 +6,14 @@ from core.services.health.assess import (
     discovery_adjusted_score,
     run_component_scores,
 )
+from core.services.health.risk_matrix import (
+    RISK_MATRIX,
+    RISK_LEVELS,
+    discovery_axes,
+    discovery_passes_risk_gate,
+    risk_fit_all,
+    risk_floors_for,
+)
 from core.services.health.consensus import score_consensus_health
 from core.services.health.ratings import (
     HealthRating,
@@ -13,6 +21,17 @@ from core.services.health.ratings import (
     min_composite_for_letter,
     score_to_rating,
 )
+from core.services.health.so_ratings import (
+    OPPORTUNITY_BANDS,
+    SOGrade,
+    STABILITY_BANDS,
+    opportunity_grade_at_least,
+    score_to_opportunity_grade,
+    score_to_stability_grade,
+    so_grade_pair,
+    stability_grade_at_least,
+)
+from core.services.health.durability import score_business_durability
 from core.services.health.financial import score_financial_health
 from core.services.health.intrinsic import score_intrinsic_health
 from core.services.health.price import score_price_health
@@ -23,12 +42,27 @@ __all__ = [
     "HealthRating",
     "grade_at_least",
     "min_composite_for_letter",
+    "RISK_MATRIX",
+    "RISK_LEVELS",
     "composite_from_scores",
     "discovery_adjusted_score",
+    "discovery_axes",
+    "discovery_passes_risk_gate",
+    "risk_fit_all",
+    "risk_floors_for",
     "create_assessment_for_stock",
     "run_component_scores",
     "score_consensus_health",
     "score_to_rating",
+    "SOGrade",
+    "STABILITY_BANDS",
+    "OPPORTUNITY_BANDS",
+    "score_to_stability_grade",
+    "score_to_opportunity_grade",
+    "stability_grade_at_least",
+    "opportunity_grade_at_least",
+    "so_grade_pair",
+    "score_business_durability",
     "score_financial_health",
     "score_intrinsic_health",
     "score_price_health",

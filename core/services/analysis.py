@@ -10,7 +10,11 @@ from django.utils import timezone
 from core.models import Holding, Discovery, Advisor, Profile
 from core.services.execution import execute_buy, execute_sell
 from core.services.llm.gemini import ask_gemini as llm_ask_gemini
-from core.services.health.assess import discovery_adjusted_score
+from core.services.health.risk_matrix import (
+    discovery_axes,
+    discovery_passes_risk_gate,
+    opportunity_adjusted,
+)
 
 logger = logging.getLogger(__name__)
 DT_EXIT_CONFIDENCE_MIN = 0.70
@@ -684,16 +688,26 @@ def analyze_discovery(sa, funds, advisors):
 
         for discovery in unique_discoveries:
 
-            score = discovery_adjusted_score(discovery)
-            if score is None:
+            stability, opportunity = discovery_axes(discovery)
+            if stability is None and opportunity is None:
                 continue
 
-            minimum = fund.min_score()
-
-            if score >= minimum:
+            if discovery_passes_risk_gate(discovery, fund.risk):
                 explanation = discovery.explanation.split(" | ")[0].strip()
                 execute_buy(sa, fund, discovery.stock, allowance, explanation, discovery=discovery)
             else:
-                logger.info(f"{fund.name}: {discovery.advisor.name} discovery {discovery.stock.symbol} score ({score}) below minimum ({minimum})")
+                floors = fund.risk_floors()
+                opp_adj = opportunity_adjusted(opportunity, discovery.weight)
+                logger.info(
+                    "%s: %s discovery %s risk gate fail (risk=%s stab=%s opp_adj=%s "
+                    "floor SO>=%s)",
+                    fund.name,
+                    discovery.advisor.name,
+                    discovery.stock.symbol,
+                    fund.risk,
+                    stability,
+                    opp_adj,
+                    floors["so_floor_display"],
+                )
 
 

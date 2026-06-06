@@ -562,7 +562,7 @@ struct AdvisorDiscoveryRow: Decodable, Identifiable {
         case scoring
     }
 
-    /// SCORE column: prefer unified scoring headline, else legacy health_score.
+    /// GRADE column: SO grade when v2, else legacy health_score.
     var listScoreText: String {
         if let scoring {
             let text = scoring.displayScoreText
@@ -635,6 +635,18 @@ struct DiscoveryScoringComponent: Decodable, Identifiable {
     }
 }
 
+struct DiscoveryScoringRiskFloors: Decodable {
+    let minStability: String?
+    let minOpportunity: String?
+    let soFloorDisplay: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case minStability = "min_stability"
+        case minOpportunity = "min_opportunity"
+        case soFloorDisplay = "so_floor_display"
+    }
+}
+
 struct DiscoveryScoring: Decodable {
     let source: String?
     let compositeScore: Double?
@@ -643,6 +655,16 @@ struct DiscoveryScoring: Decodable {
     let headlineDisplay: String?
     let summary: DiscoveryScoringSummary?
     let components: [DiscoveryScoringComponent]
+    let soGrade: String?
+    let stability: Double?
+    let opportunity: Double?
+    let opportunityAdjusted: Double?
+    let stabilityGrade: DiscoveryScoringRating?
+    let opportunityGrade: DiscoveryScoringRating?
+    let opportunityAdjustedGrade: DiscoveryScoringRating?
+    let interpretation: String?
+    let riskMatrix: [String: String]?
+    let riskFloors: [String: DiscoveryScoringRiskFloors]?
 
     private enum CodingKeys: String, CodingKey {
         case source
@@ -651,6 +673,15 @@ struct DiscoveryScoring: Decodable {
         case discoveryWeight = "discovery_weight"
         case headlineDisplay = "headline_display"
         case summary, components
+        case soGrade = "so_grade"
+        case stability, opportunity
+        case opportunityAdjusted = "opportunity_adjusted"
+        case stabilityGrade = "stability_grade"
+        case opportunityGrade = "opportunity_grade"
+        case opportunityAdjustedGrade = "opportunity_adjusted_grade"
+        case interpretation
+        case riskMatrix = "risk_matrix"
+        case riskFloors = "risk_floors"
     }
 
     init(from decoder: Decoder) throws {
@@ -662,13 +693,50 @@ struct DiscoveryScoring: Decodable {
         headlineDisplay = try c.decodeIfPresent(String.self, forKey: .headlineDisplay)
         summary = try c.decodeIfPresent(DiscoveryScoringSummary.self, forKey: .summary)
         components = try c.decodeIfPresent([DiscoveryScoringComponent].self, forKey: .components) ?? []
+        soGrade = try c.decodeIfPresent(String.self, forKey: .soGrade)
+        stability = try c.decodeIfPresent(Double.self, forKey: .stability)
+        opportunity = try c.decodeIfPresent(Double.self, forKey: .opportunity)
+        opportunityAdjusted = try c.decodeIfPresent(Double.self, forKey: .opportunityAdjusted)
+        stabilityGrade = try c.decodeIfPresent(DiscoveryScoringRating.self, forKey: .stabilityGrade)
+        opportunityGrade = try c.decodeIfPresent(DiscoveryScoringRating.self, forKey: .opportunityGrade)
+        opportunityAdjustedGrade = try c.decodeIfPresent(
+            DiscoveryScoringRating.self,
+            forKey: .opportunityAdjustedGrade
+        )
+        interpretation = try c.decodeIfPresent(String.self, forKey: .interpretation)
+        riskMatrix = try c.decodeIfPresent([String: String].self, forKey: .riskMatrix)
+        riskFloors = try c.decodeIfPresent(
+            [String: DiscoveryScoringRiskFloors].self,
+            forKey: .riskFloors
+        )
     }
 
     var isV2: Bool { source == "v2" }
     var isV1: Bool { source == "v1" }
 
-    /// List/header score text (matches API `headline_display` and web assessment header).
+    /// SO hero grade (e.g. CD) — matches web assessment header.
+    var displayGradeText: String? {
+        if let grade = soGrade?.trimmingCharacters(in: .whitespacesAndNewlines), !grade.isEmpty {
+            return grade
+        }
+        return nil
+    }
+
+    /// Opp × weight score cell, e.g. `55.1 ×1.00`.
+    var opportunityAdjustedDisplay: String {
+        let score = DiscoveryScoring.formatOptionalScore(opportunityAdjusted)
+        let weight = summary?.discoveryWeightDisplay?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if score == "—" { return "—" }
+        if weight.isEmpty || weight == "—" { return score }
+        return "\(score) \(weight)"
+    }
+
+    /// List/header: SO grade when v2, else legacy numeric headline.
     var displayScoreText: String {
+        if let grade = displayGradeText {
+            return grade
+        }
         if let headline = headlineDisplay?.trimmingCharacters(in: .whitespacesAndNewlines),
            !headline.isEmpty, headline != "—" {
             return headline

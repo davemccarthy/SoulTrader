@@ -7,6 +7,7 @@ from django.contrib.postgres.forms import SimpleArrayField
 from django.utils.html import format_html
 from django.db.models import Q
 from core.models import Advisor, Profile, Watchlist
+from core.services.health.risk_matrix import RISK_LEVELS
 from decimal import Decimal
 import yfinance as yf
 import logging
@@ -34,10 +35,9 @@ class AdvisorAdmin(admin.ModelAdmin):
 
 # Step 1: Custom User Creation Form with Risk Level dropdown
 class UserCreationFormWithRisk(UserCreationForm):
-    """Custom user creation form that includes risk level selection from Profile.RISK"""
-    
-    # Get risk level choices from Profile.RISK keys (single source of truth)
-    RISK_CHOICES = [(key, key.replace('_', ' ').title()) for key in Profile.RISK.keys()]
+    """Custom user creation form that includes risk level selection from RISK_LEVELS."""
+
+    RISK_CHOICES = [(key, key.replace('_', ' ').title()) for key in RISK_LEVELS]
     
     risk_level = forms.ChoiceField(
         choices=RISK_CHOICES,

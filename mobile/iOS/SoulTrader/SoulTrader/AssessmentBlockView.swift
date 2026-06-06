@@ -4,89 +4,181 @@ import SwiftUI
 struct AssessmentBlockView: View {
     let scoring: DiscoveryScoring
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Assessment")
-                    .appStyle(.cardTitle)
-                Spacer()
-                Text(scoring.displayScoreText)
-                    .appStyle(.metricValue)
-            }
+    private static let riskBandOrder: [(key: String, label: String)] = [
+        ("CONSERVATIVE", "Conservative"),
+        ("MODERATE", "Moderate"),
+        ("AGGRESSIVE", "Aggressive"),
+        ("RECKLESS", "Reckless"),
+    ]
 
-            if let summary = scoring.summary {
-                summarySection(summary)
-            }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            headerRow
+
+            axesSection
+                .padding(.top, 10)
 
             if !scoring.components.isEmpty {
-                componentsSection(scoring.components)
+                detailsSection
+                    .padding(.top, 10)
+            }
+
+            if scoring.riskMatrix != nil, scoring.riskFloors != nil {
+                riskBandSection
+                    .padding(.top, 10)
+            }
+
+            if let interpretation = scoring.interpretation?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !interpretation.isEmpty {
+                Text(interpretation)
+                    .appStyle(.detailBodyMuted)
+                    .padding(.top, 8)
             }
         }
         .cardSurface()
     }
 
-    private func summarySection(_ summary: DiscoveryScoringSummary) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            sectionCaption("Summary")
-            assessmentRow(
-                label: "Score",
-                value: DiscoveryScoring.formatOptionalScore(summary.assessmentScore)
-            )
-            assessmentRow(
-                label: "Weight",
-                value: summary.discoveryWeightDisplay?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-                    ? (summary.discoveryWeightDisplay ?? "—")
-                    : "—"
-            )
-            assessmentRow(
-                label: "Grade",
-                value: summary.grade?.displayLetter ?? "—"
-            )
-            if let adjusted = summary.adjustedGrade {
-                assessmentRow(label: "Adjusted", value: adjusted.displayLetter)
-            }
-        }
-        .padding(.top, 4)
-    }
-
-    private func componentsSection(_ components: [DiscoveryScoringComponent]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            sectionCaption("Details")
-            ForEach(components) { comp in
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(comp.label)
-                        .appStyle(.detailRowLabel)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Text("\(comp.weightPercent)%")
-                        .appStyle(.detailRowValueAccent)
-                        .frame(width: 40, alignment: .trailing)
-                    Text(DiscoveryScoring.formatOptionalScore(comp.score))
-                        .appStyle(.detailRowValue)
-                        .frame(width: 48, alignment: .trailing)
-                }
-            }
-        }
-        .padding(.top, 6)
-        .overlay(alignment: .top) {
-            Rectangle()
-                .fill(Color.white.opacity(0.12))
-                .frame(height: 1)
-                .offset(y: -3)
-        }
-    }
-
-    private func sectionCaption(_ title: String) -> some View {
-        Text(title)
-            .appStyle(.sectionCaption)
-    }
-
-    private func assessmentRow(label: String, value: String) -> some View {
+    private var headerRow: some View {
         HStack(alignment: .firstTextBaseline) {
+            Text("Assessment")
+                .appStyle(.cardTitle)
+            Spacer(minLength: 8)
+            if let grade = scoring.displayGradeText, grade != "—" {
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text("Grade")
+                        .appStyle(.metricLabel)
+                    Text(grade)
+                        .font(.subheadline)
+                        .fontWeight(.bold)
+                        .kerning(1.2)
+                        .foregroundStyle(Theme.valuePrimary)
+                }
+            } else {
+                Text(scoring.displayScoreText)
+                    .appStyle(.metricValue)
+            }
+        }
+    }
+
+    private var axesSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            assessmentTableHeader(columns: ("Axis", "Grade", "Score"))
+            axisRow(
+                label: "Stability",
+                grade: scoring.stabilityGrade?.displayLetter,
+                score: scoring.stability
+            )
+            axisRow(
+                label: "Opportunity",
+                grade: scoring.opportunityGrade?.displayLetter,
+                score: scoring.opportunity
+            )
+            axisRow(
+                label: "Opp × weight",
+                grade: scoring.opportunityAdjustedGrade?.displayLetter,
+                scoreText: scoring.opportunityAdjustedDisplay
+            )
+        }
+    }
+
+    private var detailsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            sectionDivider
+            assessmentTableHeader(columns: ("Details", "Wt", "Score"))
+            ForEach(scoring.components) { comp in
+                assessmentDataRow(
+                    label: comp.label,
+                    mid: "\(comp.weightPercent)%",
+                    trailing: DiscoveryScoring.formatOptionalScore(comp.score),
+                    midAccent: true
+                )
+            }
+        }
+    }
+
+    private var riskBandSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            sectionDivider
+            assessmentTableHeader(columns: ("Risk band", "Floors", "Fit"))
+            ForEach(Self.riskBandOrder, id: \.key) { band in
+                let fit = scoring.riskMatrix?[band.key] ?? "—"
+                let floor = scoring.riskFloors?[band.key]?.soFloorDisplay ?? "—"
+                assessmentDataRow(
+                    label: band.label,
+                    mid: floor,
+                    trailing: fit,
+                    trailingColor: fitColor(for: fit)
+                )
+            }
+        }
+    }
+
+    private var sectionDivider: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.12))
+            .frame(height: 1)
+            .padding(.bottom, 2)
+    }
+
+    private func axisRow(label: String, grade: String?, score: Double?) -> some View {
+        assessmentDataRow(
+            label: label,
+            mid: grade ?? "—",
+            trailing: DiscoveryScoring.formatOptionalScore(score),
+            midAccent: true
+        )
+    }
+
+    private func axisRow(label: String, grade: String?, scoreText: String) -> some View {
+        assessmentDataRow(
+            label: label,
+            mid: grade ?? "—",
+            trailing: scoreText,
+            midAccent: true
+        )
+    }
+
+    private func assessmentTableHeader(columns: (String, String, String)) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(columns.0)
+                .appStyle(.sectionCaption)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(columns.1)
+                .appStyle(.sectionCaption)
+                .frame(width: 44, alignment: .center)
+            Text(columns.2)
+                .appStyle(.sectionCaption)
+                .frame(width: 72, alignment: .trailing)
+        }
+    }
+
+    private func assessmentDataRow(
+        label: String,
+        mid: String,
+        trailing: String,
+        midAccent: Bool = false,
+        trailingColor: Color? = nil
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(label)
                 .appStyle(.detailRowLabel)
-            Spacer(minLength: 8)
-            Text(value)
-                .appStyle(.detailRowValue)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(mid)
+                .appStyle(midAccent ? .detailRowValueAccent : .detailRowValue)
+                .kerning(midAccent ? 0.8 : 0)
+                .frame(width: 44, alignment: .center)
+            Text(trailing)
+                .appStyle(.detailRowValue, color: trailingColor)
+                .frame(width: 72, alignment: .trailing)
+        }
+    }
+
+    private func fitColor(for fit: String) -> Color? {
+        switch fit.uppercased() {
+        case "BUY": return Theme.positive
+        case "AVOID": return Theme.negative
+        default: return nil
         }
     }
 }
