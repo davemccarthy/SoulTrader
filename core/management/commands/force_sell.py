@@ -1,12 +1,12 @@
 """
 Force Sell Management Command
 
-Force sell specific stocks for all users who hold them, or only for named funds (profiles).
+Force sell specific stocks across funds (profiles), or only named funds.
 
 Usage:
     python manage.py force_sell NVS ABBV AZN
     python manage.py force_sell --symbols NVS ABBV AZN
-    python manage.py force_sell EX2 --funds "Experimental" "Main"
+    python manage.py force_sell DAL --funds ZOMB
 """
 
 from django.core.management.base import BaseCommand, CommandError
@@ -124,11 +124,13 @@ class Command(BaseCommand):
             holdings = Holding.objects.filter(
                 stock=stock,
                 shares__gt=0,
-                user__is_active=True,
-            ).select_related('user', 'stock', 'fund')
+                fund_id__isnull=False,
+            ).select_related('stock', 'fund')
 
             if fund_filter_ids is not None:
                 holdings = holdings.filter(fund_id__in=fund_filter_ids)
+            else:
+                holdings = holdings.filter(fund__enabled=True)
 
             if not holdings.exists():
                 self.stdout.write(f'No holdings found for {symbol}')
@@ -141,18 +143,18 @@ class Command(BaseCommand):
                 if fund is None:
                     self.stdout.write(
                         self.style.WARNING(
-                            f'  Skipping {holding.user.username}: {warn}'
+                            f'  Skipping holding {holding.id}: {warn}'
                         )
                     )
                     continue
                 if warn:
                     self.stdout.write(
-                        self.style.WARNING(f'  {holding.user.username}: {warn}')
+                        self.style.WARNING(f'  {fund.name}: {warn}')
                     )
 
                 holding.stock.refresh()
                 sell_value = holding.shares * holding.stock.price
-                label = f'{holding.user.username} / {fund.name}'
+                label = fund.name
 
                 if dry_run:
                     self.stdout.write(

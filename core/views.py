@@ -240,6 +240,69 @@ def _fund_advisor_scoreboard_rows(fund_id: int, days: int) -> list[dict]:
     return rows
 
 
+def _advisor_scoreboard_row(fund_id: int, advisor_id: int, days: int) -> dict | None:
+    """One advisor's scoreboard stats — skips unrelated trades on discovery pages."""
+    cutoff = _scoreboard_cutoff_lookback(days)
+    advisor_name = (
+        Advisor.objects.filter(pk=advisor_id).values_list("name", flat=True).first()
+    )
+    if not advisor_name:
+        return None
+
+    buy_list = list(
+        Trade.objects.filter(fund_id=fund_id, action="BUY", sa__started__gte=cutoff)
+        .select_related("sa", "user", "stock", "stock__advisor")
+        .order_by("created")
+    )
+    if not buy_list:
+        return None
+
+    sa_ids = [t.sa_id for t in buy_list]
+    stock_ids = [t.stock_id for t in buy_list]
+    advisor_for_buy = _scoreboard_discovery_advisor_map(sa_ids, stock_ids)
+
+    def _trade_advisor(trade):
+        adv = advisor_for_buy.get((trade.sa_id, trade.stock_id))
+        if not adv and trade.stock and getattr(trade.stock, "advisor_id", None):
+            adv = trade.stock.advisor.name
+        return adv
+
+    by_user_stock = defaultdict(list)
+    for t in buy_list:
+        if _trade_advisor(t) != advisor_name:
+            continue
+        by_user_stock[(t.user_id, t.stock_id)].append(t)
+    if not by_user_stock:
+        return None
+
+    outcomes = []
+    for user_id, stock_id in by_user_stock:
+        outcomes.extend(
+            _scoreboard_fifo_outcomes_for_user_stock(
+                user_id, stock_id, cutoff, advisor_for_buy
+            )
+        )
+    advisor_outcomes = [o for o in outcomes if o["advisor"] == advisor_name]
+    if not advisor_outcomes:
+        return None
+
+    n = len(advisor_outcomes)
+    winners = sum(1 for o in advisor_outcomes if o["winner"])
+    losers = n - winners
+    win_rate = (winners / n * 100) if n else 0.0
+    total_cost = sum(o["cost"] for o in advisor_outcomes)
+    total_exit = sum(o["exit_value"] for o in advisor_outcomes)
+    gain_loss_pct = float((total_exit - total_cost) / total_cost * 100) if total_cost else 0.0
+    return {
+        "advisor_id": advisor_id,
+        "trades": n,
+        "winners": winners,
+        "losers": losers,
+        "win_rate": round(win_rate, 1),
+        "gain_loss_pct": round(gain_loss_pct, 2),
+    }
+
+
 def home(request):
     """Root URL: no marketing home — send users to login or Funds."""
     if request.user.is_authenticated:
@@ -1329,8 +1392,7 @@ def advisory_discoveries(request, advisor_id: int):
     cutoff = timezone.now() - datetime.timedelta(days=lookback_days)
     advisor = get_object_or_404(Advisor, pk=advisor_id)
 
-    scoreboard_rows = _fund_advisor_scoreboard_rows(fund.id, lookback_days)
-    advisor_stats = next((row for row in scoreboard_rows if row.get('advisor_id') == advisor.id), None)
+    advisor_stats = _advisor_scoreboard_row(fund.id, advisor.id, lookback_days)
 
     discoveries_qs = (
         Discovery.objects
@@ -1342,7 +1404,6 @@ def advisory_discoveries(request, advisor_id: int):
     paginator = Paginator(discoveries_qs, 20)
     page_obj = paginator.get_page(request.GET.get('page') or 1)
     discoveries = list(page_obj.object_list)
-    _refresh_prices_for_advisory_discoveries(discoveries)
 
     discovery_rows = []
     for discovery in discoveries:

@@ -9,6 +9,7 @@ from core.services.health.assess import (
 from core.services.health.risk_matrix import (
     RISK_MATRIX,
     RISK_LEVELS,
+    compute_so_snapshot,
     discovery_axes,
     discovery_passes_risk_gate,
     risk_fit_all,
@@ -31,6 +32,7 @@ from core.services.health.so_ratings import (
     so_grade_pair,
     stability_grade_at_least,
 )
+from core.services.health.distress import adjust_opportunity_parts
 from core.services.health.durability import score_business_durability
 from core.services.health.financial import score_financial_health
 from core.services.health.intrinsic import score_intrinsic_health
@@ -46,6 +48,7 @@ __all__ = [
     "RISK_LEVELS",
     "composite_from_scores",
     "discovery_adjusted_score",
+    "compute_so_snapshot",
     "discovery_axes",
     "discovery_passes_risk_gate",
     "risk_fit_all",
@@ -62,6 +65,7 @@ __all__ = [
     "stability_grade_at_least",
     "opportunity_grade_at_least",
     "so_grade_pair",
+    "adjust_opportunity_parts",
     "score_business_durability",
     "score_financial_health",
     "score_intrinsic_health",

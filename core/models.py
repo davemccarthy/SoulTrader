@@ -620,6 +620,29 @@ class Assessment(models.Model):
         help_text="Weighted v2 composite (0–100) from component scores.",
     )
 
+    # SO axes snapshot at assessment time (no live yfinance on read).
+    stability = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    opportunity = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    stab_debt_to_equity = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    stab_fcf_margin = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    stab_operating_margin = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    stab_durability = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    opp_fin_growth = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    opp_price_blend = models.DecimalField(
+        max_digits=5,
+        decimal_places=1,
+        null=True,
+        blank=True,
+        help_text="Price score used in opportunity blend (after distress cap).",
+    )
+    opp_valuation_blend = models.DecimalField(
+        max_digits=5,
+        decimal_places=1,
+        null=True,
+        blank=True,
+        help_text="Valuation score used in opportunity blend (after distress cap).",
+    )
+
     class Meta:
         indexes = [
             models.Index(fields=['stock', '-created']),

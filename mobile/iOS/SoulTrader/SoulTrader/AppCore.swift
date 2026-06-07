@@ -662,6 +662,8 @@ struct DiscoveryScoring: Decodable {
     let stabilityGrade: DiscoveryScoringRating?
     let opportunityGrade: DiscoveryScoringRating?
     let opportunityAdjustedGrade: DiscoveryScoringRating?
+    let showOpportunityUpgrade: Bool?
+    let opportunityUpgradeDisplay: String?
     let interpretation: String?
     let riskMatrix: [String: String]?
     let riskFloors: [String: DiscoveryScoringRiskFloors]?
@@ -679,6 +681,8 @@ struct DiscoveryScoring: Decodable {
         case stabilityGrade = "stability_grade"
         case opportunityGrade = "opportunity_grade"
         case opportunityAdjustedGrade = "opportunity_adjusted_grade"
+        case showOpportunityUpgrade = "show_opportunity_upgrade"
+        case opportunityUpgradeDisplay = "opportunity_upgrade_display"
         case interpretation
         case riskMatrix = "risk_matrix"
         case riskFloors = "risk_floors"
@@ -703,6 +707,8 @@ struct DiscoveryScoring: Decodable {
             DiscoveryScoringRating.self,
             forKey: .opportunityAdjustedGrade
         )
+        showOpportunityUpgrade = try c.decodeIfPresent(Bool.self, forKey: .showOpportunityUpgrade)
+        opportunityUpgradeDisplay = try c.decodeIfPresent(String.self, forKey: .opportunityUpgradeDisplay)
         interpretation = try c.decodeIfPresent(String.self, forKey: .interpretation)
         riskMatrix = try c.decodeIfPresent([String: String].self, forKey: .riskMatrix)
         riskFloors = try c.decodeIfPresent(
@@ -722,14 +728,37 @@ struct DiscoveryScoring: Decodable {
         return nil
     }
 
-    /// Opp × weight score cell, e.g. `55.1 ×1.00`.
-    var opportunityAdjustedDisplay: String {
+    private static let gradeRank: [String: Int] = [
+        "A": 6, "B": 5, "C": 4, "D": 3, "E": 2, "F": 1,
+    ]
+
+    /// Show Upgrade row only when weight lifted opportunity by at least one letter.
+    var showsOpportunityUpgrade: Bool {
+        if let showOpportunityUpgrade {
+            return showOpportunityUpgrade
+        }
+        guard let base = opportunityGrade?.letter.uppercased(),
+              let adj = opportunityAdjustedGrade?.letter.uppercased(),
+              let baseRank = Self.gradeRank[base],
+              let adjRank = Self.gradeRank[adj] else {
+            return false
+        }
+        return adjRank > baseRank
+    }
+
+    /// Upgrade score cell, e.g. `(×1.15) 81.1`.
+    var opportunityUpgradeDisplayText: String {
+        if let text = opportunityUpgradeDisplay?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !text.isEmpty {
+            return text
+        }
         let score = DiscoveryScoring.formatOptionalScore(opportunityAdjusted)
         let weight = summary?.discoveryWeightDisplay?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if score == "—" { return "—" }
         if weight.isEmpty || weight == "—" { return score }
-        return "\(score) \(weight)"
+        return "(\(weight)) \(score)"
     }
 
     /// List/header: SO grade when v2, else legacy numeric headline.

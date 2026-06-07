@@ -113,18 +113,36 @@ def run_component_scores(
     return out
 
 
+def run_component_results(symbol: str) -> Dict[str, Any]:
+    """Run all v2 component scorers; return {key: result object}."""
+    sym = (symbol or "").strip().upper()
+    results: Dict[str, Any] = {}
+    for key, scorer in COMPONENT_SCORERS:
+        try:
+            results[key] = scorer(sym)
+        except Exception:
+            results[key] = None
+    return results
+
+
 def create_assessment_for_stock(stock: "Stock") -> Optional["Assessment"]:
     """
-    Score stock via v2 components and persist an Assessment row.
+    Score stock via v2 components, compute SO snapshot, and persist an Assessment row.
     Returns None if every component failed to produce a score.
     """
     from core.models import Assessment
+    from core.services.health.risk_matrix import compute_so_snapshot
 
-    scores = run_component_scores(stock.symbol)
+    results = run_component_results(stock.symbol)
+    scores = {
+        key: (getattr(results.get(key), "score", None) if results.get(key) is not None else None)
+        for key, _ in COMPONENT_SCORERS
+    }
     if not any(v is not None for v in scores.values()):
         return None
 
     composite = composite_from_scores(scores)
+    so = compute_so_snapshot(stock.symbol, results)
 
     return Assessment.objects.create(
         stock=stock,
@@ -135,4 +153,13 @@ def create_assessment_for_stock(stock: "Stock") -> Optional["Assessment"]:
         consensus=_to_decimal(scores["consensus"]),
         sector=_to_decimal(scores["sector"]),
         score=composite,
+        stability=_to_decimal(so.get("stability")),
+        opportunity=_to_decimal(so.get("opportunity")),
+        stab_debt_to_equity=_to_decimal(so.get("stab_debt_to_equity")),
+        stab_fcf_margin=_to_decimal(so.get("stab_fcf_margin")),
+        stab_operating_margin=_to_decimal(so.get("stab_operating_margin")),
+        stab_durability=_to_decimal(so.get("stab_durability")),
+        opp_fin_growth=_to_decimal(so.get("opp_fin_growth")),
+        opp_price_blend=_to_decimal(so.get("opp_price_blend")),
+        opp_valuation_blend=_to_decimal(so.get("opp_valuation_blend")),
     )

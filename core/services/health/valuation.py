@@ -73,6 +73,15 @@ class ValuationHealthResult:
         }
 
 
+def _score_forward_pe(forward_pe: Optional[float], pe_rel: Optional[float]) -> Optional[float]:
+    """Unprofitable or near-zero P/E is distress, not deep value."""
+    if forward_pe is not None and forward_pe <= 0:
+        return 25.0
+    if pe_rel is not None and pe_rel < 0.05:
+        return 30.0
+    return score_relative_multiple(pe_rel)
+
+
 def _score_peg(peg: Optional[float]) -> Optional[float]:
     """Lower PEG is better; negative or zero earnings growth → skip."""
     if peg is None or peg <= 0:
@@ -130,7 +139,11 @@ def fetch_valuation_inputs(symbol: str) -> Dict[str, Any]:
     ev_ebitda = _f(info, "enterpriseToEbitda")
     ps = _f(info, "priceToSalesTrailing12Months", "priceToSales")
 
-    pe_rel = safe_div(forward_pe, bench["forward_pe"]) if forward_pe and forward_pe > 0 else None
+    pe_rel = (
+        safe_div(forward_pe, bench["forward_pe"])
+        if forward_pe is not None and forward_pe > 0
+        else None
+    )
     ev_rel = safe_div(ev_ebitda, bench["ev_ebitda"]) if ev_ebitda and ev_ebitda > 0 else None
     ps_rel = safe_div(ps, bench["ps"]) if ps and ps > 0 else None
     peg = _infer_peg(info)
@@ -177,7 +190,7 @@ def score_valuation_health(symbol: str) -> ValuationHealthResult:
             METRIC_WEIGHTS["forward_pe_vs_sector"],
             raw["forward_pe_vs_sector"],
             _rel_display(raw["forward_pe_vs_sector"], raw["forward_pe"], bench["forward_pe"], "x"),
-            score_relative_multiple(raw["forward_pe_vs_sector"]),
+            _score_forward_pe(raw["forward_pe"], raw["forward_pe_vs_sector"]),
         ),
         (
             "ev_ebitda_vs_sector",

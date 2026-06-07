@@ -102,6 +102,8 @@ def _apply_risk_matrix_context(ctx: Dict[str, Any], discovery: "Discovery") -> N
         risk_floors_for,
     )
     from core.services.health.so_ratings import (
+        opportunity_grade_upgraded,
+        opportunity_upgrade_display,
         score_to_opportunity_grade,
         score_to_stability_grade,
         so_grade_pair,
@@ -120,6 +122,18 @@ def _apply_risk_matrix_context(ctx: Dict[str, Any], discovery: "Discovery") -> N
     ctx["stability_grade"] = stab_grade.to_dict() if stab_grade else None
     ctx["opportunity_grade"] = opp_grade.to_dict() if opp_grade else None
     ctx["opportunity_adjusted_grade"] = opp_adj_grade.to_dict() if opp_adj_grade else None
+    opp_grade_dict = ctx["opportunity_grade"]
+    opp_adj_grade_dict = ctx["opportunity_adjusted_grade"]
+    ctx["show_opportunity_upgrade"] = opportunity_grade_upgraded(
+        opp_grade_dict,
+        opp_adj_grade_dict,
+    )
+    weight_display = (ctx.get("summary") or {}).get("discovery_weight_display")
+    ctx["opportunity_upgrade_display"] = (
+        opportunity_upgrade_display(opp_adj, weight_display)
+        if ctx["show_opportunity_upgrade"]
+        else None
+    )
     # Second letter uses opp × weight — same input as matrix fit gates.
     ctx["so_grade"] = so_grade_pair(stab_grade, opp_adj_grade)
     ctx["interpretation"] = interpret_axes(stability, opportunity)
@@ -203,6 +217,8 @@ def discovery_scoring_context(
         "stability_grade": None,
         "opportunity_grade": None,
         "opportunity_adjusted_grade": None,
+        "show_opportunity_upgrade": False,
+        "opportunity_upgrade_display": None,
         "so_grade": None,
         "interpretation": None,
         "risk_matrix": None,
@@ -285,8 +301,11 @@ def _headline_v1(score: Optional[float]) -> str:
 
 
 def discovery_list_score_column(scoring: Dict[str, Any]) -> Dict[str, str]:
-    """Kicker + value for advisory list header (ASSESSMENT label, grade letter when v2)."""
+    """Kicker + value for advisory list header (ASSESSMENT label, SO grade when v2)."""
     if scoring.get("source") == "v2":
+        so_grade = (scoring.get("so_grade") or "").strip()
+        if so_grade:
+            return {"kicker": "ASSESSMENT", "value": so_grade}
         summary = scoring.get("summary") or {}
         grade = summary.get("adjusted_grade") or summary.get("grade")
         if isinstance(grade, dict) and grade.get("letter"):

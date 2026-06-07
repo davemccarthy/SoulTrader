@@ -44,15 +44,15 @@ Usage:
                 <td class="assess-block-grade-cell">{% if scoring.opportunity_grade %}{{ scoring.opportunity_grade.letter }}{% else %}—{% endif %}</td>
                 <td>{% if scoring.opportunity is not None %}{{ scoring.opportunity|floatformat:1 }}{% else %}—{% endif %}</td>
             </tr>
+            {% if scoring.show_opportunity_upgrade %}
             <tr>
-                <td>Opp × weight</td>
+                <td>Upgrade</td>
                 <td class="assess-block-grade-cell">{% if scoring.opportunity_adjusted_grade %}{{ scoring.opportunity_adjusted_grade.letter }}{% else %}—{% endif %}</td>
                 <td>
-                    {% if scoring.opportunity_adjusted is not None %}
-                    {{ scoring.opportunity_adjusted|floatformat:1 }}{% if scoring.summary %} <span class="assess-block-muted">{{ scoring.summary.discovery_weight_display }}</span>{% endif %}
-                    {% else %}—{% endif %}
+                    {% if scoring.opportunity_upgrade_display %}{{ scoring.opportunity_upgrade_display }}{% else %}—{% endif %}
                 </td>
             </tr>
+            {% endif %}
         </tbody>
     </table>
 

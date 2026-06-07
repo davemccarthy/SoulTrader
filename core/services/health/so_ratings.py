@@ -130,3 +130,33 @@ def so_grade_pair(
 def so_floor_display(min_stability: str, min_opportunity: str) -> str:
     """Risk-band floor pair on respective ladders, e.g. CD or EC."""
     return f"{min_stability.strip().upper()}{min_opportunity.strip().upper()}"
+
+
+def opportunity_grade_upgraded(
+    base_grade: Optional[Dict[str, Any]],
+    adjusted_grade: Optional[Dict[str, Any]],
+) -> bool:
+    """True when discovery weight lifts opportunity to a strictly better letter."""
+    if not base_grade or not adjusted_grade:
+        return False
+    base_letter = (base_grade.get("letter") or "").strip().upper()
+    adj_letter = (adjusted_grade.get("letter") or "").strip().upper()
+    base_rank = LETTER_RANK.get(base_letter)
+    adj_rank = LETTER_RANK.get(adj_letter)
+    if base_rank is None or adj_rank is None:
+        return False
+    return adj_rank > base_rank
+
+
+def opportunity_upgrade_display(
+    opportunity_adjusted: Optional[float],
+    weight_display: Optional[str],
+) -> str:
+    """Score cell for Upgrade row, e.g. '(×1.15) 81.1'."""
+    if opportunity_adjusted is None:
+        return "—"
+    score_s = f"{float(opportunity_adjusted):.1f}"
+    w = (weight_display or "").strip()
+    if not w or w == "—":
+        return score_s
+    return f"({w}) {score_s}"

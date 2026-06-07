@@ -74,11 +74,13 @@ struct AssessmentBlockView: View {
                 grade: scoring.opportunityGrade?.displayLetter,
                 score: scoring.opportunity
             )
-            axisRow(
-                label: "Opp × weight",
-                grade: scoring.opportunityAdjustedGrade?.displayLetter,
-                scoreText: scoring.opportunityAdjustedDisplay
-            )
+            if scoring.showsOpportunityUpgrade {
+                axisRow(
+                    label: "Upgrade",
+                    grade: scoring.opportunityAdjustedGrade?.displayLetter,
+                    scoreText: scoring.opportunityUpgradeDisplayText
+                )
+            }
         }
     }
 

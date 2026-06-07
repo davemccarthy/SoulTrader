@@ -45,6 +45,7 @@ from test_health_v2_autopsy import (
 )
 
 from core.services.health.assess import COMPONENT_MODEL_WEIGHTS, composite_from_scores
+from core.services.health.distress import adjust_opportunity_parts
 from core.services.health.durability import score_business_durability
 from core.services.health.risk_matrix import (
     OPPORTUNITY_WEIGHTS,
@@ -166,9 +167,18 @@ def opportunity_parts(results: Dict[str, Any]) -> Dict[str, Optional[float]]:
     }
 
 
+def _adjusted_opportunity_parts(results: Dict[str, Any]) -> Dict[str, Optional[float]]:
+    fin = results["financial"]
+    sym = getattr(fin, "symbol", "") or ""
+    opp = opportunity_parts(results)
+    if sym:
+        opp = adjust_opportunity_parts(sym, opp)
+    return opp
+
+
 def compute_axes(results: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
     stability = _weighted_blend(stability_parts(results), STABILITY_WEIGHTS)
-    opportunity = _weighted_blend(opportunity_parts(results), OPPORTUNITY_WEIGHTS)
+    opportunity = _weighted_blend(_adjusted_opportunity_parts(results), OPPORTUNITY_WEIGHTS)
     return stability, opportunity
 
 
@@ -226,7 +236,7 @@ def run_symbol(symbol: str) -> Dict[str, Any]:
         "fund_fit": fund_fit_all(stability, opportunity),
         "fund_matrix": FUND_MATRIX,
         "stability_parts": stability_parts(results),
-        "opportunity_parts": opportunity_parts(results),
+        "opportunity_parts": _adjusted_opportunity_parts(results),
         "components": {k: r.to_dict() for k, r in results.items()},
     }
 

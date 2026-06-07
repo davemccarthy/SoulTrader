@@ -10,8 +10,8 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
+from core.services.health.distress import adjust_opportunity_parts
 from core.services.health.durability import score_business_durability
-from core.services.health.financial import score_financial_health
 from core.services.health.so_ratings import (
     min_score_for_opportunity_letter,
     min_score_for_stability_letter,
@@ -35,19 +35,19 @@ RISK_LEVELS: Tuple[str, ...] = (
 
 # Dual-floor gates: min SO grade pair per fund (see so_ratings.py ladders).
 RISK_MATRIX: Dict[str, Dict[str, str]] = {
-    "CONSERVATIVE": {"min_stability": "A", "min_opportunity": "B"},  # AB — fortress + attractive setup
-    "MODERATE": {"min_stability": "B", "min_opportunity": "C"},      # BC — good business + good opportunity
-    "AGGRESSIVE": {"min_stability": "D", "min_opportunity": "B"},    # DB — weaker business, compelling opp
+    "CONSERVATIVE": {"min_stability": "B", "min_opportunity": "B"},  # BB — strong business + strong setup
+    "MODERATE": {"min_stability": "C", "min_opportunity": "C"},      # CC — good on both axes
+    "AGGRESSIVE": {"min_stability": "D", "min_opportunity": "C"},    # DC — weaker business, decent+ opp
     "RECKLESS": {"min_stability": "D", "min_opportunity": "D"},      # DD — broadest band, within reason
 }
 
 # Layer-2 weights (component scorers unchanged; tune here).
 STABILITY_WEIGHTS: Dict[str, float] = {
-    "fin_debt_to_equity": 0.30,
-    "fin_fcf_margin": 0.25,
-    "fin_operating_margin": 0.20,
-    "durability": 0.15,
-    "sector": 0.10,
+    "fin_debt_to_equity": 0.25,
+    "fin_fcf_margin": 0.20,
+    "fin_operating_margin": 0.18,
+    "durability": 0.32,
+    "sector": 0.05,
 }
 
 OPPORTUNITY_WEIGHTS: Dict[str, float] = {
@@ -118,33 +118,116 @@ def _stored_score(assessment: "Assessment", key: str) -> Optional[float]:
     return float(raw) if raw is not None else None
 
 
-def component_results_from_assessment(
-    assessment: "Assessment",
-    symbol: str,
+def _stab_parts_from_results(
+    results: Dict[str, Any],
     *,
-    fin_cache: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    durability: Optional[float],
+) -> Dict[str, Optional[float]]:
+    fin = results.get("financial")
+    sector = results.get("sector")
+    sector_score = getattr(sector, "score", None) if sector is not None else None
+    return {
+        "sector": float(sector_score) if sector_score is not None else None,
+        "fin_debt_to_equity": _metric_score(fin, "debt_to_equity") if fin else None,
+        "fin_fcf_margin": _metric_score(fin, "fcf_margin") if fin else None,
+        "fin_operating_margin": _metric_score(fin, "operating_margin") if fin else None,
+        "durability": durability,
+    }
+
+
+def _opp_parts_from_results(
+    symbol: str,
+    results: Dict[str, Any],
+    *,
+    durability: Optional[float],
+) -> Dict[str, Optional[float]]:
+    fin = results.get("financial")
+
+    def _comp_score(key: str) -> Optional[float]:
+        comp = results.get(key)
+        sc = getattr(comp, "score", None) if comp is not None else None
+        return float(sc) if sc is not None else None
+
+    return adjust_opportunity_parts(
+        symbol,
+        {
+            "price": _comp_score("price"),
+            "valuation": _comp_score("valuation"),
+            "intrinsic": _comp_score("intrinsic"),
+            "consensus": _comp_score("consensus"),
+            "fin_growth": _fin_growth_opportunity(fin) if fin else None,
+        },
+        durability=durability,
+    )
+
+
+def compute_so_snapshot(
+    symbol: str,
+    results: Dict[str, Any],
+) -> Dict[str, Optional[float]]:
     """
-    Stored Assessment columns + live financial sub-metrics (not persisted on Assessment).
+    Compute SO axis scores and sub-metrics from v2 component scorer results.
+    Called once at assessment creation; persisted on Assessment.
     """
     sym = (symbol or "").strip().upper()
-    cache = fin_cache if fin_cache is not None else {}
-    if sym not in cache:
-        cache[sym] = score_financial_health(sym)
-    fin = cache[sym]
-    stored_fin = _stored_score(assessment, "financial")
-    if stored_fin is not None:
-        fin.score = stored_fin
+    durability = score_business_durability(sym)
+    stab_parts = _stab_parts_from_results(results, durability=durability)
+    opp_parts = _opp_parts_from_results(sym, results, durability=durability)
+    stability = _weighted_blend(stab_parts, STABILITY_WEIGHTS)
+    opportunity = _weighted_blend(opp_parts, OPPORTUNITY_WEIGHTS)
+    return {
+        "stability": stability,
+        "opportunity": opportunity,
+        "stab_debt_to_equity": stab_parts.get("fin_debt_to_equity"),
+        "stab_fcf_margin": stab_parts.get("fin_fcf_margin"),
+        "stab_operating_margin": stab_parts.get("fin_operating_margin"),
+        "stab_durability": stab_parts.get("durability"),
+        "opp_fin_growth": opp_parts.get("fin_growth"),
+        "opp_price_blend": opp_parts.get("price"),
+        "opp_valuation_blend": opp_parts.get("valuation"),
+    }
 
-    class _Comp:
-        def __init__(self, score: Optional[float]):
-            self.score = score
-            self.metrics: List[Any] = []
 
-    results: Dict[str, Any] = {"financial": fin}
-    for key in ("valuation", "intrinsic", "price", "consensus", "sector"):
-        results[key] = _Comp(_stored_score(assessment, key))
-    return results
+def _stab_parts_from_assessment(assessment: "Assessment") -> Dict[str, Optional[float]]:
+    """Stability blend inputs from persisted Assessment columns only."""
+    debt = _stored_score(assessment, "stab_debt_to_equity")
+    fcf = _stored_score(assessment, "stab_fcf_margin")
+    op_margin = _stored_score(assessment, "stab_operating_margin")
+    durability = _stored_score(assessment, "stab_durability")
+    sector = _stored_score(assessment, "sector")
+    financial = _stored_score(assessment, "financial")
+
+    if debt is None and fcf is None and op_margin is None and financial is not None:
+        debt = fcf = op_margin = financial
+    if durability is None:
+        durability = 55.0
+
+    return {
+        "sector": sector,
+        "fin_debt_to_equity": debt,
+        "fin_fcf_margin": fcf,
+        "fin_operating_margin": op_margin,
+        "durability": durability,
+    }
+
+
+def _opp_parts_from_assessment(
+    assessment: "Assessment",
+    symbol: str,
+) -> Dict[str, Optional[float]]:
+    """Opportunity blend inputs from persisted Assessment columns only."""
+    durability = _stored_score(assessment, "stab_durability")
+    raw = {
+        "price": _stored_score(assessment, "opp_price_blend") or _stored_score(assessment, "price"),
+        "valuation": _stored_score(assessment, "opp_valuation_blend")
+        or _stored_score(assessment, "valuation"),
+        "intrinsic": _stored_score(assessment, "intrinsic"),
+        "consensus": _stored_score(assessment, "consensus"),
+        "fin_growth": _stored_score(assessment, "opp_fin_growth"),
+    }
+    if durability is not None:
+        return adjust_opportunity_parts(symbol, raw, durability=durability)
+    return raw
 
 
 def axes_from_assessment(
@@ -153,26 +236,67 @@ def axes_from_assessment(
     *,
     fin_cache: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[float], Optional[float]]:
-    results = component_results_from_assessment(assessment, symbol, fin_cache=fin_cache)
-    fin = results["financial"]
-    stab_parts = {
-        "sector": results["sector"].score,
-        "fin_debt_to_equity": _metric_score(fin, "debt_to_equity"),
-        "fin_fcf_margin": _metric_score(fin, "fcf_margin"),
-        "fin_operating_margin": _metric_score(fin, "operating_margin"),
-        "durability": score_business_durability(symbol),
-    }
-    opp_parts = {
-        "price": results["price"].score,
-        "valuation": results["valuation"].score,
-        "intrinsic": results["intrinsic"].score,
-        "consensus": results["consensus"].score,
-        "fin_growth": _fin_growth_opportunity(fin),
-    }
+    """Read persisted SO snapshot; never calls yfinance on the UI path."""
+    stored_stab = _stored_score(assessment, "stability")
+    stored_opp = _stored_score(assessment, "opportunity")
+    if stored_stab is not None and stored_opp is not None:
+        return stored_stab, stored_opp
+
+    sym = (symbol or "").strip().upper()
+    stab_parts = _stab_parts_from_assessment(assessment)
+    opp_parts = _opp_parts_from_assessment(assessment, sym)
     return (
         _weighted_blend(stab_parts, STABILITY_WEIGHTS),
         _weighted_blend(opp_parts, OPPORTUNITY_WEIGHTS),
     )
+
+
+def persist_so_on_assessment(assessment: "Assessment") -> bool:
+    """
+    Recompute SO snapshot from live scorers and save on Assessment (backfill / repair).
+    Uses yfinance once per call — not for request-time UI.
+    """
+    from core.services.health.assess import run_component_results
+
+    stock = getattr(assessment, "stock", None)
+    symbol = (getattr(stock, "symbol", None) or "").strip().upper()
+    if not symbol:
+        return False
+
+    results = run_component_results(symbol)
+    so = compute_so_snapshot(symbol, results)
+    if so.get("stability") is None and so.get("opportunity") is None:
+        return False
+
+    def _dec(key: str):
+        val = so.get(key)
+        if val is None:
+            return None
+        return Decimal(str(round(float(val), 1)))
+
+    assessment.stability = _dec("stability")
+    assessment.opportunity = _dec("opportunity")
+    assessment.stab_debt_to_equity = _dec("stab_debt_to_equity")
+    assessment.stab_fcf_margin = _dec("stab_fcf_margin")
+    assessment.stab_operating_margin = _dec("stab_operating_margin")
+    assessment.stab_durability = _dec("stab_durability")
+    assessment.opp_fin_growth = _dec("opp_fin_growth")
+    assessment.opp_price_blend = _dec("opp_price_blend")
+    assessment.opp_valuation_blend = _dec("opp_valuation_blend")
+    assessment.save(
+        update_fields=[
+            "stability",
+            "opportunity",
+            "stab_debt_to_equity",
+            "stab_fcf_margin",
+            "stab_operating_margin",
+            "stab_durability",
+            "opp_fin_growth",
+            "opp_price_blend",
+            "opp_valuation_blend",
+        ]
+    )
+    return True
 
 
 def discovery_axes(
