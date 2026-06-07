@@ -331,7 +331,7 @@ BOOLEAN CONSISTENCY:
 - is_surprise must be true only if surprise_score >= 4
 
 DISCOVERY (downstream): A stock is discovered only when event_outcome="positive" AND impact_direction="bullish".
-Significance/surprise scores (and booleans) inform Discovery weight with tape position, not the hard gate.
+Significance/surprise scores plus tape position form a composite pass threshold (sig + sur + tape); they do not scale buy grades.
 
 DIRECTIONALITY RULE (critical):
 - You MUST classify event_outcome and impact_direction from article evidence.
@@ -1042,8 +1042,8 @@ class Pharm(AdvisorBase):
                 logger.info("PHARM skip discovery: allow_discovery false for %s", resolved_ticker)
                 continue
 
-            weight, raw_comp, wdetail = feed_discovery_weight_from_parsed(parsed, resolved_ticker)
-            if weight is None:
+            _weight, raw_comp, wdetail = feed_discovery_weight_from_parsed(parsed, resolved_ticker)
+            if _weight is None:
                 logger.info(
                     "PHARM skip discovery: composite raw=%s < %s | %s | %s",
                     raw_comp,
@@ -1052,7 +1052,7 @@ class Pharm(AdvisorBase):
                     wdetail,
                 )
                 continue
-            logger.info("PHARM discovery weight | %s | %s -> weight=%s", resolved_ticker, wdetail, weight)
+            logger.info("PHARM discovery pass | %s | %s | weight=1.0", resolved_ticker, wdetail)
 
             row_event_class = str(candidate.get("event_class") or "general")
             explanation = _pharm_build_discovery_explanation(
@@ -1063,7 +1063,7 @@ class Pharm(AdvisorBase):
                 feed_title=(candidate.get("title") or "").strip() or None,
             )
 
-            stock = self.discovered(sa, resolved_ticker, explanation, None, weight=weight)
+            stock = self.discovered(sa, resolved_ticker, explanation, None, weight=1.0)
 
             if stock:
                 logger.info("PHARM discovered %s (%s)", resolved_ticker, row_event_class)
