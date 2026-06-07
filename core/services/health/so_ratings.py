@@ -22,15 +22,15 @@ STABILITY_BANDS: List[Tuple[float, str, str]] = [
     (15.0, "F", "Distressed"),
 ]
 
-# Opportunity — wider bands; megacap fair-setup names land D not cliff-edge E.
-# A 80+, B 70+, C 60+, D 50+, E 40+, F <40
+# Opportunity — D/E split lowered so ~45–55 names land D not cliff-edge E.
+# A 80+, B 65+, C 55+, D 45+, E 35+, F <35
 OPPORTUNITY_BANDS: List[Tuple[float, str, str]] = [
     (80.0, "A", "Exceptional"),
-    (70.0, "B", "Strong"),
-    (60.0, "C", "Good"),
-    (50.0, "D", "Fair"),
-    (40.0, "E", "Moderate"),
-    (0.0, "F", "Weak"),
+    (65.0, "B", "Strong"),
+    (55.0, "C", "Good"),
+    (45.0, "D", "Limited but respectable"),
+    (35.0, "E", "Weak"),
+    (0.0, "F", "Very little reason to buy"),
 ]
 
 LETTER_RANK: Dict[str, int] = {
