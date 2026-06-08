@@ -85,8 +85,6 @@ NOISE_REBUY_DROP = Decimal("0.02")
 # PERCENTAGE_REBUY value2: <= 0 means unlimited tranches (capped only by fund cash).
 NOISE_REBUY_MAX_TRANCHES = Decimal("0")
 NOISE_DISCOVERY_COOLDOWN_HOURS = 48
-# Technical entry bump for SO matrix (opp × weight); matches Flux.
-NOISE_DISCOVERY_WEIGHT = Decimal("1.15")
 NOISE_ENDDAY_TAKE = Decimal("1.01")
 NOISE_ENDWEEK_TAKE = Decimal("1.00")
 NOISE_DESCENDING_TREND = Decimal("-0.15")
@@ -203,7 +201,7 @@ class Noise(AdvisorBase):
                 symbol,
                 explanation,
                 sell_instructions=sell_instructions,
-                weight=NOISE_DISCOVERY_WEIGHT,
+                weight=1.0,
             ):
                 discoveries += 1
 

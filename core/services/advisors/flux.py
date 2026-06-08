@@ -57,8 +57,6 @@ FLUX_STOP_MULT = Decimal("0.94")
 FLUX_REBUY_DROP = Decimal("0.02")
 FLUX_MAX_TRANCHES = Decimal("4")
 FLUX_DISCOVERY_COOLDOWN_HOURS = 24
-# Technical entry bump for SO matrix (opp × weight); modest lift for expensive mega-caps.
-FLUX_DISCOVERY_WEIGHT = Decimal("1.15")
 FLUX_ENDDAY_TAKE = Decimal(1.01)
 FLUX_ENDWEEK_TAKE = Decimal(1.00)
 
@@ -115,7 +113,7 @@ class Flux(AdvisorBase):
                 symbol,
                 explanation,
                 sell_instructions=sell_instructions,
-                weight=FLUX_DISCOVERY_WEIGHT,
+                weight=1.0,
             ):
                 discoveries += 1
 
