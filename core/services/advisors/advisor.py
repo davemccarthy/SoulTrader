@@ -395,63 +395,83 @@ class AdvisorBase:
         """Compatibility wrapper for financial polygon service."""
         financial_polygon.clear_polygon_cache()
 
-    def allow_discovery(self, symbol, period=None, price_decline=None):
+    def allow_discovery(self, symbol, period=None, price_decline=None, headline_check=None):
         """
-        Allow discovery based on previous discoveries.
-        
-        Args:
+        Allow discovery based on previous discoveries and optional headline screen.
 
+        Args:
             symbol: Stock symbol to check
             period: Optional hours to look back (e.g., 24 for 1 day, 168 for 7 days)
                     If None, no time-based filtering
             price_decline: Optional price decline ratio (e.g., 0.8 = 80% of discovery price)
                    If None, no price-based filtering
-        
+            headline_check: Run Yahoo headline red-flag screen (default: on for
+                    technical advisors; skipped for Pharm, Bizfeed, FDA, User)
+
         Returns:
             True if discovery should be allowed, False if not
         """
         from core.models import Discovery, Stock
-        from django.utils import timezone
-        
+        from core.services.risk.headline_screen import (
+            headline_screen_skip_for_advisor,
+            log_headline_blocked,
+            screen_headlines_for_discovery,
+        )
+
+        symbol = (symbol or "").strip().upper()
+        if headline_check is None:
+            headline_check = not headline_screen_skip_for_advisor(self.advisor.python_class)
+
         try:
             stock = Stock.objects.get(symbol=symbol)
         except Stock.DoesNotExist:
-            return True  # Stock doesn't exist, so proceed with discovery
-        
-        # Get most recent discovery by this advisor for this stock
-        discovery = Discovery.objects.filter(
-            advisor=self.advisor,
-            stock=stock
-        ).order_by('-created').first()
-        
-        # If not discovered before, proceed
-        if not discovery:
-            return True
-        
-        discovery_price = discovery.price
-        time_diff = timezone.now() - discovery.created
-        hours_ago = time_diff.total_seconds() / 3600
-        
-        # Time-based filtering: skip if discovered within period (hours)
-        if period is not None:
-            if hours_ago < period:
-                logger.info(f"{self.advisor.name}: Skipping {symbol} - discovered {hours_ago:.1f} hours ago (within {period}h period)")
-                return False  # Filtered out - too recent
-        
-        # Price-based filtering: skip if price hasn't dropped below discounted price
-        if price_decline is not None:
-            stock.refresh()
-            from decimal import Decimal
-            
-            # Convert price_decline to Decimal for proper multiplication
-            price_decline_decimal = Decimal(str(price_decline))
-            threshold_price = discovery_price * price_decline_decimal
+            stock = None
 
-            if stock.price > threshold_price:
-                logger.info(f"{self.advisor.name}: Skipping {symbol} - price ${discovery_price:.2f} hasn't dropped to {price_decline} threshold")
-                return False  # Disallow discovery - hasn't dropped enough
-        
-        # Passed all filters
+        if stock is not None:
+            discovery = Discovery.objects.filter(
+                advisor=self.advisor,
+                stock=stock,
+            ).order_by("-created").first()
+
+            if discovery:
+                discovery_price = discovery.price
+                time_diff = timezone.now() - discovery.created
+                hours_ago = time_diff.total_seconds() / 3600
+
+                if period is not None and hours_ago < period:
+                    logger.info(
+                        "%s: Skipping %s - discovered %.1f hours ago (within %sh period)",
+                        self.advisor.name,
+                        symbol,
+                        hours_ago,
+                        period,
+                    )
+                    return False
+
+                if price_decline is not None:
+                    stock.refresh()
+                    price_decline_decimal = Decimal(str(price_decline))
+                    threshold_price = discovery_price * price_decline_decimal
+                    if stock.price > threshold_price:
+                        logger.info(
+                            "%s: Skipping %s - price $%.2f hasn't dropped to %s threshold",
+                            self.advisor.name,
+                            symbol,
+                            discovery_price,
+                            price_decline,
+                        )
+                        return False
+
+        if headline_check:
+            screen = screen_headlines_for_discovery(
+                symbol,
+                advisor=self.advisor.name,
+                trigger=f"{self.advisor.python_class} discovery",
+            )
+            if not screen.allowed:
+                log_headline_blocked(self.advisor.name, symbol, screen)
+                return False
+
         return True
 
     def get_stock(self, symbol):
