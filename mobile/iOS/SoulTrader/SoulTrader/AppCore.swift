@@ -746,19 +746,9 @@ struct DiscoveryScoring: Decodable {
         return adjRank > baseRank
     }
 
-    /// Upgrade score cell, e.g. `(×1.15) 81.1`.
+    /// Upgrade score cell — adjusted opportunity only (no weight prefix on narrow layouts).
     var opportunityUpgradeDisplayText: String {
-        if let text = opportunityUpgradeDisplay?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !text.isEmpty {
-            return text
-        }
-        let score = DiscoveryScoring.formatOptionalScore(opportunityAdjusted)
-        let weight = summary?.discoveryWeightDisplay?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if score == "—" { return "—" }
-        if weight.isEmpty || weight == "—" { return score }
-        return "(\(weight)) \(score)"
+        DiscoveryScoring.formatOptionalScore(opportunityAdjusted)
     }
 
     /// List/header: SO grade when v2, else legacy numeric headline.
