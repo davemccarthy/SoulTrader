@@ -1,6 +1,8 @@
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as dt_time, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
+
+import pytz
 
 import pandas as pd
 import yfinance as yf
@@ -89,13 +91,79 @@ def _news_item_published_at(item: Any) -> Optional[datetime]:
     return None
 
 
-def latest_headlines(ticker: str, limit: int = 3, max_age_days: int = 7) -> List[str]:
+def headline_lookback_hours(now_et: Optional[datetime] = None) -> float:
+    """
+    Session-aware headline lookback window (US/Eastern).
+
+    Mon pre-market 72h | Mon regular 48h | Tue–Thu 24h | Fri session 24h
+    | Fri after close 12h | weekend / Mon after close 72h
+    """
+    et = pytz.timezone("US/Eastern")
+    now = now_et or datetime.now(et)
+    if now.tzinfo is None:
+        now = et.localize(now)
+    else:
+        now = now.astimezone(et)
+
+    wd = now.weekday()
+    t = now.time()
+    open_t = dt_time(9, 30)
+    close_t = dt_time(16, 0)
+
+    if wd == 0 and t < open_t:
+        return 72.0
+    if wd == 0 and open_t <= t < close_t:
+        return 48.0
+    if wd in (1, 2, 3):
+        return 24.0
+    if wd == 4 and t >= close_t:
+        return 12.0
+    if wd == 4:
+        return 24.0
+    return 72.0
+
+
+def headline_lookback_slot(now_et: Optional[datetime] = None) -> Tuple[float, str]:
+    """Return (hours, human slot label) for the active lookback window."""
+    et = pytz.timezone("US/Eastern")
+    now = now_et or datetime.now(et)
+    if now.tzinfo is None:
+        now = et.localize(now)
+    else:
+        now = now.astimezone(et)
+
+    wd = now.weekday()
+    t = now.time()
+    open_t = dt_time(9, 30)
+    close_t = dt_time(16, 0)
+
+    if wd == 0 and t < open_t:
+        return 72.0, "Mon pre-market"
+    if wd == 0 and open_t <= t < close_t:
+        return 48.0, "Mon regular session"
+    if wd in (1, 2, 3):
+        return 24.0, "Tue–Thu"
+    if wd == 4 and t >= close_t:
+        return 12.0, "Fri after close"
+    if wd == 4:
+        return 24.0, "Fri session"
+    if wd == 0 and t >= close_t:
+        return 72.0, "Mon after close"
+    return 72.0, "weekend"
+
+
+def latest_headlines(
+    ticker: str,
+    limit: int = 3,
+    max_age_days: int = 7,
+    *,
+    max_age_hours: Optional[float] = None,
+) -> List[str]:
     """
     Recent Yahoo Finance news titles for a ticker (yfinance Ticker.news).
 
-    Only items with a parseable publish time within ``max_age_days`` are included
-    (default 7). Set ``max_age_days=0`` to disable the age filter. Returns up to
-    ``limit`` titles, newest first.
+    Age filter: ``max_age_hours`` when set, else ``max_age_days`` (default 7).
+    Set days or hours to 0 to disable the age filter. Returns up to ``limit`` titles.
     """
     symbol = (ticker or "").strip().upper()
     if not symbol:
@@ -106,10 +174,17 @@ def latest_headlines(ticker: str, limit: int = 3, max_age_days: int = 7) -> List
         if not news_items:
             return ["No recent public headlines found."]
 
-        age_days = int(max_age_days)
         cutoff = None
-        if age_days > 0:
-            cutoff = datetime.now(timezone.utc) - timedelta(days=age_days)
+        age_label = ""
+        if max_age_hours is not None and float(max_age_hours) > 0:
+            hours = float(max_age_hours)
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+            age_label = f"{hours:g} hours"
+        else:
+            age_days = int(max_age_days)
+            if age_days > 0:
+                cutoff = datetime.now(timezone.utc) - timedelta(days=age_days)
+                age_label = f"{age_days} days"
 
         dated: List[Tuple[datetime, str]] = []
         for item in news_items:
@@ -128,8 +203,8 @@ def latest_headlines(ticker: str, limit: int = 3, max_age_days: int = 7) -> List
         headlines = [title for _, title in dated[:limit]]
 
         if not headlines:
-            if age_days > 0:
-                return [f"No headlines in the last {age_days} days."]
+            if age_label:
+                return [f"No headlines in the last {age_label}."]
             return ["No recent public headlines found."]
 
         return headlines
