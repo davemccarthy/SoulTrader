@@ -9,6 +9,11 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
+# Advisor.blob: newest article time from last fetch (next run uses strictly greater).
+STOCKSTORY_NEWS_WATERMARK_KEY = "stockstory_news_watermark"
+STOCKSTORY_BOOTSTRAP_HOURS = 1
+
+
 class Story(AdvisorBase):
     def discover(self, sa):
         """Discover stocks from StockStory news articles"""
@@ -18,63 +23,78 @@ class Story(AdvisorBase):
             return
 
         try:
-            # Get time window: from previous SA to current SA
-            start_ts = self.get_previous_sa_timestamp(sa)
-
-            # Set bounds: prev SA started -> now (to catch articles published since SA started)
             end_time = timezone.now()
-            if start_ts is not None:
-                start_time = timezone.make_aware(start_ts) if timezone.is_naive(start_ts) else start_ts
-            else:
-                # Fallback: last 24 hours if no previous SA
-                start_time = end_time - timedelta(hours=24)
+            state = self._advisor_blob_state()
+            watermark = (state.get(STOCKSTORY_NEWS_WATERMARK_KEY) or "").strip()
+            after_watermark = bool(watermark)
 
-            # Process articles already read
-            self.news_watch(sa)
-            
-            # Fetch StockStory articles within the time window
-            articles = self._fetch_stockstory_articles(start_time, end_time)
-            
+            if watermark:
+                start_time = self._parse_watermark(watermark)
+                if start_time is None:
+                    start_time = end_time - timedelta(hours=STOCKSTORY_BOOTSTRAP_HOURS)
+                    after_watermark = False
+                elif start_time >= end_time:
+                    logger.warning(
+                        "StockStory: watermark %s is not before now; re-bootstrapping last %sh",
+                        watermark,
+                        STOCKSTORY_BOOTSTRAP_HOURS,
+                    )
+                    start_time = end_time - timedelta(hours=STOCKSTORY_BOOTSTRAP_HOURS)
+                    after_watermark = False
+            else:
+                start_time = end_time - timedelta(hours=STOCKSTORY_BOOTSTRAP_HOURS)
+
+            articles = self._fetch_stockstory_articles(
+                start_time, end_time, after_watermark=after_watermark
+            )
+
             if not articles:
+                logger.info("StockStory: No new articles to process")
                 return
-            
-            # Track statistics
+
             total_found = len(articles)
             accepted_count = 0
             rejected_count = 0
-            
-            # Process each article through Gemini
-            for article_data in articles:
-                if len(article_data) == 3:
-                    url, title, ticker_price_text = article_data
-                else:
-                    # Backward compatibility
-                    url, title = article_data
-                    ticker_price_text = ""
-                
-                # Filter: only accept articles about a single stock
+
+            for url, title, ticker_price_text, _article_time in articles:
                 if self._is_single_stock_article(ticker_price_text):
                     self.news_flash(sa, title, url)
                     accepted_count += 1
                 else:
                     rejected_count += 1
-            
-            # Summary statistics
-            logger.info(f"StockStory: Summary - {total_found} articles found, {accepted_count} accepted, {rejected_count} rejected")
+
+            newest_time = max(row[3] for row in articles)
+            state[STOCKSTORY_NEWS_WATERMARK_KEY] = newest_time.astimezone(
+                dt_timezone.utc
+            ).isoformat(timespec="seconds")
+            self._save_advisor_blob_state(state)
+
+            logger.info(
+                "StockStory: Summary - %s articles found, %s accepted, %s rejected",
+                total_found,
+                accepted_count,
+                rejected_count,
+            )
 
         except Exception as e:
             logger.error(f"StockStory discovery error: {e}", exc_info=True)
 
-    def _fetch_stockstory_articles(self, start_time, end_time):
+    def _parse_watermark(self, watermark: str):
+        try:
+            parsed = datetime.fromisoformat(watermark.replace("Z", "+00:00"))
+        except ValueError:
+            logger.warning("StockStory: invalid watermark %r; bootstrapping", watermark)
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=dt_timezone.utc)
+        return parsed.astimezone(dt_timezone.utc)
+
+    def _fetch_stockstory_articles(self, start_time, end_time, *, after_watermark: bool):
         """
         Scrape StockStory articles within the specified time window.
-        
-        Args:
-            start_time: Start datetime (timezone-aware)
-            end_time: End datetime (timezone-aware)
-        
+
         Returns:
-            List of tuples: [(url, title), ...] for articles within the time window
+            List of (url, title, ticker_price_text, article_time) newest-first.
         """
         url = "https://www.barchart.com/news/authors/285/stockstory"
         
@@ -95,7 +115,13 @@ class Story(AdvisorBase):
             start_utc = start_time.astimezone(dt_timezone.utc) if start_time.tzinfo else start_time.replace(tzinfo=dt_timezone.utc)
             end_utc = end_time.astimezone(dt_timezone.utc) if end_time.tzinfo else end_time.replace(tzinfo=dt_timezone.utc)
             
-            logger.info(f"StockStory: Time window - {start_utc} to {end_utc}")
+            bound = "gt" if after_watermark else "gte"
+            logger.info(
+                "StockStory: Time window - %s (%s) to %s",
+                start_utc,
+                bound,
+                end_utc,
+            )
             
             article_links_found = 0
             articles_with_time = 0
@@ -133,11 +159,14 @@ class Story(AdvisorBase):
                         else:
                             article_time = article_time.astimezone(dt_timezone.utc)
                         
-                        if start_utc <= article_time <= end_utc:
+                        if after_watermark:
+                            in_window = start_utc < article_time <= end_utc
+                        else:
+                            in_window = start_utc <= article_time <= end_utc
+                        if in_window:
                             articles_in_window += 1
-                            # Extract ticker:price pattern from nearby HTML elements
                             ticker_price_text = self._extract_ticker_price(link)
-                            articles.append((full_url, text, ticker_price_text))
+                            articles.append((full_url, text, ticker_price_text, article_time))
                         elif articles_in_window == 0 and articles_with_time <= 3:
                             # Log first few articles outside window for diagnosis
                             # Also log what time text was found
@@ -147,7 +176,6 @@ class Story(AdvisorBase):
                         # Log first few articles without timestamps for diagnosis
                         logger.info(f"StockStory: Article without timestamp - Title: {text[:80]}")
             
-            # Remove duplicates while preserving order
             seen = set()
             unique_articles = []
             for article_data in articles:
@@ -155,7 +183,9 @@ class Story(AdvisorBase):
                 if url not in seen:
                     seen.add(url)
                     unique_articles.append(article_data)
-            
+
+            unique_articles.sort(key=lambda row: row[3], reverse=True)
+
             logger.info(f"StockStory: Found {article_links_found} article links, {articles_with_time} with timestamps, {articles_in_window} in window, {len(unique_articles)} unique")
             return unique_articles
                 
