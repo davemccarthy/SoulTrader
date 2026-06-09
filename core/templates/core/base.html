@@ -1,3 +1,4 @@
+{% load humanize %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1505,25 +1506,25 @@
         <div class="portfolio-widget-content">
             <div class="portfolio-stat">
                 <div class="portfolio-stat-header">Wealth</div>
-                <div class="portfolio-stat-value">${{ portfolio_widget.total_value|default:"0"|floatformat:0 }}</div>
+                <div class="portfolio-stat-value">${{ portfolio_widget.total_value|default:"0"|floatformat:0|intcomma }}</div>
             </div>
             <div class="portfolio-stat">
                 <div class="portfolio-stat-header">Return</div>
                 <div class="portfolio-stat-value {% if portfolio_widget.return_percent >= 0 %}positive{% else %}negative{% endif %}">
-                    ${{ portfolio_widget.return_amount|default:"0"|floatformat:0 }}
+                    ${{ portfolio_widget.return_amount|default:"0"|floatformat:0|intcomma }}
                 </div>
             </div>
             <div class="portfolio-stat">
                 <div class="portfolio-stat-header">Portfolio</div>
-                <div class="portfolio-stat-value">${{ portfolio_widget.invested|default:"0"|floatformat:0 }}</div>
+                <div class="portfolio-stat-value">${{ portfolio_widget.invested|default:"0"|floatformat:0|intcomma }}</div>
             </div>
             <div class="portfolio-stat">
                 <div class="portfolio-stat-header">Cash</div>
-                <div class="portfolio-stat-value">${{ portfolio_widget.cash|default:"0"|floatformat:0 }}</div>
+                <div class="portfolio-stat-value">${{ portfolio_widget.cash|default:"0"|floatformat:0|intcomma }}</div>
             </div>
             <div class="portfolio-stat">
                 <div class="portfolio-stat-header">Holdings</div>
-                <div class="portfolio-stat-value">{{ portfolio_widget.holdings_count|default:"0" }}</div>
+                <div class="portfolio-stat-value">{{ portfolio_widget.holdings_count|default:"0"|intcomma }}</div>
             </div>
             <div class="portfolio-stat">
                 <div class="portfolio-stat-header">Trade P&L</div>
@@ -1582,6 +1583,12 @@
             return formatted.replace(/^US\s*/, ''); // Remove "US " prefix if present
         }
 
+        function formatInteger(value) {
+            if (value == null) return '—';
+            const num = Number(value);
+            return Number.isFinite(num) ? new Intl.NumberFormat('en-US').format(num) : String(value);
+        }
+
         function formatPercent(value) {
             if (value == null) return '—';
             const fixed = Number(value).toFixed(2);
@@ -1631,7 +1638,7 @@
             const image = heading.image || '';
             const avgPrice = formatCurrency(heading.average_price);
             const worth = formatCurrency(heading.worth);
-            const shares = heading.shares || 0;
+            const shares = formatInteger(heading.shares ?? 0);
             const price = formatCurrency(heading.price);
             const changePercent = formatPercent(heading.change_percent);
             const priceClass = heading.price_class || 'neutral';
@@ -1831,10 +1838,10 @@
                                 ticks: {
                                     // Simple currency formatting
                                     callback: (value) =>
-                                        '$' +
-                                        (typeof value === 'number'
-                                            ? value.toFixed(2)
-                                            : value),
+                                        new Intl.NumberFormat('en-US', {
+                                            style: 'currency',
+                                            currency: 'USD',
+                                        }).format(typeof value === 'number' ? value : Number(value)),
                                 },
                             },
                         },
@@ -2129,7 +2136,7 @@
 
             const tradesHtml = trades.map(trade => {
                 const action = escapeHtml(trade.action || 'UNKNOWN');
-                const shares = trade.shares || 0;
+                const shares = formatInteger(trade.shares ?? 0);
                 const price = formatCurrency(trade.price);
                 const plAmount = trade.pl_amount != null ? formatCurrency(trade.pl_amount) : '—';
                 const plPercent = trade.pl_percent != null ? formatPercent(trade.pl_percent) : '—';

@@ -1,5 +1,5 @@
 {% extends 'core/base.html' %}
-{% load explanation_filters %}
+{% load explanation_filters humanize %}
 
 {% block title %}Trades - SOULTRADER{% endblock %}
 
@@ -148,7 +148,7 @@
                         <div class="holding-value-pair">
                             <div class="holding-value-pair-label">SHARES</div>
                             <div class="holding-value-pair-value">
-                                {{ trade.shares }} @ ${{ trade.price|floatformat:2 }}
+                                {{ trade.shares|intcomma }} @ ${{ trade.price|floatformat:2|intcomma }}
                             </div>
                         </div>
                     </div>
@@ -160,9 +160,9 @@
                             </div>
                             <div class="holding-value-pair-value">
                                 {% if trade.action == 'BUY' %}
-                                    -${{ trade.cost|floatformat:2 }}
+                                    -${{ trade.cost|floatformat:2|intcomma }}
                                 {% else %}
-                                    +${{ trade.cost|floatformat:2 }}
+                                    +${{ trade.cost|floatformat:2|intcomma }}
                                 {% endif %}
                             </div>
                         </div>
@@ -209,9 +209,9 @@
                     <!--
                     <div class="holdings-col">
                         {% if trade.action == 'BUY' %}
-                            <span class="holdings-price">-${{ trade.cost|floatformat:2 }}</span>
+                            <span class="holdings-price">-${{ trade.cost|floatformat:2|intcomma }}</span>
                         {% else %}
-                            <span class="holdings-price {{ trade.price_class }}">+${{ trade.cost|floatformat:2 }}</span>
+                            <span class="holdings-price {{ trade.price_class }}">+${{ trade.cost|floatformat:2|intcomma }}</span>
                         {% endif %}
                     </div>
                     <div class="holdings-col">
@@ -228,9 +228,9 @@
                     <div class="holdings-col">
                         {% if trade.pl_amount is not None %}
                             {% if trade.pl_amount >= 0 %}
-                                <span class="holdings-pl {{ trade.pl_class }}">+${{ trade.pl_amount|floatformat:2 }}</span>
+                                <span class="holdings-pl {{ trade.pl_class }}">+${{ trade.pl_amount|floatformat:2|intcomma }}</span>
                             {% else %}
-                                <span class="holdings-pl {{ trade.pl_class }}">${{ trade.pl_amount|floatformat:2 }}</span>
+                                <span class="holdings-pl {{ trade.pl_class }}">${{ trade.pl_amount|floatformat:2|intcomma }}</span>
                             {% endif %}
                         {% else %}
                             <span class="holdings-pl muted">—</span>

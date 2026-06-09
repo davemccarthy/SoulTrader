@@ -1,4 +1,5 @@
 {% extends 'core/base.html' %}
+{% load humanize %}
 
 {% block title %}Advisory Discoveries - SOULTRADER{% endblock %}
 
@@ -476,11 +477,11 @@
                 </div>
                 <div>
                     <div class="disc-kicker">Discovery</div>
-                    <div class="disc-value">{% if row.discovery_price %}${{ row.discovery_price|floatformat:2 }}{% else %}—{% endif %}</div>
+                    <div class="disc-value">{% if row.discovery_price %}${{ row.discovery_price|floatformat:2|intcomma }}{% else %}—{% endif %}</div>
                 </div>
                 <div>
                     <div class="disc-kicker">Current</div>
-                    <div class="disc-value">{% if row.current_price %}${{ row.current_price|floatformat:2 }}{% else %}—{% endif %}</div>
+                    <div class="disc-value">{% if row.current_price %}${{ row.current_price|floatformat:2|intcomma }}{% else %}—{% endif %}</div>
                 </div>
                 <div>
                     <div class="disc-kicker">P&amp;L</div>

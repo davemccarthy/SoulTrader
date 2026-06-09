@@ -1,3 +1,4 @@
+{% load humanize %}
 {% comment %}
   fund, dashboard, is_current — dashboard from get_portfolio_dashboard_data
 {% endcomment %}
@@ -26,21 +27,21 @@
             </span>
             <span class="fund-card-stat">
                 <span class="fund-card-stat-header">Holdings</span>
-                <span class="fund-card-stat-value fund-card-stat-value--neutral">{{ dashboard.holdings_count|default:"0" }}</span>
+                <span class="fund-card-stat-value fund-card-stat-value--neutral">{{ dashboard.holdings_count|default:"0"|intcomma }}</span>
             </span>
             <span class="fund-card-stat">
                 <span class="fund-card-stat-header">Wealth</span>
-                <span class="fund-card-stat-value">${{ dashboard.total_value|default:"0"|floatformat:2 }}</span>
+                <span class="fund-card-stat-value">${{ dashboard.total_value|default:"0"|floatformat:2|intcomma }}</span>
             </span>
             <span class="fund-card-stat">
                 <span class="fund-card-stat-header">Return</span>
                 <span class="fund-card-stat-value {% if dashboard.return_percent >= 0 %}positive{% else %}negative{% endif %}">
-                    ${{ dashboard.return_amount|default:"0"|floatformat:2 }}
+                    ${{ dashboard.return_amount|default:"0"|floatformat:2|intcomma }}
                 </span>
             </span>
             <span class="fund-card-stat">
                 <span class="fund-card-stat-header">Cash</span>
-                <span class="fund-card-stat-value">${{ dashboard.cash|default:"0"|floatformat:2 }}</span>
+                <span class="fund-card-stat-value">${{ dashboard.cash|default:"0"|floatformat:2|intcomma }}</span>
             </span>
             <span class="fund-card-stat">
                 <span class="fund-card-stat-header">PORTFOLIO P&amp;L</span>
