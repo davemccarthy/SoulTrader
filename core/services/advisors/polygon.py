@@ -26,6 +26,11 @@ class Polygon(AdvisorBase):
     _min_request_interval = 12  # seconds (60 seconds / 5 requests)
 
     def discover(self, sa):
+        skip = self.news_discover_skip_reason()
+        if skip:
+            logger.info("Polygon skip: %s", skip)
+            return
+
         try:
             polygon_key = self.advisor.key
             if not polygon_key:

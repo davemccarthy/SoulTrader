@@ -205,6 +205,9 @@ VALUATION_OVERLAY_POINTS_CAP = 15.0  # max +/- points from valuation overlay alo
 
 
 class AdvisorBase:
+    # News advisors (Polygon, StockStory): earliest discover after regular open.
+    NEWS_DISCOVER_MINUTES_AFTER_OPEN = 30  # 10:00 ET
+
     # Class-level cache for Polygon stock list (shared across all advisor instances)
     _polygon_stocks_cache = None
 
@@ -339,6 +342,21 @@ class AdvisorBase:
         minutes_diff = (now_et - market_open_time).total_seconds() / 60
         
         return int(minutes_diff)
+
+    def news_discover_skip_reason(self) -> Optional[str]:
+        """
+        Gate for news-driven discover(): regular session only, not before 10:00 ET.
+        Returns a log-friendly reason, or None when discover is allowed.
+        """
+        market_status = self.market_open()
+        if market_status is None:
+            return "market closed"
+        if market_status < 0:
+            return f"market not open yet ({-market_status} min to open)"
+        if market_status < self.NEWS_DISCOVER_MINUTES_AFTER_OPEN:
+            remaining = self.NEWS_DISCOVER_MINUTES_AFTER_OPEN - market_status
+            return f"before discover window ({remaining} min until 10:00 ET)"
+        return None
 
     def evaluate_stock(
         self,

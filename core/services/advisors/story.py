@@ -12,6 +12,11 @@ logger = logging.getLogger(__name__)
 class Story(AdvisorBase):
     def discover(self, sa):
         """Discover stocks from StockStory news articles"""
+        skip = self.news_discover_skip_reason()
+        if skip:
+            logger.info("StockStory skip: %s", skip)
+            return
+
         try:
             # Get time window: from previous SA to current SA
             start_ts = self.get_previous_sa_timestamp(sa)
