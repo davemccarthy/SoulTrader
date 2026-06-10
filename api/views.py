@@ -1,4 +1,5 @@
 import logging
+import math
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime as dt, timedelta
@@ -705,6 +706,8 @@ def get_stock_price_history(request):
                 try:
                     close_value = float(close)
                 except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(close_value):
                     continue
                 try:
                     day = ts.date().isoformat()

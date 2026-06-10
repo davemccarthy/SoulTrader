@@ -12,6 +12,7 @@ from collections import defaultdict
 import datetime
 import json
 import logging
+import math
 import re
 
 import yfinance as yf
@@ -873,6 +874,8 @@ def holding_history(request, stock_id):
                 try:
                     close_value = float(close)
                 except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(close_value):
                     continue
                 price_history.append(
                     {
