@@ -22,7 +22,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 from core.services.llm.gemini import ask_gemini as llm_ask_gemini
 from core.services.llm.deepseek import ask_deepseek as llm_ask_deepseek
-from core.services.llm.ollama import ask_ollama as llm_ask_ollama
+from core.services.llm.router import ask_llm as llm_ask_llm
 from core.services.llm.parsing import extract_json_from_text
 from core.services.financial import polygon as financial_polygon
 from core.services.financial import yahoo as financial_yahoo
@@ -1248,19 +1248,17 @@ Respond with only a single valid JSON object, no other text.
 
     def ask_llm(self, prompt, use_search=False, timeout=120.0):
         """Gemini first (optional search grounding), then DeepSeek on failure."""
-
-        model, results = self.ask_gemini(
-            prompt, use_search=use_search, timeout=timeout
+        model, results, next_model_idx, next_key_idx = llm_ask_llm(
+            prompt,
+            advisor_name=self.advisor.name,
+            use_search=use_search,
+            timeout=timeout,
+            gemini_model_index=self.gemini_model,
+            gemini_key_index=self._gemini_key_index,
         )
-
-        if results:
-            return model, results
-
-        logger.info(
-            "%s: Gemini unavailable; falling back to DeepSeek",
-            self.advisor.name,
-        )
-        return self.ask_deepseek(prompt, timeout=timeout)
+        self.gemini_model = next_model_idx
+        self._gemini_key_index = next_key_idx
+        return model, results
 
     def ask_gemini(self, prompt, timeout=120.0, use_search=False):
         """
@@ -1281,29 +1279,6 @@ Respond with only a single valid JSON object, no other text.
         self._gemini_key_index = next_key_idx
         return model, results
 
-    def ask_ollama(self, prompt, *, model: str = "qwen3:8b", timeout: float = 300.0):
-        """
-        Call Ollama /api/generate over HTTP with Basic Auth.
-
-        Environment (via os.getenv, e.g. from .env): OLLAMA_HOST, OLLAMA_USERNAME,
-        OLLAMA_PASSWORD.
-
-        Defaults: model qwen3:8b, timeout 300 seconds (override per call as needed).
-
-        When OLLAMA_PROMPT_LOG is not 0/false/off/no, appends each prompt and raw
-        response to ollama.txt under settings.BASE_DIR for review (set
-        OLLAMA_PROMPT_LOG=0 to disable).
-
-        Returns (model, parsed_dict) like ask_gemini, or (None, None) on failure.
-        Does not support web search grounding; use ask_gemini for that.
-        """
-        return llm_ask_ollama(
-            prompt=prompt,
-            advisor_name=self.advisor.name,
-            model=model,
-            timeout=timeout,
-        )
-
     def ask_deepseek(self, prompt, *, model: str = "deepseek-chat", timeout: float = 120.0):
         """
         Call DeepSeek OpenAI-compatible /v1/chat/completions over HTTP.
@@ -1311,8 +1286,7 @@ Respond with only a single valid JSON object, no other text.
         Environment (via os.getenv, e.g. from .env): DEEPSEEK_API_KEY.
         Optional DEEPSEEK_BASE_URL can override endpoint host.
 
-        Returns (model, parsed_dict) like ask_gemini/ask_ollama, or (None, None)
-        on failure.
+        Returns (model, parsed_dict) like ask_gemini, or (None, None) on failure.
         """
         return llm_ask_deepseek(
             prompt=prompt,
