@@ -13,7 +13,7 @@ from core.services.llm.gemini import ask_gemini as llm_ask_gemini
 from core.services.health.risk_matrix import (
     discovery_axes,
     discovery_passes_risk_gate,
-    opportunity_adjusted,
+    so_gate_fail_display,
 )
 
 logger = logging.getLogger(__name__)
@@ -696,18 +696,17 @@ def analyze_discovery(sa, funds, advisors):
                 explanation = discovery.explanation.split(" | ")[0].strip()
                 execute_buy(sa, fund, discovery.stock, allowance, explanation, discovery=discovery)
             else:
-                floors = fund.risk_floors()
-                opp_adj = opportunity_adjusted(opportunity, discovery.weight)
                 logger.info(
-                    "%s: %s discovery %s risk gate fail (risk=%s stab=%s opp_adj=%s "
-                    "floor SO>=%s)",
+                    "%s: %s discovery %s risk gate fail (SO %s)",
                     fund.name,
                     discovery.advisor.name,
                     discovery.stock.symbol,
-                    fund.risk,
-                    stability,
-                    opp_adj,
-                    floors["so_floor_display"],
+                    so_gate_fail_display(
+                        stability,
+                        opportunity,
+                        fund.risk,
+                        weight=discovery.weight,
+                    ),
                 )
 
 

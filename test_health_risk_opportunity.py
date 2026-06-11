@@ -57,6 +57,7 @@ from core.services.health.risk_matrix import (
     risk_fit_all as fund_fit_all,
     risk_fit_for as fund_fit,
     risk_floors_for,
+    so_gate_fail_display,
 )
 from core.services.health.so_ratings import (
     score_to_opportunity_grade,
@@ -406,7 +407,7 @@ def _summarize_fund_fit(df: pd.DataFrame, ret_col: str, horizon: int) -> None:
                 f"  {profile:<14} {decision:<5} n={len(vals):>3}  mean={vals.mean():+6.2f}%  "
                 f"median={vals.median():+6.2f}%  positive={pos}/{len(vals)} ({100 * pos / len(vals):.0f}%)"
             )
-        print(f"    floor SO grade: >={floors['so_floor_display']}")
+        print(f"    min SO floor: {floors['so_floor_display']}")
 
 
 def _summarize_by_grade(df: pd.DataFrame, ret_col: str, horizon: int) -> None:
@@ -600,12 +601,13 @@ def _print_report(payload: Dict[str, Any], detail: bool) -> None:
     print()
     print("  Fund fit (matrix; opp × weight=1.0):")
     for profile in FUND_PROFILE_ORDER:
-        floors = risk_floors_for(profile)
         decision = payload["fund_fit"][profile]
-        print(
-            f"    {profile:<14} {decision:<5}  "
-            f"(floor SO>={floors['so_floor_display']})"
-        )
+        if decision == "AVOID":
+            gate = so_gate_fail_display(stab, opp, profile, weight=1.0)
+            detail = f"(SO {gate})"
+        else:
+            detail = f"(SO {so_grade})"
+        print(f"    {profile:<14} {decision:<5}  {detail}")
     print()
 
     print(f"  {'Axis':<12} {'Input':<28} {'Score':>8}  {'Wt':>5}")

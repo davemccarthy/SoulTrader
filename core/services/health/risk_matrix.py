@@ -19,6 +19,7 @@ from core.services.health.so_ratings import (
     score_to_opportunity_grade,
     score_to_stability_grade,
     so_floor_display,
+    so_grade_pair,
     stability_grade_at_least,
 )
 
@@ -308,6 +309,45 @@ def discovery_axes(
         return None, None
     symbol = discovery.stock.symbol if discovery.stock else ""
     return axes_from_assessment(discovery.assessment, symbol, fin_cache=fin_cache)
+
+
+def so_pair_from_scores(
+    stability: Optional[float],
+    opportunity: Optional[float],
+    *,
+    weight: Optional[Decimal | float] = None,
+) -> Optional[str]:
+    """Concatenated SO letter pair (stability + weight-adjusted opportunity), e.g. DD."""
+    opp_adj = opportunity_adjusted(opportunity, weight)
+    return so_grade_pair(
+        score_to_stability_grade(stability),
+        score_to_opportunity_grade(opp_adj),
+    )
+
+
+def discovery_so_pair(discovery: Optional["Discovery"]) -> Optional[str]:
+    """SO letter pair for a discovery (uses discovery.weight on opportunity)."""
+    if discovery is None:
+        return None
+    stability, opportunity = discovery_axes(discovery)
+    return so_pair_from_scores(
+        stability,
+        opportunity,
+        weight=discovery.weight,
+    )
+
+
+def so_gate_fail_display(
+    stability: Optional[float],
+    opportunity: Optional[float],
+    risk: str,
+    *,
+    weight: Optional[Decimal | float] = None,
+) -> str:
+    """Human-readable gate miss, e.g. DD<DC (actual pair below risk-band floor)."""
+    actual = so_pair_from_scores(stability, opportunity, weight=weight) or "??"
+    floor = risk_floors_for(risk)["so_floor_display"]
+    return f"{actual}<{floor}"
 
 
 def passes_risk_gate(

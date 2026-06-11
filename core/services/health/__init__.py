@@ -12,8 +12,11 @@ from core.services.health.risk_matrix import (
     compute_so_snapshot,
     discovery_axes,
     discovery_passes_risk_gate,
+    discovery_so_pair,
     risk_fit_all,
     risk_floors_for,
+    so_gate_fail_display,
+    so_pair_from_scores,
 )
 from core.services.health.consensus import score_consensus_health
 from core.services.health.ratings import (
@@ -51,8 +54,11 @@ __all__ = [
     "compute_so_snapshot",
     "discovery_axes",
     "discovery_passes_risk_gate",
+    "discovery_so_pair",
     "risk_fit_all",
     "risk_floors_for",
+    "so_gate_fail_display",
+    "so_pair_from_scores",
     "create_assessment_for_stock",
     "run_component_scores",
     "score_consensus_health",
