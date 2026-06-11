@@ -368,7 +368,7 @@ class Oscilla(AdvisorBase):
                     # PROFIT_FLAT: val1=range threshold %, val2=evaluation days
                     sell_instructions = [
                         ("PROFIT_TARGET", Decimal('0.10'), None),  # 10% profit on average spend
-                        ("PERCENTAGE_REBUY", Decimal('0.10'), Decimal('0.20')),  # 10% loss, rebuy 20%
+                        ("PERCENTAGE_REBUY", Decimal('0.10'), Decimal('0.0')),  # 10% loss, rebuy tranche
                         ("PROFIT_FLAT", Decimal('0.05'), Decimal('20')),  # Sell if price range within 5% over 20 days
                     ]
 
