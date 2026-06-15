@@ -639,11 +639,13 @@ struct DiscoveryScoringRiskFloors: Decodable {
     let minStability: String?
     let minOpportunity: String?
     let soFloorDisplay: String?
+    let soCompositeFloor: String?
 
     private enum CodingKeys: String, CodingKey {
         case minStability = "min_stability"
         case minOpportunity = "min_opportunity"
         case soFloorDisplay = "so_floor_display"
+        case soCompositeFloor = "so_composite_floor"
     }
 }
 
@@ -656,6 +658,7 @@ struct DiscoveryScoring: Decodable {
     let summary: DiscoveryScoringSummary?
     let components: [DiscoveryScoringComponent]
     let soGrade: String?
+    let soGradePair: String?
     let stability: Double?
     let opportunity: Double?
     let opportunityAdjusted: Double?
@@ -676,6 +679,7 @@ struct DiscoveryScoring: Decodable {
         case headlineDisplay = "headline_display"
         case summary, components
         case soGrade = "so_grade"
+        case soGradePair = "so_grade_pair"
         case stability, opportunity
         case opportunityAdjusted = "opportunity_adjusted"
         case stabilityGrade = "stability_grade"
@@ -698,6 +702,7 @@ struct DiscoveryScoring: Decodable {
         summary = try c.decodeIfPresent(DiscoveryScoringSummary.self, forKey: .summary)
         components = try c.decodeIfPresent([DiscoveryScoringComponent].self, forKey: .components) ?? []
         soGrade = try c.decodeIfPresent(String.self, forKey: .soGrade)
+        soGradePair = try c.decodeIfPresent(String.self, forKey: .soGradePair)
         stability = try c.decodeIfPresent(Double.self, forKey: .stability)
         opportunity = try c.decodeIfPresent(Double.self, forKey: .opportunity)
         opportunityAdjusted = try c.decodeIfPresent(Double.self, forKey: .opportunityAdjusted)
@@ -720,7 +725,7 @@ struct DiscoveryScoring: Decodable {
     var isV2: Bool { source == "v2" }
     var isV1: Bool { source == "v1" }
 
-    /// SO hero grade (e.g. CD) — matches web assessment header.
+    /// Composite SO hero grade (e.g. C+) — matches web assessment header.
     var displayGradeText: String? {
         if let grade = soGrade?.trimmingCharacters(in: .whitespacesAndNewlines), !grade.isEmpty {
             return grade

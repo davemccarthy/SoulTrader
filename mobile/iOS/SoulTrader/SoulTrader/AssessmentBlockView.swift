@@ -105,7 +105,9 @@ struct AssessmentBlockView: View {
             assessmentTableHeader(columns: ("Risk band", "Floors", "Fit"))
             ForEach(Self.riskBandOrder, id: \.key) { band in
                 let fit = scoring.riskMatrix?[band.key] ?? "—"
-                let floor = scoring.riskFloors?[band.key]?.soFloorDisplay ?? "—"
+                let floor = scoring.riskFloors?[band.key]?.soCompositeFloor
+                    ?? scoring.riskFloors?[band.key]?.soFloorDisplay
+                    ?? "—"
                 assessmentDataRow(
                     label: band.label,
                     mid: floor,

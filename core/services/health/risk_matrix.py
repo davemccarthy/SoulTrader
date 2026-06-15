@@ -1,8 +1,8 @@
 """
-Risk-band dual-floor buy matrix: stability + opportunity (× discovery.weight).
+Risk-band buy gates: single-letter composite SO (round((S+O)/2)) vs band floor.
 
-Replaces legacy min grade letter / single composite min_score on Profile.
-Floors are SO letter grades; numeric mins are derived for logging.
+Legacy dual-floor pair mins remain in RISK_MATRIX for reference; gates use
+RISK_COMPOSITE_FLOOR (B / C / D / E).
 """
 
 from __future__ import annotations
@@ -15,12 +15,12 @@ from core.services.health.durability import score_business_durability
 from core.services.health.so_ratings import (
     min_score_for_opportunity_letter,
     min_score_for_stability_letter,
-    opportunity_grade_at_least,
+    letter_axis_score,
     score_to_opportunity_grade,
     score_to_stability_grade,
+    so_composite_from_grades,
     so_floor_display,
     so_grade_pair,
-    stability_grade_at_least,
 )
 
 if TYPE_CHECKING:
@@ -40,6 +40,14 @@ RISK_MATRIX: Dict[str, Dict[str, str]] = {
     "MODERATE": {"min_stability": "C", "min_opportunity": "C"},      # CC — good on both axes
     "AGGRESSIVE": {"min_stability": "D", "min_opportunity": "C"},    # DC — weaker business, decent+ opp
     "RECKLESS": {"min_stability": "D", "min_opportunity": "D"},      # DD — broadest band, within reason
+}
+
+# Single-letter composite SO floor per risk band (round((S+O)/2) ladder).
+RISK_COMPOSITE_FLOOR: Dict[str, str] = {
+    "CONSERVATIVE": "B",
+    "MODERATE": "C",
+    "AGGRESSIVE": "D",
+    "RECKLESS": "E",
 }
 
 # Layer-2 weights (component scorers unchanged; tune here).
@@ -70,6 +78,7 @@ def risk_floors_for(risk: str) -> Dict[str, Any]:
     floors["min_stability_score"] = min_score_for_stability_letter(min_stab)
     floors["min_opportunity_score"] = min_score_for_opportunity_letter(min_opp)
     floors["so_floor_display"] = so_floor_display(min_stab, min_opp)
+    floors["so_composite_floor"] = RISK_COMPOSITE_FLOOR.get(risk, "F")
     return floors
 
 
@@ -311,6 +320,28 @@ def discovery_axes(
     return axes_from_assessment(discovery.assessment, symbol, fin_cache=fin_cache)
 
 
+def so_composite_from_scores(
+    stability: Optional[float],
+    opportunity: Optional[float],
+    *,
+    weight: Optional[Decimal | float] = None,
+) -> Optional[Dict[str, Any]]:
+    """Composite SO dict (letter, score, pair) from numeric axes."""
+    opp_adj = opportunity_adjusted(opportunity, weight)
+    return so_composite_from_grades(
+        score_to_stability_grade(stability),
+        score_to_opportunity_grade(opp_adj),
+    )
+
+
+def composite_floor_score(risk: str) -> int:
+    """Minimum composite numeric score for a risk band."""
+    if risk not in RISK_COMPOSITE_FLOOR:
+        raise KeyError(f"Unknown risk band: {risk!r}")
+    score = letter_axis_score(RISK_COMPOSITE_FLOOR[risk])
+    return score if score is not None else 0
+
+
 def so_pair_from_scores(
     stability: Optional[float],
     opportunity: Optional[float],
@@ -344,9 +375,10 @@ def so_gate_fail_display(
     *,
     weight: Optional[Decimal | float] = None,
 ) -> str:
-    """Human-readable gate miss, e.g. DD<DC (actual pair below risk-band floor)."""
-    actual = so_pair_from_scores(stability, opportunity, weight=weight) or "??"
-    floor = risk_floors_for(risk)["so_floor_display"]
+    """Human-readable gate miss, e.g. E+<D (composite below risk-band floor)."""
+    composite = so_composite_from_scores(stability, opportunity, weight=weight)
+    actual = composite.get("letter") if composite else "??"
+    floor = RISK_COMPOSITE_FLOOR.get(risk, "?")
     return f"{actual}<{floor}"
 
 
@@ -357,17 +389,11 @@ def passes_risk_gate(
     *,
     weight: Optional[Decimal | float] = None,
 ) -> bool:
-    """BUY if stability and weight-adjusted opportunity SO grades meet risk-band floors."""
-    floors = risk_floors_for(risk)
-    opp_adj = opportunity_adjusted(opportunity, weight)
-    stab_grade = score_to_stability_grade(stability)
-    opp_grade = score_to_opportunity_grade(opp_adj)
-    if stab_grade is None or opp_grade is None:
+    """BUY if composite SO score meets risk-band floor (B/C/D/E)."""
+    composite = so_composite_from_scores(stability, opportunity, weight=weight)
+    if composite is None:
         return False
-    return (
-        stability_grade_at_least(stab_grade.letter, floors["min_stability"])
-        and opportunity_grade_at_least(opp_grade.letter, floors["min_opportunity"])
-    )
+    return int(composite["score"]) >= composite_floor_score(risk)
 
 
 def discovery_passes_risk_gate(discovery: Optional["Discovery"], risk: str) -> bool:

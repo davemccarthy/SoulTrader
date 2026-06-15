@@ -9,7 +9,7 @@ Usage:
     <div class="health-record-header">
         <h3 class="holdings-history-title">Assessment</h3>
         {% if scoring.so_grade %}
-        <div class="assess-block-grade-wrap" aria-label="Stability and opportunity grade">
+        <div class="assess-block-grade-wrap" aria-label="Composite SO grade">
             <div class="assess-block-grade-kicker">Grade</div>
             <div class="assess-block-hero">{{ scoring.so_grade }}</div>
         </div>
@@ -99,22 +99,22 @@ Usage:
         <tbody>
             <tr>
                 <td>Conservative</td>
-                <td class="assess-block-grade-cell">{{ scoring.risk_floors.CONSERVATIVE.so_floor_display }}</td>
+                <td class="assess-block-grade-cell">{{ scoring.risk_floors.CONSERVATIVE.so_composite_floor|default:scoring.risk_floors.CONSERVATIVE.so_floor_display }}</td>
                 <td class="assess-block-fit {% if scoring.risk_matrix.CONSERVATIVE == 'BUY' %}assess-block-fit-buy{% else %}assess-block-fit-avoid{% endif %}">{{ scoring.risk_matrix.CONSERVATIVE }}</td>
             </tr>
             <tr>
                 <td>Moderate</td>
-                <td class="assess-block-grade-cell">{{ scoring.risk_floors.MODERATE.so_floor_display }}</td>
+                <td class="assess-block-grade-cell">{{ scoring.risk_floors.MODERATE.so_composite_floor|default:scoring.risk_floors.MODERATE.so_floor_display }}</td>
                 <td class="assess-block-fit {% if scoring.risk_matrix.MODERATE == 'BUY' %}assess-block-fit-buy{% else %}assess-block-fit-avoid{% endif %}">{{ scoring.risk_matrix.MODERATE }}</td>
             </tr>
             <tr>
                 <td>Aggressive</td>
-                <td class="assess-block-grade-cell">{{ scoring.risk_floors.AGGRESSIVE.so_floor_display }}</td>
+                <td class="assess-block-grade-cell">{{ scoring.risk_floors.AGGRESSIVE.so_composite_floor|default:scoring.risk_floors.AGGRESSIVE.so_floor_display }}</td>
                 <td class="assess-block-fit {% if scoring.risk_matrix.AGGRESSIVE == 'BUY' %}assess-block-fit-buy{% else %}assess-block-fit-avoid{% endif %}">{{ scoring.risk_matrix.AGGRESSIVE }}</td>
             </tr>
             <tr>
                 <td>Reckless</td>
-                <td class="assess-block-grade-cell">{{ scoring.risk_floors.RECKLESS.so_floor_display }}</td>
+                <td class="assess-block-grade-cell">{{ scoring.risk_floors.RECKLESS.so_composite_floor|default:scoring.risk_floors.RECKLESS.so_floor_display }}</td>
                 <td class="assess-block-fit {% if scoring.risk_matrix.RECKLESS == 'BUY' %}assess-block-fit-buy{% else %}assess-block-fit-avoid{% endif %}">{{ scoring.risk_matrix.RECKLESS }}</td>
             </tr>
         </tbody>

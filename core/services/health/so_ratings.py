@@ -42,6 +42,31 @@ LETTER_RANK: Dict[str, int] = {
     "F": 1,
 }
 
+# Axis letters (S/O pair legs) → numeric score for composite: round((S + O) / 2).
+AXIS_LETTER_SCORE: Dict[str, int] = {
+    "A": 10,
+    "B": 8,
+    "C": 6,
+    "D": 4,
+    "E": 2,
+    "F": 0,
+}
+
+# Composite SO letter from rounded mean of axis scores.
+COMPOSITE_SCORE_TO_LETTER: Dict[int, str] = {
+    10: "A",
+    9: "B+",
+    8: "B",
+    7: "C+",
+    6: "C",
+    5: "D+",
+    4: "D",
+    3: "E+",
+    2: "E",
+    1: "F+",
+    0: "F",
+}
+
 
 @dataclass(frozen=True)
 class SOGrade:
@@ -125,6 +150,53 @@ def so_grade_pair(
     if stability_grade is None or opportunity_grade is None:
         return None
     return f"{stability_grade.letter}{opportunity_grade.letter}"
+
+
+def letter_axis_score(letter: Optional[str]) -> Optional[int]:
+    """Numeric axis score for composite SO (A=10 … F=0)."""
+    if not letter:
+        return None
+    return AXIS_LETTER_SCORE.get(letter.strip().upper())
+
+
+def composite_score_from_letters(
+    stability_letter: Optional[str],
+    opportunity_letter: Optional[str],
+) -> Optional[int]:
+    """Rounded mean of axis letter scores, e.g. AB → 9."""
+    s = letter_axis_score(stability_letter)
+    o = letter_axis_score(opportunity_letter)
+    if s is None or o is None:
+        return None
+    return round((s + o) / 2)
+
+
+def composite_letter_from_score(score: int) -> str:
+    return COMPOSITE_SCORE_TO_LETTER.get(int(score), "F")
+
+
+def so_composite_from_grades(
+    stability_grade: Optional[SOGrade],
+    opportunity_grade: Optional[SOGrade],
+) -> Optional[Dict[str, Any]]:
+    """
+    Single-letter SO grade from stability + opportunity pair.
+    Uses weight-adjusted opportunity grade when supplied as second arg.
+  """
+    if stability_grade is None or opportunity_grade is None:
+        return None
+    score = composite_score_from_letters(
+        stability_grade.letter,
+        opportunity_grade.letter,
+    )
+    if score is None:
+        return None
+    letter = composite_letter_from_score(score)
+    return {
+        "letter": letter,
+        "score": score,
+        "pair": so_grade_pair(stability_grade, opportunity_grade),
+    }
 
 
 def so_floor_display(min_stability: str, min_opportunity: str) -> str:

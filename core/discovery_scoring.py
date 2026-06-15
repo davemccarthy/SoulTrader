@@ -107,6 +107,7 @@ def _apply_risk_matrix_context(ctx: Dict[str, Any], discovery: "Discovery") -> N
         score_to_opportunity_grade,
         score_to_stability_grade,
         so_grade_pair,
+        so_composite_from_grades,
     )
 
     symbol = (discovery.stock.symbol or "").strip() if discovery.stock else ""
@@ -134,8 +135,13 @@ def _apply_risk_matrix_context(ctx: Dict[str, Any], discovery: "Discovery") -> N
         if ctx["show_opportunity_upgrade"]
         else None
     )
-    # Second letter uses opp × weight — same input as matrix fit gates.
-    ctx["so_grade"] = so_grade_pair(stab_grade, opp_adj_grade)
+    # Pair uses opp × weight; composite single letter is the list/detail hero grade.
+    ctx["so_grade_pair"] = so_grade_pair(stab_grade, opp_adj_grade)
+    composite = so_composite_from_grades(stab_grade, opp_adj_grade)
+    ctx["so_composite"] = composite
+    ctx["so_grade"] = (
+        composite.get("letter") if composite else ctx["so_grade_pair"]
+    )
     ctx["interpretation"] = interpret_axes(stability, opportunity)
     ctx["risk_matrix"] = risk_fit_all(stability, opportunity, weight=weight)
     ctx["risk_floors"] = {risk: risk_floors_for(risk) for risk in RISK_LEVELS}
@@ -220,6 +226,8 @@ def discovery_scoring_context(
         "show_opportunity_upgrade": False,
         "opportunity_upgrade_display": None,
         "so_grade": None,
+        "so_grade_pair": None,
+        "so_composite": None,
         "interpretation": None,
         "risk_matrix": None,
         "risk_floors": None,
