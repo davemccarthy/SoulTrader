@@ -3,8 +3,11 @@ Stock Analysis Service
 """
 
 import logging
-from decimal import Decimal
 from datetime import datetime
+from decimal import Decimal
+from typing import Optional
+
+import pandas as pd
 from pytz import timezone as tz
 from django.utils import timezone
 from core.models import Holding, Discovery, Advisor, Profile
@@ -18,6 +21,38 @@ from core.services.health.risk_matrix import (
 
 logger = logging.getLogger(__name__)
 DT_EXIT_CONFIDENCE_MIN = 0.70
+REBUY_STABILIZE_MINUTES = 30
+
+
+def _rebuy_price_above_minutes_ago(stock, minutes: int = REBUY_STABILIZE_MINUTES) -> Optional[bool]:
+    """
+    True when current price is above the last 15m close at or before (now - minutes).
+    False when still falling. None when no intraday reference (caller should defer rebuy).
+    """
+    import yfinance as yf
+
+    try:
+        px_now = float(stock.price)
+        if px_now <= 0:
+            return None
+
+        hist = yf.Ticker(stock.symbol).history(period="1d", interval="15m")
+        if hist.empty or "Close" not in hist.columns:
+            return None
+
+        idx = pd.to_datetime(hist.index, utc=True)
+        cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(minutes=minutes)
+        eligible = idx <= cutoff
+        if not eligible.any():
+            return None
+
+        px_ago = float(hist.loc[eligible, "Close"].astype(float).iloc[-1])
+        if px_ago <= 0:
+            return None
+        return px_now > px_ago
+    except Exception as exc:
+        logger.warning("Rebuy stabilization check failed for %s: %s", stock.symbol, exc)
+        return None
 
 def factor_sentiment(fund: Profile) -> Decimal:
     """
@@ -461,6 +496,24 @@ def analyze_holdings(sa, funds):
                                 drop_pct = Decimal(str(instruction.value1))
                                 drop_threshold = Decimal(str(buy_price)) * (Decimal("1.0") - drop_pct)
                                 if holding.stock.price <= drop_threshold:
+                                    stabilized = _rebuy_price_above_minutes_ago(holding.stock)
+                                    if stabilized is not True:
+                                        if stabilized is False:
+                                            logger.info(
+                                                "%s rebuy deferred: price $%.2f not above %dm ago "
+                                                "(wait for stabilization)",
+                                                holding.stock.symbol,
+                                                float(holding.stock.price),
+                                                REBUY_STABILIZE_MINUTES,
+                                            )
+                                        else:
+                                            logger.info(
+                                                "%s rebuy deferred: no %dm intraday reference",
+                                                holding.stock.symbol,
+                                                REBUY_STABILIZE_MINUTES,
+                                            )
+                                        continue
+
                                     tranche_amount = fund.average_spend() * Decimal(str(sentiment))
                                     if instruction.value2 is not None:
                                         max_tranches = Decimal(str(instruction.value2))

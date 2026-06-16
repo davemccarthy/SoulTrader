@@ -81,7 +81,7 @@ RET_LOOKBACK = 20
 MAX_DISCOVERIES_PER_SESSION = 5
 
 NOISE_TP_MULT = Decimal("1.01")
-NOISE_REBUY_DROP = Decimal("0.03")
+NOISE_REBUY_DROP = Decimal("0.02")
 # PERCENTAGE_REBUY value2: <= 0 means unlimited tranches (capped only by fund cash).
 NOISE_REBUY_MAX_TRANCHES = Decimal("0")
 NOISE_DISCOVERY_COOLDOWN_HOURS = 24
