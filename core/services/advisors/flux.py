@@ -76,10 +76,9 @@ class Flux(AdvisorBase):
         sell_instructions = [
             ("STOP_PERCENTAGE", FLUX_STOP_MULT, None),
             ("TARGET_PERCENTAGE", FLUX_TP_MULT, None),
-            ("DESCENDING_TREND", Decimal("-0.15"), None),
             ("PERCENTAGE_REBUY", FLUX_REBUY_DROP, FLUX_MAX_TRANCHES),
             ("END_DAY", FLUX_ENDDAY_TAKE, None),
-            ("END_WEEK",FLUX_ENDWEEK_TAKE, None),
+            ("END_WEEK", FLUX_ENDWEEK_TAKE, None),
         ]
 
         for symbol in FLUX_UNIVERSE:
