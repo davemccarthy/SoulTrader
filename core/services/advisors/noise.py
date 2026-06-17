@@ -1,7 +1,7 @@
 """
 Noise advisor — v2 entry on a fixed watchlist (A/B vs Flux).
 
-Entry: pullback off 20d high + relative weakness band vs QQQ/SPY; top N per session.
+Entry: pullback off 20d high + relative weakness band vs QQQ/SPY + 30m price uptick; top N per session.
 Runs only during regular session (AdvisorBase.market_open).
 Exit/add: no stop-loss; unlimited rebuys (PERCENTAGE_REBUY value2=0); TARGET, END_DAY, END_WEEK.
 """
@@ -16,6 +16,10 @@ import pandas as pd
 
 from core.services.advisors.advisor import AdvisorBase, register
 from core.services.financial import yahoo as financial_yahoo
+from core.services.intraday_stabilize import (
+    STABILIZE_MINUTES_DEFAULT,
+    price_above_minutes_ago,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +91,7 @@ NOISE_REBUY_MAX_TRANCHES = Decimal("0")
 NOISE_DISCOVERY_COOLDOWN_HOURS = 24
 NOISE_ENDDAY_TAKE = Decimal("1.01")
 NOISE_ENDWEEK_TAKE = Decimal("1.00")
+ENTRY_STABILIZE_MINUTES = STABILIZE_MINUTES_DEFAULT
 
 
 def _benchmark_for(symbol: str) -> str:
@@ -150,6 +155,7 @@ class Noise(AdvisorBase):
 
         pullback_pct = float(ENTRY_PULLBACK)
         candidates: List[Tuple[float, str, float, float, float, float, str]] = []
+        stabilize_skipped = 0
 
         for symbol in NOISE_UNIVERSE:
             if not self.allow_discovery(symbol, period=NOISE_DISCOVERY_COOLDOWN_HOURS):
@@ -180,6 +186,25 @@ class Noise(AdvisorBase):
             if rel < REL_WEAK_MIN or rel > REL_WEAK_MAX:
                 continue
 
+            stock.refresh()
+            stabilized = price_above_minutes_ago(stock, minutes=ENTRY_STABILIZE_MINUTES)
+            if stabilized is not True:
+                stabilize_skipped += 1
+                if stabilized is False:
+                    logger.debug(
+                        "Noise: %s skip entry — price $%.2f not above %dm ago",
+                        symbol,
+                        float(stock.price),
+                        ENTRY_STABILIZE_MINUTES,
+                    )
+                else:
+                    logger.debug(
+                        "Noise: %s skip entry — no %dm intraday reference",
+                        symbol,
+                        ENTRY_STABILIZE_MINUTES,
+                    )
+                continue
+
             candidates.append(
                 (rel, symbol, close_px, pct_below, stock_ret, bench_ret, bench_sym)
             )
@@ -192,7 +217,7 @@ class Noise(AdvisorBase):
             explanation = (
                 f"v2 entry | pullback {pct_below:.1f}% off {ENTRY_LOOKBACK}d high | "
                 f"rel {rel:+.1f}% vs {bench_sym} (s20 {stock_ret:+.1f}%, b20 {bench_ret:+.1f}%) | "
-                f"close ${close_px:.2f}"
+                f"{ENTRY_STABILIZE_MINUTES}m uptick | close ${close_px:.2f}"
             )
             if self.discovered(
                 sa,
@@ -204,9 +229,10 @@ class Noise(AdvisorBase):
                 discoveries += 1
 
         logger.info(
-            "Noise discover sa=%s: universe=%d candidates=%d picks=%d discoveries=%d",
+            "Noise discover sa=%s: universe=%d stabilize_skipped=%d candidates=%d picks=%d discoveries=%d",
             sa.id,
             len(NOISE_UNIVERSE),
+            stabilize_skipped,
             len(candidates),
             len(picks),
             discoveries,
