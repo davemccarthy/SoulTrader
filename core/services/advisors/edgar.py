@@ -886,14 +886,15 @@ Use reputable sources such as Bloomberg, Reuters, CNBC, Financial Times, Wall St
 Your tasks:
 1. Assess the overall sentiment of coverage toward the earnings and outlook.
 2. Determine whether the company beat or missed consensus expectations on EPS and Revenue (when such information is available).
-3. Identify key positive themes and significant red flags mentioned across articles and broker notes.
+3. Identify key positive themes and significant red flags (including analyst downgrades or cautious notes) across articles and broker research.
+
+Do not summarize stale pre-earnings consensus ratings; focus on post-release news and fresh commentary.
 
 Respond with STRICT JSON only. No other text before or after:
 {{
   "sentiment": "strong_positive" | "positive" | "mixed" | "negative" | "no_coverage",
   "eps": "strong_beat" | "beat" | "miss" | "other" | "unknown",
   "revenue": "strong_beat" | "beat" | "miss" | "other" | "unknown",
-  "broker_reactions": "buy" | "strong_buy" | "moderate_buy" | "hold" | "sell" | "mixed"| "other",
   "headlines": [
     "<short positive headline or quote>",
     "<another positive headline or quote>"
@@ -907,9 +908,8 @@ Respond with STRICT JSON only. No other text before or after:
 
 If you find no relevant coverage in that window, set:
 - \"sentiment\": \"no_coverage\",
-- \"eps_result\": \"unknown\",
-- \"revenue_result\": \"unknown\",
-- \"broker_reactions\": \"unknown\"
+- \"eps\": \"unknown\",
+- \"revenue\": \"unknown\"
 """
 
 PHARMA_ITEM_PROMPT_TEMPLATE = """You are a biotech/pharma event analyst.
@@ -1021,7 +1021,7 @@ def _edgar_detail_explanation_segments(
         segments.append(f"EX-99 notes: {' | '.join(note_parts)}")
 
     media_pairs = []
-    for key in ("sentiment", "eps", "revenue", "broker"):
+    for key in ("sentiment", "eps", "revenue"):
         value = media.get(key)
         if value is not None and str(value).strip():
             media_pairs.append(f"{key}={value}")
@@ -1570,22 +1570,20 @@ class Edgar(AdvisorBase):
         sentiment = parsed.get("sentiment")
         eps = parsed.get("eps")
         revenue = parsed.get("revenue")
-        broker = parsed.get("broker_reactions")
         headlines = parsed.get("headlines")
         red_flags = parsed.get("red_flags")
         summary = parsed.get("summary")
 
-        # Media-driven hard fail or watch:
-        if sentiment in ["no_coverage", "mixed", "negative"] or eps in ["miss"] or broker in ["hold" ,"sell", "unknown","mixed","other"]:
+        # Media-driven hard fail
+        if sentiment in ["no_coverage", "mixed", "negative"] or eps in ["miss"]:
             logger.info(
                 "ticker=%s, accession=%s media LLM: "
-                "(eps=%s, revenue=%s, sentiment=%s, broker=%s) -> fail",
+                "(eps=%s, revenue=%s, sentiment=%s) -> fail",
                 ticker,
                 accession,
                 eps,
                 revenue,
                 sentiment or "N/A",
-                broker or "N/A"
             )
             return None
 
@@ -1593,7 +1591,6 @@ class Edgar(AdvisorBase):
             "sentiment": sentiment,
             "eps": eps,
             "revenue": revenue,
-            "broker": broker,
             "headlines": headlines if isinstance(headlines, list) else [],
             "red_flags": red_flags if isinstance(red_flags, list) else [],
             "summary": summary if isinstance(summary, str) else None
@@ -1601,13 +1598,12 @@ class Edgar(AdvisorBase):
 
         logger.info(
             "ticker=%s, accession=%s media LLM: "
-            "(eps=%s, revenue=%s, sentiment=%s, broker=%s) -> pass",
+            "(eps=%s, revenue=%s, sentiment=%s) -> pass",
             ticker,
             accession,
             eps,
             revenue,
             sentiment or "N/A",
-            broker or "N/A"
         )
 
         return result
@@ -1856,7 +1852,6 @@ class Edgar(AdvisorBase):
         sentiment = media.get("sentiment")
         eps = media.get("eps")
         revenue =  media.get("revenue")
-        broker = media.get("broker")
 
         if sentiment == "strong_positive":
             bonuses.append("Strong reaction (+0.1)")
@@ -1881,12 +1876,6 @@ class Edgar(AdvisorBase):
         elif revenue == "miss":
             penalties.append("Revenue miss (-0.3)")
             score -= 0.3
-        if broker == "strong_buy":
-            bonuses.append("Strong buy (+0.1)")
-            score += 0.1
-        elif broker in  ("moderate_buy","weak_buy"):
-            penalties.append("Broker weak buy (-0.15)")
-            score -= 0.15
 
         # Form4 (optional, non-blocking): bullish insider cluster can help,
         # significant selling can add risk.

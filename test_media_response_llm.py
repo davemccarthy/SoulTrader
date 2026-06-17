@@ -53,14 +53,15 @@ Use reputable sources such as Bloomberg, Reuters, CNBC, Financial Times, Wall St
 Your tasks:
 1. Assess the overall sentiment of coverage toward the earnings and outlook.
 2. Determine whether the company beat or missed consensus expectations on EPS and Revenue (when such information is available).
-3. Identify key positive themes and significant red flags mentioned across articles and broker notes.
+3. Identify key positive themes and significant red flags (including analyst downgrades or cautious notes) across articles and broker research.
+
+Do not summarize stale pre-earnings consensus ratings; focus on post-release news and fresh commentary.
 
 Respond with STRICT JSON only. No other text before or after:
 {{
   "sentiment": "strong_positive" | "positive" | "mixed" | "negative",
-  "eps": "strong_beat" | beat" | "miss" | "other" | "unknown",
+  "eps": "strong_beat" | "beat" | "miss" | "other" | "unknown",
   "revenue": "strong_beat" | "beat" | "miss" | "other" | "unknown",
-  "broker_reactions": "buy" | "strong_buy" | "moderate_buy" | "hold" | "sell" | "other",
   "headlines": [
     "<short positive headline or quote>",
     "<another positive headline or quote>"
@@ -74,9 +75,8 @@ Respond with STRICT JSON only. No other text before or after:
 
 If you find no relevant coverage in that window, set:
 - \"sentiment\": \"no_coverage\",
-- \"eps_result\": \"unknown\",
-- \"revenue_result\": \"unknown\",
-- \"broker_reactions\": \"unknown\"
+- \"eps\": \"unknown\",
+- \"revenue\": \"unknown\"
 """
 
 
