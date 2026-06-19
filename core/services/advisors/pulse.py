@@ -17,9 +17,9 @@ import logging
 from datetime import datetime, time
 from decimal import Decimal
 from typing import Any, Dict, Final, List, Optional
-from zoneinfo import ZoneInfo
 
 import pandas as pd
+import pytz
 import yfinance as yf
 
 from core.services.advisors.advisor import AdvisorBase, register
@@ -27,7 +27,7 @@ from core.services.financial import polygon as financial_polygon
 
 logger = logging.getLogger(__name__)
 
-ET = ZoneInfo("US/Eastern")
+ET = pytz.timezone("US/Eastern")
 PULSE_BUILD_TIME_ET = time(11, 0)
 PULSE_TOP_DAILY_VOLUME = 100
 PULSE_MIN_PRICE = 5.0
