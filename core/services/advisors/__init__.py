@@ -25,6 +25,7 @@ _LAZY_MODULES = frozenset(
         "edgar",
         "flux",
         "noise",
+        "pulse",
     }
 )
 
