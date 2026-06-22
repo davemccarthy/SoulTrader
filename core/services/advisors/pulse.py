@@ -2,7 +2,8 @@
 Pulse advisor — daily attention universe + stable intraday entry.
 
 Entry:
-- Build a daily top-volume shortlist after 11:00 ET from Polygon grouped daily aggs.
+- Build a broad liquid-stock seed after 11:00 ET from Polygon grouped daily aggs.
+- Rank/filter that seed by today's intraday 15m volume so far.
 - Exclude common ETF/fund tickers.
 - Keep names with normal stability at build time:
   current >= 30m ago, current >= 60m ago * 0.995, current >= open * 0.99.
@@ -28,13 +29,16 @@ from core.services.financial import polygon as financial_polygon
 logger = logging.getLogger(__name__)
 
 ET = pytz.timezone("US/Eastern")
+PULSE_CANDIDATE_VERSION = 2
 PULSE_BUILD_TIME_ET = time(11, 0)
 PULSE_DISCOVERY_END_TIME_ET = time(14, 30)
+PULSE_SEED_UNIVERSE = 500
 PULSE_TOP_DAILY_VOLUME = 100
 PULSE_MIN_PRICE = 5.0
 PULSE_MIN_SESSION_VOLUME = 500_000
 PULSE_MIN_DOLLAR_VOLUME = 25_000_000.0
 PULSE_MIN_RANGE_PCT = 2.0
+PULSE_MAX_PRICE_DRIFT_FROM_SEED = 0.50
 PULSE_DISCOVERY_COOLDOWN_HOURS = 24
 
 PULSE_TP_MULT = Decimal("1.01")
@@ -59,12 +63,17 @@ ETF_EXCLUDE_TICKERS: Final[frozenset[str]] = frozenset(
         "IWM",
         "IVV",
         "LQD",
+        "NVD",
+        "NVDL",
+        "NVDS",
+        "NVDU",
         "QQQ",
         "RSP",
         "SDS",
         "SGOV",
         "SH",
         "SMH",
+        "SNXX",
         "SOXL",
         "SOXS",
         "SOXX",
@@ -73,6 +82,11 @@ ETF_EXCLUDE_TICKERS: Final[frozenset[str]] = frozenset(
         "SPY",
         "SQQQ",
         "TLT",
+        "TSLL",
+        "TSLQ",
+        "TSLR",
+        "TSLS",
+        "TSLT",
         "TQQQ",
         "UDOW",
         "UPRO",
@@ -142,6 +156,12 @@ def _range_pct_so_far(hist: pd.DataFrame) -> Optional[float]:
     return (hi / lo - 1.0) * 100.0
 
 
+def _volume_so_far(hist: pd.DataFrame) -> int:
+    if hist.empty or "Volume" not in hist.columns:
+        return 0
+    return _safe_int(hist["Volume"].fillna(0).sum())
+
+
 def _symbol_hist(data: pd.DataFrame, symbol: str) -> pd.DataFrame:
     if data.empty:
         return pd.DataFrame()
@@ -181,7 +201,6 @@ class Pulse(AdvisorBase):
     def _build_daily_candidates(self) -> List[Dict[str, Any]]:
         df = financial_polygon.get_filtered_stocks(
             min_price=PULSE_MIN_PRICE,
-            min_volume=PULSE_MIN_SESSION_VOLUME,
         )
         if df is None or df.empty:
             logger.warning("Pulse: Polygon grouped daily universe empty")
@@ -196,31 +215,66 @@ class Pulse(AdvisorBase):
             volume = _safe_int(row.get("today_volume"))
             if price is None or volume <= 0:
                 continue
-            dollar_volume = price * volume
-            if dollar_volume < PULSE_MIN_DOLLAR_VOLUME:
-                continue
+            prior_dollar_volume = price * volume
             rows.append(
                 {
                     "symbol": symbol,
                     "polygon_price": price,
-                    "volume": volume,
-                    "dollar_volume": dollar_volume,
+                    "prior_volume": volume,
+                    "prior_dollar_volume": prior_dollar_volume,
                 }
             )
 
-        rows.sort(key=lambda r: float(r["dollar_volume"]), reverse=True)
-        shortlist = rows[:PULSE_TOP_DAILY_VOLUME]
+        rows.sort(key=lambda r: float(r["prior_dollar_volume"]), reverse=True)
+        shortlist = rows[:PULSE_SEED_UNIVERSE]
         symbols = [str(r["symbol"]) for r in shortlist]
         intraday = _download_intraday(symbols)
 
-        candidates: List[Dict[str, Any]] = []
-        for rank, row in enumerate(shortlist, start=1):
+        intraday_ranked: List[Dict[str, Any]] = []
+        for row in shortlist:
             symbol = str(row["symbol"])
             hist = _symbol_hist(intraday, symbol)
-            if hist.empty or "Close" not in hist.columns:
+            if hist.empty or "Close" not in hist.columns or "Open" not in hist.columns:
                 continue
 
             price_now = _safe_float(hist["Close"].iloc[-1])
+            seed_price = _safe_float(row.get("polygon_price"))
+            if (
+                price_now is not None
+                and seed_price is not None
+                and abs(price_now / seed_price - 1.0) > PULSE_MAX_PRICE_DRIFT_FROM_SEED
+            ):
+                logger.debug(
+                    "Pulse: skip %s - intraday price %.2f too far from seed %.2f",
+                    symbol,
+                    price_now,
+                    seed_price,
+                )
+                continue
+            volume_so_far = _volume_so_far(hist)
+            if price_now is None or volume_so_far < PULSE_MIN_SESSION_VOLUME:
+                continue
+            dollar_volume_so_far = price_now * volume_so_far
+            if dollar_volume_so_far < PULSE_MIN_DOLLAR_VOLUME:
+                continue
+
+            intraday_ranked.append(
+                {
+                    **row,
+                    "hist": hist,
+                    "price_now": price_now,
+                    "volume_so_far": volume_so_far,
+                    "dollar_volume_so_far": dollar_volume_so_far,
+                }
+            )
+
+        intraday_ranked.sort(key=lambda r: float(r["dollar_volume_so_far"]), reverse=True)
+
+        candidates: List[Dict[str, Any]] = []
+        for rank, row in enumerate(intraday_ranked[:PULSE_TOP_DAILY_VOLUME], start=1):
+            symbol = str(row["symbol"])
+            hist = row["hist"]
+            price_now = float(row["price_now"])
             open_px = _safe_float(hist["Open"].iloc[0]) if "Open" in hist.columns else None
             px_30 = _bar_close_at_or_before(hist, 30)
             px_60 = _bar_close_at_or_before(hist, 60)
@@ -239,7 +293,9 @@ class Pulse(AdvisorBase):
                     "symbol": symbol,
                     "rank": rank,
                     "price": round(float(price_now), 4),
-                    "dollar_volume": round(float(row["dollar_volume"]), 2),
+                    "volume": int(row["volume_so_far"]),
+                    "dollar_volume": round(float(row["dollar_volume_so_far"]), 2),
+                    "prior_dollar_volume": round(float(row["prior_dollar_volume"]), 2),
                     "range_pct": round(float(range_pct), 4),
                     "pct_30m": None if px_30 is None else round(float(_pct(price_now, px_30) or 0), 4),
                     "pct_60m": None if px_60 is None else round(float(_pct(price_now, px_60) or 0), 4),
@@ -253,11 +309,16 @@ class Pulse(AdvisorBase):
     def _daily_candidates(self) -> List[Dict[str, Any]]:
         today = _today_et()
         state = self._advisor_blob_state()
-        if state.get("pulse_date") == today and isinstance(state.get("candidates"), list):
+        if (
+            state.get("pulse_date") == today
+            and state.get("pulse_version") == PULSE_CANDIDATE_VERSION
+            and isinstance(state.get("candidates"), list)
+        ):
             return state["candidates"]
 
         candidates = self._build_daily_candidates()
         state["pulse_date"] = today
+        state["pulse_version"] = PULSE_CANDIDATE_VERSION
         state["candidates"] = candidates
         state["built_at_et"] = datetime.now(ET).isoformat(timespec="seconds")
         self._save_advisor_blob_state(state)
@@ -306,7 +367,8 @@ class Pulse(AdvisorBase):
                 f"30m {float(candidate.get('pct_30m') or 0):+.1f}% | "
                 f"60m {float(candidate.get('pct_60m') or 0):+.1f}% | "
                 f"open {float(candidate.get('pct_open') or 0):+.1f}% | "
-                f"dvol ${float(candidate.get('dollar_volume') or 0):,.0f}"
+                f"vol {int(candidate.get('volume') or 0):,} | "
+                f"day dvol ${float(candidate.get('dollar_volume') or 0):,.0f}"
             )
             if self.discovered(
                 sa,
