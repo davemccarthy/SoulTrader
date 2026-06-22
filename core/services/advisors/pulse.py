@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 ET = pytz.timezone("US/Eastern")
 PULSE_BUILD_TIME_ET = time(11, 0)
+PULSE_DISCOVERY_END_TIME_ET = time(14, 30)
 PULSE_TOP_DAILY_VOLUME = 100
 PULSE_MIN_PRICE = 5.0
 PULSE_MIN_SESSION_VOLUME = 500_000
@@ -173,6 +174,10 @@ class Pulse(AdvisorBase):
         now_et = datetime.now(ET)
         return now_et.time() < PULSE_BUILD_TIME_ET
 
+    def _after_discovery_window(self) -> bool:
+        now_et = datetime.now(ET)
+        return now_et.time() >= PULSE_DISCOVERY_END_TIME_ET
+
     def _build_daily_candidates(self) -> List[Dict[str, Any]]:
         df = financial_polygon.get_filtered_stocks(
             min_price=PULSE_MIN_PRICE,
@@ -268,6 +273,12 @@ class Pulse(AdvisorBase):
             return
         if self._before_build_time():
             logger.info("Pulse skip: before %s ET build time", PULSE_BUILD_TIME_ET.strftime("%H:%M"))
+            return
+        if self._after_discovery_window():
+            logger.info(
+                "Pulse skip: after %s ET discovery window",
+                PULSE_DISCOVERY_END_TIME_ET.strftime("%H:%M"),
+            )
             return
 
         sell_instructions = [
