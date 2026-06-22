@@ -9,6 +9,7 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 _polygon_stocks_cache: Optional[pd.DataFrame] = None
+_POLYGON_STOCK_COLUMNS = ["ticker", "price", "today_volume"]
 
 
 def get_last_trading_day(test_date: Optional[str] = None) -> Optional[str]:
@@ -79,7 +80,7 @@ def _fetch_polygon_stocks_for_date(reference_date: str) -> pd.DataFrame:
                 }
             )
 
-        df = pd.DataFrame(rows)
+        df = pd.DataFrame(rows, columns=_POLYGON_STOCK_COLUMNS)
         if not df.empty:
             logger.info("Fetched %s stocks from Polygon for %s", len(df), reference_date)
         else:
@@ -103,17 +104,31 @@ def get_filtered_stocks(
     global _polygon_stocks_cache
 
     if _polygon_stocks_cache is None:
-        last_trading_date = get_last_trading_day(test_date=test_date)
-        if not last_trading_date:
+        reference_date = get_last_trading_day(test_date=test_date)
+        if not reference_date:
             logger.warning("No valid trading date available (Mon/weekend/holiday)")
             return pd.DataFrame()
 
-        _polygon_stocks_cache = _fetch_polygon_stocks_for_date(last_trading_date)
-        if _polygon_stocks_cache is None or _polygon_stocks_cache.empty:
-            logger.warning("No stocks fetched for %s (may be holiday)", last_trading_date)
+        attempts = 1 if test_date else 5
+        for _ in range(attempts):
+            _polygon_stocks_cache = _fetch_polygon_stocks_for_date(reference_date)
+            if _polygon_stocks_cache is not None and not _polygon_stocks_cache.empty:
+                break
+
+            previous_day = datetime.strptime(reference_date, "%Y-%m-%d").date() - timedelta(days=1)
+            while previous_day.weekday() >= 5:
+                previous_day -= timedelta(days=1)
+            reference_date = previous_day.strftime("%Y-%m-%d")
+        else:
+            logger.warning("No stocks fetched from Polygon after %s attempts", attempts)
             return pd.DataFrame()
 
     df = _polygon_stocks_cache.copy()
+    missing_columns = [col for col in _POLYGON_STOCK_COLUMNS if col not in df.columns]
+    if missing_columns:
+        logger.warning("Polygon stocks missing columns %s; skipping filters", missing_columns)
+        return pd.DataFrame(columns=_POLYGON_STOCK_COLUMNS)
+
     if min_price is not None:
         df = df[df["price"] >= min_price]
     if max_price is not None:
