@@ -6,7 +6,8 @@ Entry:
 - Rank/filter that seed by today's intraday 15m volume so far.
 - Exclude common ETF/fund tickers.
 - Keep names with normal stability at build time:
-  current >= 30m ago, current >= 60m ago * 0.995, current >= open * 0.99.
+  executable quote >= 30m ago, executable quote >= 60m ago * 0.995,
+  executable quote >= open * 0.99.
 - Require intraday range so far >= 2%.
 - Discover all qualifying names (MEGA spread is expected for initial test funds).
 
@@ -29,7 +30,7 @@ from core.services.financial import polygon as financial_polygon
 logger = logging.getLogger(__name__)
 
 ET = pytz.timezone("US/Eastern")
-PULSE_CANDIDATE_VERSION = 2
+PULSE_CANDIDATE_VERSION = 3
 PULSE_BUILD_TIME_ET = time(11, 0)
 PULSE_DISCOVERY_END_TIME_ET = time(14, 30)
 PULSE_SEED_UNIVERSE = 500
@@ -39,6 +40,7 @@ PULSE_MIN_SESSION_VOLUME = 500_000
 PULSE_MIN_DOLLAR_VOLUME = 25_000_000.0
 PULSE_MIN_RANGE_PCT = 2.0
 PULSE_MAX_PRICE_DRIFT_FROM_SEED = 0.50
+PULSE_MAX_QUOTE_DRIFT_FROM_BAR = 0.02
 PULSE_DISCOVERY_COOLDOWN_HOURS = 24
 
 PULSE_TP_MULT = Decimal("1.01")
@@ -162,6 +164,15 @@ def _volume_so_far(hist: pd.DataFrame) -> int:
     return _safe_int(hist["Volume"].fillna(0).sum())
 
 
+def _fast_info_price(symbol: str) -> Optional[float]:
+    try:
+        info = yf.Ticker(symbol).fast_info
+        return _safe_float(info.get("lastPrice") or info.get("regularMarketPrice"))
+    except Exception as exc:
+        logger.debug("Pulse: fast_info unavailable for %s: %s", symbol, exc)
+        return None
+
+
 def _symbol_hist(data: pd.DataFrame, symbol: str) -> pd.DataFrame:
     if data.empty:
         return pd.DataFrame()
@@ -237,24 +248,24 @@ class Pulse(AdvisorBase):
             if hist.empty or "Close" not in hist.columns or "Open" not in hist.columns:
                 continue
 
-            price_now = _safe_float(hist["Close"].iloc[-1])
+            bar_price = _safe_float(hist["Close"].iloc[-1])
             seed_price = _safe_float(row.get("polygon_price"))
             if (
-                price_now is not None
+                bar_price is not None
                 and seed_price is not None
-                and abs(price_now / seed_price - 1.0) > PULSE_MAX_PRICE_DRIFT_FROM_SEED
+                and abs(bar_price / seed_price - 1.0) > PULSE_MAX_PRICE_DRIFT_FROM_SEED
             ):
                 logger.debug(
                     "Pulse: skip %s - intraday price %.2f too far from seed %.2f",
                     symbol,
-                    price_now,
+                    bar_price,
                     seed_price,
                 )
                 continue
             volume_so_far = _volume_so_far(hist)
-            if price_now is None or volume_so_far < PULSE_MIN_SESSION_VOLUME:
+            if bar_price is None or volume_so_far < PULSE_MIN_SESSION_VOLUME:
                 continue
-            dollar_volume_so_far = price_now * volume_so_far
+            dollar_volume_so_far = bar_price * volume_so_far
             if dollar_volume_so_far < PULSE_MIN_DOLLAR_VOLUME:
                 continue
 
@@ -262,7 +273,7 @@ class Pulse(AdvisorBase):
                 {
                     **row,
                     "hist": hist,
-                    "price_now": price_now,
+                    "bar_price": bar_price,
                     "volume_so_far": volume_so_far,
                     "dollar_volume_so_far": dollar_volume_so_far,
                 }
@@ -274,7 +285,19 @@ class Pulse(AdvisorBase):
         for rank, row in enumerate(intraday_ranked[:PULSE_TOP_DAILY_VOLUME], start=1):
             symbol = str(row["symbol"])
             hist = row["hist"]
-            price_now = float(row["price_now"])
+            bar_price = float(row["bar_price"])
+            quote_price = _fast_info_price(symbol)
+            if quote_price is None:
+                continue
+            if abs(quote_price / bar_price - 1.0) > PULSE_MAX_QUOTE_DRIFT_FROM_BAR:
+                logger.debug(
+                    "Pulse: skip %s - quote %.2f too far from 15m bar %.2f",
+                    symbol,
+                    quote_price,
+                    bar_price,
+                )
+                continue
+            price_now = quote_price
             open_px = _safe_float(hist["Open"].iloc[0]) if "Open" in hist.columns else None
             px_30 = _bar_close_at_or_before(hist, 30)
             px_60 = _bar_close_at_or_before(hist, 60)
@@ -293,6 +316,7 @@ class Pulse(AdvisorBase):
                     "symbol": symbol,
                     "rank": rank,
                     "price": round(float(price_now), 4),
+                    "bar_price": round(float(bar_price), 4),
                     "volume": int(row["volume_so_far"]),
                     "dollar_volume": round(float(row["dollar_volume_so_far"]), 2),
                     "prior_dollar_volume": round(float(row["prior_dollar_volume"]), 2),
@@ -363,6 +387,8 @@ class Pulse(AdvisorBase):
 
             explanation = (
                 f"Pulse entry | rank {candidate.get('rank')} | "
+                f"quote ${float(candidate.get('price') or 0):.2f} | "
+                f"bar ${float(candidate.get('bar_price') or 0):.2f} | "
                 f"range {float(candidate.get('range_pct') or 0):.1f}% | "
                 f"30m {float(candidate.get('pct_30m') or 0):+.1f}% | "
                 f"60m {float(candidate.get('pct_60m') or 0):+.1f}% | "

@@ -4,12 +4,12 @@ Pulse v0 daily attention scan.
 
 Baby-step goal:
   - Run once per trading day after 11:00 ET.
-  - Fetch a broad Polygon grouped daily aggregate (same endpoint family as Vunder).
-  - Rank liquid, high-volume names by session dollar volume.
+  - Fetch a broad Polygon grouped daily aggregate seed (same endpoint family as Vunder).
+  - Rank liquid names by yfinance intraday volume so far on the scan date.
   - Save a date-named CSV and reuse it on later runs that day.
 
-This is intentionally not true RVOL yet. It builds today's "attention universe"
-cheaply so later Pulse tests can run only against this shortlist.
+This is intentionally not true RVOL yet. It builds a same-day "attention universe"
+from intraday volume so later Pulse tests can run only against this shortlist.
 
 Usage:
   source ~/Development/scratch/python/tutorial-env/bin/activate
@@ -25,7 +25,7 @@ import csv
 import os
 import sys
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Optional
 from zoneinfo import ZoneInfo
@@ -37,31 +37,59 @@ import yfinance as yf
 ET = ZoneInfo("US/Eastern")
 PULSE_SCAN_TIME_ET = time(11, 0)
 DEFAULT_CACHE_DIR = Path(".pulse_scan")
+DEFAULT_SEED_UNIVERSE = 500
+DEFAULT_MAX_PRICE_DRIFT_FROM_SEED = 0.50
 ETF_EXCLUDE_TICKERS = frozenset(
     {
         "DIA",
+        "EEM",
+        "EFA",
+        "EWY",
+        "GDX",
+        "GLD",
+        "HYG",
+        "IEFA",
+        "IWD",
+        "IWF",
         "IWM",
         "IVV",
+        "LQD",
+        "NVD",
+        "NVDL",
+        "NVDS",
+        "NVDU",
         "QQQ",
         "RSP",
         "SDS",
+        "SGOV",
         "SH",
         "SMH",
+        "SNXX",
         "SOXL",
         "SOXS",
+        "SOXX",
         "SPXL",
         "SPXS",
         "SPY",
         "SQQQ",
+        "TLT",
+        "TSLL",
+        "TSLQ",
+        "TSLR",
+        "TSLS",
+        "TSLT",
         "TQQQ",
         "UDOW",
         "UPRO",
+        "VCIT",
         "VOO",
         "VTI",
         "XBI",
         "XLE",
         "XLF",
+        "XLI",
         "XLK",
+        "XLP",
         "XLV",
     }
 )
@@ -77,6 +105,7 @@ class PulseCandidate:
     low: Optional[float]
     volume: int
     dollar_volume: float
+    prior_dollar_volume: Optional[float]
     change_pct: Optional[float]
     prev_close: Optional[float]
 
@@ -128,7 +157,6 @@ def _safe_int(value: Any) -> int:
 def fetch_grouped_daily_rows(
     *,
     min_price: float,
-    min_volume: int,
 ) -> list[dict[str, Any]]:
     """Fetch Polygon grouped daily aggs via the existing Vunder-compatible helper."""
     _setup_django()
@@ -136,7 +164,6 @@ def fetch_grouped_daily_rows(
 
     df = financial_polygon.get_filtered_stocks(
         min_price=min_price,
-        min_volume=min_volume,
     )
     if df is None or df.empty:
         return []
@@ -146,13 +173,17 @@ def fetch_grouped_daily_rows(
 def build_candidates(
     rows: Iterable[dict[str, Any]],
     *,
+    scan_date: date,
+    as_of_time: time,
     min_price: float,
     min_volume: int,
     min_dollar_volume: float,
     top: int,
+    seed_universe: int,
+    max_price_drift_from_seed: float,
     exclude_etfs: bool,
 ) -> list[PulseCandidate]:
-    candidates: list[PulseCandidate] = []
+    seed_rows: list[dict[str, Any]] = []
 
     for row in rows:
         symbol = str(row.get("ticker") or row.get("symbol") or "").strip().upper()
@@ -162,45 +193,85 @@ def build_candidates(
             continue
 
         price = _safe_float(row.get("price"))
-        volume = _safe_int(row.get("today_volume") or row.get("volume"))
-        if price is None or price < min_price or volume < min_volume:
+        prior_volume = _safe_int(row.get("today_volume") or row.get("volume"))
+        if price is None or price < min_price or prior_volume <= 0:
             continue
 
-        dollar_volume = price * volume
+        prior_dollar_volume = price * prior_volume
+        seed_rows.append(
+            {
+                "symbol": symbol,
+                "seed_price": price,
+                "prior_volume": prior_volume,
+                "prior_dollar_volume": prior_dollar_volume,
+            }
+        )
+
+    seed_rows.sort(key=lambda r: float(r["prior_dollar_volume"]), reverse=True)
+    shortlist = seed_rows[:seed_universe]
+    symbols = [str(r["symbol"]) for r in shortlist]
+    data = _download_intraday(symbols, scan_date=scan_date)
+    as_of_ts = _as_of_timestamp(scan_date, as_of_time)
+
+    ranked_rows: list[dict[str, Any]] = []
+    for row in shortlist:
+        symbol = str(row["symbol"])
+        hist = _hist_for_date(_symbol_hist(data, symbol), scan_date)
+        if hist.empty or "Close" not in hist.columns or "Open" not in hist.columns:
+            continue
+
+        price_now = _bar_close_at_as_of(hist, as_of_ts)
+        seed_price = _safe_float(row.get("seed_price"))
+        if price_now is None or seed_price is None:
+            continue
+        if abs(price_now / seed_price - 1.0) > max_price_drift_from_seed:
+            continue
+
+        volume_so_far = _volume_at_or_before(hist, as_of_ts)
+        if volume_so_far < min_volume:
+            continue
+        dollar_volume = price_now * volume_so_far
         if dollar_volume < min_dollar_volume:
             continue
 
+        open_px = _safe_float(hist["Open"].iloc[0])
+        day_high = _safe_float(hist.loc[pd.to_datetime(hist.index, utc=True) <= as_of_ts, "High"].max()) if "High" in hist.columns else None
+        day_low = _safe_float(hist.loc[pd.to_datetime(hist.index, utc=True) <= as_of_ts, "Low"].min()) if "Low" in hist.columns else None
+        ranked_rows.append(
+            {
+                **row,
+                "price": price_now,
+                "open": open_px,
+                "high": day_high,
+                "low": day_low,
+                "volume": volume_so_far,
+                "dollar_volume": dollar_volume,
+            }
+        )
+
+    ranked_rows.sort(key=lambda r: float(r["dollar_volume"]), reverse=True)
+    candidates: list[PulseCandidate] = []
+    for rank, row in enumerate(ranked_rows[:top], start=1):
+        open_px = _safe_float(row.get("open"))
+        price = float(row["price"])
+        change_pct = _pct(price, open_px)
+
         candidates.append(
             PulseCandidate(
-                rank=0,
-                symbol=symbol,
+                rank=rank,
+                symbol=str(row["symbol"]),
                 price=price,
-                open=None,
-                high=None,
-                low=None,
-                volume=volume,
-                dollar_volume=dollar_volume,
-                change_pct=None,
+                open=open_px,
+                high=_safe_float(row.get("high")),
+                low=_safe_float(row.get("low")),
+                volume=int(row["volume"]),
+                dollar_volume=float(row["dollar_volume"]),
+                prior_dollar_volume=float(row["prior_dollar_volume"]),
+                change_pct=change_pct,
                 prev_close=None,
             )
         )
-
-    candidates.sort(key=lambda c: c.dollar_volume, reverse=True)
-    return [
-        PulseCandidate(
-            rank=i,
-            symbol=c.symbol,
-            price=c.price,
-            open=c.open,
-            high=c.high,
-            low=c.low,
-            volume=c.volume,
-            dollar_volume=c.dollar_volume,
-            change_pct=c.change_pct,
-            prev_close=c.prev_close,
-        )
-        for i, c in enumerate(candidates[:top], start=1)
-    ]
+    return candidates
 
 
 def write_candidates(path: Path, candidates: list[PulseCandidate]) -> None:
@@ -217,6 +288,7 @@ def write_candidates(path: Path, candidates: list[PulseCandidate]) -> None:
                 "low",
                 "volume",
                 "dollar_volume",
+                "prior_dollar_volume",
                 "change_pct",
                 "prev_close",
             ],
@@ -233,6 +305,7 @@ def write_candidates(path: Path, candidates: list[PulseCandidate]) -> None:
                     "low": "" if c.low is None else f"{c.low:.4f}",
                     "volume": c.volume,
                     "dollar_volume": f"{c.dollar_volume:.2f}",
+                    "prior_dollar_volume": "" if c.prior_dollar_volume is None else f"{c.prior_dollar_volume:.2f}",
                     "change_pct": "" if c.change_pct is None else f"{c.change_pct:.4f}",
                     "prev_close": "" if c.prev_close is None else f"{c.prev_close:.4f}",
                 }
@@ -306,7 +379,21 @@ def _stable_bool(value: Optional[bool]) -> str:
     return ""
 
 
-def _download_intraday(symbols: list[str]) -> pd.DataFrame:
+def _download_intraday(symbols: list[str], *, scan_date: Optional[date] = None) -> pd.DataFrame:
+    if not symbols:
+        return pd.DataFrame()
+    if scan_date is not None:
+        start = scan_date.isoformat()
+        end = (scan_date + timedelta(days=1)).isoformat()
+        return yf.download(
+            symbols,
+            start=start,
+            end=end,
+            interval="15m",
+            auto_adjust=True,
+            progress=False,
+            threads=True,
+        )
     return yf.download(
         symbols,
         period="1d",
@@ -315,6 +402,24 @@ def _download_intraday(symbols: list[str]) -> pd.DataFrame:
         progress=False,
         threads=True,
     )
+
+
+def _hist_for_date(hist: pd.DataFrame, scan_date: date) -> pd.DataFrame:
+    if hist.empty:
+        return hist
+    idx = pd.to_datetime(hist.index, utc=True)
+    local_dates = idx.tz_convert(ET).date
+    return hist.loc[local_dates == scan_date].dropna(how="all")
+
+
+def _volume_at_or_before(hist: pd.DataFrame, as_of_ts: pd.Timestamp) -> int:
+    if hist.empty or "Volume" not in hist.columns:
+        return 0
+    idx = pd.to_datetime(hist.index, utc=True)
+    eligible = idx <= as_of_ts
+    if not eligible.any():
+        return 0
+    return _safe_int(hist.loc[eligible, "Volume"].fillna(0).sum())
 
 
 def _symbol_hist(data: pd.DataFrame, symbol: str) -> pd.DataFrame:
@@ -338,13 +443,13 @@ def enrich_stability(
     as_of_time: time,
 ) -> list[dict[str, str]]:
     symbols = [str(r.get("symbol") or "").strip().upper() for r in rows if r.get("symbol")]
-    data = _download_intraday(symbols)
+    data = _download_intraday(symbols, scan_date=scan_date)
     as_of_ts = _as_of_timestamp(scan_date, as_of_time)
     enriched: list[dict[str, str]] = []
 
     for row in rows:
         symbol = str(row.get("symbol") or "").strip().upper()
-        hist = _symbol_hist(data, symbol)
+        hist = _hist_for_date(_symbol_hist(data, symbol), scan_date)
         out = dict(row)
 
         px_now = _bar_close_at_as_of(hist, as_of_ts)
@@ -425,6 +530,7 @@ def _first_bar_at_or_after(hist: pd.DataFrame, entry_time: time) -> Optional[int
 def simulate_pulse(
     rows: list[dict[str, str]],
     *,
+    scan_date: date,
     entry_time: time,
     tp_pct: float,
     rebuy_pct: float,
@@ -444,12 +550,12 @@ def simulate_pulse(
         stable_rows.append(row)
 
     symbols = [str(r.get("symbol") or "").strip().upper() for r in stable_rows]
-    data = _download_intraday(symbols)
+    data = _download_intraday(symbols, scan_date=scan_date)
     out: list[dict[str, str]] = []
 
     for row in stable_rows:
         symbol = str(row.get("symbol") or "").strip().upper()
-        hist = _symbol_hist(data, symbol)
+        hist = _hist_for_date(_symbol_hist(data, symbol), scan_date)
         result = dict(row)
         entry_i = _first_bar_at_or_after(hist, entry_time)
 
@@ -617,6 +723,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force", action="store_true", help="Allow scan before 11:00 ET")
     parser.add_argument("--preview", type=int, default=25, help="Rows to print (default 25)")
     parser.add_argument("--include-etfs", action="store_true", help="Do not exclude common ETF tickers")
+    parser.add_argument(
+        "--seed-universe",
+        type=int,
+        default=DEFAULT_SEED_UNIVERSE,
+        help=f"Polygon seed size before intraday ranking (default {DEFAULT_SEED_UNIVERSE})",
+    )
+    parser.add_argument(
+        "--max-price-drift-from-seed",
+        type=float,
+        default=DEFAULT_MAX_PRICE_DRIFT_FROM_SEED,
+        help=f"Skip if intraday price differs from seed by more than this fraction (default {DEFAULT_MAX_PRICE_DRIFT_FROM_SEED})",
+    )
     parser.add_argument("--stable", action="store_true", help="Enrich cached candidates with normal stability tier")
     parser.add_argument("--simulate", action="store_true", help="Simulate stable candidates through today's 15m bars")
     parser.add_argument("--range-report", action="store_true", help="Summarize simulation by 11:00 range bucket")
@@ -651,6 +769,7 @@ def main() -> int:
         rows = read_cached(stable_path)
         simulated = simulate_pulse(
             rows,
+            scan_date=scan_date,
             entry_time=args.entry_time,
             tp_pct=args.tp_pct,
             rebuy_pct=args.rebuy_pct,
@@ -721,16 +840,19 @@ def main() -> int:
     print(f"Fetching Polygon grouped daily aggs for Pulse scan ({scan_date.isoformat()})...")
     rows = fetch_grouped_daily_rows(
         min_price=args.min_price,
-        min_volume=args.min_volume,
     )
     print(f"Fetched {len(rows):,} grouped daily rows")
 
     candidates = build_candidates(
         rows,
+        scan_date=scan_date,
+        as_of_time=args.entry_time,
         min_price=args.min_price,
         min_volume=args.min_volume,
         min_dollar_volume=args.min_dollar_volume,
         top=args.top,
+        seed_universe=args.seed_universe,
+        max_price_drift_from_seed=args.max_price_drift_from_seed,
         exclude_etfs=not args.include_etfs,
     )
     write_candidates(path, candidates)
