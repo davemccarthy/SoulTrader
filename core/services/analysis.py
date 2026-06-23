@@ -20,10 +20,12 @@ from core.services.health.risk_matrix import (
     discovery_passes_risk_gate,
     so_gate_fail_display,
 )
+from core.services.market import market_open
 
 logger = logging.getLogger(__name__)
 DT_EXIT_CONFIDENCE_MIN = 0.70
 REBUY_STABILIZE_MINUTES = STABILIZE_MINUTES_DEFAULT
+PEAKED_MIN_MARKET_MINUTES = 60
 
 
 def factor_sentiment(fund: Profile) -> Decimal:
@@ -310,6 +312,8 @@ def analyse_drop(sa, dropped_stocks):
 def analyze_holdings(sa, funds):
     logger.info(f"Analyzing holdings for SA session {sa.id}")
     dropped_stocks = []
+    market_status = market_open()
+    peaked_allowed = market_status is not None and market_status >= PEAKED_MIN_MARKET_MINUTES
 
     # Check if we're in the last 30 minutes of trading day (3:30 PM ET onwards)
     et = tz('US/Eastern')
@@ -605,6 +609,8 @@ def analyze_holdings(sa, funds):
                                 break
 
                         elif instruction.instruction == 'PEAKED':
+                            if not peaked_allowed:
+                                continue
                             if holding.stock.downturned(
                                 discovery.created,
                                 buy_price=buy_price,
