@@ -683,19 +683,21 @@ def analyze_discovery(sa, funds, advisors):
 
         sentiment = factor_sentiment(fund)
         allowed_advisors = list(fund.advisors or [])
+        if not allowed_advisors:
+            logger.info("%s: no advisors configured; skip discovery buys", fund.name)
+            continue
 
         # 1. Filter discoveries by allowed advisors (if specified)
         discoveries_qs = Discovery.objects.filter(sa=sa)
         
-        if allowed_advisors:
-            # Get Advisor objects for the allowed advisor python_class values
-            allowed_advisor_objects = Advisor.objects.filter(python_class__in=allowed_advisors)
+        # Get Advisor objects for the allowed advisor python_class values
+        allowed_advisor_objects = Advisor.objects.filter(python_class__in=allowed_advisors)
 
-            if allowed_advisor_objects.exists():
-                discoveries_qs = discoveries_qs.filter(advisor__in=allowed_advisor_objects)
-            else:
-                logger.warning(f"{fund.name}: no matching advisor")
-                continue
+        if allowed_advisor_objects.exists():
+            discoveries_qs = discoveries_qs.filter(advisor__in=allowed_advisor_objects)
+        else:
+            logger.warning(f"{fund.name}: no matching advisor")
+            continue
 
         # 3. Get filtered discoveries
         filtered_discoveries = list(
