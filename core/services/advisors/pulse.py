@@ -8,7 +8,7 @@ Entry:
 - Keep names with normal stability at build time:
   executable quote >= 30m ago, executable quote >= 60m ago * 0.995,
   executable quote >= open * 0.99.
-- Require intraday range so far >= 2%.
+- Require intraday range so far >= 5%.
 - Discover all qualifying names (MEGA spread is expected for initial test funds).
 
 Exit/add: Noise-style +1% target, -2% stabilized rebuy, END_DAY, END_WEEK. No DT/SL.
@@ -30,7 +30,7 @@ from core.services.financial import polygon as financial_polygon
 logger = logging.getLogger(__name__)
 
 ET = pytz.timezone("US/Eastern")
-PULSE_CANDIDATE_VERSION = 3
+PULSE_CANDIDATE_VERSION = 4
 PULSE_BUILD_TIME_ET = time(11, 0)
 PULSE_DISCOVERY_END_TIME_ET = time(14, 30)
 PULSE_SEED_UNIVERSE = 500
@@ -38,15 +38,14 @@ PULSE_TOP_DAILY_VOLUME = 100
 PULSE_MIN_PRICE = 5.0
 PULSE_MIN_SESSION_VOLUME = 500_000
 PULSE_MIN_DOLLAR_VOLUME = 25_000_000.0
-PULSE_MIN_RANGE_PCT = 2.0
+PULSE_MIN_RANGE_PCT = 5.0
 PULSE_MAX_PRICE_DRIFT_FROM_SEED = 0.50
 PULSE_MAX_QUOTE_DRIFT_FROM_BAR = 0.02
 PULSE_DISCOVERY_COOLDOWN_HOURS = 24
 
 PULSE_TP_MULT = Decimal("1.01")
 PULSE_REBUY_DROP = Decimal("0.02")
-# value2 <= 0 means unlimited rebuys, capped only by fund cash.
-PULSE_REBUY_MAX_TRANCHES = Decimal("0")
+PULSE_REBUY_MAX_TRANCHES = Decimal("3")
 PULSE_ENDDAY_TAKE = Decimal("1.01")
 PULSE_ENDWEEK_TAKE = Decimal("1.00")
 
