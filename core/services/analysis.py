@@ -3,7 +3,7 @@ Stock Analysis Service
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone as dt_timezone
 from decimal import Decimal
 
 from pytz import timezone as tz
@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 DT_EXIT_CONFIDENCE_MIN = 0.70
 REBUY_STABILIZE_MINUTES = STABILIZE_MINUTES_DEFAULT
 PEAKED_MIN_MARKET_MINUTES = 60
+RECENT_TP_LOOKBACK_HOURS = 4
 
 
 def factor_sentiment(fund: Profile) -> Decimal:
@@ -72,18 +73,59 @@ def factor_sentiment(fund: Profile) -> Decimal:
 
     return Decimal(str(sentiment))
 
-def analyse_target(holding, target, sentiment):
+def _recent_intraday_peak(stock, since_date, lookback_hours=RECENT_TP_LOOKBACK_HOURS):
+    if not since_date:
+        return None
+
+    try:
+        import yfinance as yf
+
+        now = timezone.now()
+        anchor = since_date
+        if timezone.is_naive(anchor):
+            anchor = timezone.make_aware(anchor, dt_timezone.utc)
+        window_start = max(anchor, now - timedelta(hours=lookback_hours))
+
+        ticker = yf.Ticker(stock.symbol)
+        hist = ticker.history(period="1d", interval="1m")
+        if hist.empty or "High" not in hist.columns:
+            return None
+
+        if hist.index.tz is None:
+            window_start = timezone.make_naive(window_start, dt_timezone.utc)
+        peak_window = hist[hist.index >= window_start]
+        if peak_window.empty:
+            return None
+        return float(peak_window["High"].max())
+    except Exception as exc:
+        logger.debug("Could not check recent intraday peak for %s: %s", stock.symbol, exc)
+        return None
+
+
+def analyse_target(holding, target, sentiment, discovery=None):
 
     current = holding.stock.price
     buy_price = holding.average_price or Decimal(0.0)
     target = buy_price + (Decimal(str(target)) - buy_price) * sentiment
 
-    # Case 1: Targets should only trigger sells at a profit, not at a loss
-    if current < buy_price:
+    # Case 1: Targets should only trigger sells at a profit, not at a loss.
+    if current <= buy_price:
         return False
 
-    # Case 2: Price < target
+    # Case 2: Price < target, but a recent intraday spike already hit it.
     if current < target:
+        if discovery is not None:
+            peak = _recent_intraday_peak(holding.stock, discovery.created)
+            if peak is not None and Decimal(str(peak)) >= target:
+                logger.info(
+                    "Taking TP SELL for %s: recent intraday peak %.2f hit target %s; current=%s avg=%s",
+                    holding.stock.symbol,
+                    peak,
+                    target,
+                    current,
+                    buy_price,
+                )
+                return True
         return False
 
     # Case 3: At/above target, only hold if trend is clearly positive
@@ -394,7 +436,7 @@ def analyze_holdings(sa, funds):
                                     break
 
                         elif instruction.instruction == 'TARGET_PRICE':
-                            if analyse_target(holding, instruction.value1, sentiment):
+                            if analyse_target(holding, instruction.value1, sentiment, discovery):
                                 execute_sell(
                                     sa, fund, holding,
                                     f"{holding.stock.symbol} reached target price of ${instruction.value1:.2f}",
@@ -405,7 +447,7 @@ def analyze_holdings(sa, funds):
                             avg = holding.average_price or discovery.price
                             if instruction.value1 and avg:
                                 target_px = Decimal(str(instruction.value1)) * Decimal(str(avg))
-                                if analyse_target(holding, target_px, sentiment):
+                                if analyse_target(holding, target_px, sentiment, discovery):
                                     execute_sell(
                                         sa, fund, holding,
                                         f"{holding.stock.symbol} reached target "
@@ -425,7 +467,7 @@ def analyze_holdings(sa, funds):
                                 else:
                                     current_target = float(buy_price)  # After max_days, target = buy_price (break-even)
 
-                                if analyse_target(holding, Decimal(str(current_target)), sentiment):
+                                if analyse_target(holding, Decimal(str(current_target)), sentiment, discovery):
                                     execute_sell(sa, fund, holding, f"{holding.stock.symbol} diminishing target ${current_target:.2f} (day {days_held}/{max_days})")
                                     break
                             else:
@@ -441,7 +483,7 @@ def analyze_holdings(sa, funds):
                                 target_value = base_allowance * (Decimal('1.0') + ratio)
                                 target_price = target_value / Decimal(str(holding.shares))
                                 
-                                if analyse_target(holding, target_price, sentiment):
+                                if analyse_target(holding, target_price, sentiment, discovery):
                                     execute_sell(sa, fund, holding, f"{holding.stock.symbol} reached profit target (target price: ${target_price:.2f})")
                                     break
                             else:

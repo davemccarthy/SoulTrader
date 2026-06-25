@@ -2,13 +2,13 @@
 Pulse advisor — daily attention universe + stable intraday entry.
 
 Entry:
-- Build a broad liquid-stock seed after 11:00 ET from Polygon grouped daily aggs.
+- Build a broad liquid-stock seed after 11:30 ET from Polygon grouped daily aggs.
 - Rank/filter that seed by today's intraday 15m volume so far.
 - Exclude common ETF/fund tickers.
 - Keep names with normal stability at build time:
   executable quote >= 30m ago, executable quote >= 60m ago * 0.995,
   executable quote >= open * 0.99.
-- Require intraday range so far >= 5%.
+- Require recent 60m intraday range >= 5%, bypassing the first noisy hour.
 - Discover all qualifying names (MEGA spread is expected for initial test funds).
 
 Exit/add: Noise-style +1% target, -2% stabilized rebuy, END_DAY, END_WEEK. No DT/SL.
@@ -30,8 +30,8 @@ from core.services.financial import polygon as financial_polygon
 logger = logging.getLogger(__name__)
 
 ET = pytz.timezone("US/Eastern")
-PULSE_CANDIDATE_VERSION = 4
-PULSE_BUILD_TIME_ET = time(11, 0)
+PULSE_CANDIDATE_VERSION = 5
+PULSE_BUILD_TIME_ET = time(11, 30)
 PULSE_DISCOVERY_END_TIME_ET = time(14, 30)
 PULSE_SEED_UNIVERSE = 500
 PULSE_TOP_DAILY_VOLUME = 100
@@ -39,11 +39,12 @@ PULSE_MIN_PRICE = 5.0
 PULSE_MIN_SESSION_VOLUME = 500_000
 PULSE_MIN_DOLLAR_VOLUME = 25_000_000.0
 PULSE_MIN_RANGE_PCT = 5.0
+PULSE_RANGE_LOOKBACK_MINUTES = 60
 PULSE_MAX_PRICE_DRIFT_FROM_SEED = 0.50
 PULSE_MAX_QUOTE_DRIFT_FROM_BAR = 0.02
-PULSE_DISCOVERY_COOLDOWN_HOURS = 24
+PULSE_DISCOVERY_COOLDOWN_HOURS = 2
 
-PULSE_TP_MULT = Decimal("1.01")
+PULSE_TP_MULT = Decimal("1.002")
 PULSE_REBUY_DROP = Decimal("0.02")
 PULSE_REBUY_MAX_TRANCHES = Decimal("3")
 PULSE_ENDDAY_TAKE = Decimal("1.01")
@@ -147,11 +148,17 @@ def _bar_close_at_or_before(hist: pd.DataFrame, minutes_ago: int) -> Optional[fl
     return _safe_float(hist.loc[eligible, "Close"].astype(float).iloc[-1])
 
 
-def _range_pct_so_far(hist: pd.DataFrame) -> Optional[float]:
+def _range_pct_last_minutes(hist: pd.DataFrame, minutes: int) -> Optional[float]:
     if hist.empty or "High" not in hist.columns or "Low" not in hist.columns:
         return None
-    hi = _safe_float(hist["High"].max())
-    lo = _safe_float(hist["Low"].min())
+    idx = pd.to_datetime(hist.index, utc=True)
+    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(minutes=minutes)
+    eligible = idx >= cutoff
+    if not eligible.any():
+        return None
+    recent = hist.loc[eligible]
+    hi = _safe_float(recent["High"].max())
+    lo = _safe_float(recent["Low"].min())
     if hi is None or lo is None or lo <= 0:
         return None
     return (hi / lo - 1.0) * 100.0
@@ -300,7 +307,7 @@ class Pulse(AdvisorBase):
             open_px = _safe_float(hist["Open"].iloc[0]) if "Open" in hist.columns else None
             px_30 = _bar_close_at_or_before(hist, 30)
             px_60 = _bar_close_at_or_before(hist, 60)
-            range_pct = _range_pct_so_far(hist)
+            range_pct = _range_pct_last_minutes(hist, PULSE_RANGE_LOOKBACK_MINUTES)
 
             stable_30 = price_now is not None and px_30 is not None and price_now >= px_30
             stable_60 = price_now is not None and px_60 is not None and price_now >= px_60 * 0.995
@@ -388,7 +395,7 @@ class Pulse(AdvisorBase):
                 f"Pulse entry | rank {candidate.get('rank')} | "
                 f"quote ${float(candidate.get('price') or 0):.2f} | "
                 f"bar ${float(candidate.get('bar_price') or 0):.2f} | "
-                f"range {float(candidate.get('range_pct') or 0):.1f}% | "
+                f"{PULSE_RANGE_LOOKBACK_MINUTES}m range {float(candidate.get('range_pct') or 0):.1f}% | "
                 f"30m {float(candidate.get('pct_30m') or 0):+.1f}% | "
                 f"60m {float(candidate.get('pct_60m') or 0):+.1f}% | "
                 f"open {float(candidate.get('pct_open') or 0):+.1f}% | "

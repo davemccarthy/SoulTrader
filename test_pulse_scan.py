@@ -3,20 +3,21 @@
 Pulse v0 daily attention scan.
 
 Baby-step goal:
-  - Run once per trading day after 11:00 ET.
+  - Run once per trading day after 11:30 ET.
   - Fetch a broad Polygon grouped daily aggregate seed (same endpoint family as Vunder).
   - Rank liquid names by yfinance intraday volume so far on the scan date.
   - Save a date-named CSV and reuse it on later runs that day.
 
-This is intentionally not true RVOL yet. It builds a same-day "attention universe"
-from intraday volume so later Pulse tests can run only against this shortlist.
+This builds a same-day "attention universe" from intraday volume so later
+Pulse tests can run only against this shortlist. Optional time-adjusted RVOL
+can compare today's cumulative volume with prior sessions at the same time.
 
 Usage:
   source ~/Development/scratch/python/tutorial-env/bin/activate
   python test_pulse_scan.py
   python test_pulse_scan.py --top 200 --min-price 5 --min-dollar-volume 50000000
   python test_pulse_scan.py --refresh
-  python test_pulse_scan.py --force   # allow before 11:00 ET
+  python test_pulse_scan.py --force   # allow before 11:30 ET
 """
 from __future__ import annotations
 
@@ -35,10 +36,12 @@ import yfinance as yf
 
 
 ET = ZoneInfo("US/Eastern")
-PULSE_SCAN_TIME_ET = time(11, 0)
+PULSE_SCAN_TIME_ET = time(11, 30)
+DEFAULT_RANGE_LOOKBACK_MINUTES = 60
 DEFAULT_CACHE_DIR = Path(".pulse_scan")
 DEFAULT_SEED_UNIVERSE = 500
 DEFAULT_MAX_PRICE_DRIFT_FROM_SEED = 0.50
+DEFAULT_RVOL_LOOKBACK_DAYS = 20
 ETF_EXCLUDE_TICKERS = frozenset(
     {
         "DIA",
@@ -82,8 +85,11 @@ ETF_EXCLUDE_TICKERS = frozenset(
         "UDOW",
         "UPRO",
         "VCIT",
+        "VCSH",
+        "VEA",
         "VOO",
         "VTI",
+        "VXUS",
         "XBI",
         "XLE",
         "XLF",
@@ -91,6 +97,7 @@ ETF_EXCLUDE_TICKERS = frozenset(
         "XLK",
         "XLP",
         "XLV",
+        "VYM",
     }
 )
 
@@ -106,6 +113,7 @@ class PulseCandidate:
     volume: int
     dollar_volume: float
     prior_dollar_volume: Optional[float]
+    rvol: Optional[float]
     change_pct: Optional[float]
     prev_close: Optional[float]
 
@@ -157,6 +165,7 @@ def _safe_int(value: Any) -> int:
 def fetch_grouped_daily_rows(
     *,
     min_price: float,
+    scan_date: date,
 ) -> list[dict[str, Any]]:
     """Fetch Polygon grouped daily aggs via the existing Vunder-compatible helper."""
     _setup_django()
@@ -164,6 +173,7 @@ def fetch_grouped_daily_rows(
 
     df = financial_polygon.get_filtered_stocks(
         min_price=min_price,
+        test_date=scan_date.isoformat(),
     )
     if df is None or df.empty:
         return []
@@ -178,6 +188,8 @@ def build_candidates(
     min_price: float,
     min_volume: int,
     min_dollar_volume: float,
+    min_rvol: Optional[float],
+    rvol_lookback_days: int,
     top: int,
     seed_universe: int,
     max_price_drift_from_seed: float,
@@ -211,6 +223,11 @@ def build_candidates(
     shortlist = seed_rows[:seed_universe]
     symbols = [str(r["symbol"]) for r in shortlist]
     data = _download_intraday(symbols, scan_date=scan_date)
+    rvol_data = (
+        _download_intraday_lookback(symbols, scan_date=scan_date, lookback_days=rvol_lookback_days)
+        if min_rvol is not None
+        else pd.DataFrame()
+    )
     as_of_ts = _as_of_timestamp(scan_date, as_of_time)
 
     ranked_rows: list[dict[str, Any]] = []
@@ -230,6 +247,17 @@ def build_candidates(
         volume_so_far = _volume_at_or_before(hist, as_of_ts)
         if volume_so_far < min_volume:
             continue
+        rvol = None
+        if min_rvol is not None:
+            rvol_hist = _symbol_hist(rvol_data, symbol)
+            rvol = _time_adjusted_rvol(
+                rvol_hist,
+                scan_date=scan_date,
+                as_of_time=as_of_time,
+                today_volume_so_far=volume_so_far,
+            )
+            if rvol is None or rvol < min_rvol:
+                continue
         dollar_volume = price_now * volume_so_far
         if dollar_volume < min_dollar_volume:
             continue
@@ -246,6 +274,7 @@ def build_candidates(
                 "low": day_low,
                 "volume": volume_so_far,
                 "dollar_volume": dollar_volume,
+                "rvol": rvol,
             }
         )
 
@@ -267,6 +296,7 @@ def build_candidates(
                 volume=int(row["volume"]),
                 dollar_volume=float(row["dollar_volume"]),
                 prior_dollar_volume=float(row["prior_dollar_volume"]),
+                rvol=_safe_float(row.get("rvol")),
                 change_pct=change_pct,
                 prev_close=None,
             )
@@ -289,6 +319,7 @@ def write_candidates(path: Path, candidates: list[PulseCandidate]) -> None:
                 "volume",
                 "dollar_volume",
                 "prior_dollar_volume",
+                "rvol",
                 "change_pct",
                 "prev_close",
             ],
@@ -306,6 +337,7 @@ def write_candidates(path: Path, candidates: list[PulseCandidate]) -> None:
                     "volume": c.volume,
                     "dollar_volume": f"{c.dollar_volume:.2f}",
                     "prior_dollar_volume": "" if c.prior_dollar_volume is None else f"{c.prior_dollar_volume:.2f}",
+                    "rvol": "" if c.rvol is None else f"{c.rvol:.4f}",
                     "change_pct": "" if c.change_pct is None else f"{c.change_pct:.4f}",
                     "prev_close": "" if c.prev_close is None else f"{c.prev_close:.4f}",
                 }
@@ -371,6 +403,26 @@ def _range_pct_at_or_before(hist: pd.DataFrame, as_of_ts: pd.Timestamp) -> Optio
     return (hi / lo - 1.0) * 100.0
 
 
+def _range_pct_between(
+    hist: pd.DataFrame,
+    *,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+) -> Optional[float]:
+    if hist.empty or "High" not in hist.columns or "Low" not in hist.columns:
+        return None
+    idx = pd.to_datetime(hist.index, utc=True)
+    eligible = (idx >= start_ts) & (idx <= end_ts)
+    if not eligible.any():
+        return None
+    sub = hist.loc[eligible]
+    hi = _safe_float(sub["High"].max())
+    lo = _safe_float(sub["Low"].min())
+    if hi is None or lo is None or lo <= 0:
+        return None
+    return (hi / lo - 1.0) * 100.0
+
+
 def _stable_bool(value: Optional[bool]) -> str:
     if value is True:
         return "Y"
@@ -404,6 +456,29 @@ def _download_intraday(symbols: list[str], *, scan_date: Optional[date] = None) 
     )
 
 
+def _download_intraday_lookback(
+    symbols: list[str],
+    *,
+    scan_date: date,
+    lookback_days: int,
+) -> pd.DataFrame:
+    if not symbols:
+        return pd.DataFrame()
+    # Include extra calendar days so weekends/holidays still leave enough sessions.
+    calendar_days = max(lookback_days * 2, lookback_days + 10)
+    start = (scan_date - timedelta(days=calendar_days)).isoformat()
+    end = (scan_date + timedelta(days=1)).isoformat()
+    return yf.download(
+        symbols,
+        start=start,
+        end=end,
+        interval="15m",
+        auto_adjust=True,
+        progress=False,
+        threads=True,
+    )
+
+
 def _hist_for_date(hist: pd.DataFrame, scan_date: date) -> pd.DataFrame:
     if hist.empty:
         return hist
@@ -420,6 +495,41 @@ def _volume_at_or_before(hist: pd.DataFrame, as_of_ts: pd.Timestamp) -> int:
     if not eligible.any():
         return 0
     return _safe_int(hist.loc[eligible, "Volume"].fillna(0).sum())
+
+
+def _time_adjusted_rvol(
+    hist: pd.DataFrame,
+    *,
+    scan_date: date,
+    as_of_time: time,
+    today_volume_so_far: int,
+) -> Optional[float]:
+    if hist.empty or "Volume" not in hist.columns or today_volume_so_far <= 0:
+        return None
+
+    idx = pd.to_datetime(hist.index, utc=True)
+    local_idx = idx.tz_convert(ET)
+    df = hist.copy()
+    df["_local_date"] = local_idx.date
+    df["_local_time"] = local_idx.time
+
+    prior_volumes: list[int] = []
+    for session_date, session in df.groupby("_local_date"):
+        if session_date >= scan_date:
+            continue
+        comparable = session[session["_local_time"] <= as_of_time]
+        if comparable.empty:
+            continue
+        volume = _safe_int(comparable["Volume"].fillna(0).sum())
+        if volume > 0:
+            prior_volumes.append(volume)
+
+    if not prior_volumes:
+        return None
+    avg_prior = sum(prior_volumes) / len(prior_volumes)
+    if avg_prior <= 0:
+        return None
+    return float(today_volume_so_far / avg_prior)
 
 
 def _symbol_hist(data: pd.DataFrame, symbol: str) -> pd.DataFrame:
@@ -441,6 +551,7 @@ def enrich_stability(
     *,
     scan_date: date,
     as_of_time: time,
+    range_lookback_minutes: Optional[int],
 ) -> list[dict[str, str]]:
     symbols = [str(r.get("symbol") or "").strip().upper() for r in rows if r.get("symbol")]
     data = _download_intraday(symbols, scan_date=scan_date)
@@ -461,6 +572,13 @@ def enrich_stability(
         pct_30 = _pct(px_now, px_30)
         pct_60 = _pct(px_now, px_60)
         range_pct_to_asof = _range_pct_at_or_before(hist, as_of_ts)
+        recent_range_pct = None
+        if range_lookback_minutes is not None and range_lookback_minutes > 0:
+            recent_range_pct = _range_pct_between(
+                hist,
+                start_ts=as_of_ts - pd.Timedelta(minutes=range_lookback_minutes),
+                end_ts=as_of_ts,
+            )
         full_day_range_pct = None
         if not hist.empty and "High" in hist.columns and "Low" in hist.columns:
             hi = _safe_float(hist["High"].max())
@@ -483,6 +601,8 @@ def enrich_stability(
                 "pct_30m": "" if pct_30 is None else f"{pct_30:.4f}",
                 "pct_60m": "" if pct_60 is None else f"{pct_60:.4f}",
                 "range_pct_to_asof": "" if range_pct_to_asof is None else f"{range_pct_to_asof:.4f}",
+                "recent_range_pct": "" if recent_range_pct is None else f"{recent_range_pct:.4f}",
+                "recent_range_minutes": "" if range_lookback_minutes is None else str(range_lookback_minutes),
                 "day_range_pct": "" if full_day_range_pct is None else f"{full_day_range_pct:.4f}",
                 "stable_30m": _stable_bool(stable_30 if px_30 is not None else None),
                 "stable_60m": _stable_bool(stable_60 if px_60 is not None else None),
@@ -514,7 +634,7 @@ def _parse_et_time(value: str) -> time:
         hh, mm = value.split(":", 1)
         return time(int(hh), int(mm))
     except Exception as exc:
-        raise argparse.ArgumentTypeError("time must be HH:MM, e.g. 11:00") from exc
+        raise argparse.ArgumentTypeError("time must be HH:MM, e.g. 11:30") from exc
 
 
 def _first_bar_at_or_after(hist: pd.DataFrame, entry_time: time) -> Optional[int]:
@@ -537,6 +657,8 @@ def simulate_pulse(
     max_tranches: int,
     min_range_pct: Optional[float],
     max_range_pct: Optional[float],
+    min_recent_range_pct: Optional[float],
+    max_recent_range_pct: Optional[float],
 ) -> list[dict[str, str]]:
     stable_rows = []
     for row in rows:
@@ -546,6 +668,15 @@ def simulate_pulse(
         if min_range_pct is not None and (range_pct is None or range_pct < min_range_pct):
             continue
         if max_range_pct is not None and (range_pct is None or range_pct > max_range_pct):
+            continue
+        recent_range_pct = _safe_float(row.get("recent_range_pct"))
+        if min_recent_range_pct is not None and (
+            recent_range_pct is None or recent_range_pct < min_recent_range_pct
+        ):
+            continue
+        if max_recent_range_pct is not None and (
+            recent_range_pct is None or recent_range_pct > max_recent_range_pct
+        ):
             continue
         stable_rows.append(row)
 
@@ -656,7 +787,7 @@ def print_preview(rows: list[Any], *, limit: int, stable: bool = False, simulati
     if simulation:
         print(
             f"{'rank':>4}  {'symbol':<7} {'entry':>9} {'exit':>9} "
-            f"{'rng%':>7} {'ret%':>8} {'tr':>3} {'rb':>3} {'reason':>6}"
+            f"{'rng%':>7} {'rrng%':>7} {'ret%':>8} {'tr':>3} {'rb':>3} {'reason':>6}"
         )
         for row in rows[:limit]:
             print(
@@ -664,6 +795,7 @@ def print_preview(rows: list[Any], *, limit: int, stable: bool = False, simulati
                 f"{float(row.get('sim_entry_price') or 0):>9.2f} "
                 f"{float(row.get('sim_exit_price') or 0):>9.2f} "
                 f"{row.get('range_pct_to_asof', ''):>7} "
+                f"{row.get('recent_range_pct', ''):>7} "
                 f"{row.get('sim_return_pct', ''):>8} "
                 f"{row.get('sim_tranches', ''):>3} {row.get('sim_rebuys', ''):>3} "
                 f"{row.get('sim_exit_reason', row.get('sim_status', '')):>6}"
@@ -673,20 +805,22 @@ def print_preview(rows: list[Any], *, limit: int, stable: bool = False, simulati
     if stable:
         print(
             f"{'rank':>4}  {'symbol':<7} {'price':>9} {'volume':>12} "
-            f"{'dollar_vol':>14} {'30m':>7} {'60m':>7} {'open':>7} {'rng':>7} {'stable':>6}"
+            f"{'dollar_vol':>14} {'30m':>7} {'60m':>7} {'open':>7} {'rng':>7} {'rrng':>7} {'stable':>6}"
         )
     else:
-        print(f"{'rank':>4}  {'symbol':<7} {'price':>9} {'volume':>12} {'dollar_vol':>14} {'chg%':>8}")
+        print(f"{'rank':>4}  {'symbol':<7} {'price':>9} {'volume':>12} {'dollar_vol':>14} {'rvol':>6} {'chg%':>8}")
     for row in rows[:limit]:
         if isinstance(row, PulseCandidate):
             print(
                 f"{row.rank:>4}  {row.symbol:<7} {row.price:>9.2f} "
                 f"{row.volume:>12,d} {row.dollar_volume:>14,.0f} "
+                f"{'' if row.rvol is None else f'{row.rvol:.2f}':>6} "
                 f"{'' if row.change_pct is None else f'{row.change_pct:+.2f}':>8}"
             )
         else:
             volume = int(float(row.get("volume") or 0))
             dollar_volume = float(row.get("dollar_volume") or 0)
+            rvol = row.get("rvol") or ""
             if stable:
                 print(
                     f"{row.get('rank', ''):>4}  {row.get('symbol', ''):<7} "
@@ -694,6 +828,7 @@ def print_preview(rows: list[Any], *, limit: int, stable: bool = False, simulati
                     f"{volume:>12,d} {dollar_volume:>14,.0f} "
                     f"{row.get('pct_30m', ''):>7} {row.get('pct_60m', ''):>7} "
                     f"{row.get('pct_from_open', ''):>7} {row.get('range_pct_to_asof', ''):>7} "
+                    f"{row.get('recent_range_pct', ''):>7} "
                     f"{row.get('normal_stable', ''):>6}"
                 )
                 continue
@@ -702,7 +837,8 @@ def print_preview(rows: list[Any], *, limit: int, stable: bool = False, simulati
             print(
                 f"{row.get('rank', ''):>4}  {row.get('symbol', ''):<7} "
                 f"{float(row.get('price') or 0):>9.2f} "
-                f"{volume:>12,d} {dollar_volume:>14,.0f} {change_s:>8}"
+                f"{volume:>12,d} {dollar_volume:>14,.0f} "
+                f"{f'{float(rvol):.2f}' if rvol else '':>6} {change_s:>8}"
             )
 
 
@@ -717,10 +853,17 @@ def parse_args() -> argparse.Namespace:
         default=25_000_000,
         help="Minimum day dollar volume (default 25m)",
     )
+    parser.add_argument("--min-rvol", type=float, help="Minimum time-adjusted intraday RVOL")
+    parser.add_argument(
+        "--rvol-lookback-days",
+        type=int,
+        default=DEFAULT_RVOL_LOOKBACK_DAYS,
+        help=f"Prior sessions to use for RVOL average (default {DEFAULT_RVOL_LOOKBACK_DAYS})",
+    )
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     parser.add_argument("--date", type=str, help="Override scan date YYYY-MM-DD (default today ET)")
     parser.add_argument("--refresh", action="store_true", help="Rebuild even if today's CSV exists")
-    parser.add_argument("--force", action="store_true", help="Allow scan before 11:00 ET")
+    parser.add_argument("--force", action="store_true", help="Allow scan before 11:30 ET")
     parser.add_argument("--preview", type=int, default=25, help="Rows to print (default 25)")
     parser.add_argument("--include-etfs", action="store_true", help="Do not exclude common ETF tickers")
     parser.add_argument(
@@ -737,13 +880,24 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--stable", action="store_true", help="Enrich cached candidates with normal stability tier")
     parser.add_argument("--simulate", action="store_true", help="Simulate stable candidates through today's 15m bars")
-    parser.add_argument("--range-report", action="store_true", help="Summarize simulation by 11:00 range bucket")
+    parser.add_argument("--range-report", action="store_true", help="Summarize simulation by entry-time range bucket")
     parser.add_argument("--entry-time", type=_parse_et_time, default=PULSE_SCAN_TIME_ET, help="ET entry time HH:MM")
+    parser.add_argument(
+        "--range-lookback-minutes",
+        type=int,
+        default=DEFAULT_RANGE_LOOKBACK_MINUTES,
+        help=(
+            "Calculate recent range over the N minutes before --entry-time "
+            f"(default {DEFAULT_RANGE_LOOKBACK_MINUTES})"
+        ),
+    )
     parser.add_argument("--tp-pct", type=float, default=0.01, help="Take-profit percentage (default 0.01)")
     parser.add_argument("--rebuy-pct", type=float, default=0.02, help="Rebuy drop percentage (default 0.02)")
     parser.add_argument("--max-tranches", type=int, default=4, help="Max tranches including initial buy (default 4)")
     parser.add_argument("--min-range-pct", type=float, help="Only simulate names with range_pct_to_asof >= this")
     parser.add_argument("--max-range-pct", type=float, help="Only simulate names with range_pct_to_asof <= this")
+    parser.add_argument("--min-recent-range-pct", type=float, help="Only simulate names with recent_range_pct >= this")
+    parser.add_argument("--max-recent-range-pct", type=float, help="Only simulate names with recent_range_pct <= this")
     return parser.parse_args()
 
 
@@ -776,6 +930,8 @@ def main() -> int:
             max_tranches=args.max_tranches,
             min_range_pct=args.min_range_pct,
             max_range_pct=args.max_range_pct,
+            min_recent_range_pct=args.min_recent_range_pct,
+            max_recent_range_pct=args.max_recent_range_pct,
         )
         write_dict_rows(sim_path, simulated)
         ok_rows = [r for r in simulated if r.get("sim_status") == "OK"]
@@ -795,10 +951,15 @@ def main() -> int:
             lo = "-inf" if args.min_range_pct is None else f"{args.min_range_pct:g}"
             hi = "+inf" if args.max_range_pct is None else f"{args.max_range_pct:g}"
             range_filter = f", range={lo}..{hi}%"
+        recent_range_filter = ""
+        if args.min_recent_range_pct is not None or args.max_recent_range_pct is not None:
+            lo = "-inf" if args.min_recent_range_pct is None else f"{args.min_recent_range_pct:g}"
+            hi = "+inf" if args.max_recent_range_pct is None else f"{args.max_recent_range_pct:g}"
+            recent_range_filter = f", recent_range={lo}..{hi}%"
         print(
             f"Wrote Pulse simulation: {sim_path} "
             f"(ok={len(ok_rows)}, TP={len(tp_rows)}, avg_ret={avg_ret:+.2f}%, "
-            f"avg_tranches={avg_tranches:.2f}{range_filter})"
+            f"avg_tranches={avg_tranches:.2f}{range_filter}{recent_range_filter})"
         )
         print_preview(simulated, limit=args.preview, simulation=True)
         return 0
@@ -812,6 +973,7 @@ def main() -> int:
             rows,
             scan_date=scan_date,
             as_of_time=args.entry_time,
+            range_lookback_minutes=args.range_lookback_minutes,
         )
         write_dict_rows(stable_path, enriched)
         stable_count = sum(1 for r in enriched if r.get("normal_stable") == "Y")
@@ -840,6 +1002,7 @@ def main() -> int:
     print(f"Fetching Polygon grouped daily aggs for Pulse scan ({scan_date.isoformat()})...")
     rows = fetch_grouped_daily_rows(
         min_price=args.min_price,
+        scan_date=scan_date,
     )
     print(f"Fetched {len(rows):,} grouped daily rows")
 
@@ -850,6 +1013,8 @@ def main() -> int:
         min_price=args.min_price,
         min_volume=args.min_volume,
         min_dollar_volume=args.min_dollar_volume,
+        min_rvol=args.min_rvol,
+        rvol_lookback_days=args.rvol_lookback_days,
         top=args.top,
         seed_universe=args.seed_universe,
         max_price_drift_from_seed=args.max_price_drift_from_seed,
