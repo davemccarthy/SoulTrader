@@ -38,8 +38,9 @@ PULSE_TOP_DAILY_VOLUME = 100
 PULSE_MIN_PRICE = 5.0
 PULSE_MIN_SESSION_VOLUME = 500_000
 PULSE_MIN_DOLLAR_VOLUME = 25_000_000.0
-PULSE_MIN_RANGE_PCT = 5.0
+PULSE_MIN_RANGE_PCT = 1.5
 PULSE_RANGE_LOOKBACK_MINUTES = 60
+PULSE_CANDIDATE_CACHE_MINUTES = 15
 PULSE_MAX_PRICE_DRIFT_FROM_SEED = 0.50
 PULSE_MAX_QUOTE_DRIFT_FROM_BAR = 0.02
 PULSE_DISCOVERY_COOLDOWN_HOURS = 2
@@ -108,6 +109,13 @@ ETF_EXCLUDE_TICKERS: Final[frozenset[str]] = frozenset(
 
 def _today_et() -> str:
     return datetime.now(ET).date().isoformat()
+
+
+def _cache_bucket_et() -> str:
+    now_et = datetime.now(ET)
+    bucket_minute = (now_et.minute // PULSE_CANDIDATE_CACHE_MINUTES) * PULSE_CANDIDATE_CACHE_MINUTES
+    bucket = now_et.replace(minute=bucket_minute, second=0, microsecond=0)
+    return bucket.isoformat(timespec="minutes")
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -338,10 +346,12 @@ class Pulse(AdvisorBase):
 
     def _daily_candidates(self) -> List[Dict[str, Any]]:
         today = _today_et()
+        bucket = _cache_bucket_et()
         state = self._advisor_blob_state()
         if (
             state.get("pulse_date") == today
             and state.get("pulse_version") == PULSE_CANDIDATE_VERSION
+            and state.get("pulse_bucket_et") == bucket
             and isinstance(state.get("candidates"), list)
         ):
             return state["candidates"]
@@ -349,6 +359,7 @@ class Pulse(AdvisorBase):
         candidates = self._build_daily_candidates()
         state["pulse_date"] = today
         state["pulse_version"] = PULSE_CANDIDATE_VERSION
+        state["pulse_bucket_et"] = bucket
         state["candidates"] = candidates
         state["built_at_et"] = datetime.now(ET).isoformat(timespec="seconds")
         self._save_advisor_blob_state(state)
