@@ -677,6 +677,7 @@ class SellInstruction(models.Model):
         ("TARGET_PRICE", "Target Price (Price)"),
         ("STOP_PERCENTAGE", "Stop Loss (Percentage)"),
         ("TARGET_PERCENTAGE", "Target Price (Percentage)"),
+        ("TARGET_INTRADAY", "Target Intraday"),
         ("AFTER_DAYS", "After Days"),
         ("DESCENDING_TREND", 'Descending trend'),
         ("END_WEEK", "End of current week"),

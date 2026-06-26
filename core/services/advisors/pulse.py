@@ -46,6 +46,7 @@ PULSE_MAX_QUOTE_DRIFT_FROM_BAR = 0.02
 PULSE_DISCOVERY_COOLDOWN_HOURS = 2
 
 PULSE_TP_MULT = Decimal("1.002")
+PULSE_INTRADAY_GIVEBACK = Decimal("0.002")
 PULSE_REBUY_DROP = Decimal("0.02")
 PULSE_REBUY_MAX_TRANCHES = Decimal("3")
 PULSE_ENDDAY_TAKE = Decimal("1.01")
@@ -384,7 +385,7 @@ class Pulse(AdvisorBase):
             return
 
         sell_instructions = [
-            ("TARGET_PERCENTAGE", PULSE_TP_MULT, None),
+            ("TARGET_INTRADAY", PULSE_TP_MULT, PULSE_INTRADAY_GIVEBACK),
             ("PERCENTAGE_REBUY", PULSE_REBUY_DROP, PULSE_REBUY_MAX_TRANCHES),
             ("END_DAY", PULSE_ENDDAY_TAKE, None),
             ("END_WEEK", PULSE_ENDWEEK_TAKE, None),

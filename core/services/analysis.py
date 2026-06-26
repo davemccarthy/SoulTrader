@@ -148,6 +148,65 @@ def analyse_target(holding, target, sentiment, discovery=None):
     return False
 
 
+def _intraday_peak_since(stock, since_date):
+    if not since_date:
+        return None
+
+    try:
+        import yfinance as yf
+
+        anchor = since_date
+        if timezone.is_naive(anchor):
+            anchor = timezone.make_aware(anchor, dt_timezone.utc)
+
+        ticker = yf.Ticker(stock.symbol)
+        hist = ticker.history(period="1d", interval="1m")
+        if hist.empty or "High" not in hist.columns:
+            return None
+
+        if hist.index.tz is None:
+            anchor = timezone.make_naive(anchor, dt_timezone.utc)
+        peak_window = hist[hist.index >= anchor]
+        if peak_window.empty:
+            return None
+        return float(peak_window["High"].max())
+    except Exception as exc:
+        logger.debug("Could not check intraday peak for %s: %s", stock.symbol, exc)
+        return None
+
+
+def analyse_intraday(holding, activation_mult, giveback_pct, discovery=None):
+    current = holding.stock.price
+    buy_price = holding.average_price or Decimal(0.0)
+    if current <= buy_price:
+        return False
+
+    activation_px = Decimal(str(activation_mult)) * Decimal(str(buy_price))
+    peak = _intraday_peak_since(holding.stock, discovery.created if discovery else holding.created)
+    if peak is None:
+        return False
+
+    peak_d = Decimal(str(peak))
+    if peak_d < activation_px:
+        return False
+
+    giveback = Decimal(str(giveback_pct or "0"))
+    exit_px = peak_d * (Decimal("1.0") - giveback)
+    if current <= exit_px:
+        logger.info(
+            "Taking intraday SELL for %s: peak %.2f hit activation %s; current=%s exit<=%s avg=%s",
+            holding.stock.symbol,
+            peak,
+            activation_px,
+            current,
+            exit_px,
+            buy_price,
+        )
+        return True
+
+    return False
+
+
 def _session_exit_threshold_px(value1, avg) -> Decimal | None:
     """
     Dollar sell threshold for END_DAY / END_WEEK.
@@ -452,6 +511,16 @@ def analyze_holdings(sa, funds):
                                         sa, fund, holding,
                                         f"{holding.stock.symbol} reached target "
                                         f"${target_px:.2f} ({instruction.value1}× avg ${avg:.2f})",
+                                    )
+                                    break
+
+                        elif instruction.instruction == 'TARGET_INTRADAY':
+                            if instruction.value1 and instruction.value2:
+                                if analyse_intraday(holding, instruction.value1, instruction.value2, discovery):
+                                    execute_sell(
+                                        sa, fund, holding,
+                                        f"{holding.stock.symbol} captured intraday target "
+                                        f"({instruction.value1}× avg, {instruction.value2} giveback)",
                                     )
                                     break
 
