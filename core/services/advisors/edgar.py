@@ -1,12 +1,12 @@
 """
-Edgar advisor (ED-8): Form 4 screening (watchlist) plus 8-K earnings filings,
-filters 1–6, analyze_8k.
+Edgar advisor (ED-8): 8-K earnings filings, filters 1-6, analyze_8k,
+plus on-demand Form 4 enrichment.
 
 Test independently: python manage.py run_edgar
 
-Production: discover() fetches latest Form 4/4-A (scored batch → watchlist for
-bullish totals), then 8-Ks, filters, and self.discovered(...) for passing stocks.
-Form 4 helpers and ``fetch_form4_filings_for_date`` live in this module for backfill.
+Production: discover() fetches latest 8-Ks, filters, and self.discovered(...)
+for passing stocks.
+Form 4 helpers live in ``core.services.sec.form4``.
 """
 
 import logging
@@ -14,20 +14,18 @@ import os
 import html
 import re
 import time
-from collections import Counter, defaultdict
-from dataclasses import asdict, dataclass, field
+from collections import Counter
 from decimal import Decimal
-from datetime import date, datetime, timedelta, timezone as dt_timezone
+from datetime import date, datetime, time as dt_time, timedelta, timezone as dt_timezone
 from zoneinfo import ZoneInfo
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import requests
 import yfinance as yf
-import pandas as pd
 from django.conf import settings
-from edgar import Company, find, set_identity, get_filings, get_latest_filings
-from datetime import date, datetime, time as dt_time, timedelta, timezone as dt_timezone
+from edgar import Company, find, set_identity, get_latest_filings
 
 from core.services.advisors.advisor import AdvisorBase, register
+from core.services.sec.form4 import get_form4_intel
 
 logger = logging.getLogger(__name__)
 
@@ -55,381 +53,6 @@ def cik_to_ticker(cik: str) -> Optional[str]:
     except Exception:
         _CIK_TO_TICKER_CACHE[cik] = None
         return None
-
-
-# ---------------------------------------------------------------------------
-# Form 4 screening (same module as Edgar — no separate advisor file)
-# ---------------------------------------------------------------------------
-
-F4_IGNORE_CODES = frozenset({"A", "F", "G"})
-F4_MIN_TRADE_VALUE_USD = 25_000.0
-F4_WEIGHT_CODE = {"P": 4, "S": -1}
-F4_DOLLAR_TIERS: Tuple[Tuple[int, int], ...] = (
-    (1_000_000, 3),
-    (250_000, 2),
-    (50_000, 1),
-)
-F4_PCT_TIERS: Tuple[Tuple[float, int], ...] = (
-    (0.30, 3),
-    (0.15, 2),
-    (0.05, 1),
-)
-
-
-@dataclass
-class Form4LineScore:
-    code: str
-    date: str
-    shares: int
-    price: float
-    value_usd: float
-    post_remaining: int
-    security: str
-    components: Dict[str, float] = field(default_factory=dict)
-    notes: List[str] = field(default_factory=list)
-    skipped: bool = False
-    raw_score: float = 0.0
-
-
-@dataclass
-class Form4FilingScore:
-    accession: str
-    cik: str
-    issuer_cik: str
-    ticker: str
-    issuer_name: str
-    insider_name: str
-    role_label: str
-    role_mod: int
-    period: str
-    lines: List[Form4LineScore] = field(default_factory=list)
-    filing_subtotal: float = 0.0
-    cluster_adj: float = 0.0
-    total: float = 0.0
-
-
-def form4_filing_score_to_dict(fs: Form4FilingScore) -> Dict[str, Any]:
-    return asdict(fs)
-
-
-def _f4_f_num(x: Any, default: float = 0.0) -> float:
-    if x is None or (isinstance(x, float) and pd.isna(x)):
-        return default
-    try:
-        return float(x)
-    except (TypeError, ValueError):
-        return default
-
-
-def _f4_f_int(x: Any, default: int = 0) -> int:
-    v = _f4_f_num(x, float("nan"))
-    if v != v:
-        return default
-    return int(abs(v))
-
-
-def _f4_normalize_title(title: Optional[str]) -> str:
-    if not title:
-        return ""
-    return re.sub(r"\s+", " ", title.strip().lower())
-
-
-def _f4_insider_role_modifier(owner: Any) -> Tuple[int, str]:
-    title = _f4_normalize_title(getattr(owner, "officer_title", None) or "")
-    is_dir = bool(getattr(owner, "is_director", False))
-    is_10 = bool(getattr(owner, "is_ten_pct_owner", False))
-    if any(k in title for k in ("chief executive", "ceo")):
-        return 2, "CEO-tier"
-    if any(k in title for k in ("chief financial", "cfo")):
-        return 2, "CFO-tier"
-    if any(k in title for k in ("chief operating", "coo", "president")):
-        return 1, "COO/President-tier"
-    if is_dir:
-        return 1, "Director"
-    if is_10:
-        return 0, "10% holder"
-    if getattr(owner, "is_officer", False):
-        return 0, "Officer (other)"
-    return 0, "Other / unknown"
-
-
-def _f4_dollar_weight(value_usd: float) -> int:
-    av = abs(value_usd)
-    for threshold, w in F4_DOLLAR_TIERS:
-        if av >= threshold:
-            return w
-    return 0
-
-
-def _f4_holdings_pct_weight(shares: int, post_remaining: int) -> int:
-    if post_remaining <= 0 or shares <= 0:
-        return 0
-    pct = shares / float(post_remaining)
-    for threshold, w in F4_PCT_TIERS:
-        if pct >= threshold:
-            return w
-    return 0
-
-
-def _f4_footnote_blob(form4: Any, row: pd.Series) -> str:
-    raw = str(row.get("footnotes") or "")
-    try:
-        resolved = form4._resolve_footnotes(raw)  # noqa: SLF001
-    except Exception:
-        resolved = ""
-    remarks = getattr(form4, "remarks", None) or ""
-    return f"{resolved} {remarks}".lower()
-
-
-def _f4_mentions_10b5_1(text: str) -> bool:
-    if not text:
-        return False
-    return "10b5" in text or "10b-5" in text
-
-
-def _f4_mentions_tax_withhold(text: str) -> bool:
-    return "withhold" in text or "tax" in text
-
-
-def _f4_dates_by_code(df: pd.DataFrame) -> Dict[str, Set[str]]:
-    out: Dict[str, Set[str]] = defaultdict(set)
-    if df is None or df.empty:
-        return out
-    for _, row in df.iterrows():
-        code = str(row.get("Code") or "")
-        d = str(row.get("Date") or "")
-        if d:
-            out[code].add(d)
-    return out
-
-
-def _f4_score_nonderivative_row(form4: Any, owner: Any, row: pd.Series) -> Form4LineScore:
-    code = str(row.get("Code") or "").strip().upper()
-    d = str(row.get("Date") or "")
-    sec = str(row.get("Security") or "")
-    shares = _f4_f_int(row.get("Shares"), 0)
-    price = _f4_f_num(row.get("Price"), 0.0)
-    remaining = _f4_f_int(row.get("Remaining"), 0)
-    value = float(shares) * price if price > 0 else 0.0
-    notes: List[str] = []
-
-    if code in F4_IGNORE_CODES:
-        return Form4LineScore(
-            code, d, shares, price, value, remaining, sec, notes=["ignored code"], skipped=True
-        )
-    if code not in F4_WEIGHT_CODE and code not in ("M", "X"):
-        notes.append("non-P/S code — not scored in v1")
-        return Form4LineScore(code, d, shares, price, value, remaining, sec, notes=notes, skipped=True)
-    if code in ("M", "X"):
-        notes.append("exercise / conversion — not scored as open-market signal")
-        return Form4LineScore(code, d, shares, price, value, remaining, sec, notes=notes, skipped=True)
-
-    fn = _f4_footnote_blob(form4, row)
-    acquired = str(row.get("AcquiredDisposed") or "").upper()
-    is_buy = acquired == "A"
-    is_sell = acquired == "D"
-    if not is_buy and not is_sell:
-        return Form4LineScore(code, d, shares, price, value, remaining, sec, notes=["no A/D"], skipped=True)
-    if code == "P" and not is_buy:
-        notes.append("code P but disposition — check filing")
-    if code == "S" and not is_sell:
-        notes.append("code S but acquisition — check filing")
-    if value < F4_MIN_TRADE_VALUE_USD and price > 0:
-        return Form4LineScore(
-            code, d, shares, price, value, remaining, sec, notes=["below min notional"], skipped=True
-        )
-
-    role_mod, role_lbl = _f4_insider_role_modifier(owner)
-    _ = role_lbl
-    base = float(F4_WEIGHT_CODE.get(code, 0))
-    dw = _f4_dollar_weight(value)
-    pw = _f4_holdings_pct_weight(shares, remaining)
-    sign = 1.0 if is_buy else -1.0
-    comp: Dict[str, float] = {
-        "type": base,
-        "dollar": sign * dw,
-        "holdings_pct": sign * pw,
-        "role": float(role_mod) if is_buy else float(role_mod) * 0.5,
-    }
-    raw = sum(comp.values())
-    if is_sell and _f4_mentions_10b5_1(fn):
-        raw = raw + 1.0
-        notes.append("10b5-1 language in footnotes — reduced bearish weight")
-    tx_df = form4.non_derivative_table.transactions.data
-    by_code_date = _f4_dates_by_code(tx_df)
-    exercise_codes = by_code_date.get("M", set()) | by_code_date.get("X", set())
-    if is_sell and d in exercise_codes:
-        raw *= 0.25
-        notes.append("same-date exercise row present — possible exercise+sale (attenuated)")
-    if is_sell and _f4_mentions_tax_withhold(fn) and code == "S":
-        notes.append("footnote mentions tax — verify not routine withhold")
-
-    return Form4LineScore(
-        code=code,
-        date=d,
-        shares=shares,
-        price=price,
-        value_usd=value,
-        post_remaining=remaining,
-        security=sec,
-        components=comp,
-        notes=notes,
-        skipped=False,
-        raw_score=raw,
-    )
-
-
-def _f4_accession(filing: Any) -> str:
-    return str(
-        getattr(filing, "accession_no", None)
-        or getattr(filing, "accession_number", None)
-        or ""
-    )
-
-
-def score_form4_filing(filing: Any) -> Optional[Form4FilingScore]:
-    form = getattr(filing, "form", None)
-    acc = _f4_accession(filing)
-    if form not in ("4", "4/A"):
-        logger.debug("Form 4 skip accession=%s: wrong form=%r", acc or "?", form)
-        return None
-    try:
-        obj = filing.obj()
-    except Exception as e:
-        logger.warning("Form 4 parse fail accession=%s: %s", acc or "?", e)
-        return None
-    owners = getattr(obj.reporting_owners, "owners", None) or []
-    if not owners:
-        logger.warning("Form 4 skip accession=%s: no reporting owners", acc)
-        return None
-    owner = owners[0]
-    role_mod, role_lbl = _f4_insider_role_modifier(owner)
-    issuer_cik_raw = str(obj.issuer.cik or "").strip()
-    issuer_cik = issuer_cik_raw.zfill(10) if issuer_cik_raw else ""
-    ticker = (obj.issuer.ticker or "").strip().upper() or (cik_to_ticker(issuer_cik) or "")
-    insider = obj.insider_name or owner.name
-    lines: List[Form4LineScore] = []
-    if obj.non_derivative_table.has_transactions:
-        df = obj.non_derivative_table.transactions.data
-        for _, row in df.iterrows():
-            lines.append(_f4_score_nonderivative_row(obj, owner, row))
-    active = [ln for ln in lines if not ln.skipped]
-    subtotal = sum(ln.raw_score for ln in active)
-    return Form4FilingScore(
-        accession=acc,
-        cik=str(filing.cik),
-        issuer_cik=issuer_cik or str(filing.cik).zfill(10),
-        ticker=ticker or "?",
-        issuer_name=obj.issuer.name or "",
-        insider_name=insider,
-        role_label=role_lbl,
-        role_mod=role_mod,
-        period=str(obj.reporting_period or ""),
-        lines=lines,
-        filing_subtotal=subtotal,
-        cluster_adj=0.0,
-        total=subtotal,
-    )
-
-
-def _f4_week_key_issuer(issuer_cik: str, date_str: str) -> Optional[Tuple[str, int, int]]:
-    cik = (issuer_cik or "").strip().zfill(10)
-    if not date_str:
-        return None
-    try:
-        d = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
-    except ValueError:
-        return None
-    iso = d.isocalendar()
-    return (cik, int(iso[0]), int(iso[1]))
-
-
-def apply_form4_cluster_adjustments(results: List[Form4FilingScore]) -> None:
-    p_insiders: Dict[Tuple[str, int, int], Set[str]] = defaultdict(set)
-    s_insiders: Dict[Tuple[str, int, int], Set[str]] = defaultdict(set)
-    for r in results:
-        for ln in r.lines:
-            if ln.skipped or not ln.date:
-                continue
-            wk = _f4_week_key_issuer(r.issuer_cik, ln.date)
-            if not wk:
-                continue
-            if ln.code == "P":
-                p_insiders[wk].add(r.insider_name)
-            elif ln.code == "S":
-                s_insiders[wk].add(r.insider_name)
-    for r in results:
-        adj = 0.0
-        bullish_weeks: Set[Tuple[str, int, int]] = set()
-        bearish_weeks: Set[Tuple[str, int, int]] = set()
-        for ln in r.lines:
-            if ln.skipped or not ln.date:
-                continue
-            wk = _f4_week_key_issuer(r.issuer_cik, ln.date)
-            if not wk:
-                continue
-            if ln.code == "P":
-                bullish_weeks.add(wk)
-            elif ln.code == "S":
-                bearish_weeks.add(wk)
-        for wk in bullish_weeks:
-            n = len(p_insiders.get(wk, ()))
-            if n >= 3:
-                adj += 3.0
-            elif n == 2:
-                adj += 1.0
-        for wk in bearish_weeks:
-            n = len(s_insiders.get(wk, ()))
-            if n >= 3:
-                adj -= 3.0
-            elif n == 2:
-                adj -= 1.0
-        r.cluster_adj = adj
-        r.total = r.filing_subtotal + adj
-
-
-def score_form4_filings(
-    filings: List[Any],
-    *,
-    apply_cluster: bool = True,
-) -> List[Form4FilingScore]:
-    results: List[Form4FilingScore] = []
-    for f in filings:
-        fs = score_form4_filing(f)
-        if fs is not None:
-            results.append(fs)
-    if apply_cluster and results:
-        apply_form4_cluster_adjustments(results)
-    logger.info("Form 4 scored %d / %d filings (cluster=%s)", len(results), len(filings), apply_cluster)
-    return results
-
-
-def fetch_latest_form4_filings(page_size: int = 100) -> List[Any]:
-    page = max(40, page_size)
-    primary = list(get_latest_filings(form="4", page_size=page))
-    amendments = list(get_latest_filings(form="4/A", page_size=min(page, 100)))
-    merged: List[Any] = []
-    seen: Set[str] = set()
-    for f in primary + amendments:
-        aid = getattr(f, "accession_no", None) or getattr(f, "accession_number", None)
-        if aid and aid in seen:
-            continue
-        if aid:
-            seen.add(aid)
-        merged.append(f)
-    logger.info("Form 4 fetched %d filings (4 + 4/A, page_size=%d)", len(merged), page)
-    return merged
-
-
-def fetch_form4_filings_for_date(filing_date: str, limit: int = 500) -> List[Any]:
-    """SEC filing date YYYY-MM-DD — for backfill."""
-    filings = list(get_filings(form="4", filing_date=filing_date))[:limit]
-    if len(filings) < limit:
-        need = limit - len(filings)
-        filings.extend(list(get_filings(form="4/A", filing_date=filing_date))[:need])
-    out = filings[:limit]
-    logger.info("Form 4 fetched %d filings for filing_date=%s", len(out), filing_date)
-    return out
 
 
 def _filing_date_or_none(filing) -> Optional[date]:
@@ -1083,11 +706,9 @@ def _edgar_detail_explanation_segments(
 class Edgar(AdvisorBase):
     """Advisor for 8-K earnings filings (basic filters only in this step)."""
 
-    FORM4_LATEST_PAGE_SIZE = 100
     FORM4_WATCH_MIN_TOTAL = 5.0
     FORM4_WATCH_MAX_SELL_TOTAL = -5.0
     FORM4_WATCH_DAYS = 30
-    FORM4_PASS_LOG_MIN_TOTAL = 30.0
 
     def filter_filing(self, filing) -> bool:
         """
@@ -1628,138 +1249,67 @@ class Edgar(AdvisorBase):
             )
             return None
 
-        from core.models import Watchlist
-        from django.utils import timezone
-
-        # Form4 watch entries are created in run_form4_screening with watch_kind=form4_signal/form4_sell.
-        # Keep this non-blocking: no matching signal -> None.
-        qs = Watchlist.objects.filter(
-            advisor=self.advisor,
-            stock__symbol=ticker,
-            meta__watch_kind__in=["form4_signal", "form4_sell"],
-        )
-
-        # Respect active watch window (same convention as AdvisorBase.watchlist()).
-        now = timezone.now()
-        qs = qs.extra(
-            where=["created + (days || ' days')::interval >= %s"],
-            params=[now],
-        ).order_by("-created")
-
-        if not qs.exists():
-            logger.info(
-                "ticker=%s, accession=%s Form4 match: none",
+        end_date = filing_dt.date() if filing_dt is not None else None
+        try:
+            result = get_form4_intel(
+                ticker,
+                days=self.FORM4_WATCH_DAYS,
+                end_date=end_date,
+                limit=100,
+            )
+        except Exception as e:
+            logger.warning(
+                "ticker=%s, accession=%s Form4 on-demand lookup failed: %s",
                 ticker,
                 accession,
+                e,
             )
             return None
 
-        entries = list(qs)
-        if not entries:
+        if not result.get("entry_count"):
             logger.info(
-                "ticker=%s, accession=%s Form4 match: none",
+                "ticker=%s, accession=%s Form4 match: none (filings=%s parsed=%s)",
                 ticker,
                 accession,
+                result.get("filing_count"),
+                result.get("parsed_count"),
             )
             return None
 
-        # If filing datetime exists, keep only recent Form4 signals (<= 30 days lookback).
-        if filing_dt is not None:
-            recent_entries = []
-            for e in entries:
-                created_dt = getattr(e, "created", None)
-                if created_dt is None:
-                    continue
-                try:
-                    delta_days = abs((filing_dt - created_dt).days)
-                except Exception:
-                    continue
-                if delta_days <= 30:
-                    recent_entries.append(e)
-            entries = recent_entries
-            if not entries:
-                logger.info(
-                    "ticker=%s, accession=%s Form4 match: stale (no entries <=30d)",
-                    ticker,
-                    accession,
-                )
-                return None
+        form4_total = 0.0
+        try:
+            form4_total = float(result.get("total") or 0.0)
+        except (TypeError, ValueError):
+            form4_total = 0.0
 
-        # Newest first for representative metadata.
-        entries.sort(key=lambda e: getattr(e, "created", now), reverse=True)
-        latest = entries[0]
-        latest_meta = latest.meta or {}
-        latest_created = getattr(latest, "created", None)
-        latest_age_days = None
-        if latest_created is not None:
-            try:
-                latest_age_days = (now - latest_created).days
-            except Exception:
-                latest_age_days = None
+        if (
+            form4_total < self.FORM4_WATCH_MIN_TOTAL
+            and form4_total > self.FORM4_WATCH_MAX_SELL_TOTAL
+        ):
+            logger.info(
+                "ticker=%s, accession=%s Form4 match: below threshold total=%.2f entries=%s buy=%s sell=%s",
+                ticker,
+                accession,
+                form4_total,
+                result.get("entry_count"),
+                result.get("buy_count"),
+                result.get("sell_count"),
+            )
+            return None
 
-        net_total = 0.0
-        buy_total = 0.0
-        sell_total = 0.0
-        buy_count = 0
-        sell_count = 0
-        matched_accessions: list[str] = []
-        for e in entries:
-            meta = e.meta or {}
-            kind = str(meta.get("watch_kind") or "")
-            raw_total = meta.get("total")
-            try:
-                total_val = float(raw_total) if raw_total is not None else 0.0
-            except (TypeError, ValueError):
-                total_val = 0.0
-
-            net_total += total_val
-            if kind == "form4_sell":
-                sell_count += 1
-                sell_total += total_val
-            else:
-                buy_count += 1
-                buy_total += total_val
-
-            acc = meta.get("form4_accession")
-            if isinstance(acc, str) and acc.strip():
-                matched_accessions.append(acc.strip())
-
-        dominant_kind = "form4_signal" if net_total >= 0 else "form4_sell"
-        result = {
-            "symbol": ticker,
-            "watch_id": latest.id,
-            "status": latest.status,
-            "created": latest_created.isoformat() if latest_created is not None else None,
-            "age_days": latest_age_days,
-            "entry_count": len(entries),
-            "watch_kind": dominant_kind,
-            "total": net_total,
-            "buy_total": buy_total,
-            "sell_total": sell_total,
-            "buy_count": buy_count,
-            "sell_count": sell_count,
-            "form4_accession": latest_meta.get("form4_accession"),
-            "issuer_cik": latest_meta.get("issuer_cik"),
-            "insider_name": latest_meta.get("insider_name"),
-            "role_label": latest_meta.get("role_label"),
-            "filing_subtotal": latest_meta.get("filing_subtotal"),
-            "cluster_adj": latest_meta.get("cluster_adj"),
-            "period": latest_meta.get("period"),
-            "issuer_name": latest_meta.get("issuer_name"),
-            "explanation": latest.explanation,
-            "matched_accessions": matched_accessions[:20],
-        }
+        result["watch_kind"] = "form4_signal" if form4_total >= 0 else "form4_sell"
 
         logger.info(
-            "ticker=%s, accession=%s Form4 match: entries=%d net_total=%.2f buy=%d sell=%d latest=%s age_days=%s",
+            "ticker=%s, accession=%s Form4 match: entries=%s net_total=%.2f buy=%s sell=%s latest=%s range=%s..%s",
             ticker,
             accession,
-            result["entry_count"],
-            result["total"],
-            result["buy_count"],
-            result["sell_count"],
+            result.get("entry_count"),
+            form4_total,
+            result.get("buy_count"),
+            result.get("sell_count"),
             result.get("form4_accession") or "N/A",
-            latest_age_days if latest_age_days is not None else "N/A",
+            result.get("start_date"),
+            result.get("end_date"),
         )
         return result
 
@@ -2444,68 +1994,6 @@ class Edgar(AdvisorBase):
         # Unknown category
         logger.info("ticker=%s, CIK=%s, accession=%s unknown category -> fail ",ticker , cik, accession)
 
-    def _form4_accession_already_watched(self, accession: str) -> bool:
-        from core.models import Watchlist
-
-        if not (accession or "").strip():
-            return True
-        return Watchlist.objects.filter(
-            advisor=self.advisor,
-            meta__form4_accession=accession,
-        ).exists()
-
-    def run_form4_screening(self, sa, filings: list) -> None:
-        """
-        Score a batch of Form 4 filing objects; add bullish signals to watchlist.
-        ``filings`` should already be Form 4 / 4-A and pass any timestamp filters.
-        """
-        _ = sa
-        if not filings:
-            return
-        scored = score_form4_filings(filings, apply_cluster=True)
-        for fs in scored:
-            is_bullish = fs.total >= self.FORM4_WATCH_MIN_TOTAL
-            is_bearish = fs.total <= self.FORM4_WATCH_MAX_SELL_TOTAL
-            if not is_bullish and not is_bearish:
-                continue
-            sym = (fs.ticker or "").strip().upper()
-            if not sym or sym == "?":
-                logger.info(
-                    "Form 4 skip watch accession=%s: no ticker (issuer_cik=%s)",
-                    fs.accession,
-                    fs.issuer_cik,
-                )
-                continue
-            if self._form4_accession_already_watched(fs.accession):
-                logger.debug("Form 4 skip watch accession=%s: already on watchlist", fs.accession)
-                continue
-            if fs.total >= self.FORM4_PASS_LOG_MIN_TOTAL:
-                logger.info(
-                    "*FORM4_PASS ticker=%s score=%.1f accession=%s watch_kind=%s would_discover=true",
-                    sym,
-                    fs.total,
-                    fs.accession,
-                    "form4_signal" if is_bullish else "form4_sell",
-                )
-            explanation = (
-                f"Form4 {fs.accession} {fs.insider_name} total={fs.total:+.1f} "
-                f"({fs.issuer_name})"
-            )[:500]
-            watch_kind = "form4_signal" if is_bullish else "form4_sell"
-            meta = {
-                "watch_kind": watch_kind,
-                "issuer_cik": fs.issuer_cik,
-                "form4_accession": fs.accession,
-                "total": fs.total,
-                "filing_subtotal": fs.filing_subtotal,
-                "cluster_adj": fs.cluster_adj,
-                "insider_name": fs.insider_name,
-                "period": fs.period,
-                "issuer_name": fs.issuer_name,
-                "role_label": fs.role_label,
-            }
-            self.watch(sym, explanation, days=self.FORM4_WATCH_DAYS, meta=meta)
-
     def discover(self, sa):
 
         logger.info("Fetching latest filings...")
@@ -2526,28 +2014,6 @@ class Edgar(AdvisorBase):
 
         filings = [filing1]
         """
-        # Form 4 / 4-A: dense feed, batch score + watchlist for bullish totals
-        try:
-            filings_f4 = fetch_latest_form4_filings(self.FORM4_LATEST_PAGE_SIZE)
-            filtered_f4 = []
-            for filing in filings_f4:
-                try:
-                    filing_dt = _filing_datetime(filing)
-                    if prev_ts is not None and filing_dt is not None and filing_dt < prev_ts:
-                        accession = (
-                            getattr(filing, "accession_no", None)
-                            or getattr(filing, "accession_number", None)
-                            or ""
-                        )
-                        continue
-                    filtered_f4.append(filing)
-                except Exception as e:
-                    logger.error("⚠️ Error filtering Form 4 filing: %s", e)
-            if filtered_f4:
-                self.run_form4_screening(sa, filtered_f4)
-        except Exception as e:
-            logger.warning("Form 4 fetch/screen failed: %s", e)
-
         # Filter latest to 8-Ks only
         filings_8k = [f for f in filings if getattr(f, "form", None) == "8-K"]
         if not filings_8k:
