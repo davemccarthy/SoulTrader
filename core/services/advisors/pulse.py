@@ -11,7 +11,8 @@ Entry:
 - Require recent 60m intraday range >= 5%, bypassing the first noisy hour.
 - Discover all qualifying names (MEGA spread is expected for initial test funds).
 
-Exit/add: Noise-style +1% target, -2% stabilized rebuy, END_DAY, END_WEEK. No DT/SL.
+Exit/add: TARGET_INTRADAY (+0.2% / 0.2% giveback), -2% stabilized rebuy (max 3 tranches),
+END_DAY flat at 3:30 ET (1.00× avg). No END_WEEK, DT, or SL.
 """
 from __future__ import annotations
 
@@ -49,8 +50,7 @@ PULSE_TP_MULT = Decimal("1.002")
 PULSE_INTRADAY_GIVEBACK = Decimal("0.002")
 PULSE_REBUY_DROP = Decimal("0.02")
 PULSE_REBUY_MAX_TRANCHES = Decimal("3")
-PULSE_ENDDAY_TAKE = Decimal("1.01")
-PULSE_ENDWEEK_TAKE = Decimal("1.00")
+PULSE_ENDDAY_TAKE = Decimal("1.00")
 
 ETF_EXCLUDE_TICKERS: Final[frozenset[str]] = frozenset(
     {
@@ -388,7 +388,6 @@ class Pulse(AdvisorBase):
             ("TARGET_INTRADAY", PULSE_TP_MULT, PULSE_INTRADAY_GIVEBACK),
             ("PERCENTAGE_REBUY", PULSE_REBUY_DROP, PULSE_REBUY_MAX_TRANCHES),
             ("END_DAY", PULSE_ENDDAY_TAKE, None),
-            ("END_WEEK", PULSE_ENDWEEK_TAKE, None),
         ]
 
         candidates = self._daily_candidates()
