@@ -5,7 +5,9 @@ Stock Analysis Service
 import logging
 from datetime import datetime, timedelta, timezone as dt_timezone
 from decimal import Decimal
+from typing import Any, Optional
 
+import pandas as pd
 from pytz import timezone as tz
 from django.utils import timezone
 from core.models import Holding, Discovery, Advisor, Profile
@@ -27,6 +29,16 @@ DT_EXIT_CONFIDENCE_MIN = 0.70
 REBUY_STABILIZE_MINUTES = STABILIZE_MINUTES_DEFAULT
 PEAKED_MIN_MARKET_MINUTES = 60
 RECENT_TP_LOOKBACK_HOURS = 4
+
+# Runner: realtime impulse check inside analyse_intraday (shared 1m hist with IPC).
+# Shadow mode (default): log target_moving but still run IPC. Flip to True after log replay.
+RUNNER_SKIP_IPC = False
+RUNNER_LOOKBACK_MINUTES = 30
+RUNNER_MIN_PROFIT_PCT = 2.0
+RUNNER_MIN_RET_30M_PCT = 1.0
+RUNNER_MIN_VOL_RATIO = 2.0
+RUNNER_MIN_CLOSE_POSITION = 0.6
+RUNNER_MIN_SIGNALS = 4
 
 
 def factor_sentiment(fund: Profile) -> Decimal:
@@ -148,31 +160,176 @@ def analyse_target(holding, target, sentiment, discovery=None):
     return False
 
 
-def _intraday_peak_since(stock, since_date):
-    if not since_date:
-        return None
-
+def _fetch_intraday_hist(stock):
+    """Today's 1m bars for IPC peak and runner impulse (single fetch per analyse_intraday call)."""
     try:
         import yfinance as yf
 
-        anchor = since_date
-        if timezone.is_naive(anchor):
-            anchor = timezone.make_aware(anchor, dt_timezone.utc)
-
-        ticker = yf.Ticker(stock.symbol)
-        hist = ticker.history(period="1d", interval="1m")
+        hist = yf.Ticker(stock.symbol).history(period="1d", interval="1m")
         if hist.empty or "High" not in hist.columns:
             return None
+        return hist
+    except Exception as exc:
+        logger.debug("Could not fetch intraday hist for %s: %s", stock.symbol, exc)
+        return None
 
-        if hist.index.tz is None:
-            anchor = timezone.make_naive(anchor, dt_timezone.utc)
+
+def _hist_anchor_ts(since_date, hist: pd.DataFrame):
+    anchor = since_date
+    if timezone.is_naive(anchor):
+        anchor = timezone.make_aware(anchor, dt_timezone.utc)
+    if hist.index.tz is None:
+        return timezone.make_naive(anchor, dt_timezone.utc)
+    return pd.Timestamp(anchor).tz_convert(hist.index.tz)
+
+
+def _hist_check_ts(hist: pd.DataFrame) -> pd.Timestamp:
+    now = timezone.now()
+    if hist.index.tz is None:
+        return pd.Timestamp(now.replace(tzinfo=None))
+    return pd.Timestamp(now.astimezone(hist.index.tz))
+
+
+def _price_at_or_before(hist: pd.DataFrame, ts: pd.Timestamp) -> Optional[float]:
+    if hist.empty or "Close" not in hist.columns:
+        return None
+    eligible = hist.index <= ts
+    if not eligible.any():
+        return None
+    return float(hist.loc[eligible, "Close"].astype(float).iloc[-1])
+
+
+def _high_in_hist_range(
+    hist: pd.DataFrame, start_ts: pd.Timestamp, end_ts: pd.Timestamp
+) -> Optional[float]:
+    if hist.empty or "High" not in hist.columns:
+        return None
+    window = hist[(hist.index >= start_ts) & (hist.index < end_ts)]
+    if window.empty:
+        return None
+    return float(window["High"].astype(float).max())
+
+
+def _volume_sum_hist(
+    hist: pd.DataFrame, start_ts: pd.Timestamp, end_ts: pd.Timestamp
+) -> Optional[float]:
+    if hist.empty or "Volume" not in hist.columns:
+        return None
+    window = hist[(hist.index >= start_ts) & (hist.index <= end_ts)]
+    if window.empty:
+        return None
+    total = float(window["Volume"].astype(float).sum())
+    return total if total > 0 else None
+
+
+def _intraday_peak_from_hist(hist: pd.DataFrame, since_date) -> Optional[float]:
+    if not since_date or hist is None or hist.empty:
+        return None
+    try:
+        anchor = _hist_anchor_ts(since_date, hist)
         peak_window = hist[hist.index >= anchor]
         if peak_window.empty:
             return None
         return float(peak_window["High"].max())
     except Exception as exc:
-        logger.debug("Could not check intraday peak for %s: %s", stock.symbol, exc)
+        logger.debug("Could not compute intraday peak from hist: %s", exc)
         return None
+
+
+def _target_is_moving(holding, hist: pd.DataFrame, discovery=None) -> tuple[bool, dict[str, Any]]:
+    """
+    Realtime runner impulse: 30m buying-trend bundle on shared 1m hist.
+    Returns (is_moving, detail) for shadow logging.
+    """
+    buy_price = holding.average_price or (discovery.price if discovery else None)
+    if not buy_price or hist is None or hist.empty:
+        return False, {}
+
+    entry_price = float(buy_price)
+    if entry_price <= 0:
+        return False, {}
+
+    check_ts = _hist_check_ts(hist)
+    price_now = _price_at_or_before(hist, check_ts)
+    if price_now is None or price_now <= entry_price:
+        return False, {}
+
+    lookback = RUNNER_LOOKBACK_MINUTES
+    start_30 = check_ts - pd.Timedelta(minutes=lookback)
+    prior_start = start_30 - pd.Timedelta(minutes=lookback)
+    window = hist[(hist.index >= start_30) & (hist.index <= check_ts)]
+    if window.empty or len(window) < 2:
+        return False, {}
+
+    price_30_ago = _price_at_or_before(hist, start_30)
+    profit_pct = (price_now / entry_price - 1.0) * 100.0
+    ret_30m_pct = None
+    if price_30_ago is not None and price_30_ago > 0:
+        ret_30m_pct = (price_now / price_30_ago - 1.0) * 100.0
+
+    highs = window["High"].astype(float)
+    lows = window["Low"].astype(float) if "Low" in window.columns else window["Close"].astype(float)
+    high_max = float(highs.max())
+    low_min = float(lows.min())
+    if high_max > low_min:
+        close_position = (price_now - low_min) / (high_max - low_min)
+    else:
+        close_position = 0.5
+
+    last_10_start = check_ts - pd.Timedelta(minutes=10)
+    prev_10_start = check_ts - pd.Timedelta(minutes=20)
+    hi_last10 = _high_in_hist_range(hist, last_10_start, check_ts + pd.Timedelta(minutes=1))
+    hi_prev10 = _high_in_hist_range(hist, prev_10_start, last_10_start)
+
+    vol_last = _volume_sum_hist(hist, start_30, check_ts)
+    vol_prior = _volume_sum_hist(hist, prior_start, start_30)
+    vol_ratio = None
+    if vol_last is not None and vol_prior is not None and vol_prior > 0:
+        vol_ratio = vol_last / vol_prior
+
+    signals: list[str] = []
+    if profit_pct >= RUNNER_MIN_PROFIT_PCT:
+        signals.append("profit")
+    if ret_30m_pct is not None and ret_30m_pct >= RUNNER_MIN_RET_30M_PCT:
+        signals.append("ret30m")
+    if hi_last10 is not None and hi_prev10 is not None and hi_last10 > hi_prev10:
+        signals.append("hh")
+    if vol_ratio is not None and vol_ratio >= RUNNER_MIN_VOL_RATIO:
+        signals.append("vol")
+    if close_position >= RUNNER_MIN_CLOSE_POSITION:
+        signals.append("close")
+
+    score = len(signals)
+    detail = {
+        "score": score,
+        "signals": ",".join(signals),
+        "profit_pct": round(profit_pct, 3),
+        "ret_30m_pct": None if ret_30m_pct is None else round(ret_30m_pct, 3),
+        "vol_ratio": None if vol_ratio is None else round(vol_ratio, 3),
+        "close_position": round(close_position, 3),
+        "price": round(price_now, 4),
+    }
+    return score >= RUNNER_MIN_SIGNALS, detail
+
+
+def _ipc_should_sell(
+    current,
+    buy_price,
+    activation_mult,
+    giveback_pct,
+    peak: Optional[float],
+) -> bool:
+    if peak is None or current <= buy_price:
+        return False
+
+    activation_px = Decimal(str(activation_mult)) * Decimal(str(buy_price))
+    peak_d = Decimal(str(peak))
+    if peak_d < activation_px:
+        return False
+
+    giveback = Decimal(str(giveback_pct or "0"))
+    exit_px = peak_d * (Decimal("1.0") - giveback)
+    return current <= exit_px
 
 
 def analyse_intraday(holding, activation_mult, giveback_pct, discovery=None):
@@ -181,30 +338,51 @@ def analyse_intraday(holding, activation_mult, giveback_pct, discovery=None):
     if current <= buy_price:
         return False
 
-    activation_px = Decimal(str(activation_mult)) * Decimal(str(buy_price))
-    peak = _intraday_peak_since(holding.stock, discovery.created if discovery else holding.created)
-    if peak is None:
+    since_date = discovery.created if discovery else holding.created
+    hist = _fetch_intraday_hist(holding.stock)
+    if hist is None:
         return False
 
-    peak_d = Decimal(str(peak))
-    if peak_d < activation_px:
-        return False
+    moving, moving_detail = _target_is_moving(holding, hist, discovery)
+    peak = _intraday_peak_from_hist(hist, since_date)
+    ipc_would_sell = _ipc_should_sell(
+        current, buy_price, activation_mult, giveback_pct, peak
+    )
 
-    giveback = Decimal(str(giveback_pct or "0"))
-    exit_px = peak_d * (Decimal("1.0") - giveback)
-    if current <= exit_px:
+    if moving:
         logger.info(
-            "Taking intraday SELL for %s: peak %.2f hit activation %s; current=%s exit<=%s avg=%s",
+            "target_moving %s score=%s signals=%s profit_pct=%s ret_30m=%s "
+            "vol_ratio=%s close_pos=%s price=%s ipc_would_sell=%s runner_skip_ipc=%s",
             holding.stock.symbol,
-            peak,
-            activation_px,
-            current,
-            exit_px,
-            buy_price,
+            moving_detail.get("score"),
+            moving_detail.get("signals"),
+            moving_detail.get("profit_pct"),
+            moving_detail.get("ret_30m_pct"),
+            moving_detail.get("vol_ratio"),
+            moving_detail.get("close_position"),
+            moving_detail.get("price"),
+            ipc_would_sell,
+            RUNNER_SKIP_IPC,
         )
-        return True
+        if RUNNER_SKIP_IPC:
+            return False
 
-    return False
+    if not ipc_would_sell:
+        return False
+
+    activation_px = Decimal(str(activation_mult)) * Decimal(str(buy_price))
+    giveback = Decimal(str(giveback_pct or "0"))
+    exit_px = Decimal(str(peak)) * (Decimal("1.0") - giveback)
+    logger.info(
+        "Taking intraday SELL for %s: peak %.2f hit activation %s; current=%s exit<=%s avg=%s",
+        holding.stock.symbol,
+        peak,
+        activation_px,
+        current,
+        exit_px,
+        buy_price,
+    )
+    return True
 
 
 def _session_exit_threshold_px(value1, avg) -> Decimal | None:
