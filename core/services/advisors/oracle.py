@@ -32,6 +32,7 @@ from core.services.health.risk_matrix import compute_so_snapshot
 from core.services.health.so_ratings import (
     opportunity_grade_at_least,
     score_to_opportunity_grade,
+    score_to_stability_grade,
 )
 from core.services.sec.form4 import get_form4_intel
 
@@ -50,6 +51,14 @@ DISCOVERY_COOLDOWN_HOURS = 48
 YFINANCE_PAUSE_SEC = 0.05
 
 CONSENSUS_VETO_KEYS = frozenset({"sell", "strong_sell"})
+
+_CONSENSUS_REC_DISPLAY = {
+    "strong_buy": "Strong Buy",
+    "buy": "Buy",
+    "hold": "Hold",
+    "sell": "Sell",
+    "strong_sell": "Strong Sell",
+}
 
 # Form 4 confirm layer (on-demand per gate passer; aligned with Edgar thresholds).
 FORM4_LOOKBACK_DAYS = 30
@@ -277,25 +286,145 @@ def compute_pre_move_build(
     }
 
 
-def _consensus_veto(symbol: str) -> Tuple[bool, str]:
-    """Hard veto on major negative consensus."""
+def _consensus_gate(symbol: str) -> Tuple[bool, Dict[str, Any]]:
     result = score_consensus_health(symbol)
     rec = (result.recommendation_key or "").strip().lower()
-    if rec in CONSENSUS_VETO_KEYS:
-        return True, f"consensus={rec}"
-    return False, rec or "n/a"
+    veto = rec in CONSENSUS_VETO_KEYS
+    return veto, {
+        "consensus_rec": rec or None,
+        "consensus_analyst_count": result.analyst_count,
+    }
 
 
-def _opportunity_passes(symbol: str) -> Tuple[bool, Optional[str], Optional[float]]:
+def _so_gate(symbol: str) -> Tuple[bool, Dict[str, Any]]:
+    """Opportunity gate (>= C) plus stability snapshot for explanation."""
     results = run_component_results(symbol)
     so = compute_so_snapshot(symbol, results)
     opp_score = so.get("opportunity")
-    grade = score_to_opportunity_grade(opp_score)
-    if grade is None:
-        return False, None, opp_score
-    if not opportunity_grade_at_least(grade.letter, MIN_OPPORTUNITY_GRADE):
-        return False, grade.letter, opp_score
-    return True, grade.letter, opp_score
+    stab_score = so.get("stability")
+    opp_grade = score_to_opportunity_grade(opp_score)
+    stab_grade = score_to_stability_grade(stab_score)
+    info: Dict[str, Any] = {
+        "opp_grade": opp_grade.letter if opp_grade else None,
+        "opp_label": opp_grade.label if opp_grade else None,
+        "opp_score": round(float(opp_score), 1) if opp_score is not None else None,
+        "stab_grade": stab_grade.letter if stab_grade else None,
+        "stab_label": stab_grade.label if stab_grade else None,
+        "stab_score": round(float(stab_score), 1) if stab_score is not None else None,
+    }
+    if opp_grade is None:
+        return False, info
+    if not opportunity_grade_at_least(opp_grade.letter, MIN_OPPORTUNITY_GRADE):
+        return False, info
+    return True, info
+
+
+def _format_earnings_month_day(earnings_date: Optional[str]) -> str:
+    if not earnings_date:
+        return "earnings"
+    try:
+        parsed = date.fromisoformat(str(earnings_date))
+    except ValueError:
+        return str(earnings_date)
+    return f"{parsed.strftime('%B')} {parsed.day}"
+
+
+def _movement_sentence(shape: Optional[str]) -> str:
+    key = (shape or "").strip().lower()
+    if key == "creep":
+        return "Price has shown a steady climb over the last 20 days"
+    if key == "bang":
+        return "Price has risen sharply, with much of the gain in the last few days"
+    if key == "mixed":
+        return "Price is up over 20 days with a mixed day-to-day pattern"
+    return "Price is up over the last 20 days"
+
+
+def _opportunity_sentence(candidate: Dict[str, Any]) -> str:
+    grade = candidate.get("opp_grade") or "?"
+    label = (candidate.get("opp_label") or "unknown").lower()
+    score = candidate.get("opp_score")
+    if score is not None:
+        return (
+            f"Opportunity grade {grade} ({label}, {score:.0f}) — passed minimum for discovery"
+        )
+    return f"Opportunity grade {grade} ({label}) — passed minimum for discovery"
+
+
+def _consensus_sentence(candidate: Dict[str, Any]) -> str:
+    rec = (candidate.get("consensus_rec") or "").strip().lower()
+    if rec in ("", "none", "n/a", "null"):
+        rec = ""
+    count = candidate.get("consensus_analyst_count")
+    if rec:
+        display = _CONSENSUS_REC_DISPLAY.get(rec, rec.replace("_", " ").title())
+        if count is not None:
+            return f"Analyst consensus is {display} ({count} analysts)"
+        return f"Analyst consensus is {display}"
+    if count is not None:
+        return f"Limited analyst coverage ({count} analysts)"
+    return "Limited analyst coverage"
+
+
+def _insider_sentence(candidate: Dict[str, Any]) -> str:
+    days = FORM4_LOOKBACK_DAYS
+    entries = candidate.get("form4_entries") or 0
+    if not entries:
+        return f"No insider buy or sell activity in the last {days} days"
+
+    total = candidate.get("form4_total")
+    name = (candidate.get("form4_insider_name") or "").strip()
+    role = (candidate.get("form4_role_label") or "").strip()
+    who = f"{role} {name}".strip() if role or name else ""
+
+    try:
+        total_f = float(total) if total is not None else 0.0
+    except (TypeError, ValueError):
+        total_f = 0.0
+
+    if total_f >= FORM4_BONUS_TOTAL:
+        if who:
+            return f"{who} — net insider buying in the last {days} days (boosted rank)"
+        return f"Net insider buying in the last {days} days (boosted rank)"
+    if total_f < 0:
+        if who:
+            return f"{who} — insider selling in the last {days} days"
+        return f"Insider selling in the last {days} days"
+    if who:
+        return f"{who} — insider activity in the last {days} days"
+    return f"Insider activity in the last {days} days"
+
+
+def _stability_sentence(candidate: Dict[str, Any]) -> str:
+    grade = candidate.get("stab_grade")
+    label = (candidate.get("stab_label") or "unknown").lower()
+    if not grade:
+        return "Stability grade unavailable"
+    score = candidate.get("stab_score")
+    if score is not None:
+        return f"Stability grade {grade} ({label}, {score:.0f})"
+    return f"Stability grade {grade} ({label})"
+
+
+def _discovery_explanation_lead(candidate: Dict[str, Any]) -> str:
+    pre_move = float(candidate.get("pre_move_pct") or 0.0)
+    lookahead = candidate.get("lookahead_days")
+    earnings = _format_earnings_month_day(candidate.get("earnings_date"))
+    if pre_move < 0:
+        return f"Down {abs(pre_move):.1f}% · {lookahead}d to {earnings}"
+    return f"Up {pre_move:.1f}% · {lookahead}d to {earnings}"
+
+
+def build_discovery_explanation(candidate: Dict[str, Any]) -> str:
+    segments = [
+        _discovery_explanation_lead(candidate),
+        _movement_sentence(candidate.get("shape")),
+        _opportunity_sentence(candidate),
+        _consensus_sentence(candidate),
+        _insider_sentence(candidate),
+        _stability_sentence(candidate),
+    ]
+    return " | ".join(segments)
 
 
 def _form4_summary(intel: Dict[str, Any]) -> Dict[str, Any]:
@@ -307,6 +436,8 @@ def _form4_summary(intel: Dict[str, Any]) -> Dict[str, Any]:
         "form4_buy_count": intel.get("buy_count"),
         "form4_sell_count": intel.get("sell_count"),
         "form4_entries": intel.get("entry_count"),
+        "form4_insider_name": intel.get("insider_name"),
+        "form4_role_label": intel.get("role_label"),
     }
 
 
@@ -324,7 +455,13 @@ def _form4_gate(symbol: str) -> Tuple[bool, str, Decimal, Dict[str, Any]]:
         return False, "form4=unavailable", Decimal("1.0"), {}
 
     if not intel.get("entry_count"):
-        return False, "form4=none", Decimal("1.0"), {"form4_total": None, "form4_kind": None}
+        return False, "form4=none", Decimal("1.0"), {
+            "form4_total": None,
+            "form4_kind": None,
+            "form4_entries": 0,
+            "form4_insider_name": None,
+            "form4_role_label": None,
+        }
 
     summary = _form4_summary(intel)
     total = float(summary["form4_total"] or 0.0)
@@ -489,20 +626,24 @@ class Oracle(AdvisorBase):
                 logger.debug("Oracle %s: no positive pre-move (%s)", sym, pre_move)
                 continue
 
-            opp_ok, opp_grade, opp_score = _opportunity_passes(sym)
+            opp_ok, so_info = _so_gate(sym)
             if not opp_ok:
                 logger.debug(
                     "Oracle %s: opportunity below %s (grade=%s score=%s)",
                     sym,
                     MIN_OPPORTUNITY_GRADE,
-                    opp_grade,
-                    opp_score,
+                    so_info.get("opp_grade"),
+                    so_info.get("opp_score"),
                 )
                 continue
 
-            vetoed, consensus_note = _consensus_veto(sym)
-            if vetoed:
-                logger.debug("Oracle %s: consensus veto (%s)", sym, consensus_note)
+            consensus_veto, consensus_info = _consensus_gate(sym)
+            if consensus_veto:
+                logger.debug(
+                    "Oracle %s: consensus veto (%s)",
+                    sym,
+                    consensus_info.get("consensus_rec"),
+                )
                 continue
 
             f4_veto, f4_note, f4_weight, f4_summary = _form4_gate(sym)
@@ -522,12 +663,11 @@ class Oracle(AdvisorBase):
                 {
                     **build,
                     **f4_summary,
+                    **so_info,
+                    **consensus_info,
                     "earnings_date": meta.get("earnings_date"),
                     "lookahead_days": meta.get("lookahead_days"),
                     "session": meta.get("session"),
-                    "opp_grade": opp_grade,
-                    "opp_score": round(float(opp_score), 1) if opp_score is not None else None,
-                    "consensus": consensus_note,
                     "form4_note": f4_note,
                     "discovery_weight": f4_weight,
                     "rank_score": round(rank_score, 2),
@@ -557,7 +697,7 @@ class Oracle(AdvisorBase):
                 logger.info("Oracle %s: discovery cooldown active", sym)
                 continue
 
-            explanation = self._discovery_explanation(candidate)
+            explanation = build_discovery_explanation(candidate)
             weight = candidate.get("discovery_weight") or Decimal("1.0")
             if self.discovered(
                 sa,
@@ -569,23 +709,6 @@ class Oracle(AdvisorBase):
                 discoveries += 1
         return discoveries
 
-    @staticmethod
-    def _discovery_explanation(candidate: Dict[str, Any]) -> str:
-        sym = candidate.get("symbol") or ""
-        earnings_date = candidate.get("earnings_date") or "?"
-        lookahead = candidate.get("lookahead_days")
-        pre_move = candidate.get("pre_move_pct")
-        shape = candidate.get("shape") or "?"
-        opp_grade = candidate.get("opp_grade") or "?"
-        consensus = candidate.get("consensus") or "n/a"
-        form4_note = candidate.get("form4_note") or "n/a"
-        late_share = candidate.get("late_share_pct")
-        late_s = f"{late_share:.0f}%" if late_share is not None else "n/a"
-        return (
-            f"Oracle | pre-earnings build | {sym} earnings {earnings_date} "
-            f"(+{lookahead}d) | +{pre_move:.1f}% {PRE_MOVE_LOOKBACK_DAYS}d build | "
-            f"{shape} | late={late_s} | opp={opp_grade} | consensus={consensus} | {form4_note}"
-        )
 
     def analyze(self, sa, stock) -> None:
         return
