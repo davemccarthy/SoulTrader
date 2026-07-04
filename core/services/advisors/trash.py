@@ -2,7 +2,7 @@
 Trash Advisor — bad-sell recovery.
 
 Phase 1: collect SELL losses from the current SA into the watchlist.
-Phase 2: on below_ma_up + consensus traffic-light, rediscover with loss-scaled exits.
+Phase 2: on below_ma_up + consensus traffic-light, rediscover with rebuy / peaked / flat-profit exits.
 """
 
 from __future__ import annotations
@@ -23,8 +23,13 @@ WATCH_DAYS = 21
 ENTRY_MA_PERIOD = 20
 TRASH_DISCOVERY_COOLDOWN_HOURS = 24
 
-TRASH_STOP_MULT = Decimal("0.94")
-TRASH_TP_MAX_DAYS = 45
+TRASH_REBUY_DROP = Decimal("0.05")
+TRASH_REBUY_MAX_TRANCHES = Decimal("5")
+TRASH_PEAKED_GIVEBACK_PCT = Decimal("15.0")
+TRASH_PEAKED_MIN_GAIN_PCT = Decimal("20.0")
+TRASH_PROFIT_FLAT_RANGE = Decimal("0.05")
+TRASH_PROFIT_FLAT_DAYS = Decimal("12")
+TRASH_DESCENDING_TREND = Decimal("-0.20")
 TRASH_MIN_ANALYSTS = 3
 
 CONSENSUS_MEAN_BUY_MAX = 2.5
@@ -155,7 +160,7 @@ class Trash(AdvisorBase):
                 continue
 
             loss_pct = float(meta.get("loss_pct") or 0.0)
-            sell_instructions = self._sell_instructions(loss_pct)
+            sell_instructions = self._sell_instructions()
             weight = Decimal("1.25") if signal == "green" else Decimal("1.0")
 
             ma = float(closes.rolling(ENTRY_MA_PERIOD).mean().iloc[-1])
@@ -222,13 +227,13 @@ class Trash(AdvisorBase):
 
         return "yellow", consensus
 
-    def _sell_instructions(self, loss_pct: float) -> List[Tuple[str, Any, Any]]:
-        """Stop + diminishing TP scaled to original bad-sell loss magnitude."""
-        abs_loss = abs(loss_pct) / 100.0
-        tp_mult = max(1.01, 1.0 + abs_loss)
+    def _sell_instructions(self) -> List[Tuple[str, Any, Any]]:
+        """Scale-in on dips; exit on peak fade, stalled profit, or broken trend."""
         return [
-            ("STOP_PERCENTAGE", TRASH_STOP_MULT, None),
-            ("PERCENTAGE_DIMINISHING", Decimal(str(round(tp_mult, 4))), TRASH_TP_MAX_DAYS),
+            ("PERCENTAGE_REBUY", TRASH_REBUY_DROP, TRASH_REBUY_MAX_TRANCHES),
+            ("PEAKED", TRASH_PEAKED_GIVEBACK_PCT, TRASH_PEAKED_MIN_GAIN_PCT),
+            ("PROFIT_FLAT", TRASH_PROFIT_FLAT_RANGE, TRASH_PROFIT_FLAT_DAYS),
+            ("DESCENDING_TREND", TRASH_DESCENDING_TREND, None),
         ]
 
     def _discovery_explanation(
