@@ -35,11 +35,12 @@ def _print_summary(result: etf_holdings.RefreshResult, preview: int) -> None:
     if not result.ok:
         print(f"{result.etf}: error {result.error}", file=sys.stderr)
         return
+    stale_note = " (stale)" if result.stale else ""
     diff = result.diff
     added = len(diff.added) if diff else 0
     removed = len(diff.removed) if diff else 0
     print(
-        f"{result.etf}: ok date={result.holdings_date} saved={result.snapshot_path} "
+        f"{result.etf}: ok date={result.holdings_date}{stale_note} saved={result.snapshot_path} "
         f"added={added} removed={removed}"
     )
     if diff and diff.added:

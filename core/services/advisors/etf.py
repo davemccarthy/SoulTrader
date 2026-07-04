@@ -107,6 +107,7 @@ class Etf(AdvisorBase):
         events = etf_holdings.entrants_from_refresh(results)
 
         ok_count = sum(1 for r in results if r.ok)
+        stale_count = sum(1 for r in results if r.stale)
         fail_count = len(results) - ok_count
         discoveries = 0
         skipped_cooldown = 0
@@ -134,6 +135,7 @@ class Etf(AdvisorBase):
         state["last_refresh"] = {
             "date": today,
             "ok": ok_count,
+            "stale": stale_count,
             "failed": fail_count,
             "entrants": len(events),
             "discoveries": discoveries,
@@ -142,10 +144,11 @@ class Etf(AdvisorBase):
         self.mark_market_date_processed(today)
 
         logger.info(
-            "ETF sa=%s: refresh ok=%d failed=%d entrants=%d discoveries=%d "
+            "ETF sa=%s: refresh ok=%d stale=%d failed=%d entrants=%d discoveries=%d "
             "cooldown_skip=%d filter_skip=%d",
             sa.id,
             ok_count,
+            stale_count,
             fail_count,
             len(events),
             discoveries,

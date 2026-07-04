@@ -131,6 +131,7 @@ class RefreshResult:
     snapshot_path: Optional[Path] = None
     holdings_date: Optional[str] = None
     diff: Optional[DiffResult] = None
+    stale: bool = False
 
 
 DEFAULT_ETFS: Dict[str, ETFConfig] = {
@@ -169,8 +170,8 @@ DEFAULT_ETFS: Dict[str, ETFConfig] = {
     "SMH": ETFConfig(
         etf="SMH",
         theme="semiconductors",
-        provider="frenzycap",
-        url="https://www.frenzycap.com/quote/SMH",
+        provider="vaneck_xlsx",
+        url="https://www.vaneck.com/us/en/etf/equity/smh/holdings/download/xlsx/",
         management_style="passive",
         issuer="vaneck",
     ),
@@ -309,6 +310,8 @@ def inclusion_label(inclusion_type: str) -> str:
 def is_valid_equity_ticker(ticker: str) -> bool:
     sym = _clean(ticker).upper()
     if not sym or sym in IGNORE_TICKERS:
+        return False
+    if sym in {"—", "-", "--"}:
         return False
     if sym.startswith("$"):
         return False
@@ -508,6 +511,35 @@ def _xlsx_rows(content: bytes) -> List[List[str]]:
         return rows
 
 
+def fetch_vaneck_xlsx(config: ETFConfig) -> Snapshot:
+    resp = _get(config.url)
+    rows = _xlsx_rows(resp.content)
+
+    holdings_date = date.today().isoformat()
+    for row in rows[:5]:
+        joined = " ".join(cell for cell in row if cell)
+        match = re.search(r"Daily Holdings.*?\s+(\d{2}/\d{2}/\d{4})", joined, flags=re.I)
+        if match:
+            holdings_date = _normalize_date(match.group(1))
+            break
+
+    holdings: List[Holding] = []
+    headers: Optional[List[str]] = None
+    for row in rows:
+        if "Ticker" in row and "Holding Name" in row:
+            headers = row
+            continue
+        if headers is None or len(row) < len(headers):
+            continue
+        holding = _holding_from_row(dict(zip(headers, row)))
+        if holding is not None:
+            holdings.append(holding)
+
+    if not holdings:
+        raise ValueError("VanEck XLSX parsed but produced no holdings")
+    return _snapshot_from_config(config, config.url, holdings_date, holdings)
+
+
 def fetch_spdr_xlsx(config: ETFConfig) -> Snapshot:
     resp = _get(config.url)
     rows = _xlsx_rows(resp.content)
@@ -626,6 +658,8 @@ def fetch_snapshot(config: ETFConfig) -> Snapshot:
         return fetch_firsttrust(config)
     if config.provider == "spdr_xlsx":
         return fetch_spdr_xlsx(config)
+    if config.provider == "vaneck_xlsx":
+        return fetch_vaneck_xlsx(config)
     if config.provider == "frenzycap":
         return fetch_frenzycap(config)
     if config.provider in {"globalx", "ark"}:
@@ -765,6 +799,25 @@ def refresh_snapshot(
         )
     except Exception as exc:
         logger.warning("ETF refresh failed %s: %s", config.etf, exc)
+        stale_path = latest_snapshot_path(out_dir, config.etf)
+        if stale_path is not None:
+            snapshot = load_snapshot(stale_path)
+            diff = diff_latest(out_dir, config.etf)
+            logger.info(
+                "ETF refresh %s: using stale snapshot %s after %s",
+                config.etf,
+                stale_path.name,
+                type(exc).__name__,
+            )
+            return RefreshResult(
+                etf=config.etf,
+                ok=True,
+                error=f"stale after {type(exc).__name__}: {exc}",
+                snapshot_path=stale_path,
+                holdings_date=snapshot.holdings_date,
+                diff=diff,
+                stale=True,
+            )
         return RefreshResult(etf=config.etf, ok=False, error=f"{type(exc).__name__}: {exc}")
 
 
