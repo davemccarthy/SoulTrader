@@ -19,11 +19,6 @@ struct FundsView: View {
             }
 
             List {
-                WealthChartCard(points: viewModel.globalHistory)
-                    .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 8, trailing: 6))
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-
                 if let dashboard = viewModel.globalDashboard {
                     FundSecondarySummaryCard(
                         countTitle: "FUNDS",
@@ -33,7 +28,7 @@ struct FundsView: View {
                             portfolioValue: dashboard.holdingsMarketValue
                         ),
                         middleTitle: "RETURN",
-                        middleValue: formatCurrency(dashboard.returnAmount),
+                        middleValue: Theme.formatCompactCurrency(dashboard.returnAmount),
                         middleColor: Theme.signedColor(for: dashboard.returnAmount),
                         todayPercent: dashboard.todayPercent
                     )
@@ -54,13 +49,13 @@ struct FundsView: View {
 
                         MetricColumn(
                             title: "PORTFOLIO",
-                            value: formatCurrency(fund.dashboard.totalValue)
+                            value: Theme.formatCompactCurrency(fund.dashboard.totalValue)
                         )
                         .frame(width: 128, alignment: .leading)
 
                         MetricColumn(
                             title: "HOLDINGS",
-                            value: formatCurrency(fund.dashboard.holdingsMarketValue),
+                            value: Theme.formatCompactCurrency(fund.dashboard.holdingsMarketValue),
                             valueColor: Theme.signedColor(for: fund.dashboard.holdingsPnl),
                             alignment: .trailing,
                             expands: true
@@ -116,15 +111,6 @@ struct FundsView: View {
         }
         .background(Theme.appBackground)
         .toolbar(.hidden, for: .navigationBar)
-    }
-
-    private func formatCurrency(_ value: Double) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        formatter.minimumFractionDigits = 0
-        formatter.maximumFractionDigits = 0
-        formatter.roundingMode = .halfUp
-        return formatter.string(from: NSNumber(value: value)) ?? "$0"
     }
 
     private func formatPercent(_ value: Double?) -> String {

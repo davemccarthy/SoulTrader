@@ -1113,7 +1113,6 @@ final class AuthViewModel: ObservableObject {
     @Published var holdings: [HoldingResponse] = []
     @Published var trades: [TradeResponse] = []
     @Published var globalDashboard: GlobalDashboardResponse?
-    @Published var globalHistory: [WealthChartPoint] = []
     @Published var selectedFundHistory: [WealthChartPoint] = []
     @Published var isLoading = false
     @Published var statusMessage: String?
@@ -1158,7 +1157,6 @@ final class AuthViewModel: ObservableObject {
     var hasSelectedFund: Bool { selectedFundId != nil }
     var selectedFundName: String? { funds.first(where: { $0.id == selectedFundId })?.name }
     var selectedFund: FundResponse? { funds.first(where: { $0.id == selectedFundId }) }
-    var activeHistory: [WealthChartPoint] { selectedTab == .funds ? globalHistory : selectedFundHistory }
     var totalPercentTitle: String {
         switch returnPercentMode {
         case .total: return "PROFIT"
@@ -1284,12 +1282,6 @@ final class AuthViewModel: ObservableObject {
                 globalDashboard = nil
             }
 
-            if let history = try? await apiClient.fetchDashboardHistory(accessToken: access, fundId: nil) {
-                globalHistory = mapHistoryPoints(history.points)
-            } else {
-                globalHistory = []
-            }
-
             if let fundId = selectedFundId,
                let history = try? await apiClient.fetchDashboardHistory(accessToken: access, fundId: fundId) {
                 selectedFundHistory = mapHistoryPoints(history.points)
@@ -1410,7 +1402,6 @@ final class AuthViewModel: ObservableObject {
         holdings = []
         trades = []
         globalDashboard = nil
-        globalHistory = []
         selectedFundHistory = []
         selectedTab = .funds
         statusMessage = "Logged out."
@@ -1530,19 +1521,19 @@ struct FundSummaryCard: View {
         SummaryMetricCard(items: [
             SummaryMetricItem(
                 title: "PORTFOLIO",
-                value: formatCurrency(fund.dashboard.totalValue),
+                value: Theme.formatCompactCurrency(fund.dashboard.totalValue),
                 color: Theme.valuePrimary,
                 alignment: .leading
             ),
             SummaryMetricItem(
                 title: "CASH",
-                value: formatCurrency(fund.dashboard.cash),
+                value: Theme.formatCompactCurrency(fund.dashboard.cash),
                 color: Theme.valuePrimary,
                 alignment: .trailing
             ),
             SummaryMetricItem(
                 title: "HOLDINGS",
-                value: formatCurrency(fund.dashboard.holdingsMarketValue),
+                value: Theme.formatCompactCurrency(fund.dashboard.holdingsMarketValue),
                 color: Theme.signedColor(for: fund.dashboard.holdingsPnl),
                 alignment: .trailing
             ),
@@ -1557,15 +1548,6 @@ struct FundSummaryCard: View {
         .onTapGesture {
             onTap?()
         }
-    }
-
-    private func formatCurrency(_ value: Double) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        formatter.minimumFractionDigits = 0
-        formatter.maximumFractionDigits = 0
-        formatter.roundingMode = .halfUp
-        return formatter.string(from: NSNumber(value: value)) ?? "$0"
     }
 
     private func formatPercent(_ value: Double?) -> String {
@@ -1671,19 +1653,19 @@ struct GlobalSummaryCard: View {
         SummaryMetricCard(items: [
             SummaryMetricItem(
                 title: "PORTFOLIO",
-                value: formatCurrency(dashboard.totalValue),
+                value: Theme.formatCompactCurrency(dashboard.totalValue),
                 color: Theme.valuePrimary,
                 alignment: .leading
             ),
             SummaryMetricItem(
                 title: "CASH",
-                value: formatCurrency(dashboard.cash),
+                value: Theme.formatCompactCurrency(dashboard.cash),
                 color: Theme.valuePrimary,
                 alignment: .trailing
             ),
             SummaryMetricItem(
                 title: "HOLDINGS",
-                value: formatCurrency(dashboard.holdingsMarketValue),
+                value: Theme.formatCompactCurrency(dashboard.holdingsMarketValue),
                 color: Theme.signedColor(for: dashboard.holdingsPnl),
                 alignment: .trailing
             ),
@@ -1698,15 +1680,6 @@ struct GlobalSummaryCard: View {
         .onTapGesture {
             onTap?()
         }
-    }
-
-    private func formatCurrency(_ value: Double) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        formatter.minimumFractionDigits = 0
-        formatter.maximumFractionDigits = 0
-        formatter.roundingMode = .halfUp
-        return formatter.string(from: NSNumber(value: value)) ?? "$0"
     }
 
     private func formatPercent(_ value: Double?) -> String {
@@ -1752,7 +1725,7 @@ struct WealthChartCard: View {
                             .foregroundStyle(Color.white.opacity(0.15))
                         AxisValueLabel {
                             if let val = value.as(Double.self) {
-                                Text(shortCurrency(val))
+                                Text(Theme.formatCompactCurrency(val))
                                     .font(.caption2)
                                     .foregroundStyle(Theme.secondaryText)
                             }
@@ -1775,16 +1748,6 @@ struct WealthChartCard: View {
         .padding(.vertical, 10)
         .background(Theme.rowBackground, in: RoundedRectangle(cornerRadius: 10))
         .clipShape(RoundedRectangle(cornerRadius: 10))
-    }
-
-    private func shortCurrency(_ value: Double) -> String {
-        if value >= 1_000_000 {
-            return String(format: "$%.1fM", value / 1_000_000)
-        }
-        if value >= 1_000 {
-            return String(format: "$%.0fK", value / 1_000)
-        }
-        return String(format: "$%.0f", value)
     }
 
     private var yScale: (lower: Double, upper: Double, step: Double) {

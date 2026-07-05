@@ -45,4 +45,17 @@ enum Theme {
         if value < 0 { return negative }
         return valuePrimary
     }
+
+    /// Summary-strip currency: `$2.3M`, `$850K`, `$999` (preserves sign).
+    static func formatCompactCurrency(_ value: Double) -> String {
+        let absValue = abs(value)
+        let sign = value < 0 ? "-" : ""
+        if absValue >= 1_000_000 {
+            return String(format: "%@$%.1fM", sign, absValue / 1_000_000)
+        }
+        if absValue >= 1_000 {
+            return String(format: "%@$%.0fK", sign, absValue / 1_000)
+        }
+        return String(format: "%@$%.0f", sign, absValue)
+    }
 }
