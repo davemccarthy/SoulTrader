@@ -633,14 +633,6 @@ def run_llm_triage_batch(
         return model, {}
 
     by_sym = _llm_triage_by_symbol(results)
-    # TEMP: full LLM triage payload for remote testing — remove after validation
-    try:
-        logger.info(
-            "Oracle LLM triage response (temp): %s",
-            json.dumps(results, separators=(",", ":"), default=str),
-        )
-    except (TypeError, ValueError):
-        logger.info("Oracle LLM triage response (temp): %r", results)
     if len(candidates) == 1:
         logger.info(
             "Oracle LLM triage %s: model=%s verdict=%s",
