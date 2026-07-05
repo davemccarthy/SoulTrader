@@ -2,11 +2,14 @@
 Oracle advisor — forward-looking pre-event scanner.
 
 Pipeline:
-  earnings calendar (+21 / +14), once per calendar day → price build → SO gate → consensus veto
+  earnings calendar (+18 / +14), once per calendar day → price build → SO gate → consensus veto
   → Form 4 confirm → discover
 
 Production:
   python manage.py smartanalyse ORCL
+
+LLM triage (default on): ask_llm per discover attempt (bang/creep); skip on verdict=veto.
+Disable: ORACLE_LLM_TRIAGE=0
 """
 
 from __future__ import annotations
@@ -41,7 +44,7 @@ logger = logging.getLogger(__name__)
 EARNINGS_API_BASE = "https://api.earningsapi.com/v1/calendar/earnings"
 
 # Earnings calendar lookaheads (calendar days); 2 API calls per daily refresh.
-LOOKAHEAD_DAYS: Tuple[int, ...] = (21, 14)
+LOOKAHEAD_DAYS: Tuple[int, ...] = (18, 14)
 
 MIN_OPPORTUNITY_GRADE = "C"
 PRE_MOVE_LOOKBACK_DAYS = 20
@@ -67,8 +70,14 @@ FORM4_BONUS_TOTAL = 8.0
 FORM4_BONUS_WEIGHT = Decimal("1.15")
 FORM4_RANK_BONUS_PCT = 3.0
 
+# LLM triage: batch attribution on gate passers; skip discover on verdict=veto.
+LLM_TRIAGE_TIMEOUT_SEC = 180.0
+
 # Pre-earnings holds: wider than default PEAKED (see LNN lesson).
+# STOP_PERCENTAGE first — hard cap on wrong picks (~6%); augmenting still ratchets winners.
+ORACLE_STOP_MULT = Decimal("0.94")
 ORACLE_SELL_INSTRUCTIONS = [
+    ("STOP_PERCENTAGE", ORACLE_STOP_MULT, None),
     ("PERCENTAGE_AUGMENTING", Decimal("0.88"), 45),
     ("DESCENDING_TREND", Decimal("-0.20"), None),
     ("AFTER_DAYS", 45, None),
@@ -477,6 +486,178 @@ def _form4_gate(symbol: str) -> Tuple[bool, str, Decimal, Dict[str, Any]]:
     return False, note, weight, summary
 
 
+def _llm_triage_enabled() -> bool:
+    raw = (os.environ.get("ORACLE_LLM_TRIAGE") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _fmt_triage_pct(value: Any) -> str:
+    if value is None:
+        return "—"
+    try:
+        return f"{float(value):+.1f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _fmt_triage_consensus(candidate: Dict[str, Any]) -> str:
+    rec = (candidate.get("consensus_rec") or "").strip().lower() or "none"
+    count = candidate.get("consensus_analyst_count")
+    if count is not None:
+        return f"{rec}({count})"
+    return rec
+
+
+def _fmt_triage_form4(candidate: Dict[str, Any]) -> str:
+    entries = candidate.get("form4_entries") or 0
+    if not entries:
+        return "none"
+    total = candidate.get("form4_total")
+    kind = candidate.get("form4_kind") or "activity"
+    if total is not None:
+        try:
+            return f"{kind}({float(total):+.0f})"
+        except (TypeError, ValueError):
+            pass
+    return str(kind)
+
+
+def build_pipe_row_from_candidate(candidate: Dict[str, Any]) -> str:
+    """Compact pipe row: sym|earn|d|b20|shape|late%|jmp%|opp|f4|cons."""
+    sym = str(candidate.get("symbol") or "").strip().upper()
+    late = candidate.get("late_share_pct")
+    jmp = candidate.get("max_1d_jump_pct")
+    late_s = "—" if late is None else f"{float(late):.0f}"
+    jmp_s = "—" if jmp is None else f"{float(jmp):.2f}"
+    return "|".join(
+        [
+            sym,
+            str(candidate.get("earnings_date") or ""),
+            str(candidate.get("lookahead_days") or ""),
+            _fmt_triage_pct(candidate.get("pre_move_pct")),
+            str(candidate.get("shape") or "flat"),
+            late_s,
+            jmp_s,
+            str(candidate.get("opp_grade") or "?"),
+            _fmt_triage_form4(candidate),
+            _fmt_triage_consensus(candidate),
+        ]
+    )
+
+
+LLM_TRIAGE_PROMPT_HEADER = """Validate pre-earnings scanner picks. For each ticker: WHY moving? Pre-earnings positioning vs external catalyst? Skeptical; facts vs interpretation. No advice/targets.
+
+One JSON object per input row, same order. Creeps usually allow unless discrete headline.
+allow: fits pre-earnings drift, no obvious priced-in event
+flag: macro/sector beta, late spike, or partial priced-in
+veto: clear company event likely fully priced (guidance, contract, M&A)
+
+Legend: sym|earn|d|b20|shape|late%|jmp%|opp|f4|cons
+
+INPUT (as-of {as_of}):
+{pipe_block}
+
+JSON array only:
+[{{"sym":"","driver_cat":"earnings_anticipation|sector_repricing|company_catalyst|speculative_surge|relief_reversal|mixed|unclear","driver_desc":"","thesis_fit":"supports|weakens|neutral","priced_in":"low|medium|high","verdict":"allow|flag|veto","reason":"","conf":1-10,"evidence":[{{"fact":"","src":"","date":"YYYY-MM-DD"}}],"peers":[],"risks":[]}}]
+"""
+
+
+def build_llm_triage_prompt(as_of: str, pipe_rows: List[str]) -> str:
+    return LLM_TRIAGE_PROMPT_HEADER.format(as_of=as_of, pipe_block="\n".join(pipe_rows))
+
+
+def _normalize_llm_triage_results(results: Any) -> List[Dict[str, Any]]:
+    if results is None:
+        return []
+    if isinstance(results, list):
+        return [r for r in results if isinstance(r, dict)]
+    if isinstance(results, dict):
+        for key in ("results", "tickers", "data"):
+            inner = results.get(key)
+            if isinstance(inner, list):
+                return [r for r in inner if isinstance(r, dict)]
+        return [results]
+    return []
+
+
+def _llm_triage_by_symbol(results: Any) -> Dict[str, Dict[str, Any]]:
+    out: Dict[str, Dict[str, Any]] = {}
+    for item in _normalize_llm_triage_results(results):
+        sym = (item.get("sym") or item.get("symbol") or "").strip().upper()
+        if sym:
+            out[sym] = item
+    return out
+
+
+def _llm_triage_is_veto(triage: Optional[Dict[str, Any]]) -> bool:
+    if not triage:
+        return False
+    return (triage.get("verdict") or "").strip().lower() == "veto"
+
+
+def _llm_triage_blob_summary(triage: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "verdict": triage.get("verdict"),
+        "driver_cat": triage.get("driver_cat"),
+        "thesis_fit": triage.get("thesis_fit"),
+        "priced_in": triage.get("priced_in"),
+        "conf": triage.get("conf", triage.get("confidence")),
+        "reason": triage.get("reason"),
+    }
+
+
+def run_llm_triage_batch(
+    candidates: List[Dict[str, Any]],
+    *,
+    as_of: str,
+    timeout: float = LLM_TRIAGE_TIMEOUT_SEC,
+) -> Tuple[Optional[str], Dict[str, Dict[str, Any]]]:
+    """Batch LLM attribution. Returns (model, symbol -> triage dict). Fail open on error."""
+    if not candidates:
+        return None, {}
+
+    from core.services.llm.router import ask_llm
+
+    pipe_rows = [build_pipe_row_from_candidate(c) for c in candidates]
+    prompt = build_llm_triage_prompt(as_of, pipe_rows)
+    model, results, _, _ = ask_llm(
+        prompt=prompt,
+        advisor_name="Oracle",
+        gemini_model_index=0,
+        gemini_key_index=0,
+        timeout=timeout,
+        use_search=True,
+    )
+    if not results:
+        logger.warning("Oracle LLM triage: no response (%d candidates)", len(candidates))
+        return model, {}
+
+    by_sym = _llm_triage_by_symbol(results)
+    # TEMP: full LLM triage payload for remote testing — remove after validation
+    try:
+        logger.info(
+            "Oracle LLM triage response (temp): %s",
+            json.dumps(results, separators=(",", ":"), default=str),
+        )
+    except (TypeError, ValueError):
+        logger.info("Oracle LLM triage response (temp): %r", results)
+    if len(candidates) == 1:
+        logger.info(
+            "Oracle LLM triage %s: model=%s verdict=%s",
+            candidates[0].get("symbol"),
+            model,
+            (by_sym.get(str(candidates[0].get("symbol") or "").upper()) or {}).get("verdict"),
+        )
+    else:
+        logger.info(
+            "Oracle LLM triage: model=%s candidates=%d parsed=%d",
+            model,
+            len(candidates),
+            len(by_sym),
+        )
+    return model, by_sym
+
+
 class Oracle(AdvisorBase):
     """Forward pre-earnings scanner."""
 
@@ -526,7 +707,12 @@ class Oracle(AdvisorBase):
         )
 
         candidates, scan_stats = self._score_universe(universe["symbol_index"])
-        discoveries = self._discover_top_candidates(sa, candidates)
+
+        discoveries, llm_vetoed, triage_by_sym, triage_model = self._discover_top_candidates(
+            sa,
+            candidates,
+            as_of=today,
+        )
 
         state = self._advisor_blob_state()
         state["last_scan"] = {
@@ -534,6 +720,12 @@ class Oracle(AdvisorBase):
             "scored": scan_stats["scored"],
             "passed_gates": scan_stats["passed_gates"],
             "form4_vetoed": scan_stats.get("form4_vetoed", 0),
+            "llm_vetoed": llm_vetoed,
+            "llm_triage_model": triage_model,
+            "llm_triage": {
+                sym: _llm_triage_blob_summary(t)
+                for sym, t in triage_by_sym.items()
+            },
             "discoveries": discoveries,
             "top_candidates": [
                 {
@@ -544,6 +736,9 @@ class Oracle(AdvisorBase):
                     "opp_grade": c.get("opp_grade"),
                     "form4_total": c.get("form4_total"),
                     "earnings_date": c.get("earnings_date"),
+                    "llm_verdict": (
+                        triage_by_sym.get(str(c.get("symbol") or "").upper()) or {}
+                    ).get("verdict"),
                 }
                 for c in candidates[:10]
             ],
@@ -552,11 +747,12 @@ class Oracle(AdvisorBase):
         self.mark_market_date_processed(today)
 
         logger.info(
-            "Oracle sa=%s: scored=%d passed_gates=%d form4_vetoed=%d discoveries=%d",
+            "Oracle sa=%s: scored=%d passed_gates=%d form4_vetoed=%d llm_vetoed=%d discoveries=%d",
             sa.id,
             scan_stats["scored"],
             scan_stats["passed_gates"],
             scan_stats.get("form4_vetoed", 0),
+            llm_vetoed,
             discoveries,
         )
 
@@ -685,17 +881,46 @@ class Oracle(AdvisorBase):
         self,
         sa,
         candidates: List[Dict[str, Any]],
-    ) -> int:
+        *,
+        as_of: str,
+    ) -> Tuple[int, int, Dict[str, Dict[str, Any]], Optional[str]]:
+        """
+        Walk ranked passers; allow_discovery (cooldown) before LLM triage, then discover.
+        Returns (discoveries, llm_vetoed, triage_by_sym, last_triage_model).
+        """
+        triage_by_sym: Dict[str, Dict[str, Any]] = {}
+        triage_model: Optional[str] = None
+        llm_vetoed = 0
         discoveries = 0
+
         for candidate in candidates:
             if discoveries >= MAX_DISCOVERIES_PER_RUN:
                 break
             sym = str(candidate.get("symbol") or "").strip().upper()
             if not sym:
                 continue
+
             if not self.allow_discovery(sym, period=DISCOVERY_COOLDOWN_HOURS):
-                logger.info("Oracle %s: discovery cooldown active", sym)
+                logger.info("Oracle %s: allow_discovery false (cooldown)", sym)
                 continue
+
+            if _llm_triage_enabled():
+                model, batch = run_llm_triage_batch([candidate], as_of=as_of)
+                if model:
+                    triage_model = model
+                triage = batch.get(sym)
+                if triage:
+                    triage_by_sym[sym] = triage
+                if _llm_triage_is_veto(triage):
+                    llm_vetoed += 1
+                    reason = (triage.get("reason") or triage.get("driver_desc") or "LLM veto").strip()
+                    logger.info(
+                        "Oracle %s: LLM triage veto (%s) — %s",
+                        sym,
+                        triage.get("driver_cat") or "n/a",
+                        reason[:200],
+                    )
+                    continue
 
             explanation = build_discovery_explanation(candidate)
             weight = candidate.get("discovery_weight") or Decimal("1.0")
@@ -707,7 +932,8 @@ class Oracle(AdvisorBase):
                 weight=weight,
             ):
                 discoveries += 1
-        return discoveries
+
+        return discoveries, llm_vetoed, triage_by_sym, triage_model
 
 
     def analyze(self, sa, stock) -> None:

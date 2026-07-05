@@ -17,11 +17,12 @@ def extract_json_from_text(text: str) -> Any:
     except json.JSONDecodeError:
         pass
 
-    match = re.search(r"\{[\s\S]*\}", cleaned)
-    if match:
-        try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError:
-            pass
+    for pattern in (r"\[[\s\S]*\]", r"\{[\s\S]*\}"):
+        match = re.search(pattern, cleaned)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                continue
 
     return None
