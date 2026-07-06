@@ -1,4 +1,5 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from typing import Optional
 
 import pytz
 
@@ -61,6 +62,48 @@ def is_full_day_market_holiday(day):
         _observed_market_holiday(datetime(year, 12, 25).date()),  # Christmas
     }
     return day in holidays
+
+
+def is_trading_day(day: date) -> bool:
+    """True when day is a weekday and not a full-day US market holiday."""
+    return day.weekday() < 5 and not is_full_day_market_holiday(day)
+
+
+def last_completed_trading_day(anchor: Optional[date] = None) -> date:
+    """
+    Last US equity session before anchor (default today).
+
+    Uses calendar day before anchor, skipping weekends/holidays. Suitable for
+    lab defaults; production EOD jobs should use resolve_eod_session_date().
+    """
+    current = (anchor or datetime.now().date()) - timedelta(days=1)
+    while not is_trading_day(current):
+        current -= timedelta(days=1)
+    return current
+
+
+def resolve_eod_session_date(now: Optional[datetime] = None) -> date:
+    """
+    Session date for end-of-day drop intake.
+
+    After 4:00 PM ET on a trading day, returns that day; otherwise the prior
+    completed session.
+    """
+    et = pytz.timezone("US/Eastern")
+    now_et = (now or datetime.now(et)).astimezone(et)
+    today = now_et.date()
+    market_close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+    if is_trading_day(today) and now_et >= market_close:
+        return today
+    return last_completed_trading_day(anchor=today)
+
+
+def prior_trading_day(session: date) -> date:
+    """Trading session immediately before session."""
+    current = session - timedelta(days=1)
+    while not is_trading_day(current):
+        current -= timedelta(days=1)
+    return current
 
 
 def market_open():

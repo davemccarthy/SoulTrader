@@ -43,6 +43,12 @@ from core.services.health.so_ratings import (
     stability_grade_at_least,
 )
 from core.services.health.distress import adjust_opportunity_parts
+from core.services.health.diagnostic import (
+    DiagnosticResult,
+    analyze_symbol,
+    diagnostic_to_dict,
+    filter_buy_ready,
+)
 from core.services.health.durability import score_business_durability
 from core.services.health.financial import score_financial_health
 from core.services.health.intrinsic import score_intrinsic_health
@@ -86,6 +92,10 @@ __all__ = [
     "composite_score_from_letters",
     "letter_axis_score",
     "adjust_opportunity_parts",
+    "DiagnosticResult",
+    "analyze_symbol",
+    "diagnostic_to_dict",
+    "filter_buy_ready",
     "score_business_durability",
     "score_financial_health",
     "score_intrinsic_health",

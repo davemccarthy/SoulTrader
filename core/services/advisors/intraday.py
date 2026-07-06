@@ -8,10 +8,10 @@ logger = logging.getLogger(__name__)
 
 
 class Intraday(AdvisorBase):
-    """No-op placeholder; strategy moved to Vulture advisor."""
+    """No-op placeholder; legacy intraday overlay removed."""
 
     def discover(self, sa):
-        logger.info("Intraday advisor is stubbed; use Vulture for active logic.")
+        logger.info("Intraday advisor is stubbed; no active logic.")
         return
 
     def analyze(self, sa, stock):
