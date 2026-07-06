@@ -75,6 +75,7 @@ LLM_TRIAGE_TIMEOUT_SEC = 180.0
 
 # Pre-earnings holds: wider than default PEAKED (see LNN lesson).
 # STOP_PERCENTAGE first — hard cap on wrong picks (~6%); augmenting still ratchets winners.
+# Hard stop is not evaluated in the first 60 min after open (same window as PEAKED).
 ORACLE_STOP_MULT = Decimal("0.94")
 ORACLE_SELL_INSTRUCTIONS = [
     ("STOP_PERCENTAGE", ORACLE_STOP_MULT, None),

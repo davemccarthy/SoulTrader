@@ -22,7 +22,7 @@ from core.services.health.risk_matrix import (
     discovery_passes_risk_gate,
     so_gate_fail_display,
 )
-from core.services.market import market_open
+from core.services.market import in_opening_noise_window, market_open
 
 logger = logging.getLogger(__name__)
 DT_EXIT_CONFIDENCE_MIN = 0.70
@@ -624,7 +624,9 @@ def analyze_holdings(sa, funds):
 
         sentiment = factor_sentiment(fund)
 
-        for holding in Holding.objects.filter(fund=fund):
+        for holding in Holding.objects.filter(fund=fund).select_related(
+            "stock", "discovery", "discovery__advisor"
+        ):
 
             # Latest prices
             holding.stock.refresh()
@@ -656,6 +658,13 @@ def analyze_holdings(sa, funds):
                                 break
 
                         elif instruction.instruction == 'STOP_PERCENTAGE':
+                            adv = discovery.advisor
+                            if (
+                                adv
+                                and adv.python_class == "Oracle"
+                                and in_opening_noise_window(PEAKED_MIN_MARKET_MINUTES)
+                            ):
+                                continue
                             avg = holding.average_price or discovery.price
                             if instruction.value1 and avg:
                                 mult = Decimal(str(instruction.value1))

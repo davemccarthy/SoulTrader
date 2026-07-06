@@ -96,3 +96,9 @@ def market_open():
     minutes_diff = (now_et - market_open_time).total_seconds() / 60
 
     return int(minutes_diff)
+
+
+def in_opening_noise_window(minutes: int = 60) -> bool:
+    """True during the first `minutes` after the 9:30 ET open (regular session)."""
+    status = market_open()
+    return status is not None and 0 <= status < minutes
