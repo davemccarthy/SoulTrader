@@ -168,6 +168,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         build_llm_triage_prompt,
         build_pipe_row_from_candidate,
         _llm_triage_is_veto,
+        _llm_triage_skips_discover,
     )
 
     as_of: str
@@ -227,7 +228,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             continue
         sym = item.get("sym") or item.get("symbol") or "?"
         verdict = item.get("verdict", "?")
-        skip = _llm_triage_is_veto(item)
+        skip = _llm_triage_skips_discover(item)
         print(
             f"{sym}: {verdict} | {item.get('driver_cat', '?')} | "
             f"thesis={item.get('thesis_fit', '?')} | conf={item.get('conf', '?')}"

@@ -2,13 +2,13 @@
 Oracle advisor — forward-looking pre-event scanner.
 
 Pipeline:
-  earnings calendar (+18 / +14), once per calendar day → price build → SO gate → consensus veto
-  → Form 4 confirm → discover
+  earnings calendar (+18 / +14), once per calendar day → price build → SO gate → consensus (buy+)
+  → pre-Form4 shortlist → Form 4 confirm → LLM triage (all) → discover survivors
 
 Production:
   python manage.py smartanalyse ORCL
 
-LLM triage (default on): ask_llm per discover attempt (bang/creep); skip on verdict=veto.
+LLM triage (default on): batch all gate passers; skip discover on verdict=veto or flag.
 Disable: ORACLE_LLM_TRIAGE=0
 """
 
@@ -48,12 +48,12 @@ LOOKAHEAD_DAYS: Tuple[int, ...] = (18, 14)
 
 MIN_OPPORTUNITY_GRADE = "C"
 PRE_MOVE_LOOKBACK_DAYS = 20
-MAX_DISCOVERIES_PER_RUN = 3
 MIN_PRICE = 5.0
 DISCOVERY_COOLDOWN_HOURS = 48
 YFINANCE_PAUSE_SEC = 0.05
 
-CONSENSUS_VETO_KEYS = frozenset({"sell", "strong_sell"})
+# Only buy / strong_buy advance; hold, none, unknown, and sell tiers do not pass.
+CONSENSUS_PASS_KEYS = frozenset({"strong_buy", "buy"})
 
 _CONSENSUS_REC_DISPLAY = {
     "strong_buy": "Strong Buy",
@@ -70,7 +70,12 @@ FORM4_BONUS_TOTAL = 8.0
 FORM4_BONUS_WEIGHT = Decimal("1.15")
 FORM4_RANK_BONUS_PCT = 3.0
 
-# LLM triage: batch attribution on gate passers; skip discover on verdict=veto.
+# Run Form 4 only on the top N cheap-gate passers (SEC calls dominate large universes).
+# Shortlist prefers creep/mixed over bang, then higher pre_move within each tier.
+FORM4_PREFILTER_TOP_N = 25
+_PRE_FORM4_SHAPE_TIER = {"creep": 0, "mixed": 1, "bang": 2, "flat": 3}
+
+# LLM triage: batch attribution on gate passers; skip discover on verdict=veto or flag.
 LLM_TRIAGE_TIMEOUT_SEC = 180.0
 
 # Pre-earnings holds: wider than default PEAKED (see LNN lesson).
@@ -297,13 +302,19 @@ def compute_pre_move_build(
 
 
 def _consensus_gate(symbol: str) -> Tuple[bool, Dict[str, Any]]:
+    """
+    Consensus allowlist gate.
+
+    Returns (blocked, info). blocked=True when consensus is not buy/strong_buy
+    (includes hold, none, unknown, sell).
+    """
     result = score_consensus_health(symbol)
-    rec = (result.recommendation_key or "").strip().lower()
-    veto = rec in CONSENSUS_VETO_KEYS
-    return veto, {
+    rec = (result.recommendation_key or "").strip().lower().replace(" ", "_")
+    info: Dict[str, Any] = {
         "consensus_rec": rec or None,
         "consensus_analyst_count": result.analyst_count,
     }
+    return rec not in CONSENSUS_PASS_KEYS, info
 
 
 def _so_gate(symbol: str) -> Tuple[bool, Dict[str, Any]]:
@@ -487,6 +498,30 @@ def _form4_gate(symbol: str) -> Tuple[bool, str, Decimal, Dict[str, Any]]:
     return False, note, weight, summary
 
 
+def _pre_form4_shortlist_key(candidate: Dict[str, Any]) -> Tuple[int, float]:
+    """Lower sorts first: creep/mixed before bang; then higher pre_move within tier."""
+    shape = str(candidate.get("shape") or "flat").lower()
+    tier = _PRE_FORM4_SHAPE_TIER.get(shape, 3)
+    pre = float(candidate.get("pre_move_pct") or 0.0)
+    return tier, -pre
+
+
+def _select_form4_shortlist(
+    pre_form4: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    Return (symbols to run through Form 4, count skipped by prefilter).
+
+    FORM4_PREFILTER_TOP_N <= 0 disables the cap (legacy: Form 4 on every passer).
+    """
+    if FORM4_PREFILTER_TOP_N <= 0 or len(pre_form4) <= FORM4_PREFILTER_TOP_N:
+        return pre_form4, 0
+    ranked = sorted(pre_form4, key=_pre_form4_shortlist_key)
+    shortlist = ranked[:FORM4_PREFILTER_TOP_N]
+    skipped = len(pre_form4) - len(shortlist)
+    return shortlist, skipped
+
+
 def _llm_triage_enabled() -> bool:
     raw = (os.environ.get("ORACLE_LLM_TRIAGE") or "1").strip().lower()
     return raw not in ("0", "false", "no", "off")
@@ -590,10 +625,22 @@ def _llm_triage_by_symbol(results: Any) -> Dict[str, Dict[str, Any]]:
     return out
 
 
-def _llm_triage_is_veto(triage: Optional[Dict[str, Any]]) -> bool:
+def _llm_triage_verdict(triage: Optional[Dict[str, Any]]) -> str:
     if not triage:
-        return False
-    return (triage.get("verdict") or "").strip().lower() == "veto"
+        return ""
+    return (triage.get("verdict") or "").strip().lower()
+
+
+def _llm_triage_is_veto(triage: Optional[Dict[str, Any]]) -> bool:
+    return _llm_triage_verdict(triage) == "veto"
+
+
+def _llm_triage_is_flag(triage: Optional[Dict[str, Any]]) -> bool:
+    return _llm_triage_verdict(triage) == "flag"
+
+
+def _llm_triage_skips_discover(triage: Optional[Dict[str, Any]]) -> bool:
+    return _llm_triage_verdict(triage) in ("veto", "flag")
 
 
 def _llm_triage_blob_summary(triage: Dict[str, Any]) -> Dict[str, Any]:
@@ -701,7 +748,7 @@ class Oracle(AdvisorBase):
 
         candidates, scan_stats = self._score_universe(universe["symbol_index"])
 
-        discoveries, llm_vetoed, triage_by_sym, triage_model = self._discover_top_candidates(
+        discoveries, llm_vetoed, llm_flagged, triage_by_sym, triage_model = self._discover_top_candidates(
             sa,
             candidates,
             as_of=today,
@@ -711,9 +758,12 @@ class Oracle(AdvisorBase):
         state["last_scan"] = {
             "date": today,
             "scored": scan_stats["scored"],
+            "pre_form4_passers": scan_stats.get("pre_form4_passers", 0),
+            "form4_prefilter_skipped": scan_stats.get("form4_prefilter_skipped", 0),
             "passed_gates": scan_stats["passed_gates"],
             "form4_vetoed": scan_stats.get("form4_vetoed", 0),
             "llm_vetoed": llm_vetoed,
+            "llm_flagged": llm_flagged,
             "llm_triage_model": triage_model,
             "llm_triage": {
                 sym: _llm_triage_blob_summary(t)
@@ -740,12 +790,16 @@ class Oracle(AdvisorBase):
         self.mark_market_date_processed(today)
 
         logger.info(
-            "Oracle sa=%s: scored=%d passed_gates=%d form4_vetoed=%d llm_vetoed=%d discoveries=%d",
+            "Oracle sa=%s: scored=%d pre_form4=%d form4_skipped=%d passed_gates=%d "
+            "form4_vetoed=%d llm_vetoed=%d llm_flagged=%d discoveries=%d",
             sa.id,
             scan_stats["scored"],
+            scan_stats.get("pre_form4_passers", 0),
+            scan_stats.get("form4_prefilter_skipped", 0),
             scan_stats["passed_gates"],
             scan_stats.get("form4_vetoed", 0),
             llm_vetoed,
+            llm_flagged,
             discoveries,
         )
 
@@ -796,10 +850,8 @@ class Oracle(AdvisorBase):
         symbol_index: Dict[str, Dict[str, Any]],
     ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
         cache: Dict[Tuple[str, date, date], Optional[pd.Series]] = {}
-        passed: List[Dict[str, Any]] = []
+        pre_form4: List[Dict[str, Any]] = []
         scored = 0
-        passed_gates = 0
-        form4_vetoed = 0
 
         for sym, meta in sorted(symbol_index.items()):
             scored += 1
@@ -826,13 +878,42 @@ class Oracle(AdvisorBase):
                 )
                 continue
 
-            consensus_veto, consensus_info = _consensus_gate(sym)
-            if consensus_veto:
+            consensus_blocked, consensus_info = _consensus_gate(sym)
+            if consensus_blocked:
                 logger.debug(
-                    "Oracle %s: consensus veto (%s)",
+                    "Oracle %s: consensus blocked (%s)",
                     sym,
-                    consensus_info.get("consensus_rec"),
+                    consensus_info.get("consensus_rec") or "none",
                 )
+                continue
+
+            pre_form4.append(
+                {
+                    **build,
+                    **so_info,
+                    **consensus_info,
+                    "earnings_date": meta.get("earnings_date"),
+                    "lookahead_days": meta.get("lookahead_days"),
+                    "session": meta.get("session"),
+                }
+            )
+
+        form4_shortlist, form4_prefilter_skipped = _select_form4_shortlist(pre_form4)
+        if form4_prefilter_skipped:
+            logger.info(
+                "Oracle Form4 prefilter: %d cheap-gate passers → %d shortlisted (%d skipped)",
+                len(pre_form4),
+                len(form4_shortlist),
+                form4_prefilter_skipped,
+            )
+
+        passed: List[Dict[str, Any]] = []
+        passed_gates = 0
+        form4_vetoed = 0
+
+        for row in form4_shortlist:
+            sym = str(row.get("symbol") or "").strip().upper()
+            if not sym:
                 continue
 
             f4_veto, f4_note, f4_weight, f4_summary = _form4_gate(sym)
@@ -841,7 +922,7 @@ class Oracle(AdvisorBase):
                 logger.info("Oracle %s: Form4 veto (%s)", sym, f4_note)
                 continue
 
-            pre_move_f = float(pre_move)
+            pre_move_f = float(row.get("pre_move_pct") or 0.0)
             f4_total = f4_summary.get("form4_total")
             rank_score = pre_move_f
             if f4_total is not None and float(f4_total) >= FORM4_BONUS_TOTAL:
@@ -850,13 +931,8 @@ class Oracle(AdvisorBase):
             passed_gates += 1
             passed.append(
                 {
-                    **build,
+                    **row,
                     **f4_summary,
-                    **so_info,
-                    **consensus_info,
-                    "earnings_date": meta.get("earnings_date"),
-                    "lookahead_days": meta.get("lookahead_days"),
-                    "session": meta.get("session"),
                     "form4_note": f4_note,
                     "discovery_weight": f4_weight,
                     "rank_score": round(rank_score, 2),
@@ -866,6 +942,8 @@ class Oracle(AdvisorBase):
         passed.sort(key=lambda c: float(c.get("rank_score") or c.get("pre_move_pct") or 0.0), reverse=True)
         return passed, {
             "scored": scored,
+            "pre_form4_passers": len(pre_form4),
+            "form4_prefilter_skipped": form4_prefilter_skipped,
             "passed_gates": passed_gates,
             "form4_vetoed": form4_vetoed,
         }
@@ -876,44 +954,48 @@ class Oracle(AdvisorBase):
         candidates: List[Dict[str, Any]],
         *,
         as_of: str,
-    ) -> Tuple[int, int, Dict[str, Dict[str, Any]], Optional[str]]:
+    ) -> Tuple[int, int, int, Dict[str, Dict[str, Any]], Optional[str]]:
         """
-        Walk ranked passers; allow_discovery (cooldown) before LLM triage, then discover.
-        Returns (discoveries, llm_vetoed, triage_by_sym, last_triage_model).
+        Batch LLM triage on all gate passers; discover survivors (allow, not veto/flag).
+
+        Returns (discoveries, llm_vetoed, llm_flagged, triage_by_sym, last_triage_model).
         """
         triage_by_sym: Dict[str, Dict[str, Any]] = {}
         triage_model: Optional[str] = None
         llm_vetoed = 0
+        llm_flagged = 0
         discoveries = 0
 
+        if _llm_triage_enabled() and candidates:
+            triage_model, triage_by_sym = run_llm_triage_batch(candidates, as_of=as_of)
+
         for candidate in candidates:
-            if discoveries >= MAX_DISCOVERIES_PER_RUN:
-                break
             sym = str(candidate.get("symbol") or "").strip().upper()
             if not sym:
                 continue
 
-            if not self.allow_discovery(sym, period=DISCOVERY_COOLDOWN_HOURS):
-                logger.info("Oracle %s: allow_discovery false (cooldown)", sym)
-                continue
-
             if _llm_triage_enabled():
-                model, batch = run_llm_triage_batch([candidate], as_of=as_of)
-                if model:
-                    triage_model = model
-                triage = batch.get(sym)
-                if triage:
-                    triage_by_sym[sym] = triage
-                if _llm_triage_is_veto(triage):
-                    llm_vetoed += 1
-                    reason = (triage.get("reason") or triage.get("driver_desc") or "LLM veto").strip()
+                triage = triage_by_sym.get(sym)
+                if _llm_triage_skips_discover(triage):
+                    reason = (triage.get("reason") or triage.get("driver_desc") or "LLM skip").strip()
+                    if _llm_triage_is_veto(triage):
+                        llm_vetoed += 1
+                        label = "veto"
+                    else:
+                        llm_flagged += 1
+                        label = "flag"
                     logger.info(
-                        "Oracle %s: LLM triage veto (%s) — %s",
+                        "Oracle %s: LLM triage %s (%s) — %s",
                         sym,
+                        label,
                         triage.get("driver_cat") or "n/a",
                         reason[:200],
                     )
                     continue
+
+            if not self.allow_discovery(sym, period=DISCOVERY_COOLDOWN_HOURS):
+                logger.info("Oracle %s: allow_discovery false (cooldown)", sym)
+                continue
 
             explanation = build_discovery_explanation(candidate)
             weight = candidate.get("discovery_weight") or Decimal("1.0")
@@ -926,7 +1008,7 @@ class Oracle(AdvisorBase):
             ):
                 discoveries += 1
 
-        return discoveries, llm_vetoed, triage_by_sym, triage_model
+        return discoveries, llm_vetoed, llm_flagged, triage_by_sym, triage_model
 
 
     def analyze(self, sa, stock) -> None:
