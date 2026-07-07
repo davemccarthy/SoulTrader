@@ -213,6 +213,55 @@ def _download_intraday(symbols: List[str]) -> pd.DataFrame:
     )
 
 
+def _format_signed_pct(value: Optional[float]) -> str:
+    if value is None:
+        return "n/a"
+    return f"{float(value):+.1f}%"
+
+
+def _pulse_explanation_lead(candidate: Dict[str, Any]) -> str:
+    """Short holdings summary: price move + intraday range (not volume)."""
+    range_pct = float(candidate.get("range_pct") or 0)
+    pct_60 = candidate.get("pct_60m")
+    pct_30 = candidate.get("pct_30m")
+
+    if pct_60 is not None:
+        return f"{_format_signed_pct(pct_60)} last hour, {range_pct:.1f}% range"
+    if pct_30 is not None:
+        return f"{_format_signed_pct(pct_30)} last 30m, {range_pct:.1f}% range"
+    return f"{range_pct:.1f}% intraday range"
+
+
+def _pulse_rank_sentence(candidate: Dict[str, Any]) -> str:
+    rank = candidate.get("rank")
+    if rank is None:
+        return "High session dollar volume"
+    return f"Ranked #{int(rank)} for session dollar volume"
+
+
+def _pulse_price_sentence(candidate: Dict[str, Any]) -> str:
+    price = float(candidate.get("price") or 0)
+    bar = float(candidate.get("bar_price") or 0)
+    return f"Live ${price:.2f} (15m close ${bar:.2f})"
+
+
+def _pulse_volume_sentence(candidate: Dict[str, Any]) -> str:
+    vol = int(candidate.get("volume") or 0)
+    dvol = float(candidate.get("dollar_volume") or 0)
+    return f"~{vol:,} shares traded today (~${dvol:,.0f})"
+
+
+def build_pulse_discovery_explanation(candidate: Dict[str, Any]) -> str:
+    segments = [
+        _pulse_explanation_lead(candidate),
+        _pulse_rank_sentence(candidate),
+        "Price stable vs 30m, 60m, and open",
+        _pulse_price_sentence(candidate),
+        _pulse_volume_sentence(candidate),
+    ]
+    return " | ".join(segments)
+
+
 class Pulse(AdvisorBase):
     """Daily attention universe with stable intraday entry."""
 
@@ -402,17 +451,7 @@ class Pulse(AdvisorBase):
                 skipped_cooldown += 1
                 continue
 
-            explanation = (
-                f"Pulse entry | rank {candidate.get('rank')} | "
-                f"quote ${float(candidate.get('price') or 0):.2f} | "
-                f"bar ${float(candidate.get('bar_price') or 0):.2f} | "
-                f"{PULSE_RANGE_LOOKBACK_MINUTES}m range {float(candidate.get('range_pct') or 0):.1f}% | "
-                f"30m {float(candidate.get('pct_30m') or 0):+.1f}% | "
-                f"60m {float(candidate.get('pct_60m') or 0):+.1f}% | "
-                f"open {float(candidate.get('pct_open') or 0):+.1f}% | "
-                f"vol {int(candidate.get('volume') or 0):,} | "
-                f"day dvol ${float(candidate.get('dollar_volume') or 0):,.0f}"
-            )
+            explanation = build_pulse_discovery_explanation(candidate)
             if self.discovered(
                 sa,
                 symbol,
