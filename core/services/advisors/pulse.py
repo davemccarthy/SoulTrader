@@ -52,6 +52,9 @@ PULSE_REBUY_DROP = Decimal("0.02")
 PULSE_REBUY_MAX_TRANCHES = Decimal("3")
 PULSE_ENDDAY_TAKE = Decimal("1.00")
 
+# Opportunity floor at discover (Oracle uses C at pre-discover gate).
+PULSE_MIN_OPPORTUNITY_GRADE = "D"
+
 ETF_EXCLUDE_TICKERS: Final[frozenset[str]] = frozenset(
     {
         "DIA",
@@ -262,6 +265,40 @@ def build_pulse_discovery_explanation(candidate: Dict[str, Any]) -> str:
     return " | ".join(segments)
 
 
+def _pulse_opportunity_gate(symbol: str) -> tuple[bool, str]:
+    """
+    Live SO check before discover (same scorers as Assessment; Oracle pattern).
+    Returns (passes, detail) for logging.
+    """
+    from core.services.health.assess import run_component_results
+    from core.services.health.risk_matrix import compute_so_snapshot
+    from core.services.health.so_ratings import (
+        opportunity_grade_at_least,
+        score_to_opportunity_grade,
+        score_to_stability_grade,
+    )
+
+    results = run_component_results(symbol)
+    so = compute_so_snapshot(symbol, results)
+    opp_score = so.get("opportunity")
+    stab_score = so.get("stability")
+    opp_grade = score_to_opportunity_grade(opp_score)
+    stab_grade = score_to_stability_grade(stab_score)
+    opp_letter = opp_grade.letter if opp_grade else "n/a"
+    stab_letter = stab_grade.letter if stab_grade else "n/a"
+    opp_display = round(float(opp_score), 1) if opp_score is not None else None
+
+    detail = (
+        f"opp={opp_letter} min={PULSE_MIN_OPPORTUNITY_GRADE} "
+        f"stab={stab_letter} opportunity_score={opp_display}"
+    )
+    if opp_grade is None:
+        return False, detail
+    if not opportunity_grade_at_least(opp_grade.letter, PULSE_MIN_OPPORTUNITY_GRADE):
+        return False, detail
+    return True, detail
+
+
 class Pulse(AdvisorBase):
     """Daily attention universe with stable intraday entry."""
 
@@ -442,6 +479,7 @@ class Pulse(AdvisorBase):
         candidates = self._daily_candidates()
         discoveries = 0
         skipped_cooldown = 0
+        skipped_opp = 0
 
         for candidate in candidates:
             symbol = str(candidate.get("symbol") or "").strip().upper()
@@ -449,6 +487,12 @@ class Pulse(AdvisorBase):
                 continue
             if not self.allow_discovery(symbol, period=PULSE_DISCOVERY_COOLDOWN_HOURS):
                 skipped_cooldown += 1
+                continue
+
+            opp_ok, opp_detail = _pulse_opportunity_gate(symbol)
+            if not opp_ok:
+                logger.info("pulse_opp_gate block discover %s %s", symbol, opp_detail)
+                skipped_opp += 1
                 continue
 
             explanation = build_pulse_discovery_explanation(candidate)
@@ -462,10 +506,11 @@ class Pulse(AdvisorBase):
                 discoveries += 1
 
         logger.info(
-            "Pulse discover sa=%s: candidates=%d skipped_cooldown=%d discoveries=%d",
+            "Pulse discover sa=%s: candidates=%d skipped_cooldown=%d skipped_opp=%d discoveries=%d",
             sa.id,
             len(candidates),
             skipped_cooldown,
+            skipped_opp,
             discoveries,
         )
 
