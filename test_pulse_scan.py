@@ -566,9 +566,11 @@ def enrich_stability(
         px_now = _bar_close_at_as_of(hist, as_of_ts)
         open_px = _safe_float(hist["Open"].iloc[0]) if not hist.empty and "Open" in hist.columns else None
         px_30 = _bar_close_at_or_before(hist, 30, as_of_ts=as_of_ts)
+        px_5 = _bar_close_at_or_before(hist, 5, as_of_ts=as_of_ts)
         px_60 = _bar_close_at_or_before(hist, 60, as_of_ts=as_of_ts)
 
         pct_open = _pct(px_now, open_px)
+        pct_5 = _pct(px_now, px_5)
         pct_30 = _pct(px_now, px_30)
         pct_60 = _pct(px_now, px_60)
         range_pct_to_asof = _range_pct_at_or_before(hist, as_of_ts)
@@ -586,25 +588,33 @@ def enrich_stability(
             if hi is not None and lo is not None and lo > 0:
                 full_day_range_pct = (hi / lo - 1.0) * 100.0
 
-        stable_30 = px_now is not None and px_30 is not None and px_now >= px_30
+        recovering = (
+            px_now is not None
+            and px_30 is not None
+            and px_5 is not None
+            and px_now < px_30
+            and px_now > px_5
+        )
         stable_60 = px_now is not None and px_60 is not None and px_now >= px_60 * 0.995
         stable_open = px_now is not None and open_px is not None and px_now >= open_px * 0.99
-        normal_stable = stable_30 and stable_60 and stable_open
+        normal_stable = recovering and stable_60 and stable_open
 
         out.update(
             {
                 "price_now": "" if px_now is None else f"{px_now:.4f}",
                 "open_now": "" if open_px is None else f"{open_px:.4f}",
                 "price_30m_ago": "" if px_30 is None else f"{px_30:.4f}",
+                "price_5m_ago": "" if px_5 is None else f"{px_5:.4f}",
                 "price_60m_ago": "" if px_60 is None else f"{px_60:.4f}",
                 "pct_from_open": "" if pct_open is None else f"{pct_open:.4f}",
+                "pct_5m": "" if pct_5 is None else f"{pct_5:.4f}",
                 "pct_30m": "" if pct_30 is None else f"{pct_30:.4f}",
                 "pct_60m": "" if pct_60 is None else f"{pct_60:.4f}",
                 "range_pct_to_asof": "" if range_pct_to_asof is None else f"{range_pct_to_asof:.4f}",
                 "recent_range_pct": "" if recent_range_pct is None else f"{recent_range_pct:.4f}",
                 "recent_range_minutes": "" if range_lookback_minutes is None else str(range_lookback_minutes),
                 "day_range_pct": "" if full_day_range_pct is None else f"{full_day_range_pct:.4f}",
-                "stable_30m": _stable_bool(stable_30 if px_30 is not None else None),
+                "recovering": _stable_bool(recovering if px_30 is not None and px_5 is not None else None),
                 "stable_60m": _stable_bool(stable_60 if px_60 is not None else None),
                 "stable_open": _stable_bool(stable_open if open_px is not None else None),
                 "normal_stable": _stable_bool(normal_stable),
@@ -652,7 +662,10 @@ def simulate_pulse(
     *,
     scan_date: date,
     entry_time: time,
+    exit_type: str,
     tp_pct: float,
+    activate_pct: float,
+    giveback_pct: float,
     rebuy_pct: float,
     max_tranches: int,
     min_range_pct: Optional[float],
@@ -704,16 +717,30 @@ def simulate_pulse(
         exit_reason = "EOD"
         exit_i = len(closes) - 1
         rebuys = 0
+        high_water = entry_px
+        activated = False
 
         for i in range(entry_i + 1, len(closes)):
-            tp_px = avg * (1.0 + tp_pct)
-            if float(highs.iloc[i]) >= tp_px:
-                exit_px = tp_px
-                exit_reason = "TP"
-                exit_i = i
-                break
-
             close = float(closes.iloc[i])
+            high_water = max(high_water, float(highs.iloc[i]))
+
+            if exit_type == "IPC":
+                activate_px = avg * (1.0 + activate_pct)
+                if high_water >= activate_px:
+                    activated = True
+                if activated and close > avg and close <= high_water * (1.0 - giveback_pct):
+                    exit_px = close
+                    exit_reason = "IPC_GIVEBACK"
+                    exit_i = i
+                    break
+            else:
+                tp_px = avg * (1.0 + tp_pct)
+                if float(highs.iloc[i]) >= tp_px:
+                    exit_px = tp_px
+                    exit_reason = "TP"
+                    exit_i = i
+                    break
+
             add_px = avg * (1.0 - rebuy_pct)
             if tranches < max_tranches and close <= add_px and i >= 2:
                 close_30m_ago = float(closes.iloc[i - 2])
@@ -731,6 +758,7 @@ def simulate_pulse(
                 "sim_entry_time_et": entry_time.strftime("%H:%M"),
                 "sim_entry_price": f"{entry_px:.4f}",
                 "sim_exit_price": f"{exit_px:.4f}",
+                "sim_exit_type": exit_type,
                 "sim_exit_reason": exit_reason,
                 "sim_return_pct": f"{ret_pct:.4f}",
                 "sim_tranches": str(tranches),
@@ -768,12 +796,12 @@ def print_range_report(rows: list[dict[str, str]]) -> None:
         range_pct = _safe_float(row.get("range_pct_to_asof"))
         grouped[_range_bucket(range_pct)].append(row)
 
-    print(f"{'range':>6}  {'n':>3} {'TP':>3} {'tp%':>6} {'avg_ret':>8} {'avg_tr':>7} {'worst':>8}")
+    print(f"{'range':>6}  {'n':>3} {'ex':>3} {'ex%':>6} {'avg_ret':>8} {'avg_tr':>7} {'worst':>8}")
     for bucket in buckets:
         sub = grouped[bucket]
         if not sub:
             continue
-        tp = sum(1 for r in sub if r.get("sim_exit_reason") == "TP")
+        tp = sum(1 for r in sub if r.get("sim_exit_reason") != "EOD")
         rets = [float(r.get("sim_return_pct") or 0) for r in sub]
         tranches = [int(r.get("sim_tranches") or 0) for r in sub]
         print(
@@ -892,6 +920,24 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--tp-pct", type=float, default=0.01, help="Take-profit percentage (default 0.01)")
+    parser.add_argument(
+        "--exit-type",
+        choices=["FIXED_TP", "IPC"],
+        default="FIXED_TP",
+        help="Exit policy for simulation: fixed target or intraday peak/giveback",
+    )
+    parser.add_argument(
+        "--activate-pct",
+        type=float,
+        default=0.002,
+        help="IPC activation profit, e.g. 0.002 = 0.2%%",
+    )
+    parser.add_argument(
+        "--giveback-pct",
+        type=float,
+        default=0.002,
+        help="IPC giveback from high-water mark",
+    )
     parser.add_argument("--rebuy-pct", type=float, default=0.02, help="Rebuy drop percentage (default 0.02)")
     parser.add_argument("--max-tranches", type=int, default=4, help="Max tranches including initial buy (default 4)")
     parser.add_argument("--min-range-pct", type=float, help="Only simulate names with range_pct_to_asof >= this")
@@ -925,7 +971,10 @@ def main() -> int:
             rows,
             scan_date=scan_date,
             entry_time=args.entry_time,
+            exit_type=args.exit_type,
             tp_pct=args.tp_pct,
+            activate_pct=args.activate_pct,
+            giveback_pct=args.giveback_pct,
             rebuy_pct=args.rebuy_pct,
             max_tranches=args.max_tranches,
             min_range_pct=args.min_range_pct,
@@ -935,7 +984,7 @@ def main() -> int:
         )
         write_dict_rows(sim_path, simulated)
         ok_rows = [r for r in simulated if r.get("sim_status") == "OK"]
-        tp_rows = [r for r in ok_rows if r.get("sim_exit_reason") == "TP"]
+        exit_rows = [r for r in ok_rows if r.get("sim_exit_reason") != "EOD"]
         avg_ret = (
             sum(float(r.get("sim_return_pct") or 0) for r in ok_rows) / len(ok_rows)
             if ok_rows
@@ -958,8 +1007,9 @@ def main() -> int:
             recent_range_filter = f", recent_range={lo}..{hi}%"
         print(
             f"Wrote Pulse simulation: {sim_path} "
-            f"(ok={len(ok_rows)}, TP={len(tp_rows)}, avg_ret={avg_ret:+.2f}%, "
-            f"avg_tranches={avg_tranches:.2f}{range_filter}{recent_range_filter})"
+            f"(exit_type={args.exit_type}, ok={len(ok_rows)}, exits={len(exit_rows)}, "
+            f"avg_ret={avg_ret:+.2f}%, avg_tranches={avg_tranches:.2f}"
+            f"{range_filter}{recent_range_filter})"
         )
         print_preview(simulated, limit=args.preview, simulation=True)
         return 0

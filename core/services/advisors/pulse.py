@@ -5,9 +5,9 @@ Entry:
 - Build a broad liquid-stock seed after 11:30 ET from Polygon grouped daily aggs.
 - Rank/filter that seed by today's intraday 15m volume so far.
 - Exclude common ETF/fund tickers.
-- Keep names with normal stability at build time:
-  executable quote >= 30m ago, executable quote >= 60m ago * 0.995,
-  executable quote >= open * 0.99.
+- Keep names with recovery + stability at build time:
+  executable quote below 30m ago and above 5m ago (short-term bounce after pullback),
+  executable quote >= 60m ago * 0.995, executable quote >= open * 0.99.
 - Require recent 60m intraday range >= 5%, bypassing the first noisy hour.
 - Discover all qualifying names (MEGA spread is expected for initial test funds).
 
@@ -31,7 +31,7 @@ from core.services.financial import polygon as financial_polygon
 logger = logging.getLogger(__name__)
 
 ET = pytz.timezone("US/Eastern")
-PULSE_CANDIDATE_VERSION = 5
+PULSE_CANDIDATE_VERSION = 6
 PULSE_BUILD_TIME_ET = time(11, 30)
 PULSE_DISCOVERY_END_TIME_ET = time(14, 30)
 PULSE_SEED_UNIVERSE = 500
@@ -41,6 +41,8 @@ PULSE_MIN_SESSION_VOLUME = 500_000
 PULSE_MIN_DOLLAR_VOLUME = 25_000_000.0
 PULSE_MIN_RANGE_PCT = 1.5
 PULSE_RANGE_LOOKBACK_MINUTES = 60
+PULSE_RECOVERY_MEDIUM_MINUTES = 30
+PULSE_RECOVERY_SHORT_MINUTES = 5
 PULSE_CANDIDATE_CACHE_MINUTES = 15
 PULSE_MAX_PRICE_DRIFT_FROM_SEED = 0.50
 PULSE_MAX_QUOTE_DRIFT_FROM_BAR = 0.02
@@ -149,6 +151,21 @@ def _pct(current: Optional[float], base: Optional[float]) -> Optional[float]:
     return (current / base - 1.0) * 100.0
 
 
+def _is_price_recovering(
+    price_now: Optional[float],
+    px_medium: Optional[float],
+    px_short: Optional[float],
+) -> bool:
+    """Pullback vs medium lookback with short-term bounce (not a momentum chase)."""
+    return (
+        price_now is not None
+        and px_medium is not None
+        and px_short is not None
+        and price_now < px_medium
+        and price_now > px_short
+    )
+
+
 def _bar_close_at_or_before(hist: pd.DataFrame, minutes_ago: int) -> Optional[float]:
     if hist.empty or "Close" not in hist.columns:
         return None
@@ -223,16 +240,25 @@ def _format_signed_pct(value: Optional[float]) -> str:
 
 
 def _pulse_explanation_lead(candidate: Dict[str, Any]) -> str:
-    """Short holdings summary: price move + intraday range (not volume)."""
+    """Short holdings summary: recovery move + intraday range (not volume)."""
     range_pct = float(candidate.get("range_pct") or 0)
-    pct_60 = candidate.get("pct_60m")
+    pct_5 = candidate.get("pct_5m")
     pct_30 = candidate.get("pct_30m")
 
-    if pct_60 is not None:
-        return f"{_format_signed_pct(pct_60)} last hour, {range_pct:.1f}% range"
+    if pct_5 is not None and pct_30 is not None:
+        return (
+            f"Recovering {_format_signed_pct(pct_5)} last 5m, "
+            f"{_format_signed_pct(pct_30)} vs 30m, {range_pct:.1f}% range"
+        )
+    if pct_5 is not None:
+        return f"Recovering {_format_signed_pct(pct_5)} last 5m, {range_pct:.1f}% range"
     if pct_30 is not None:
-        return f"{_format_signed_pct(pct_30)} last 30m, {range_pct:.1f}% range"
+        return f"{_format_signed_pct(pct_30)} vs 30m, {range_pct:.1f}% range"
     return f"{range_pct:.1f}% intraday range"
+
+
+def _pulse_stability_sentence(candidate: Dict[str, Any]) -> str:
+    return "Pullback vs 30m, bouncing vs 5m; OK vs 60m and open"
 
 
 def _pulse_rank_sentence(candidate: Dict[str, Any]) -> str:
@@ -258,7 +284,7 @@ def build_pulse_discovery_explanation(candidate: Dict[str, Any]) -> str:
     segments = [
         _pulse_explanation_lead(candidate),
         _pulse_rank_sentence(candidate),
-        "Price stable vs 30m, 60m, and open",
+        _pulse_stability_sentence(candidate),
         _pulse_price_sentence(candidate),
         _pulse_volume_sentence(candidate),
     ]
@@ -400,14 +426,15 @@ class Pulse(AdvisorBase):
                 continue
             price_now = quote_price
             open_px = _safe_float(hist["Open"].iloc[0]) if "Open" in hist.columns else None
-            px_30 = _bar_close_at_or_before(hist, 30)
+            px_30 = _bar_close_at_or_before(hist, PULSE_RECOVERY_MEDIUM_MINUTES)
+            px_5 = _bar_close_at_or_before(hist, PULSE_RECOVERY_SHORT_MINUTES)
             px_60 = _bar_close_at_or_before(hist, 60)
             range_pct = _range_pct_last_minutes(hist, PULSE_RANGE_LOOKBACK_MINUTES)
 
-            stable_30 = price_now is not None and px_30 is not None and price_now >= px_30
+            recovering = _is_price_recovering(price_now, px_30, px_5)
             stable_60 = price_now is not None and px_60 is not None and price_now >= px_60 * 0.995
             stable_open = price_now is not None and open_px is not None and price_now >= open_px * 0.99
-            if not (stable_30 and stable_60 and stable_open):
+            if not (recovering and stable_60 and stable_open):
                 continue
             if range_pct is None or range_pct < PULSE_MIN_RANGE_PCT:
                 continue
@@ -422,6 +449,7 @@ class Pulse(AdvisorBase):
                     "dollar_volume": round(float(row["dollar_volume_so_far"]), 2),
                     "prior_dollar_volume": round(float(row["prior_dollar_volume"]), 2),
                     "range_pct": round(float(range_pct), 4),
+                    "pct_5m": None if px_5 is None else round(float(_pct(price_now, px_5) or 0), 4),
                     "pct_30m": None if px_30 is None else round(float(_pct(price_now, px_30) or 0), 4),
                     "pct_60m": None if px_60 is None else round(float(_pct(price_now, px_60) or 0), 4),
                     "pct_open": None if open_px is None else round(float(_pct(price_now, open_px) or 0), 4),
