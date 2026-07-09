@@ -3,7 +3,7 @@
 Pulse v0 daily attention scan.
 
 Baby-step goal:
-  - Run once per trading day after 11:30 ET.
+  - Run once per trading day after 11:00 ET.
   - Fetch a broad Polygon grouped daily aggregate seed (same endpoint family as Vunder).
   - Rank liquid names by yfinance intraday volume so far on the scan date.
   - Save a date-named CSV and reuse it on later runs that day.
@@ -17,7 +17,7 @@ Usage:
   python test_pulse_scan.py
   python test_pulse_scan.py --top 200 --min-price 5 --min-dollar-volume 50000000
   python test_pulse_scan.py --refresh
-  python test_pulse_scan.py --force   # allow before 11:30 ET
+  python test_pulse_scan.py --force   # allow before 11:00 ET
 """
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ import yfinance as yf
 
 
 ET = ZoneInfo("US/Eastern")
-PULSE_SCAN_TIME_ET = time(11, 30)
+PULSE_SCAN_TIME_ET = time(11, 0)
 DEFAULT_RANGE_LOOKBACK_MINUTES = 60
 DEFAULT_CACHE_DIR = Path(".pulse_scan")
 DEFAULT_SEED_UNIVERSE = 500
@@ -891,7 +891,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     parser.add_argument("--date", type=str, help="Override scan date YYYY-MM-DD (default today ET)")
     parser.add_argument("--refresh", action="store_true", help="Rebuild even if today's CSV exists")
-    parser.add_argument("--force", action="store_true", help="Allow scan before 11:30 ET")
+    parser.add_argument("--force", action="store_true", help="Allow scan before 11:00 ET")
     parser.add_argument("--preview", type=int, default=25, help="Rows to print (default 25)")
     parser.add_argument("--include-etfs", action="store_true", help="Do not exclude common ETF tickers")
     parser.add_argument(
