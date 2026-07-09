@@ -9,7 +9,7 @@ Entry:
   executable quote below 30m ago and above 5m ago (short-term bounce after pullback),
   executable quote >= 60m ago * 0.995, executable quote >= open * 0.99.
 - Require recent 60m intraday range >= 1.3%.
-- Discover all qualifying names (MEGA spread is expected for initial test funds).
+- Discover qualifying names between 11:00 and 13:30 ET (MEGA spread is expected for initial test funds).
 
 Exit/add: TARGET_INTRADAY (+0.2% / 0.2% giveback), -2% stabilized rebuy (max 3 tranches),
 END_DAY flat at 3:30 ET (1.00× avg). No END_WEEK, DT, or SL.
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 ET = pytz.timezone("US/Eastern")
 PULSE_CANDIDATE_VERSION = 7
 PULSE_BUILD_TIME_ET = time(11, 0)
-PULSE_DISCOVERY_END_TIME_ET = time(14, 30)
+PULSE_DISCOVERY_END_TIME_ET = time(13, 30)
 PULSE_SEED_UNIVERSE = 500
 PULSE_TOP_DAILY_VOLUME = 100
 PULSE_MIN_PRICE = 5.0
@@ -55,7 +55,7 @@ PULSE_REBUY_MAX_TRANCHES = Decimal("3")
 PULSE_ENDDAY_TAKE = Decimal("1.00")
 
 # Opportunity floor at discover (Oracle uses C at pre-discover gate).
-PULSE_MIN_OPPORTUNITY_GRADE = "D"
+PULSE_MIN_OPPORTUNITY_GRADE = "C"
 
 ETF_EXCLUDE_TICKERS: Final[frozenset[str]] = frozenset(
     {
