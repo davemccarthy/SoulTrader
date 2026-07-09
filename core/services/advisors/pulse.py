@@ -8,7 +8,7 @@ Entry:
 - Keep names with recovery + stability at build time:
   executable quote below 30m ago and above 5m ago (short-term bounce after pullback),
   executable quote >= 60m ago * 0.995, executable quote >= open * 0.99.
-- Require recent 60m intraday range >= 1.3%.
+- Require recent 60m intraday range >= 1.25%.
 - Discover qualifying names between 11:00 and 13:30 ET (MEGA spread is expected for initial test funds).
 
 Exit/add: TARGET_INTRADAY (+0.2% / 0.2% giveback), -2% stabilized rebuy (max 3 tranches),
@@ -31,7 +31,7 @@ from core.services.financial import polygon as financial_polygon
 logger = logging.getLogger(__name__)
 
 ET = pytz.timezone("US/Eastern")
-PULSE_CANDIDATE_VERSION = 7
+PULSE_CANDIDATE_VERSION = 8
 PULSE_BUILD_TIME_ET = time(11, 0)
 PULSE_DISCOVERY_END_TIME_ET = time(13, 30)
 PULSE_SEED_UNIVERSE = 500
@@ -39,7 +39,7 @@ PULSE_TOP_DAILY_VOLUME = 100
 PULSE_MIN_PRICE = 5.0
 PULSE_MIN_SESSION_VOLUME = 500_000
 PULSE_MIN_DOLLAR_VOLUME = 25_000_000.0
-PULSE_MIN_RANGE_PCT = 1.3
+PULSE_MIN_RANGE_PCT = 1.25
 PULSE_RANGE_LOOKBACK_MINUTES = 60
 PULSE_RECOVERY_MEDIUM_MINUTES = 30
 PULSE_RECOVERY_SHORT_MINUTES = 5
@@ -247,11 +247,11 @@ def _pulse_explanation_lead(candidate: Dict[str, Any]) -> str:
 
     if pct_5 is not None and pct_30 is not None:
         return (
-            f"Recovering {_format_signed_pct(pct_5)} last 5m, "
+            f"{_format_signed_pct(pct_5)} last 5m, "
             f"{_format_signed_pct(pct_30)} vs 30m, {range_pct:.1f}% range"
         )
     if pct_5 is not None:
-        return f"Recovering {_format_signed_pct(pct_5)} last 5m, {range_pct:.1f}% range"
+        return f"{_format_signed_pct(pct_5)} last 5m, {range_pct:.1f}% range"
     if pct_30 is not None:
         return f"{_format_signed_pct(pct_30)} vs 30m, {range_pct:.1f}% range"
     return f"{range_pct:.1f}% intraday range"
