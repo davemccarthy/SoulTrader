@@ -27,12 +27,66 @@ from core.services.market import in_opening_noise_window, market_open
 logger = logging.getLogger(__name__)
 DT_EXIT_CONFIDENCE_MIN = 0.70
 REBUY_STABILIZE_MINUTES = STABILIZE_MINUTES_DEFAULT
+REBUY_SHORT_MINUTES = 5
+REBUY_TREND_HOURS = 2
+REBUY_MIN_TREND = Decimal("-0.10")
 PEAKED_MIN_MARKET_MINUTES = 60
 RECENT_TP_LOOKBACK_HOURS = 4
 
 # Runner: realtime impulse check inside analyse_intraday (shared 1m hist with IPC).
 # Shadow mode (default): log target_moving but still run IPC. Flip to True after log replay.
 RUNNER_SKIP_IPC = False
+
+
+def _percentage_rebuy_intraday_allows(stock, current_price) -> bool:
+    """
+    PERCENTAGE_REBUY recovery gate (global): RTH only, short-term uptick, mild 2h trend.
+    """
+    if market_open() is None:
+        logger.info("%s rebuy deferred: market closed", stock.symbol)
+        return False
+
+    trend = stock.calc_trend(
+        period="1d",
+        interval="15m",
+        hours=REBUY_TREND_HOURS,
+        latest_price=current_price,
+    )
+    if trend is None:
+        logger.info(
+            "%s rebuy deferred: no %dh trend reference",
+            stock.symbol,
+            REBUY_TREND_HOURS,
+        )
+        return False
+    if trend <= REBUY_MIN_TREND:
+        logger.info(
+            "%s rebuy deferred: trend %.4f <= %.2f (2h slope)",
+            stock.symbol,
+            float(trend),
+            float(REBUY_MIN_TREND),
+        )
+        return False
+
+    for minutes in (REBUY_STABILIZE_MINUTES, REBUY_SHORT_MINUTES):
+        stabilized = price_above_minutes_ago(stock, minutes=minutes)
+        if stabilized is not True:
+            if stabilized is False:
+                logger.info(
+                    "%s rebuy deferred: price $%.2f not above %dm ago (wait for stabilization)",
+                    stock.symbol,
+                    float(stock.price),
+                    minutes,
+                )
+            else:
+                logger.info(
+                    "%s rebuy deferred: no %dm intraday reference",
+                    stock.symbol,
+                    minutes,
+                )
+            return False
+
+    return True
 RUNNER_LOOKBACK_MINUTES = 30
 RUNNER_MIN_PROFIT_PCT = 2.0
 RUNNER_MIN_RET_30M_PCT = 1.0
@@ -766,28 +820,14 @@ def analyze_holdings(sa, funds):
                         elif instruction.instruction == 'PERCENTAGE_REBUY':
                             # value1 = drop fraction from average (e.g. 0.02 = 2%); add one fund tranche at current price.
                             # value2 = max tranche count cap (default 3 when null). value2 <= 0 = unlimited (cash only).
+                            # Intraday gate (RTH): calc_trend(2h) > -0.10 and price above 30m and 5m references.
                             if instruction.value1 and holding.shares > 0 and buy_price:
                                 drop_pct = Decimal(str(instruction.value1))
                                 drop_threshold = Decimal(str(buy_price)) * (Decimal("1.0") - drop_pct)
                                 if holding.stock.price <= drop_threshold:
-                                    stabilized = price_above_minutes_ago(
-                                        holding.stock, minutes=REBUY_STABILIZE_MINUTES
-                                    )
-                                    if stabilized is not True:
-                                        if stabilized is False:
-                                            logger.info(
-                                                "%s rebuy deferred: price $%.2f not above %dm ago "
-                                                "(wait for stabilization)",
-                                                holding.stock.symbol,
-                                                float(holding.stock.price),
-                                                REBUY_STABILIZE_MINUTES,
-                                            )
-                                        else:
-                                            logger.info(
-                                                "%s rebuy deferred: no %dm intraday reference",
-                                                holding.stock.symbol,
-                                                REBUY_STABILIZE_MINUTES,
-                                            )
+                                    if not _percentage_rebuy_intraday_allows(
+                                        holding.stock, holding.stock.price
+                                    ):
                                         continue
 
                                     tranche_amount = fund.average_spend() * Decimal(str(sentiment))

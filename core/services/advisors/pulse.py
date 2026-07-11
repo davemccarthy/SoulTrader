@@ -11,7 +11,7 @@ Entry:
 - Require recent 60m intraday range >= 1.25%.
 - Discover qualifying names between 11:00 and 13:30 ET (MEGA spread is expected for initial test funds).
 
-Exit/add: TARGET_INTRADAY (+0.2% / 0.2% giveback), -2% stabilized rebuy (max 3 tranches),
+Exit/add: TARGET_INTRADAY (+0.2% / 0.2% giveback), -2% rebuy (max 3 tranches; 2h trend + 5m/30m recovery),
 END_DAY flat at 3:30 ET (1.00× avg). No END_WEEK, DT, or SL.
 """
 from __future__ import annotations
