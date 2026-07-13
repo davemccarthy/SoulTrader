@@ -18,6 +18,13 @@ Usage:
   python test_pulse_scan.py --top 200 --min-price 5 --min-dollar-volume 50000000
   python test_pulse_scan.py --refresh
   python test_pulse_scan.py --force   # allow before 11:00 ET
+  python test_pulse_scan.py --stable --date 2026-07-08 --entry-time 11:00
+  python test_pulse_scan.py --impulse-backtest --from 2026-07-06 --to 2026-07-10
+  python test_pulse_scan.py --impulse-backtest --from 2026-06-22 --to 2026-07-10 \\
+    --exit-type IPC --activate-pct 0.002 --giveback-pct 0.002 \\
+    --impulse-activate-pct 0.006 --impulse-giveback-pct 0.004 \\
+    --bandwagon-min-vol-ratio 1.5 --bandwagon-min-ret-15m 0.3 \\
+    --bandwagon-lookback-minutes 5
 """
 from __future__ import annotations
 
@@ -42,6 +49,32 @@ DEFAULT_CACHE_DIR = Path(".pulse_scan")
 DEFAULT_SEED_UNIVERSE = 500
 DEFAULT_MAX_PRICE_DRIFT_FROM_SEED = 0.50
 DEFAULT_RVOL_LOOKBACK_DAYS = 20
+PULSE_MIN_RANGE_PCT = 1.25
+# Discover impulse (no profit signal; mirrors analysis.py runner minus profit).
+IMPULSE_LOOKBACK_MINUTES = 30
+IMPULSE_MIN_RET_30M_PCT = 1.0
+IMPULSE_MIN_VOL_RATIO = 2.0
+IMPULSE_MIN_CLOSE_POSITION = 0.6
+IMPULSE_MIN_SIGNALS_DEFAULT = 3
+# Bandwagon partner (vol spike + sharp price up); independent of 1m impulse scoring.
+BANDWAGON_LOOKBACK_MINUTES_DEFAULT = 15
+BANDWAGON_MIN_VOL_RATIO_DEFAULT = 1.5
+BANDWAGON_MIN_RET_PCT_DEFAULT = 0.3
+DISCOVER_BUCKETS = (
+    "recovery",
+    "impulse_only",
+    "impulse_any",
+    "both",
+    "bandwagon",
+    "bandwagon_only",
+)
+# Back-compat alias used by reports and aggregation loops.
+IMPULSE_BUCKETS = DISCOVER_BUCKETS
+# Partner buckets use --impulse-activate-pct / --impulse-giveback-pct when set.
+PARTNER_IPC_BUCKETS = frozenset(
+    {"impulse_only", "impulse_any", "both", "bandwagon", "bandwagon_only"}
+)
+IMPULSE_IPC_BUCKETS = PARTNER_IPC_BUCKETS
 ETF_EXCLUDE_TICKERS = frozenset(
     {
         "DIA",
@@ -431,6 +464,50 @@ def _stable_bool(value: Optional[bool]) -> str:
     return ""
 
 
+def _bandwagon_bar_interval(lookback_minutes: int) -> str:
+    """Finer bars when lookback is short (5m data for <=5m windows)."""
+    if lookback_minutes <= 5:
+        return "5m"
+    return "15m"
+
+
+def _download_intraday_bars(
+    symbols: list[str],
+    *,
+    scan_date: date,
+    interval: str,
+) -> pd.DataFrame:
+    if not symbols:
+        return pd.DataFrame()
+    start = scan_date.isoformat()
+    end = (scan_date + timedelta(days=1)).isoformat()
+    return yf.download(
+        symbols,
+        start=start,
+        end=end,
+        interval=interval,
+        auto_adjust=True,
+        progress=False,
+        threads=True,
+    )
+
+
+def _download_intraday_1m(symbols: list[str], *, scan_date: date) -> pd.DataFrame:
+    if not symbols:
+        return pd.DataFrame()
+    start = scan_date.isoformat()
+    end = (scan_date + timedelta(days=1)).isoformat()
+    return yf.download(
+        symbols,
+        start=start,
+        end=end,
+        interval="1m",
+        auto_adjust=True,
+        progress=False,
+        threads=True,
+    )
+
+
 def _download_intraday(symbols: list[str], *, scan_date: Optional[date] = None) -> pd.DataFrame:
     if not symbols:
         return pd.DataFrame()
@@ -626,6 +703,304 @@ def enrich_stability(
     return enriched
 
 
+def _compute_bandwagon_at_as_of(
+    hist: pd.DataFrame,
+    as_of_ts: pd.Timestamp,
+    *,
+    lookback_minutes: int,
+    min_vol_ratio: float,
+    min_ret_pct: float,
+) -> dict[str, str]:
+    empty = {
+        "bandwagon_lookback_min": str(lookback_minutes),
+        "bandwagon_ret_pct": "",
+        "bandwagon_vol_last": "",
+        "bandwagon_vol_prior": "",
+        "bandwagon_vol_ratio": "",
+        "bandwagon_pass": "",
+        # legacy aliases (ret/vol over lookback window, not always 15m)
+        "pct_15m": "",
+        "vol_15m": "",
+        "vol_prior_15m": "",
+        "vol_ratio_15m": "",
+    }
+    if hist.empty or "Close" not in hist.columns:
+        return empty
+
+    px_now = _bar_close_at_as_of(hist, as_of_ts)
+    px_ago = _bar_close_at_or_before(hist, lookback_minutes, as_of_ts=as_of_ts)
+    ret_pct = _pct(px_now, px_ago)
+
+    last_start = as_of_ts - pd.Timedelta(minutes=lookback_minutes)
+    prior_start = as_of_ts - pd.Timedelta(minutes=lookback_minutes * 2)
+    vol_last = _volume_sum_hist_range(hist, last_start, as_of_ts)
+    vol_prior = _volume_sum_hist_range(hist, prior_start, last_start)
+
+    vol_ratio = None
+    if vol_last is not None and vol_prior is not None and vol_prior > 0:
+        vol_ratio = vol_last / vol_prior
+
+    passes = (
+        vol_ratio is not None
+        and vol_ratio >= min_vol_ratio
+        and ret_pct is not None
+        and ret_pct >= min_ret_pct
+    )
+    fields = {
+        "bandwagon_lookback_min": str(lookback_minutes),
+        "bandwagon_ret_pct": "" if ret_pct is None else f"{ret_pct:.4f}",
+        "bandwagon_vol_last": "" if vol_last is None else f"{vol_last:.0f}",
+        "bandwagon_vol_prior": "" if vol_prior is None else f"{vol_prior:.0f}",
+        "bandwagon_vol_ratio": "" if vol_ratio is None else f"{vol_ratio:.4f}",
+        "bandwagon_pass": _stable_bool(passes),
+        "pct_15m": "" if ret_pct is None else f"{ret_pct:.4f}",
+        "vol_15m": "" if vol_last is None else f"{vol_last:.0f}",
+        "vol_prior_15m": "" if vol_prior is None else f"{vol_prior:.0f}",
+        "vol_ratio_15m": "" if vol_ratio is None else f"{vol_ratio:.4f}",
+    }
+    return fields
+
+
+def enrich_bandwagon(
+    rows: list[dict[str, str]],
+    *,
+    scan_date: date,
+    as_of_time: time,
+    lookback_minutes: int,
+    min_vol_ratio: float,
+    min_ret_pct: float,
+    min_range_pct: float,
+) -> list[dict[str, str]]:
+    """Bandwagon: recent volume spike + sharp price up over lookback (5m or 15m bars)."""
+    symbols = [str(r.get("symbol") or "").strip().upper() for r in rows if r.get("symbol")]
+    interval = _bandwagon_bar_interval(lookback_minutes)
+    data = _download_intraday_bars(symbols, scan_date=scan_date, interval=interval)
+    as_of_ts = _as_of_timestamp(scan_date, as_of_time)
+    out: list[dict[str, str]] = []
+
+    for row in rows:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        hist = _hist_for_date(_symbol_hist(data, symbol), scan_date)
+        merged = dict(row)
+        bandwagon_fields = _compute_bandwagon_at_as_of(
+            hist,
+            as_of_ts,
+            lookback_minutes=lookback_minutes,
+            min_vol_ratio=min_vol_ratio,
+            min_ret_pct=min_ret_pct,
+        )
+        merged.update(bandwagon_fields)
+
+        range_pct = _safe_float(row.get("range_pct_to_asof"))
+        if merged.get("bandwagon_pass") == "Y":
+            if range_pct is None or range_pct < min_range_pct:
+                merged["bandwagon_pass"] = "n"
+
+        out.append(merged)
+
+    return out
+
+
+def _high_in_hist_range(
+    hist: pd.DataFrame,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+) -> Optional[float]:
+    if hist.empty or "High" not in hist.columns:
+        return None
+    idx = pd.to_datetime(hist.index, utc=True)
+    window = hist[(idx >= start_ts) & (idx < end_ts)]
+    if window.empty:
+        return None
+    return _safe_float(window["High"].astype(float).max())
+
+
+def _volume_sum_hist_range(
+    hist: pd.DataFrame,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+) -> Optional[float]:
+    if hist.empty or "Volume" not in hist.columns:
+        return None
+    idx = pd.to_datetime(hist.index, utc=True)
+    window = hist[(idx >= start_ts) & (idx <= end_ts)]
+    if window.empty:
+        return None
+    total = float(window["Volume"].astype(float).sum())
+    return total if total > 0 else None
+
+
+def _compute_impulse_at_as_of(
+    hist: pd.DataFrame,
+    as_of_ts: pd.Timestamp,
+    *,
+    min_signals: int,
+    min_ret_30m_pct: float,
+) -> dict[str, str]:
+    empty = {
+        "impulse_score": "",
+        "impulse_signals": "",
+        "impulse_ret_30m": "",
+        "impulse_vol_ratio": "",
+        "impulse_close_pos": "",
+        "impulse_pass": "",
+    }
+    if hist.empty or "Close" not in hist.columns:
+        return empty
+
+    idx = pd.to_datetime(hist.index, utc=True)
+    eligible = idx <= as_of_ts
+    if not eligible.any():
+        return empty
+
+    hist = hist.loc[eligible]
+    idx = pd.to_datetime(hist.index, utc=True)
+    price_now = _safe_float(hist["Close"].astype(float).iloc[-1])
+    if price_now is None:
+        return empty
+
+    lookback = IMPULSE_LOOKBACK_MINUTES
+    start_30 = as_of_ts - pd.Timedelta(minutes=lookback)
+    prior_start = start_30 - pd.Timedelta(minutes=lookback)
+    window = hist[(idx >= start_30) & (idx <= as_of_ts)]
+    if window.empty or len(window) < 2:
+        return empty
+
+    prior_30 = hist.loc[idx <= start_30]
+    if prior_30.empty:
+        return empty
+    price_30_ago = _safe_float(prior_30["Close"].astype(float).iloc[-1])
+    if price_30_ago is None:
+        return empty
+    ret_30m_pct = (price_now / price_30_ago - 1.0) * 100.0
+
+    highs = window["High"].astype(float) if "High" in window.columns else window["Close"].astype(float)
+    lows = window["Low"].astype(float) if "Low" in window.columns else window["Close"].astype(float)
+    high_max = float(highs.max())
+    low_min = float(lows.min())
+    if high_max > low_min:
+        close_position = (price_now - low_min) / (high_max - low_min)
+    else:
+        close_position = 0.5
+
+    last_10_start = as_of_ts - pd.Timedelta(minutes=10)
+    prev_10_start = as_of_ts - pd.Timedelta(minutes=20)
+    hi_last10 = _high_in_hist_range(hist, last_10_start, as_of_ts + pd.Timedelta(minutes=1))
+    hi_prev10 = _high_in_hist_range(hist, prev_10_start, last_10_start)
+
+    vol_last = _volume_sum_hist_range(hist, start_30, as_of_ts)
+    vol_prior = _volume_sum_hist_range(hist, prior_start, start_30)
+    vol_ratio = None
+    if vol_last is not None and vol_prior is not None and vol_prior > 0:
+        vol_ratio = vol_last / vol_prior
+
+    signals: list[str] = []
+    if ret_30m_pct is not None and ret_30m_pct >= min_ret_30m_pct:
+        signals.append("ret30m")
+    if hi_last10 is not None and hi_prev10 is not None and hi_last10 > hi_prev10:
+        signals.append("hh")
+    if vol_ratio is not None and vol_ratio >= IMPULSE_MIN_VOL_RATIO:
+        signals.append("vol")
+    if close_position >= IMPULSE_MIN_CLOSE_POSITION:
+        signals.append("close")
+
+    score = len(signals)
+    return {
+        "impulse_score": str(score),
+        "impulse_signals": ",".join(signals),
+        "impulse_ret_30m": "" if ret_30m_pct is None else f"{ret_30m_pct:.4f}",
+        "impulse_vol_ratio": "" if vol_ratio is None else f"{vol_ratio:.4f}",
+        "impulse_close_pos": f"{close_position:.4f}",
+        "impulse_pass": _stable_bool(score >= min_signals),
+    }
+
+
+def enrich_impulse(
+    rows: list[dict[str, str]],
+    *,
+    scan_date: date,
+    as_of_time: time,
+    min_range_pct: float,
+    min_signals: int,
+    min_ret_30m_pct: float,
+) -> list[dict[str, str]]:
+    """Add 1m impulse fields for rows passing range (cheap 15m gate already in stable CSV)."""
+    eligible: list[dict[str, str]] = []
+    for row in rows:
+        range_pct = _safe_float(row.get("range_pct_to_asof"))
+        if range_pct is None or range_pct < min_range_pct:
+            continue
+        eligible.append(row)
+
+    symbols = [str(r.get("symbol") or "").strip().upper() for r in eligible if r.get("symbol")]
+    data_1m = _download_intraday_1m(symbols, scan_date=scan_date)
+    as_of_ts = _as_of_timestamp(scan_date, as_of_time)
+    out: list[dict[str, str]] = []
+
+    for row in rows:
+        merged = dict(row)
+        range_pct = _safe_float(row.get("range_pct_to_asof"))
+        if range_pct is None or range_pct < min_range_pct:
+            merged.update(
+                {
+                    "impulse_score": "",
+                    "impulse_signals": "",
+                    "impulse_ret_30m": "",
+                    "impulse_vol_ratio": "",
+                    "impulse_close_pos": "",
+                    "impulse_pass": "",
+                }
+            )
+            out.append(merged)
+            continue
+
+        symbol = str(row.get("symbol") or "").strip().upper()
+        hist = _hist_for_date(_symbol_hist(data_1m, symbol), scan_date)
+        merged.update(
+            _compute_impulse_at_as_of(
+                hist,
+                as_of_ts,
+                min_signals=min_signals,
+                min_ret_30m_pct=min_ret_30m_pct,
+            )
+        )
+        out.append(merged)
+
+    return out
+
+
+def _ipc_pcts_for_bucket(
+    bucket: str,
+    *,
+    activate_pct: float,
+    giveback_pct: float,
+    impulse_activate_pct: float,
+    impulse_giveback_pct: float,
+) -> tuple[float, float]:
+    if bucket in IMPULSE_IPC_BUCKETS:
+        return impulse_activate_pct, impulse_giveback_pct
+    return activate_pct, giveback_pct
+
+
+def _row_in_bucket(row: dict[str, str], bucket: str) -> bool:
+    stable = row.get("normal_stable") == "Y"
+    impulse = row.get("impulse_pass") == "Y"
+    bandwagon = row.get("bandwagon_pass") == "Y"
+    if bucket == "recovery":
+        return stable
+    if bucket == "impulse_only":
+        return impulse and not stable
+    if bucket == "impulse_any":
+        return impulse
+    if bucket == "both":
+        return stable and impulse
+    if bucket == "bandwagon":
+        return bandwagon
+    if bucket == "bandwagon_only":
+        return bandwagon and not stable
+    raise ValueError(f"unknown bucket: {bucket}")
+
+
 def write_dict_rows(path: Path, rows: list[dict[str, str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames: list[str] = []
@@ -672,10 +1047,11 @@ def simulate_pulse(
     max_range_pct: Optional[float],
     min_recent_range_pct: Optional[float],
     max_recent_range_pct: Optional[float],
+    bucket: str = "recovery",
 ) -> list[dict[str, str]]:
-    stable_rows = []
+    entry_rows = []
     for row in rows:
-        if row.get("normal_stable") != "Y":
+        if not _row_in_bucket(row, bucket):
             continue
         range_pct = _safe_float(row.get("range_pct_to_asof"))
         if min_range_pct is not None and (range_pct is None or range_pct < min_range_pct):
@@ -691,13 +1067,13 @@ def simulate_pulse(
             recent_range_pct is None or recent_range_pct > max_recent_range_pct
         ):
             continue
-        stable_rows.append(row)
+        entry_rows.append(row)
 
-    symbols = [str(r.get("symbol") or "").strip().upper() for r in stable_rows]
+    symbols = [str(r.get("symbol") or "").strip().upper() for r in entry_rows]
     data = _download_intraday(symbols, scan_date=scan_date)
     out: list[dict[str, str]] = []
 
-    for row in stable_rows:
+    for row in entry_rows:
         symbol = str(row.get("symbol") or "").strip().upper()
         hist = _hist_for_date(_symbol_hist(data, symbol), scan_date)
         result = dict(row)
@@ -755,6 +1131,9 @@ def simulate_pulse(
         ret_pct = (exit_px / avg - 1.0) * 100.0
         result.update(
             {
+                "sim_bucket": bucket,
+                "sim_ipc_activate_pct": f"{activate_pct:.6f}",
+                "sim_ipc_giveback_pct": f"{giveback_pct:.6f}",
                 "sim_entry_time_et": entry_time.strftime("%H:%M"),
                 "sim_entry_price": f"{entry_px:.4f}",
                 "sim_exit_price": f"{exit_px:.4f}",
@@ -809,6 +1188,158 @@ def print_range_report(rows: list[dict[str, str]]) -> None:
             f"{sum(rets) / len(rets):>+7.2f}% {sum(tranches) / len(tranches):>7.2f} "
             f"{min(rets):>+7.2f}%"
         )
+
+
+def _summarize_sim_rows(rows: list[dict[str, str]]) -> dict[str, Any]:
+    ok_rows = [r for r in rows if r.get("sim_status") == "OK"]
+    if not ok_rows:
+        return {
+            "n": 0,
+            "exits": 0,
+            "exit_pct": 0.0,
+            "avg_ret": 0.0,
+            "win_pct": 0.0,
+            "avg_tranches": 0.0,
+            "worst": 0.0,
+            "best": 0.0,
+        }
+    rets = [float(r.get("sim_return_pct") or 0) for r in ok_rows]
+    tranches = [int(r.get("sim_tranches") or 0) for r in ok_rows]
+    exits = sum(1 for r in ok_rows if r.get("sim_exit_reason") != "EOD")
+    wins = sum(1 for r in rets if r > 0)
+    return {
+        "n": len(ok_rows),
+        "exits": exits,
+        "exit_pct": exits / len(ok_rows) * 100.0,
+        "avg_ret": sum(rets) / len(rets),
+        "win_pct": wins / len(rets) * 100.0,
+        "avg_tranches": sum(tranches) / len(tranches),
+        "worst": min(rets),
+        "best": max(rets),
+    }
+
+
+def print_impulse_bucket_report(
+    summaries: dict[str, dict[str, Any]],
+    *,
+    scan_date: Optional[date] = None,
+) -> None:
+    if scan_date is not None:
+        print(f"\n=== Impulse backtest {scan_date.isoformat()} ===")
+    else:
+        print("\n=== Impulse backtest (aggregated) ===")
+    print(
+        f"{'bucket':<16} {'n':>4} {'ex':>3} {'ex%':>6} {'avg_ret':>8} "
+        f"{'win%':>6} {'avg_tr':>7} {'worst':>8} {'best':>8}"
+    )
+    for bucket in DISCOVER_BUCKETS:
+        s = summaries.get(bucket) or {}
+        if not s.get("n"):
+            print(f"{bucket:<16}    0")
+            continue
+        print(
+            f"{bucket:<16} {s['n']:>4} {s['exits']:>3} {s['exit_pct']:>5.1f}% "
+            f"{s['avg_ret']:>+7.2f}% {s['win_pct']:>5.1f}% {s['avg_tranches']:>7.2f} "
+            f"{s['worst']:>+7.2f}% {s['best']:>+7.2f}%"
+        )
+
+
+def _iter_dates(date_from: date, date_to: date) -> list[date]:
+    out: list[date] = []
+    current = date_from
+    while current <= date_to:
+        if current.weekday() < 5:
+            out.append(current)
+        current += timedelta(days=1)
+    return out
+
+
+def run_impulse_backtest_for_date(
+    *,
+    cache_dir: Path,
+    scan_date: date,
+    entry_time: time,
+    range_lookback_minutes: int,
+    min_range_pct: float,
+    min_signals: int,
+    min_ret_30m_pct: float,
+    exit_type: str,
+    tp_pct: float,
+    activate_pct: float,
+    giveback_pct: float,
+    impulse_activate_pct: float,
+    impulse_giveback_pct: float,
+    bandwagon_min_vol_ratio: float,
+    bandwagon_min_ret_pct: float,
+    bandwagon_lookback_minutes: int,
+    rebuy_pct: float,
+    max_tranches: int,
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, str]]]:
+    path = _cache_path(cache_dir, scan_date)
+    stable_path = _stable_cache_path(cache_dir, scan_date)
+
+    if not path.exists():
+        raise FileNotFoundError(f"Candidate CSV missing: {path}")
+    if not stable_path.exists():
+        rows = read_cached(path)
+        enriched = enrich_stability(
+            rows,
+            scan_date=scan_date,
+            as_of_time=entry_time,
+            range_lookback_minutes=range_lookback_minutes,
+        )
+        write_dict_rows(stable_path, enriched)
+    else:
+        enriched = read_cached(stable_path)
+
+    with_bandwagon = enrich_bandwagon(
+        enriched,
+        scan_date=scan_date,
+        as_of_time=entry_time,
+        lookback_minutes=bandwagon_lookback_minutes,
+        min_vol_ratio=bandwagon_min_vol_ratio,
+        min_ret_pct=bandwagon_min_ret_pct,
+        min_range_pct=min_range_pct,
+    )
+    with_impulse = enrich_impulse(
+        with_bandwagon,
+        scan_date=scan_date,
+        as_of_time=entry_time,
+        min_range_pct=min_range_pct,
+        min_signals=min_signals,
+        min_ret_30m_pct=min_ret_30m_pct,
+    )
+
+    summaries: dict[str, dict[str, Any]] = {}
+    all_sim: list[dict[str, str]] = []
+    for bucket in DISCOVER_BUCKETS:
+        bucket_activate, bucket_giveback = _ipc_pcts_for_bucket(
+            bucket,
+            activate_pct=activate_pct,
+            giveback_pct=giveback_pct,
+            impulse_activate_pct=impulse_activate_pct,
+            impulse_giveback_pct=impulse_giveback_pct,
+        )
+        simulated = simulate_pulse(
+            with_impulse,
+            scan_date=scan_date,
+            entry_time=entry_time,
+            exit_type=exit_type,
+            tp_pct=tp_pct,
+            activate_pct=bucket_activate,
+            giveback_pct=bucket_giveback,
+            rebuy_pct=rebuy_pct,
+            max_tranches=max_tranches,
+            min_range_pct=min_range_pct,
+            max_range_pct=None,
+            min_recent_range_pct=None,
+            max_recent_range_pct=None,
+            bucket=bucket,
+        )
+        summaries[bucket] = _summarize_sim_rows(simulated)
+        all_sim.extend(simulated)
+
+    return summaries, all_sim
 
 
 def print_preview(rows: list[Any], *, limit: int, stable: bool = False, simulation: bool = False) -> None:
@@ -944,6 +1475,80 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-range-pct", type=float, help="Only simulate names with range_pct_to_asof <= this")
     parser.add_argument("--min-recent-range-pct", type=float, help="Only simulate names with recent_range_pct >= this")
     parser.add_argument("--max-recent-range-pct", type=float, help="Only simulate names with recent_range_pct <= this")
+    parser.add_argument(
+        "--impulse-backtest",
+        action="store_true",
+        help="Compare recovery vs impulse discover buckets (requires stable/candidate CSV per date)",
+    )
+    parser.add_argument(
+        "--from",
+        dest="date_from",
+        metavar="DATE",
+        help="Start date YYYY-MM-DD for --impulse-backtest (inclusive)",
+    )
+    parser.add_argument(
+        "--to",
+        dest="date_to",
+        metavar="DATE",
+        help="End date YYYY-MM-DD for --impulse-backtest (inclusive)",
+    )
+    parser.add_argument(
+        "--impulse-min-signals",
+        type=int,
+        default=IMPULSE_MIN_SIGNALS_DEFAULT,
+        help=f"Min impulse signals (of 4) to pass gate (default {IMPULSE_MIN_SIGNALS_DEFAULT})",
+    )
+    parser.add_argument(
+        "--impulse-min-range-pct",
+        type=float,
+        default=PULSE_MIN_RANGE_PCT,
+        help=f"Min range_pct_to_asof before 1m impulse fetch (default {PULSE_MIN_RANGE_PCT})",
+    )
+    parser.add_argument(
+        "--impulse-min-ret-30m-pct",
+        type=float,
+        default=IMPULSE_MIN_RET_30M_PCT,
+        help=f"Impulse ret30m signal: min %% vs 30m ago (default {IMPULSE_MIN_RET_30M_PCT})",
+    )
+    parser.add_argument(
+        "--impulse-activate-pct",
+        type=float,
+        default=None,
+        help="IPC activation for impulse buckets (default: same as --activate-pct)",
+    )
+    parser.add_argument(
+        "--impulse-giveback-pct",
+        type=float,
+        default=None,
+        help="IPC giveback for partner buckets (default: same as --giveback-pct)",
+    )
+    parser.add_argument(
+        "--bandwagon-min-vol-ratio",
+        type=float,
+        default=BANDWAGON_MIN_VOL_RATIO_DEFAULT,
+        help=(
+            f"Bandwagon: last lookback vol / prior lookback vol "
+            f"(default {BANDWAGON_MIN_VOL_RATIO_DEFAULT})"
+        ),
+    )
+    parser.add_argument(
+        "--bandwagon-min-ret-15m",
+        type=float,
+        default=BANDWAGON_MIN_RET_PCT_DEFAULT,
+        help=(
+            f"Bandwagon: min %% price change over lookback window "
+            f"(default {BANDWAGON_MIN_RET_PCT_DEFAULT})"
+        ),
+    )
+    parser.add_argument(
+        "--bandwagon-lookback-minutes",
+        type=int,
+        default=BANDWAGON_LOOKBACK_MINUTES_DEFAULT,
+        help=(
+            f"Bandwagon lookback for vol ratio and ret (default {BANDWAGON_LOOKBACK_MINUTES_DEFAULT}; "
+            "uses 5m bars when <=5, else 15m)"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -953,6 +1558,83 @@ def main() -> int:
     path = _cache_path(args.cache_dir, scan_date)
     stable_path = _stable_cache_path(args.cache_dir, scan_date)
     sim_path = _simulation_cache_path(args.cache_dir, scan_date)
+
+    if args.impulse_backtest:
+        date_from = date.fromisoformat(args.date_from) if args.date_from else scan_date
+        date_to = date.fromisoformat(args.date_to) if args.date_to else date_from
+        if date_to < date_from:
+            print("--to must be on or after --from", file=sys.stderr)
+            return 2
+        if args.bandwagon_lookback_minutes <= 0:
+            print("--bandwagon-lookback-minutes must be positive", file=sys.stderr)
+            return 2
+
+        aggregated: dict[str, list[dict[str, str]]] = {b: [] for b in DISCOVER_BUCKETS}
+        dates = _iter_dates(date_from, date_to)
+        if not dates:
+            print("No weekdays in date range", file=sys.stderr)
+            return 2
+
+        impulse_activate_pct = (
+            args.impulse_activate_pct
+            if args.impulse_activate_pct is not None
+            else args.activate_pct
+        )
+        impulse_giveback_pct = (
+            args.impulse_giveback_pct
+            if args.impulse_giveback_pct is not None
+            else args.giveback_pct
+        )
+
+        for day in dates:
+            try:
+                summaries, sim_rows = run_impulse_backtest_for_date(
+                    cache_dir=args.cache_dir,
+                    scan_date=day,
+                    entry_time=args.entry_time,
+                    range_lookback_minutes=args.range_lookback_minutes,
+                    min_range_pct=args.impulse_min_range_pct,
+                    min_signals=args.impulse_min_signals,
+                    min_ret_30m_pct=args.impulse_min_ret_30m_pct,
+                    exit_type=args.exit_type,
+                    tp_pct=args.tp_pct,
+                    activate_pct=args.activate_pct,
+                    giveback_pct=args.giveback_pct,
+                    impulse_activate_pct=impulse_activate_pct,
+                    impulse_giveback_pct=impulse_giveback_pct,
+                    bandwagon_min_vol_ratio=args.bandwagon_min_vol_ratio,
+                    bandwagon_min_ret_pct=args.bandwagon_min_ret_15m,
+                    bandwagon_lookback_minutes=args.bandwagon_lookback_minutes,
+                    rebuy_pct=args.rebuy_pct,
+                    max_tranches=args.max_tranches,
+                )
+            except FileNotFoundError as exc:
+                print(f"Skip {day.isoformat()}: {exc}", file=sys.stderr)
+                continue
+            print_impulse_bucket_report(summaries, scan_date=day)
+            for row in sim_rows:
+                if row.get("sim_status") == "OK":
+                    bucket = row.get("sim_bucket") or ""
+                    if bucket in aggregated:
+                        aggregated[bucket].append(row)
+
+        total_summaries = {b: _summarize_sim_rows(aggregated[b]) for b in DISCOVER_BUCKETS}
+        print_impulse_bucket_report(total_summaries, scan_date=None)
+        ipc_note = (
+            f"recovery_ipc={args.activate_pct:g}/{args.giveback_pct:g} "
+            f"partner_ipc={impulse_activate_pct:g}/{impulse_giveback_pct:g}"
+        )
+        bandwagon_note = (
+            f"bandwagon {args.bandwagon_lookback_minutes}m vol>={args.bandwagon_min_vol_ratio:g}x "
+            f"ret>={args.bandwagon_min_ret_15m:g}%"
+        )
+        print(
+            f"Days attempted: {len(dates)} | impulse_min_signals={args.impulse_min_signals} "
+            f"| impulse_ret30m>={args.impulse_min_ret_30m_pct:g}% "
+            f"| min_range={args.impulse_min_range_pct:g}% | {bandwagon_note} "
+            f"| exit={args.exit_type} | entry={args.entry_time.strftime('%H:%M')} ET | {ipc_note}"
+        )
+        return 0
 
     if args.range_report:
         if not sim_path.exists():
@@ -981,6 +1663,7 @@ def main() -> int:
             max_range_pct=args.max_range_pct,
             min_recent_range_pct=args.min_recent_range_pct,
             max_recent_range_pct=args.max_recent_range_pct,
+            bucket="recovery",
         )
         write_dict_rows(sim_path, simulated)
         ok_rows = [r for r in simulated if r.get("sim_status") == "OK"]

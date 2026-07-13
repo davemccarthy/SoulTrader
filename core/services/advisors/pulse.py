@@ -13,6 +13,9 @@ Entry:
 
 Exit/add: TARGET_INTRADAY (+0.2% / 0.2% giveback), -2% rebuy (max 3 tranches; 2h trend + 5m/30m recovery),
 END_DAY flat at 3:30 ET (1.00× avg). No END_WEEK, DT, or SL.
+
+Shadow (no buys): IMPULSE and COMBO discover paths logged once per cache bucket
+(ret30m >= 0.5%%, 3-of-4 1m signals; COMBO = impulse + normal_stable).
 """
 from __future__ import annotations
 
@@ -31,7 +34,7 @@ from core.services.financial import polygon as financial_polygon
 logger = logging.getLogger(__name__)
 
 ET = pytz.timezone("US/Eastern")
-PULSE_CANDIDATE_VERSION = 8
+PULSE_CANDIDATE_VERSION = 9
 PULSE_BUILD_TIME_ET = time(11, 0)
 PULSE_DISCOVERY_END_TIME_ET = time(13, 30)
 PULSE_SEED_UNIVERSE = 500
@@ -56,6 +59,14 @@ PULSE_ENDDAY_TAKE = Decimal("1.00")
 
 # Opportunity floor at discover (Oracle uses C at pre-discover gate).
 PULSE_MIN_OPPORTUNITY_GRADE = "C"
+
+# Shadow impulse/combo at discover (backtest-aligned; no discoveries from these paths yet).
+PULSE_IMPULSE_SHADOW = True
+PULSE_IMPULSE_LOOKBACK_MINUTES = 30
+PULSE_IMPULSE_MIN_RET_30M_PCT = 0.5
+PULSE_IMPULSE_MIN_VOL_RATIO = 2.0
+PULSE_IMPULSE_MIN_CLOSE_POSITION = 0.6
+PULSE_IMPULSE_MIN_SIGNALS = 3
 
 ETF_EXCLUDE_TICKERS: Final[frozenset[str]] = frozenset(
     {
@@ -233,6 +244,195 @@ def _download_intraday(symbols: List[str]) -> pd.DataFrame:
     )
 
 
+def _download_intraday_1m(symbols: List[str]) -> pd.DataFrame:
+    if not symbols:
+        return pd.DataFrame()
+    return yf.download(
+        symbols,
+        period="1d",
+        interval="1m",
+        auto_adjust=True,
+        progress=False,
+        threads=True,
+    )
+
+
+def _high_in_hist_range(
+    hist: pd.DataFrame,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+) -> Optional[float]:
+    if hist.empty or "High" not in hist.columns:
+        return None
+    idx = pd.to_datetime(hist.index, utc=True)
+    window = hist[(idx >= start_ts) & (idx < end_ts)]
+    if window.empty:
+        return None
+    return _safe_float(window["High"].astype(float).max())
+
+
+def _volume_sum_hist_range(
+    hist: pd.DataFrame,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+) -> Optional[float]:
+    if hist.empty or "Volume" not in hist.columns:
+        return None
+    idx = pd.to_datetime(hist.index, utc=True)
+    window = hist[(idx >= start_ts) & (idx <= end_ts)]
+    if window.empty:
+        return None
+    total = float(window["Volume"].astype(float).sum())
+    return total if total > 0 else None
+
+
+def _compute_pulse_impulse(hist_1m: pd.DataFrame) -> Dict[str, Any]:
+    """1m impulse score for shadow discover (mirrors test_pulse_scan; no profit signal)."""
+    empty: Dict[str, Any] = {
+        "impulse_score": 0,
+        "impulse_signals": "",
+        "impulse_ret_30m": None,
+        "impulse_vol_ratio": None,
+        "impulse_close_pos": None,
+        "impulse_pass": False,
+    }
+    if hist_1m.empty or "Close" not in hist_1m.columns:
+        return empty
+
+    idx = pd.to_datetime(hist_1m.index, utc=True)
+    check_ts = pd.Timestamp.now(tz="UTC")
+    if hist_1m.index.tz is None:
+        check_ts = pd.Timestamp(check_ts.replace(tzinfo=None))
+
+    eligible = idx <= check_ts
+    if not eligible.any():
+        return empty
+
+    hist = hist_1m.loc[eligible]
+    idx = pd.to_datetime(hist.index, utc=True)
+    price_now = _safe_float(hist["Close"].astype(float).iloc[-1])
+    if price_now is None:
+        return empty
+
+    lookback = PULSE_IMPULSE_LOOKBACK_MINUTES
+    start_30 = check_ts - pd.Timedelta(minutes=lookback)
+    prior_start = start_30 - pd.Timedelta(minutes=lookback)
+    window = hist[(idx >= start_30) & (idx <= check_ts)]
+    if window.empty or len(window) < 2:
+        return empty
+
+    prior_30 = hist.loc[idx <= start_30]
+    if prior_30.empty:
+        return empty
+    price_30_ago = _safe_float(prior_30["Close"].astype(float).iloc[-1])
+    if price_30_ago is None:
+        return empty
+    ret_30m_pct = (price_now / price_30_ago - 1.0) * 100.0
+
+    highs = window["High"].astype(float) if "High" in window.columns else window["Close"].astype(float)
+    lows = window["Low"].astype(float) if "Low" in window.columns else window["Close"].astype(float)
+    high_max = float(highs.max())
+    low_min = float(lows.min())
+    if high_max > low_min:
+        close_position = (price_now - low_min) / (high_max - low_min)
+    else:
+        close_position = 0.5
+
+    last_10_start = check_ts - pd.Timedelta(minutes=10)
+    prev_10_start = check_ts - pd.Timedelta(minutes=20)
+    hi_last10 = _high_in_hist_range(hist, last_10_start, check_ts + pd.Timedelta(minutes=1))
+    hi_prev10 = _high_in_hist_range(hist, prev_10_start, last_10_start)
+
+    vol_last = _volume_sum_hist_range(hist, start_30, check_ts)
+    vol_prior = _volume_sum_hist_range(hist, prior_start, start_30)
+    vol_ratio = None
+    if vol_last is not None and vol_prior is not None and vol_prior > 0:
+        vol_ratio = vol_last / vol_prior
+
+    signals: List[str] = []
+    if ret_30m_pct >= PULSE_IMPULSE_MIN_RET_30M_PCT:
+        signals.append("ret30m")
+    if hi_last10 is not None and hi_prev10 is not None and hi_last10 > hi_prev10:
+        signals.append("hh")
+    if vol_ratio is not None and vol_ratio >= PULSE_IMPULSE_MIN_VOL_RATIO:
+        signals.append("vol")
+    if close_position >= PULSE_IMPULSE_MIN_CLOSE_POSITION:
+        signals.append("close")
+
+    score = len(signals)
+    return {
+        "impulse_score": score,
+        "impulse_signals": ",".join(signals),
+        "impulse_ret_30m": round(ret_30m_pct, 4),
+        "impulse_vol_ratio": None if vol_ratio is None else round(vol_ratio, 4),
+        "impulse_close_pos": round(close_position, 4),
+        "impulse_pass": score >= PULSE_IMPULSE_MIN_SIGNALS,
+    }
+
+
+def _log_pulse_impulse_shadow(attention_rows: List[Dict[str, Any]]) -> None:
+    """Log IMPULSE and COMBO shadow hits once per attention build (no buys)."""
+    eligible = [
+        row
+        for row in attention_rows
+        if float(row.get("range_pct") or 0) >= PULSE_MIN_RANGE_PCT
+    ]
+    if not eligible:
+        logger.info("pulse_shadow: no attention rows with range>=%s%%", PULSE_MIN_RANGE_PCT)
+        return
+
+    symbols = [str(row["symbol"]) for row in eligible]
+    data_1m = _download_intraday_1m(symbols)
+    impulse_hits = 0
+    combo_hits = 0
+
+    for row in eligible:
+        symbol = str(row["symbol"])
+        hist_1m = _symbol_hist(data_1m, symbol)
+        impulse = _compute_pulse_impulse(hist_1m)
+        if not impulse.get("impulse_pass"):
+            continue
+
+        normal_stable = bool(row.get("normal_stable"))
+        impulse_hits += 1
+        logger.info(
+            "pulse_shadow path=IMPULSE symbol=%s rank=%s score=%s signals=%s ret_30m=%s "
+            "vol_ratio=%s close_pos=%s range_pct=%s normal_stable=%s",
+            symbol,
+            row.get("rank"),
+            impulse.get("impulse_score"),
+            impulse.get("impulse_signals"),
+            impulse.get("impulse_ret_30m"),
+            impulse.get("impulse_vol_ratio"),
+            impulse.get("impulse_close_pos"),
+            row.get("range_pct"),
+            normal_stable,
+        )
+        if normal_stable:
+            combo_hits += 1
+            logger.info(
+                "pulse_shadow path=COMBO symbol=%s rank=%s score=%s signals=%s ret_30m=%s "
+                "vol_ratio=%s close_pos=%s range_pct=%s",
+                symbol,
+                row.get("rank"),
+                impulse.get("impulse_score"),
+                impulse.get("impulse_signals"),
+                impulse.get("impulse_ret_30m"),
+                impulse.get("impulse_vol_ratio"),
+                impulse.get("impulse_close_pos"),
+                row.get("range_pct"),
+            )
+
+    logger.info(
+        "pulse_shadow summary eligible=%d impulse=%d combo=%d ret30m_min=%s min_signals=%s",
+        len(eligible),
+        impulse_hits,
+        combo_hits,
+        PULSE_IMPULSE_MIN_RET_30M_PCT,
+        PULSE_IMPULSE_MIN_SIGNALS,
+    )
+
+
 def _format_signed_pct(value: Optional[float]) -> str:
     if value is None:
         return "n/a"
@@ -336,13 +536,13 @@ class Pulse(AdvisorBase):
         now_et = datetime.now(ET)
         return now_et.time() >= PULSE_DISCOVERY_END_TIME_ET
 
-    def _build_daily_candidates(self) -> List[Dict[str, Any]]:
+    def _build_daily_candidates(self) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         df = financial_polygon.get_filtered_stocks(
             min_price=PULSE_MIN_PRICE,
         )
         if df is None or df.empty:
             logger.warning("Pulse: Polygon grouped daily universe empty")
-            return []
+            return [], []
 
         rows: List[Dict[str, Any]] = []
         for _, row in df.iterrows():
@@ -408,6 +608,7 @@ class Pulse(AdvisorBase):
 
         intraday_ranked.sort(key=lambda r: float(r["dollar_volume_so_far"]), reverse=True)
 
+        attention: List[Dict[str, Any]] = []
         candidates: List[Dict[str, Any]] = []
         for rank, row in enumerate(intraday_ranked[:PULSE_TOP_DAILY_VOLUME], start=1):
             symbol = str(row["symbol"])
@@ -434,7 +635,29 @@ class Pulse(AdvisorBase):
             recovering = _is_price_recovering(price_now, px_30, px_5)
             stable_60 = price_now is not None and px_60 is not None and price_now >= px_60 * 0.995
             stable_open = price_now is not None and open_px is not None and price_now >= open_px * 0.99
-            if not (recovering and stable_60 and stable_open):
+            normal_stable = recovering and stable_60 and stable_open
+
+            attention_row = {
+                "symbol": symbol,
+                "rank": rank,
+                "price": round(float(price_now), 4),
+                "bar_price": round(float(bar_price), 4),
+                "volume": int(row["volume_so_far"]),
+                "dollar_volume": round(float(row["dollar_volume_so_far"]), 2),
+                "prior_dollar_volume": round(float(row["prior_dollar_volume"]), 2),
+                "range_pct": None if range_pct is None else round(float(range_pct), 4),
+                "pct_5m": None if px_5 is None else round(float(_pct(price_now, px_5) or 0), 4),
+                "pct_30m": None if px_30 is None else round(float(_pct(price_now, px_30) or 0), 4),
+                "pct_60m": None if px_60 is None else round(float(_pct(price_now, px_60) or 0), 4),
+                "pct_open": None if open_px is None else round(float(_pct(price_now, open_px) or 0), 4),
+                "recovering": recovering,
+                "stable_60": stable_60,
+                "stable_open": stable_open,
+                "normal_stable": normal_stable,
+            }
+            attention.append(attention_row)
+
+            if not normal_stable:
                 continue
             if range_pct is None or range_pct < PULSE_MIN_RANGE_PCT:
                 continue
@@ -443,23 +666,30 @@ class Pulse(AdvisorBase):
                 {
                     "symbol": symbol,
                     "rank": rank,
-                    "price": round(float(price_now), 4),
-                    "bar_price": round(float(bar_price), 4),
-                    "volume": int(row["volume_so_far"]),
-                    "dollar_volume": round(float(row["dollar_volume_so_far"]), 2),
-                    "prior_dollar_volume": round(float(row["prior_dollar_volume"]), 2),
-                    "range_pct": round(float(range_pct), 4),
-                    "pct_5m": None if px_5 is None else round(float(_pct(price_now, px_5) or 0), 4),
-                    "pct_30m": None if px_30 is None else round(float(_pct(price_now, px_30) or 0), 4),
-                    "pct_60m": None if px_60 is None else round(float(_pct(price_now, px_60) or 0), 4),
-                    "pct_open": None if open_px is None else round(float(_pct(price_now, open_px) or 0), 4),
+                    "price": attention_row["price"],
+                    "bar_price": attention_row["bar_price"],
+                    "volume": attention_row["volume"],
+                    "dollar_volume": attention_row["dollar_volume"],
+                    "prior_dollar_volume": attention_row["prior_dollar_volume"],
+                    "range_pct": attention_row["range_pct"],
+                    "pct_5m": attention_row["pct_5m"],
+                    "pct_30m": attention_row["pct_30m"],
+                    "pct_60m": attention_row["pct_60m"],
+                    "pct_open": attention_row["pct_open"],
                 }
             )
 
+        if PULSE_IMPULSE_SHADOW:
+            _log_pulse_impulse_shadow(attention)
+
         candidates.sort(key=lambda r: float(r["range_pct"]), reverse=True)
-        return candidates
+        return attention, candidates
 
     def _daily_candidates(self) -> List[Dict[str, Any]]:
+        _attention, candidates = self._ensure_pulse_cache()
+        return candidates
+
+    def _ensure_pulse_cache(self) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         today = _today_et()
         bucket = _cache_bucket_et()
         state = self._advisor_blob_state()
@@ -469,16 +699,17 @@ class Pulse(AdvisorBase):
             and state.get("pulse_bucket_et") == bucket
             and isinstance(state.get("candidates"), list)
         ):
-            return state["candidates"]
+            return state.get("attention") or [], state["candidates"]
 
-        candidates = self._build_daily_candidates()
+        attention, candidates = self._build_daily_candidates()
         state["pulse_date"] = today
         state["pulse_version"] = PULSE_CANDIDATE_VERSION
         state["pulse_bucket_et"] = bucket
+        state["attention"] = attention
         state["candidates"] = candidates
         state["built_at_et"] = datetime.now(ET).isoformat(timespec="seconds")
         self._save_advisor_blob_state(state)
-        return candidates
+        return attention, candidates
 
     def discover(self, sa) -> None:
         market_status = self.market_open()
