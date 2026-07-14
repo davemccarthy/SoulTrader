@@ -30,6 +30,7 @@ REBUY_STABILIZE_MINUTES = STABILIZE_MINUTES_DEFAULT
 REBUY_SHORT_MINUTES = 5
 REBUY_TREND_HOURS = 2
 REBUY_MIN_TREND = Decimal("-0.10")
+REBUY_MAX_TRANCHES_DEFAULT = Decimal("5")
 PEAKED_MIN_MARKET_MINUTES = 60
 RECENT_TP_LOOKBACK_HOURS = 4
 
@@ -819,7 +820,7 @@ def analyze_holdings(sa, funds):
                                 logger.warning(f"{instruction.instruction} invalid threshold (value1={instruction.value1}, buy_price={buy_price})")
                         elif instruction.instruction == 'PERCENTAGE_REBUY':
                             # value1 = drop fraction from average (e.g. 0.02 = 2%); add one fund tranche at current price.
-                            # value2 = max tranche count cap (default 3 when null). value2 <= 0 = unlimited (cash only).
+                            # value2 = max tranche count cap (default 5 when null). value2 <= 0 = unlimited (cash only).
                             # Intraday gate (RTH): calc_trend(2h) > -0.10 and price above 30m and 5m references.
                             if instruction.value1 and holding.shares > 0 and buy_price:
                                 drop_pct = Decimal(str(instruction.value1))
@@ -834,7 +835,7 @@ def analyze_holdings(sa, funds):
                                     if instruction.value2 is not None:
                                         max_tranches = Decimal(str(instruction.value2))
                                     else:
-                                        max_tranches = Decimal("3")
+                                        max_tranches = REBUY_MAX_TRANCHES_DEFAULT
 
                                     if max_tranches > 0:
                                         current_book = Decimal(str(holding.average_price)) * Decimal(str(holding.shares))

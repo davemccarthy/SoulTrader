@@ -1470,7 +1470,7 @@ def parse_args() -> argparse.Namespace:
         help="IPC giveback from high-water mark",
     )
     parser.add_argument("--rebuy-pct", type=float, default=0.02, help="Rebuy drop percentage (default 0.02)")
-    parser.add_argument("--max-tranches", type=int, default=4, help="Max tranches including initial buy (default 4)")
+    parser.add_argument("--max-tranches", type=int, default=5, help="Max tranches including initial buy (default 5)")
     parser.add_argument("--min-range-pct", type=float, help="Only simulate names with range_pct_to_asof >= this")
     parser.add_argument("--max-range-pct", type=float, help="Only simulate names with range_pct_to_asof <= this")
     parser.add_argument("--min-recent-range-pct", type=float, help="Only simulate names with recent_range_pct >= this")

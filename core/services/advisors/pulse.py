@@ -11,7 +11,7 @@ Entry:
 - Require recent 60m intraday range >= 1.25%.
 - Discover qualifying names between 11:00 and 13:30 ET (MEGA spread is expected for initial test funds).
 
-Exit/add: TARGET_INTRADAY (+0.2% / 0.2% giveback), -2% rebuy (max 3 tranches; 2h trend + 5m/30m recovery),
+Exit/add: TARGET_INTRADAY (+0.2% / 0.2% giveback), -2% rebuy (default max tranches; 2h trend + 5m/30m recovery),
 END_DAY flat at 3:30 ET (1.00× avg). No END_WEEK, DT, or SL.
 
 Shadow (no buys): IMPULSE and COMBO discover paths logged once per cache bucket
@@ -54,7 +54,6 @@ PULSE_DISCOVERY_COOLDOWN_HOURS = 6
 PULSE_TP_MULT = Decimal("1.002")
 PULSE_INTRADAY_GIVEBACK = Decimal("0.002")
 PULSE_REBUY_DROP = Decimal("0.02")
-PULSE_REBUY_MAX_TRANCHES = Decimal("3")
 PULSE_ENDDAY_TAKE = Decimal("1.00")
 
 # Opportunity floor at discover (Oracle uses C at pre-discover gate).
@@ -731,7 +730,7 @@ class Pulse(AdvisorBase):
 
         sell_instructions = [
             ("TARGET_INTRADAY", PULSE_TP_MULT, PULSE_INTRADAY_GIVEBACK),
-            ("PERCENTAGE_REBUY", PULSE_REBUY_DROP, PULSE_REBUY_MAX_TRANCHES),
+            ("PERCENTAGE_REBUY", PULSE_REBUY_DROP, None),
             ("END_DAY", PULSE_ENDDAY_TAKE, None),
         ]
 
