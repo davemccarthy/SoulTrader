@@ -15,7 +15,7 @@ Exit/add: TARGET_INTRADAY (+0.2% / 0.2% giveback), -2% rebuy (default max tranch
 END_DAY flat at 3:30 ET (1.00× avg). No END_WEEK, DT, or SL.
 
 Shadow (no buys): IMPULSE and COMBO discover paths logged once per cache bucket
-(ret30m >= 0.5%%, 3-of-4 1m signals; COMBO = impulse + normal_stable).
+(ret30m >= 1.0%%, 3-of-4 1m signals; COMBO = impulse + normal_stable).
 """
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ PULSE_MIN_OPPORTUNITY_GRADE = "C"
 # Shadow impulse/combo at discover (backtest-aligned; no discoveries from these paths yet).
 PULSE_IMPULSE_SHADOW = True
 PULSE_IMPULSE_LOOKBACK_MINUTES = 30
-PULSE_IMPULSE_MIN_RET_30M_PCT = 0.5
+PULSE_IMPULSE_MIN_RET_30M_PCT = 1.0
 PULSE_IMPULSE_MIN_VOL_RATIO = 2.0
 PULSE_IMPULSE_MIN_CLOSE_POSITION = 0.6
 PULSE_IMPULSE_MIN_SIGNALS = 3
@@ -109,6 +109,7 @@ ETF_EXCLUDE_TICKERS: Final[frozenset[str]] = frozenset(
         "TQQQ",
         "UDOW",
         "UPRO",
+        "USO",
         "VCIT",
         "VOO",
         "VTI",
