@@ -40,7 +40,7 @@ class Profile(models.Model):
         "MEGA": 100,
         "LARGE": 60,
         "MEDIUM": 40,
-        "SMALL": 20,
+        "SMALL": 25,
         "MICRO": 15,
         "NANO": 10,
     }
