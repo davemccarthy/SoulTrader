@@ -11,8 +11,9 @@ Entry:
 - Require recent 60m intraday range >= 1.25%.
 - Discover qualifying names between 11:00 and 13:30 ET (MEGA spread is expected for initial test funds).
 - Live IMPULSE/COMBO paths (optional): 1m momentum + COMBO (impulse + normal_stable).
-- Market tape (SPY/QQQ): refresh each discover run; persist green/yellow/red on Advisor.blob
-  (default red); skip new discovers on red; push superusers on status change.
+- Market tape (SPY/QQQ): refresh only during Pulse buying hours (11:00–13:30 ET);
+  persist green/yellow/red on Advisor.blob (default red); skip discovers on red;
+  push superusers on status change.
 
 Exit/add: TARGET_INTRADAY (+0.2% / 0.2% giveback), -2% rebuy (default max tranches; 2h trend + 5m/30m recovery),
 END_DAY flat at 3:30 ET (1.00× avg). No END_WEEK, DT, or SL.
@@ -881,12 +882,6 @@ class Pulse(AdvisorBase):
         if market_status < 0:
             logger.info("Pulse skip: market not open yet (%s min to open)", -market_status)
             return
-
-        tape_status = self._refresh_market_tape()
-        if tape_status == "red":
-            logger.info("Pulse skip: market tape RED (discover paused)")
-            return
-
         if self._before_build_time():
             logger.info("Pulse skip: before %s ET build time", PULSE_BUILD_TIME_ET.strftime("%H:%M"))
             return
@@ -895,6 +890,11 @@ class Pulse(AdvisorBase):
                 "Pulse skip: after %s ET discovery window",
                 PULSE_DISCOVERY_END_TIME_ET.strftime("%H:%M"),
             )
+            return
+
+        tape_status = self._refresh_market_tape()
+        if tape_status == "red":
+            logger.info("Pulse skip: market tape RED (discover paused)")
             return
 
         sell_instructions = [
