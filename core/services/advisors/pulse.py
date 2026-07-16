@@ -12,7 +12,7 @@ Entry:
 - Discover qualifying names between 11:00 and 13:30 ET (MEGA spread is expected for initial test funds).
 - Live IMPULSE/COMBO paths (optional): 1m momentum + COMBO (impulse + normal_stable).
 - Market tape (SPY/QQQ): refresh only during Pulse buying hours (11:00–13:30 ET);
-  persist green/yellow/red on Advisor.blob (default red); skip discovers on red;
+  persist green/yellow/red on Advisor.blob (default red); skip discovers on red or yellow;
   push superusers on status change.
 
 Exit/add: TARGET_INTRADAY (+0.2% / 0.2% giveback), -2% rebuy (default max tranches; 2h trend + 5m/30m recovery),
@@ -893,8 +893,8 @@ class Pulse(AdvisorBase):
             return
 
         tape_status = self._refresh_market_tape()
-        if tape_status == "red":
-            logger.info("Pulse skip: market tape RED (discover paused)")
+        if tape_status != "green":
+            logger.info("Pulse skip: market tape not GREEN (discover paused)")
             return
 
         sell_instructions = [
