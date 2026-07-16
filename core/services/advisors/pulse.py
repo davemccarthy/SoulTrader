@@ -10,12 +10,14 @@ Entry:
   executable quote >= 60m ago * 0.995, executable quote >= open * 0.99.
 - Require recent 60m intraday range >= 1.25%.
 - Discover qualifying names between 11:00 and 13:30 ET (MEGA spread is expected for initial test funds).
+- Live IMPULSE/COMBO paths (optional): 1m momentum + COMBO (impulse + normal_stable).
+- Market tape (SPY/QQQ): refresh each discover run; persist green/yellow/red on Advisor.blob
+  (default red); skip new discovers on red; push superusers on status change.
 
 Exit/add: TARGET_INTRADAY (+0.2% / 0.2% giveback), -2% rebuy (default max tranches; 2h trend + 5m/30m recovery),
 END_DAY flat at 3:30 ET (1.00× avg). No END_WEEK, DT, or SL.
 
-Shadow (no buys): IMPULSE and COMBO discover paths logged once per cache bucket
-(ret30m >= 1.0%%, 3-of-4 1m signals; COMBO = impulse + normal_stable).
+Shadow: when enabled, logs IMPULSE/COMBO hits once per cache bucket (same gates as live).
 """
 from __future__ import annotations
 
@@ -30,11 +32,13 @@ import yfinance as yf
 
 from core.services.advisors.advisor import AdvisorBase, register
 from core.services.financial import polygon as financial_polygon
+from core.services.market.tape import evaluate_tape, fetch_tape
+from core.services.push import push_super
 
 logger = logging.getLogger(__name__)
 
 ET = pytz.timezone("US/Eastern")
-PULSE_CANDIDATE_VERSION = 9
+PULSE_CANDIDATE_VERSION = 10
 PULSE_BUILD_TIME_ET = time(11, 0)
 PULSE_DISCOVERY_END_TIME_ET = time(13, 30)
 PULSE_SEED_UNIVERSE = 500
@@ -59,13 +63,23 @@ PULSE_ENDDAY_TAKE = Decimal("1.00")
 # Opportunity floor at discover (Oracle uses C at pre-discover gate).
 PULSE_MIN_OPPORTUNITY_GRADE = "C"
 
-# Shadow impulse/combo at discover (backtest-aligned; no discoveries from these paths yet).
+# Impulse/combo gates (shadow + live discover when enabled below).
 PULSE_IMPULSE_SHADOW = True
+PULSE_IMPULSE_LIVE = True
+PULSE_COMBO_LIVE = True
 PULSE_IMPULSE_LOOKBACK_MINUTES = 30
 PULSE_IMPULSE_MIN_RET_30M_PCT = 1.0
 PULSE_IMPULSE_MIN_VOL_RATIO = 2.0
 PULSE_IMPULSE_MIN_CLOSE_POSITION = 0.6
 PULSE_IMPULSE_MIN_SIGNALS = 3
+
+# Market tape on Advisor.blob (missing → red). Push titles on status change.
+PULSE_TAPE_DEFAULT = "red"
+PULSE_TAPE_PUSH_TITLES: Final[Dict[str, str]] = {
+    "red": "RED MARKET ALERT",
+    "yellow": "YELLOW MARKET WARNING",
+    "green": "GREEN MARKET STABLE",
+}
 
 ETF_EXCLUDE_TICKERS: Final[frozenset[str]] = frozenset(
     {
@@ -370,15 +384,16 @@ def _compute_pulse_impulse(hist_1m: pd.DataFrame) -> Dict[str, Any]:
     }
 
 
-def _log_pulse_impulse_shadow(attention_rows: List[Dict[str, Any]]) -> None:
-    """Log IMPULSE and COMBO shadow hits once per attention build (no buys)."""
+def _enrich_attention_impulse(attention_rows: List[Dict[str, Any]], *, log_shadow: bool) -> None:
+    """Attach 1m impulse fields to attention rows; optionally log shadow hits."""
     eligible = [
         row
         for row in attention_rows
         if float(row.get("range_pct") or 0) >= PULSE_MIN_RANGE_PCT
     ]
     if not eligible:
-        logger.info("pulse_shadow: no attention rows with range>=%s%%", PULSE_MIN_RANGE_PCT)
+        if log_shadow:
+            logger.info("pulse_shadow: no attention rows with range>=%s%%", PULSE_MIN_RANGE_PCT)
         return
 
     symbols = [str(row["symbol"]) for row in eligible]
@@ -390,29 +405,17 @@ def _log_pulse_impulse_shadow(attention_rows: List[Dict[str, Any]]) -> None:
         symbol = str(row["symbol"])
         hist_1m = _symbol_hist(data_1m, symbol)
         impulse = _compute_pulse_impulse(hist_1m)
+        row.update(impulse)
+
         if not impulse.get("impulse_pass"):
             continue
 
         normal_stable = bool(row.get("normal_stable"))
-        impulse_hits += 1
-        logger.info(
-            "pulse_shadow path=IMPULSE symbol=%s rank=%s score=%s signals=%s ret_30m=%s "
-            "vol_ratio=%s close_pos=%s range_pct=%s normal_stable=%s",
-            symbol,
-            row.get("rank"),
-            impulse.get("impulse_score"),
-            impulse.get("impulse_signals"),
-            impulse.get("impulse_ret_30m"),
-            impulse.get("impulse_vol_ratio"),
-            impulse.get("impulse_close_pos"),
-            row.get("range_pct"),
-            normal_stable,
-        )
-        if normal_stable:
-            combo_hits += 1
+        if log_shadow:
+            impulse_hits += 1
             logger.info(
-                "pulse_shadow path=COMBO symbol=%s rank=%s score=%s signals=%s ret_30m=%s "
-                "vol_ratio=%s close_pos=%s range_pct=%s",
+                "pulse_shadow path=IMPULSE symbol=%s rank=%s score=%s signals=%s ret_30m=%s "
+                "vol_ratio=%s close_pos=%s range_pct=%s normal_stable=%s",
                 symbol,
                 row.get("rank"),
                 impulse.get("impulse_score"),
@@ -421,16 +424,82 @@ def _log_pulse_impulse_shadow(attention_rows: List[Dict[str, Any]]) -> None:
                 impulse.get("impulse_vol_ratio"),
                 impulse.get("impulse_close_pos"),
                 row.get("range_pct"),
+                normal_stable,
             )
+            if normal_stable:
+                combo_hits += 1
+                logger.info(
+                    "pulse_shadow path=COMBO symbol=%s rank=%s score=%s signals=%s ret_30m=%s "
+                    "vol_ratio=%s close_pos=%s range_pct=%s",
+                    symbol,
+                    row.get("rank"),
+                    impulse.get("impulse_score"),
+                    impulse.get("impulse_signals"),
+                    impulse.get("impulse_ret_30m"),
+                    impulse.get("impulse_vol_ratio"),
+                    impulse.get("impulse_close_pos"),
+                    row.get("range_pct"),
+                )
 
-    logger.info(
-        "pulse_shadow summary eligible=%d impulse=%d combo=%d ret30m_min=%s min_signals=%s",
-        len(eligible),
-        impulse_hits,
-        combo_hits,
-        PULSE_IMPULSE_MIN_RET_30M_PCT,
-        PULSE_IMPULSE_MIN_SIGNALS,
+    if log_shadow:
+        logger.info(
+            "pulse_shadow summary eligible=%d impulse=%d combo=%d ret30m_min=%s min_signals=%s",
+            len(eligible),
+            impulse_hits,
+            combo_hits,
+            PULSE_IMPULSE_MIN_RET_30M_PCT,
+            PULSE_IMPULSE_MIN_SIGNALS,
+        )
+
+
+def _attention_row_to_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "symbol": row["symbol"],
+        "rank": row.get("rank"),
+        "price": row.get("price"),
+        "bar_price": row.get("bar_price"),
+        "volume": row.get("volume"),
+        "dollar_volume": row.get("dollar_volume"),
+        "prior_dollar_volume": row.get("prior_dollar_volume"),
+        "range_pct": row.get("range_pct"),
+        "pct_5m": row.get("pct_5m"),
+        "pct_30m": row.get("pct_30m"),
+        "pct_60m": row.get("pct_60m"),
+        "pct_open": row.get("pct_open"),
+    }
+
+
+def _pulse_impulse_sentence(row: Dict[str, Any]) -> str:
+    ret30m = row.get("impulse_ret_30m")
+    ret_display = _format_signed_pct(float(ret30m) if ret30m is not None else None)
+    return (
+        f"Impulse {row.get('impulse_score')}/4 ({row.get('impulse_signals')}); "
+        f"ret30m {ret_display}"
     )
+
+
+def build_pulse_combo_discovery_explanation(candidate: Dict[str, Any], row: Dict[str, Any]) -> str:
+    segments = [
+        f"COMBO: {_pulse_impulse_sentence(row)}",
+        _pulse_explanation_lead(candidate),
+        _pulse_rank_sentence(candidate),
+        _pulse_stability_sentence(candidate),
+        _pulse_price_sentence(candidate),
+        _pulse_volume_sentence(candidate),
+    ]
+    return " | ".join(segments)
+
+
+def build_pulse_impulse_discovery_explanation(candidate: Dict[str, Any], row: Dict[str, Any]) -> str:
+    range_pct = float(candidate.get("range_pct") or 0)
+    segments = [
+        f"IMPULSE: {_pulse_impulse_sentence(row)}",
+        _pulse_rank_sentence(candidate),
+        f"{range_pct:.1f}% intraday range",
+        _pulse_price_sentence(candidate),
+        _pulse_volume_sentence(candidate),
+    ]
+    return " | ".join(segments)
 
 
 def _format_signed_pct(value: Optional[float]) -> str:
@@ -535,6 +604,63 @@ class Pulse(AdvisorBase):
     def _after_discovery_window(self) -> bool:
         now_et = datetime.now(ET)
         return now_et.time() >= PULSE_DISCOVERY_END_TIME_ET
+
+    def _refresh_market_tape(self) -> str:
+        """
+        Fetch SPY/QQQ tape, persist status on Advisor.blob, push on change.
+
+        Returns green | yellow | red. Missing/failed readings → red.
+        """
+        state = self._advisor_blob_state()
+        prev = str(state.get("tape_status") or PULSE_TAPE_DEFAULT).strip().lower()
+        if prev not in PULSE_TAPE_PUSH_TITLES:
+            prev = PULSE_TAPE_DEFAULT
+
+        try:
+            readings = fetch_tape()
+            verdict = evaluate_tape(readings)
+            new_status = verdict.state
+            reason = verdict.reason
+            if not readings or new_status not in PULSE_TAPE_PUSH_TITLES:
+                new_status = PULSE_TAPE_DEFAULT
+                reason = reason or "no benchmark readings"
+        except Exception as exc:
+            logger.warning("Pulse tape fetch failed: %s", exc)
+            new_status = PULSE_TAPE_DEFAULT
+            reason = f"tape fetch failed: {exc.__class__.__name__}"
+
+        now_et = datetime.now(ET)
+        state["tape_status"] = new_status
+        state["tape_reason"] = reason
+        state["tape_updated_at_et"] = now_et.isoformat(timespec="seconds")
+        state["tape_date"] = now_et.date().isoformat()
+        self._save_advisor_blob_state(state)
+
+        if new_status != prev:
+            title = PULSE_TAPE_PUSH_TITLES[new_status]
+            body = f"Was {prev.upper()}: {reason}"
+            try:
+                push_super(body, title=title)
+                logger.info(
+                    "pulse_tape state=%s prev=%s push=sent reason=%s",
+                    new_status.upper(),
+                    prev.upper(),
+                    reason,
+                )
+            except Exception:
+                logger.exception(
+                    "pulse_tape state=%s prev=%s push=failed reason=%s",
+                    new_status.upper(),
+                    prev.upper(),
+                    reason,
+                )
+        else:
+            logger.info(
+                "pulse_tape state=%s unchanged reason=%s",
+                new_status.upper(),
+                reason,
+            )
+        return new_status
 
     def _build_daily_candidates(self) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         df = financial_polygon.get_filtered_stocks(
@@ -679,8 +805,11 @@ class Pulse(AdvisorBase):
                 }
             )
 
-        if PULSE_IMPULSE_SHADOW:
-            _log_pulse_impulse_shadow(attention)
+        if PULSE_IMPULSE_SHADOW or PULSE_IMPULSE_LIVE or PULSE_COMBO_LIVE:
+            _enrich_attention_impulse(
+                attention,
+                log_shadow=PULSE_IMPULSE_SHADOW,
+            )
 
         candidates.sort(key=lambda r: float(r["range_pct"]), reverse=True)
         return attention, candidates
@@ -711,6 +840,39 @@ class Pulse(AdvisorBase):
         self._save_advisor_blob_state(state)
         return attention, candidates
 
+    def _discover_pulse_candidate(
+        self,
+        sa,
+        symbol: str,
+        explanation: str,
+        sell_instructions,
+        discovered_symbols: set[str],
+        *,
+        path: str,
+    ) -> str:
+        """Returns discovered | cooldown | opp | dup | failed."""
+        if symbol in discovered_symbols:
+            return "dup"
+        if not self.allow_discovery(symbol, period=PULSE_DISCOVERY_COOLDOWN_HOURS):
+            return "cooldown"
+
+        opp_ok, opp_detail = _pulse_opportunity_gate(symbol)
+        if not opp_ok:
+            logger.info("pulse_opp_gate block discover %s path=%s %s", symbol, path, opp_detail)
+            return "opp"
+
+        if self.discovered(
+            sa,
+            symbol,
+            explanation,
+            sell_instructions=sell_instructions,
+            weight=1.0,
+        ):
+            discovered_symbols.add(symbol)
+            logger.info("pulse_discover path=%s symbol=%s", path, symbol)
+            return "discovered"
+        return "failed"
+
     def discover(self, sa) -> None:
         market_status = self.market_open()
         if market_status is None:
@@ -719,6 +881,12 @@ class Pulse(AdvisorBase):
         if market_status < 0:
             logger.info("Pulse skip: market not open yet (%s min to open)", -market_status)
             return
+
+        tape_status = self._refresh_market_tape()
+        if tape_status == "red":
+            logger.info("Pulse skip: market tape RED (discover paused)")
+            return
+
         if self._before_build_time():
             logger.info("Pulse skip: before %s ET build time", PULSE_BUILD_TIME_ET.strftime("%H:%M"))
             return
@@ -735,42 +903,96 @@ class Pulse(AdvisorBase):
             ("END_DAY", PULSE_ENDDAY_TAKE, None),
         ]
 
-        candidates = self._daily_candidates()
-        discoveries = 0
+        attention, recovery_candidates = self._ensure_pulse_cache()
+        discovered_symbols: set[str] = set()
         skipped_cooldown = 0
         skipped_opp = 0
+        discoveries_combo = 0
+        discoveries_recovery = 0
+        discoveries_impulse = 0
 
-        for candidate in candidates:
+        if PULSE_COMBO_LIVE:
+            for row in attention:
+                if not row.get("impulse_pass") or not row.get("normal_stable"):
+                    continue
+                symbol = str(row.get("symbol") or "").strip().upper()
+                if not symbol:
+                    continue
+                candidate = _attention_row_to_candidate(row)
+                explanation = build_pulse_combo_discovery_explanation(candidate, row)
+                outcome = self._discover_pulse_candidate(
+                    sa,
+                    symbol,
+                    explanation,
+                    sell_instructions,
+                    discovered_symbols,
+                    path="COMBO",
+                )
+                if outcome == "discovered":
+                    discoveries_combo += 1
+                elif outcome == "cooldown":
+                    skipped_cooldown += 1
+                elif outcome == "opp":
+                    skipped_opp += 1
+
+        for candidate in recovery_candidates:
             symbol = str(candidate.get("symbol") or "").strip().upper()
             if not symbol:
                 continue
-            if not self.allow_discovery(symbol, period=PULSE_DISCOVERY_COOLDOWN_HOURS):
-                skipped_cooldown += 1
-                continue
-
-            opp_ok, opp_detail = _pulse_opportunity_gate(symbol)
-            if not opp_ok:
-                logger.info("pulse_opp_gate block discover %s %s", symbol, opp_detail)
-                skipped_opp += 1
-                continue
-
             explanation = build_pulse_discovery_explanation(candidate)
-            if self.discovered(
+            outcome = self._discover_pulse_candidate(
                 sa,
                 symbol,
                 explanation,
-                sell_instructions=sell_instructions,
-                weight=1.0,
-            ):
-                discoveries += 1
+                sell_instructions,
+                discovered_symbols,
+                path="RECOVERY",
+            )
+            if outcome == "discovered":
+                discoveries_recovery += 1
+            elif outcome == "cooldown":
+                skipped_cooldown += 1
+            elif outcome == "opp":
+                skipped_opp += 1
 
+        if PULSE_IMPULSE_LIVE:
+            for row in attention:
+                if not row.get("impulse_pass") or row.get("normal_stable"):
+                    continue
+                symbol = str(row.get("symbol") or "").strip().upper()
+                if not symbol:
+                    continue
+                candidate = _attention_row_to_candidate(row)
+                explanation = build_pulse_impulse_discovery_explanation(candidate, row)
+                outcome = self._discover_pulse_candidate(
+                    sa,
+                    symbol,
+                    explanation,
+                    sell_instructions,
+                    discovered_symbols,
+                    path="IMPULSE",
+                )
+                if outcome == "discovered":
+                    discoveries_impulse += 1
+                elif outcome == "cooldown":
+                    skipped_cooldown += 1
+                elif outcome == "opp":
+                    skipped_opp += 1
+
+        discoveries = discoveries_combo + discoveries_recovery + discoveries_impulse
         logger.info(
-            "Pulse discover sa=%s: candidates=%d skipped_cooldown=%d skipped_opp=%d discoveries=%d",
+            "Pulse discover sa=%s: recovery_cands=%d attention=%d "
+            "discoveries=%d (combo=%d recovery=%d impulse=%d) "
+            "skipped_cooldown=%d skipped_opp=%d",
             sa.id,
-            len(candidates),
+            len(recovery_candidates),
+            len(attention),
+            discoveries,
+            discoveries_combo,
+            discoveries_recovery,
+            discoveries_impulse,
             skipped_cooldown,
             skipped_opp,
-            discoveries,
         )
 
     def analyze(self, sa, stock) -> None:
