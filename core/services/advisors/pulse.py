@@ -552,7 +552,7 @@ def _pulse_volume_sentence(candidate: Dict[str, Any]) -> str:
 
 def build_pulse_discovery_explanation(candidate: Dict[str, Any]) -> str:
     segments = [
-        _pulse_explanation_lead(candidate),
+        f"RECOVERY: {_pulse_explanation_lead(candidate)}",
         _pulse_rank_sentence(candidate),
         _pulse_stability_sentence(candidate),
         _pulse_price_sentence(candidate),
