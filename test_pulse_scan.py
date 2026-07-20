@@ -25,6 +25,8 @@ Usage:
     --impulse-activate-pct 0.006 --impulse-giveback-pct 0.004 \\
     --bandwagon-min-vol-ratio 1.5 --bandwagon-min-ret-15m 0.3 \\
     --bandwagon-lookback-minutes 5
+  python test_pulse_scan.py --recovery-gate-backtest --from 2026-06-22 --to 2026-07-17 \\
+    --exit-type IPC --activate-pct 0.002 --giveback-pct 0.002
 """
 from __future__ import annotations
 
@@ -60,6 +62,14 @@ IMPULSE_MIN_SIGNALS_DEFAULT = 3
 BANDWAGON_LOOKBACK_MINUTES_DEFAULT = 15
 BANDWAGON_MIN_VOL_RATIO_DEFAULT = 1.5
 BANDWAGON_MIN_RET_PCT_DEFAULT = 0.3
+# Recovery-gate paper variants (keep 30m pullback fixed; change short confirm / trend).
+RECOVERY_GATE_VARIANTS = (
+    "A",  # production-like: down 30m, up 5m on 15m bars + stable_60/open
+    "B",  # down 30m, up 1m on 1m bars + stable_60/open
+    "C",  # B + calc_trend-style 2h slope > threshold
+)
+RECOVERY_GATE_TREND_HOURS = 2
+RECOVERY_GATE_MIN_TREND_DEFAULT = -0.05
 DISCOVER_BUCKETS = (
     "recovery",
     "impulse_only",
@@ -701,6 +711,230 @@ def enrich_stability(
         enriched.append(out)
 
     return enriched
+
+
+def _normalized_slope_closes(closes: list[float]) -> Optional[float]:
+    """Mirror Stock.calc_trend normalize: (OLS slope / mean price) * 100."""
+    n = len(closes)
+    if n < 2:
+        return None
+    x_mean = (n - 1) / 2.0
+    y_mean = sum(closes) / n
+    if y_mean == 0:
+        return None
+    num = sum((i - x_mean) * (y - y_mean) for i, y in enumerate(closes))
+    den = sum((i - x_mean) ** 2 for i in range(n))
+    if den == 0:
+        return None
+    return (num / den / y_mean) * 100.0
+
+
+def _trend_at_as_of(
+    hist: pd.DataFrame,
+    as_of_ts: pd.Timestamp,
+    *,
+    hours: float = RECOVERY_GATE_TREND_HOURS,
+) -> Optional[float]:
+    """2h (default) normalized slope on bars at or before as_of."""
+    if hist.empty or "Close" not in hist.columns:
+        return None
+    idx = pd.to_datetime(hist.index, utc=True)
+    eligible = hist.loc[idx <= as_of_ts]
+    if eligible.empty:
+        return None
+    start = as_of_ts - pd.Timedelta(hours=hours)
+    window = eligible.loc[pd.to_datetime(eligible.index, utc=True) >= start]
+    closes = [float(x) for x in window["Close"].astype(float).tolist() if float(x) > 0]
+    return _normalized_slope_closes(closes)
+
+
+def _recovering_vs_lookbacks(
+    px_now: Optional[float],
+    px_medium: Optional[float],
+    px_short: Optional[float],
+) -> Optional[bool]:
+    if px_now is None or px_medium is None or px_short is None:
+        return None
+    return px_now < px_medium and px_now > px_short
+
+
+def enrich_recovery_gate_variants(
+    rows: list[dict[str, str]],
+    *,
+    scan_date: date,
+    as_of_time: time,
+    min_trend: float = RECOVERY_GATE_MIN_TREND_DEFAULT,
+) -> list[dict[str, str]]:
+    """
+    Paper flags for recovery-gate A/B/C (does not rewrite normal_stable).
+
+    A: down 30m / up 5m on 15m bars + stable_60/open (production-like)
+    B: down 30m / up 1m on 1m bars + same stable_60/open from 15m
+    C: B and 2h trend slope > min_trend
+    """
+    symbols = [str(r.get("symbol") or "").strip().upper() for r in rows if r.get("symbol")]
+    data_15m = _download_intraday(symbols, scan_date=scan_date)
+    data_1m = _download_intraday_1m(symbols, scan_date=scan_date)
+    as_of_ts = _as_of_timestamp(scan_date, as_of_time)
+    enriched: list[dict[str, str]] = []
+
+    for row in rows:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        hist_15 = _hist_for_date(_symbol_hist(data_15m, symbol), scan_date)
+        hist_1m = _hist_for_date(_symbol_hist(data_1m, symbol), scan_date)
+        out = dict(row)
+
+        px_now_15 = _bar_close_at_as_of(hist_15, as_of_ts)
+        open_px = (
+            _safe_float(hist_15["Open"].iloc[0])
+            if not hist_15.empty and "Open" in hist_15.columns
+            else None
+        )
+        px_30_15 = _bar_close_at_or_before(hist_15, 30, as_of_ts=as_of_ts)
+        px_5_15 = _bar_close_at_or_before(hist_15, 5, as_of_ts=as_of_ts)
+        px_60_15 = _bar_close_at_or_before(hist_15, 60, as_of_ts=as_of_ts)
+
+        # Prefer live-ish 1m close at as_of for B/C short window; fall back to 15m now.
+        px_now_1m = _bar_close_at_as_of(hist_1m, as_of_ts)
+        px_now = px_now_1m if px_now_1m is not None else px_now_15
+        px_30_1m = _bar_close_at_or_before(hist_1m, 30, as_of_ts=as_of_ts)
+        px_1_1m = _bar_close_at_or_before(hist_1m, 1, as_of_ts=as_of_ts)
+
+        stable_60 = px_now_15 is not None and px_60_15 is not None and px_now_15 >= px_60_15 * 0.995
+        stable_open = px_now_15 is not None and open_px is not None and px_now_15 >= open_px * 0.99
+
+        recovering_a = _recovering_vs_lookbacks(px_now_15, px_30_15, px_5_15)
+        recovering_b = _recovering_vs_lookbacks(px_now, px_30_1m, px_1_1m)
+        trend = _trend_at_as_of(hist_15, as_of_ts, hours=RECOVERY_GATE_TREND_HOURS)
+        trend_ok = trend is not None and trend > min_trend
+
+        gate_a = bool(recovering_a) and stable_60 and stable_open
+        gate_b = bool(recovering_b) and stable_60 and stable_open
+        gate_c = gate_b and trend_ok
+
+        out.update(
+            {
+                "recovery_A": _stable_bool(gate_a if recovering_a is not None else None),
+                "recovery_B": _stable_bool(gate_b if recovering_b is not None else None),
+                "recovery_C": _stable_bool(gate_c if recovering_b is not None else None),
+                "recovery_trend_2h": "" if trend is None else f"{trend:.4f}",
+                "recovery_trend_ok": _stable_bool(trend_ok if trend is not None else None),
+                "recovery_as_of_et": as_of_time.strftime("%H:%M"),
+            }
+        )
+        enriched.append(out)
+
+    return enriched
+
+
+def _rows_for_recovery_variant(rows: list[dict[str, str]], variant: str) -> list[dict[str, str]]:
+    """Map variant flag onto normal_stable so simulate_pulse(bucket=recovery) reuses existing path."""
+    key = f"recovery_{variant}"
+    out: list[dict[str, str]] = []
+    for row in rows:
+        cloned = dict(row)
+        cloned["normal_stable"] = row.get(key) or ""
+        cloned["recovery_variant"] = variant
+        out.append(cloned)
+    return out
+
+
+def print_recovery_gate_report(
+    summaries: dict[str, dict[str, Any]],
+    *,
+    scan_date: Optional[date],
+) -> None:
+    label = scan_date.isoformat() if scan_date else "TOTAL"
+    print(f"\n=== Recovery gate variants @ {label} ===")
+    print(
+        f"{'var':>3}  {'n':>5}  {'ex%':>6}  {'win%':>7}  {'avg%':>8}  "
+        f"{'worst%':>8}  {'best%':>8}  {'avg_tr':>7}"
+    )
+    for variant in RECOVERY_GATE_VARIANTS:
+        s = summaries.get(variant) or {}
+        n = int(s.get("n") or 0)
+        if n == 0:
+            print(f"{variant:>3}  {0:>5}")
+            continue
+        print(
+            f"{variant:>3}  {n:>5}  {float(s['exit_pct']):>5.1f}%  "
+            f"{float(s['win_pct']):>6.1f}%  {float(s['avg_ret']):>+7.3f}%  "
+            f"{float(s['worst']):>+7.2f}%  {float(s['best']):>+7.2f}%  "
+            f"{float(s['avg_tranches']):>7.2f}"
+        )
+
+
+def run_recovery_gate_backtest_for_date(
+    *,
+    cache_dir: Path,
+    scan_date: date,
+    entry_time: time,
+    range_lookback_minutes: int,
+    min_range_pct: float,
+    exit_type: str,
+    tp_pct: float,
+    activate_pct: float,
+    giveback_pct: float,
+    rebuy_pct: float,
+    max_tranches: int,
+    min_trend: float,
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, str]]]:
+    """
+    Compare recovery-gate A/B/C on one cached attention day.
+
+    Requires candidate CSV; builds/reuses stable enrich for range filters, then
+    scores A/B/C with fresh 15m+1m downloads (B/C need 1m).
+    """
+    path = _cache_path(cache_dir, scan_date)
+    stable_path = _stable_cache_path(cache_dir, scan_date)
+
+    if not path.exists():
+        raise FileNotFoundError(f"Candidate CSV missing: {path}")
+    if not stable_path.exists():
+        rows = read_cached(path)
+        enriched = enrich_stability(
+            rows,
+            scan_date=scan_date,
+            as_of_time=entry_time,
+            range_lookback_minutes=range_lookback_minutes,
+        )
+        write_dict_rows(stable_path, enriched)
+    else:
+        enriched = read_cached(stable_path)
+
+    with_gates = enrich_recovery_gate_variants(
+        enriched,
+        scan_date=scan_date,
+        as_of_time=entry_time,
+        min_trend=min_trend,
+    )
+
+    summaries: dict[str, dict[str, Any]] = {}
+    all_sim: list[dict[str, str]] = []
+    for variant in RECOVERY_GATE_VARIANTS:
+        variant_rows = _rows_for_recovery_variant(with_gates, variant)
+        simulated = simulate_pulse(
+            variant_rows,
+            scan_date=scan_date,
+            entry_time=entry_time,
+            exit_type=exit_type,
+            tp_pct=tp_pct,
+            activate_pct=activate_pct,
+            giveback_pct=giveback_pct,
+            rebuy_pct=rebuy_pct,
+            max_tranches=max_tranches,
+            min_range_pct=min_range_pct,
+            max_range_pct=None,
+            min_recent_range_pct=None,
+            max_recent_range_pct=None,
+            bucket="recovery",
+        )
+        for row in simulated:
+            row["sim_recovery_variant"] = variant
+        summaries[variant] = _summarize_sim_rows(simulated)
+        all_sim.extend(simulated)
+
+    return summaries, all_sim
 
 
 def _compute_bandwagon_at_as_of(
@@ -1549,6 +1783,23 @@ def parse_args() -> argparse.Namespace:
             "uses 5m bars when <=5, else 15m)"
         ),
     )
+    parser.add_argument(
+        "--recovery-gate-backtest",
+        action="store_true",
+        help=(
+            "Compare recovery-gate A (30m/5m 15m bars) vs B (30m/1m on 1m) vs "
+            "C (B + 2h trend); requires candidate CSV per date"
+        ),
+    )
+    parser.add_argument(
+        "--recovery-min-trend",
+        type=float,
+        default=RECOVERY_GATE_MIN_TREND_DEFAULT,
+        help=(
+            f"Variant C: min normalized 2h slope (default {RECOVERY_GATE_MIN_TREND_DEFAULT}; "
+            "mirrors Stock.calc_trend scale)"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -1633,6 +1884,57 @@ def main() -> int:
             f"| impulse_ret30m>={args.impulse_min_ret_30m_pct:g}% "
             f"| min_range={args.impulse_min_range_pct:g}% | {bandwagon_note} "
             f"| exit={args.exit_type} | entry={args.entry_time.strftime('%H:%M')} ET | {ipc_note}"
+        )
+        return 0
+
+    if args.recovery_gate_backtest:
+        date_from = date.fromisoformat(args.date_from) if args.date_from else scan_date
+        date_to = date.fromisoformat(args.date_to) if args.date_to else date_from
+        if date_to < date_from:
+            print("--to must be on or after --from", file=sys.stderr)
+            return 2
+
+        aggregated_rg: dict[str, list[dict[str, str]]] = {v: [] for v in RECOVERY_GATE_VARIANTS}
+        dates = _iter_dates(date_from, date_to)
+        if not dates:
+            print("No weekdays in date range", file=sys.stderr)
+            return 2
+
+        for day in dates:
+            try:
+                summaries, sim_rows = run_recovery_gate_backtest_for_date(
+                    cache_dir=args.cache_dir,
+                    scan_date=day,
+                    entry_time=args.entry_time,
+                    range_lookback_minutes=args.range_lookback_minutes,
+                    min_range_pct=args.impulse_min_range_pct,
+                    exit_type=args.exit_type,
+                    tp_pct=args.tp_pct,
+                    activate_pct=args.activate_pct,
+                    giveback_pct=args.giveback_pct,
+                    rebuy_pct=args.rebuy_pct,
+                    max_tranches=args.max_tranches,
+                    min_trend=args.recovery_min_trend,
+                )
+            except FileNotFoundError as exc:
+                print(f"Skip {day.isoformat()}: {exc}", file=sys.stderr)
+                continue
+            print_recovery_gate_report(summaries, scan_date=day)
+            for row in sim_rows:
+                if row.get("sim_status") != "OK":
+                    continue
+                variant = row.get("sim_recovery_variant") or ""
+                if variant in aggregated_rg:
+                    aggregated_rg[variant].append(row)
+
+        total_rg = {v: _summarize_sim_rows(aggregated_rg[v]) for v in RECOVERY_GATE_VARIANTS}
+        print_recovery_gate_report(total_rg, scan_date=None)
+        print(
+            "A=30m/5m@15m  B=30m/1m@1m  C=B+trend2h>"
+            f"{args.recovery_min_trend:g} | days={len(dates)} | "
+            f"exit={args.exit_type} | entry={args.entry_time.strftime('%H:%M')} ET | "
+            f"ipc={args.activate_pct:g}/{args.giveback_pct:g} | "
+            f"min_range={args.impulse_min_range_pct:g}%"
         )
         return 0
 
