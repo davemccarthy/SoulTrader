@@ -220,10 +220,9 @@ class AdvisorBase:
 
     # Default sell instructions to discovery
     sell_instructions = [
-        ("PERCENTAGE_DIMINISHING", 1.50, 30),
-        ("PERCENTAGE_AUGMENTING", 0.90, 60),
-        ('DESCENDING_TREND', -0.20, None),
-        ("PEAKED", 20.0, 5.0)
+        ("PEAKED", 20.0, 5.0),
+        ("PERCENTAGE_REBUY", 0.05, 5),
+        ("DESCENDING_TREND", -0.20, None),
     ]
 
     def stock_consensus(self, symbol: str) -> Dict[str, Any]:

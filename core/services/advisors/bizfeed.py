@@ -1618,18 +1618,11 @@ class Bizfeed(AdvisorBase):
                 yahoo_exchange=listed_ex or "",
             )
 
-            sell_instructions = [
-                ("PERCENTAGE_DIMINISHING", 1.30, 7),
-                ("PERCENTAGE_AUGMENTING", 0.90, 20),
-                ("DESCENDING_TREND", -0.20, None),
-                ("NOT_TRENDING", None, None),
-            ]
-
             stock = self.discovered(
                 sa,
                 listed_sym,
                 explanation,
-                sell_instructions,
+                None,
                 weight=weight,
             )
             if stock:
