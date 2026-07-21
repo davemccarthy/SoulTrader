@@ -26,6 +26,8 @@ from core.services.market import in_opening_noise_window, market_open
 
 logger = logging.getLogger(__name__)
 DT_EXIT_CONFIDENCE_MIN = 0.70
+# analyse_drop: only honor EXIT when model tags catalyst as fresh (see _build_drop_prompt).
+DT_FRESH_CATALYST_AGES = frozenset({"today", "1d", "2d"})
 REBUY_STABILIZE_MINUTES = STABILIZE_MINUTES_DEFAULT
 REBUY_SHORT_MINUTES = 5
 REBUY_TREND_HOURS = 2
@@ -460,38 +462,41 @@ def _build_drop_prompt(context_block: str) -> str:
     return f"""
 You are a live risk triage assistant for equity positions.
 
-A descending-trend alert has triggered for the tickers below after a recent price drop.
-Decide whether each position should be exited NOW due to a materially negative, very recent catalyst.
+A descending-trend alert has triggered for the tickers below (2h price trend broken).
+Decide EXIT only if there is a materially negative catalyst that likely CAUSED or is driving
+THIS drop — not general background risk.
+
+Recency policy (hard rules):
+- Prefer catalysts dated within the last 2 trading days (US equity calendar).
+- Ignore or treat as non-decisive: older earnings, old lawsuits, evergreen competition,
+  macro/sector narratives, and anything clearly published before our position entry
+  (entry_date in context) unless there is a NEW material update in the last 2 trading days.
+- If you cannot find a trusted-source catalyst in that window, you MUST HOLD.
+- Do not EXIT on "continued weakness" or "prior miss still overhanging" alone.
 
 Source quality policy:
-- Primary sources (highest trust): Reuters, Bloomberg, Dow Jones Newswires
-- Secondary source: Benzinga
-- Give most weight to primary sources.
-- Use Benzinga alone only if the catalyst is clear and material.
-- If credible recent evidence is missing or ambiguous, choose HOLD with lower confidence.
+- Primary (highest trust): Reuters, Bloomberg, Dow Jones Newswires
+- Secondary: Benzinga (alone only if catalyst is clear, dated, and material)
+- In reason, name the catalyst AND its approximate date (e.g. "guidance cut today").
+- sources_used: only sources you actually relied on for the EXIT case; empty on HOLD.
 
 What qualifies for EXIT:
-- A recent catalyst likely to impair near-term value materially, such as:
-  earnings/guidance miss, major downgrade cluster, regulatory/legal action,
-  financing/liquidity stress, or thesis-breaking company-specific news.
-- The catalyst should plausibly explain the drop and suggest continued downside asymmetry.
+- New, company-specific, material negative: earnings/guidance miss, major downgrade cluster,
+  regulatory/legal action, financing/liquidity stress, or thesis-breaking news —
+  that plausibly explains today's drop and leaves downside asymmetry.
+- Confidence >= 0.70 only when the link from catalyst → this drop is clear.
 
 What qualifies for HOLD:
-- No credible material catalyst found in trusted sources, or
-- Evidence appears stale, minor, speculative, or already absorbed.
-
-Output requirements:
-- For each ticker, return:
-  - action: "EXIT" or "HOLD" only
-  - confidence: number 0.0–1.0
-  - reason: one concise sentence (max 25 words) naming the key catalyst/risk or lack of credible evidence
-  - sources_used: array of source names you relied on (from Reuters/Bloomberg/Dow Jones Newswires/Benzinga; empty if none)
+- No trusted catalyst in the last 2 trading days, or
+- Only stale/minor/speculative/already-absorbed news, or
+- Drop looks technical/sector/noise without a fresh company catalyst.
 
 Rules:
 - No prose outside JSON.
-- If uncertain, default to HOLD with lower confidence.
+- If uncertain, HOLD with lower confidence.
+- Never EXIT solely because price/trend is weak; trend already triggered this review.
 
-Context:
+Context (per ticker includes entry_date, days_held, pnl — use them):
 {context_block}
 
 Return ONLY a single JSON object in this exact shape:
@@ -499,8 +504,9 @@ Return ONLY a single JSON object in this exact shape:
   "TICKER": {{
     "action": "EXIT|HOLD",
     "confidence": 0.00,
-    "reason": "short reason",
-    "sources_used": ["Reuters", "Bloomberg"]
+    "reason": "short reason with catalyst date or 'no fresh catalyst'",
+    "sources_used": ["Reuters", "Bloomberg"],
+    "catalyst_age": "today|1d|2d|stale|none"
   }}
 }}
 """
@@ -509,6 +515,9 @@ Return ONLY a single JSON object in this exact shape:
 def analyse_drop(sa, dropped_stocks):
     """
     Evaluate DT-triggered holdings via LLM and execute sells for EXIT decisions.
+
+    EXIT requires confidence >= DT_EXIT_CONFIDENCE_MIN and catalyst_age in
+    {{today, 1d, 2d}} so stale news alone cannot force a loss exit.
     """
     if not dropped_stocks:
         return
@@ -531,15 +540,38 @@ def analyse_drop(sa, dropped_stocks):
         threshold = item.get("threshold")
         company = (holding.stock.company or "").strip() or "unknown"
         fund = item["fund"]
+        discovery = item.get("discovery")
+
+        entry_dt = None
+        if discovery is not None and getattr(discovery, "created", None):
+            entry_dt = discovery.created
+        elif getattr(holding, "created", None):
+            entry_dt = holding.created
+
+        if entry_dt is not None:
+            if timezone.is_aware(entry_dt):
+                entry_date = timezone.localtime(entry_dt).date()
+            else:
+                entry_date = entry_dt.date()
+            entry_date_str = entry_date.isoformat()
+            days_held = (timezone.localdate() - entry_date).days
+        else:
+            entry_date_str = "unknown"
+            days_held = None
+
         line = (
             f"  {symbol}: {company!r}, ${float(current_price):.2f}; "
-            f"fund={fund.name!r}; trend={float(trend):.4f} < threshold={float(threshold):.4f}"
+            f"fund={fund.name!r}; entry_date={entry_date_str}"
         )
+        if days_held is not None:
+            line += f"; days_held={days_held}"
+        line += (
+            f"; trend={float(trend):.4f} < threshold={float(threshold):.4f}"
+        )
+        if buy_price and buy_price > 0:
+            line += f"; buy_price=${float(buy_price):.2f}"
         if pnl_pct is not None:
-            line += (
-                f"; buy_price=${float(buy_price):.2f}; "
-                f"pnl_pct={float(pnl_pct):.2f}%"
-            )
+            line += f"; pnl_pct={float(pnl_pct):.2f}%"
         contexts_by_symbol[symbol] = line
 
     context_block = "\n".join(contexts_by_symbol[s] for s in sorted(contexts_by_symbol.keys()))
@@ -574,35 +606,49 @@ def analyse_drop(sa, dropped_stocks):
         confidence = max(0.0, min(1.0, confidence))
         reason = (data.get("reason") or "").strip()
         sources = data.get("sources_used") if isinstance(data.get("sources_used"), list) else []
+        catalyst_age = (data.get("catalyst_age") or "").strip().lower()
 
         logger.info(
-            "analyse_drop decision %s: action=%s confidence=%.2f sources=%s reason=%s",
+            "analyse_drop decision %s: action=%s confidence=%.2f catalyst_age=%s sources=%s reason=%s",
             symbol,
             action or "N/A",
             confidence,
-            ",".join(sources) if sources else "-",
+            catalyst_age or "-",
+            ",".join(str(s) for s in sources) if sources else "-",
             reason or "-",
         )
 
         if action == "EXIT" and confidence >= DT_EXIT_CONFIDENCE_MIN:
+            if catalyst_age not in DT_FRESH_CATALYST_AGES:
+                logger.info(
+                    "analyse_drop HOLD/skip %s: EXIT blocked — catalyst_age=%r not in %s "
+                    "(stale/missing news guard)",
+                    symbol,
+                    catalyst_age or None,
+                    sorted(DT_FRESH_CATALYST_AGES),
+                )
+                continue
             exit_by_symbol[symbol] = {
                 "confidence": confidence,
                 "reason": reason,
                 "sources_used": sources,
+                "catalyst_age": catalyst_age,
             }
             logger.info(
-                "analyse_drop qualified EXIT %s (confidence %.2f >= %.2f)",
+                "analyse_drop qualified EXIT %s (confidence %.2f >= %.2f, catalyst_age=%s)",
                 symbol,
                 confidence,
                 DT_EXIT_CONFIDENCE_MIN,
+                catalyst_age,
             )
         else:
             logger.info(
-                "analyse_drop HOLD/skip %s (action=%s, confidence=%.2f, threshold=%.2f)",
+                "analyse_drop HOLD/skip %s (action=%s, confidence=%.2f, threshold=%.2f, catalyst_age=%s)",
                 symbol,
                 action or "N/A",
                 confidence,
                 DT_EXIT_CONFIDENCE_MIN,
+                catalyst_age or "-",
             )
 
     if not exit_by_symbol:
@@ -628,18 +674,20 @@ def analyse_drop(sa, dropped_stocks):
 
         reason = decision["reason"] or "Recent material downside catalyst after descending trend."
         conf = decision["confidence"]
+        age = decision.get("catalyst_age") or "?"
         logger.info(
-            "analyse_drop executing SELL %s fund=%s holding_id=%s conf=%.2f",
+            "analyse_drop executing SELL %s fund=%s holding_id=%s conf=%.2f catalyst_age=%s",
             symbol,
             fund.name,
             holding.id,
             conf,
+            age,
         )
         execute_sell(
             sa,
             fund,
             holding,
-            reason[:240],
+            f"[DT/{age}] {reason}"[:240],
         )
 
 
@@ -917,9 +965,23 @@ def analyze_holdings(sa, funds):
                                 logger.warning(f"PROFIT_FLAT instruction {instruction.id} missing required fields (value1 or value2)")
 
                         elif instruction.instruction == 'AFTER_DAYS':
+                            # Profit-only time exit: hold until day N, then sell only if price > avg.
                             days_held = (timezone.now() - discovery.created).days
-                            if instruction.value1 and days_held >= int(instruction.value1):
-                                execute_sell(sa, fund, holding, f"{holding.stock.symbol} after holding for {days_held} days (target: {int(instruction.value1)} days)")
+                            avg = holding.average_price or discovery.price
+                            if (
+                                instruction.value1
+                                and days_held >= int(instruction.value1)
+                                and avg
+                                and holding.stock.price > avg
+                            ):
+                                execute_sell(
+                                    sa,
+                                    fund,
+                                    holding,
+                                    f"{holding.stock.symbol} after {days_held} days "
+                                    f"in profit (target: {int(instruction.value1)} days, "
+                                    f"avg ${avg:.2f})",
+                                )
                                 break
 
                         elif instruction.instruction == 'DESCENDING_TREND':

@@ -684,7 +684,12 @@ def holding_detail(request, stock_id):
                 elif instruction.instruction == 'AFTER_DAYS' and instruction.value1:
                     days_held = (timezone.now() - discovery.created).days
                     instruction_data['days_held'] = days_held
-                    instruction_data['status'] = 'active' if days_held >= int(instruction.value1) else 'pending'
+                    in_profit = float(current_price) > float(avg_price or discovery.price or 0)
+                    instruction_data['status'] = (
+                        'active'
+                        if days_held >= int(instruction.value1) and in_profit
+                        else 'pending'
+                    )
                 elif instruction.instruction == 'DESCENDING_TREND' and instruction.value1 is not None:
                     # DESCENDING_TREND value is a threshold (e.g., -0.20 means sell if trend < -0.20)
                     instruction_data['value'] = float(instruction.value1)
@@ -997,7 +1002,13 @@ def holding_history(request, stock_id):
             elif instruction.instruction == 'AFTER_DAYS' and instruction.value1:
                 days_held = (timezone.now() - discovery_obj.created).days
                 instruction_data['days_held'] = days_held
-                instruction_data['status'] = 'active' if days_held >= int(instruction.value1) else 'pending'
+                basis = float(avg_price) if avg_price else float(discovery_obj.price or 0)
+                in_profit = float(current_price) > basis
+                instruction_data['status'] = (
+                    'active'
+                    if days_held >= int(instruction.value1) and in_profit
+                    else 'pending'
+                )
             elif instruction.instruction == 'DESCENDING_TREND' and instruction.value1 is not None:
                 instruction_data['value'] = float(instruction.value1)
                 threshold = float(instruction.value1)

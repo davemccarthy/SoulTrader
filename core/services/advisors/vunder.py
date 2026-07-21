@@ -52,7 +52,7 @@ DISCOVERY_WEIGHT = 1.0
 # STOP_PERCENTAGE: hard max loss vs average cost.
 # PEAKED: exit after rally if price gives back from session peak (rerating failed to hold).
 # DESCENDING_TREND: short-term trend breakdown → analyse_drop path.
-# AFTER_DAYS: backstop if rerating never materializes.
+# AFTER_DAYS: profit-only time exit if rerating never materializes (price > avg).
 VUNDER_STOP_MULT = Decimal("0.87")
 VUNDER_TARGET_FV_CAPTURE = 0.70
 VUNDER_TARGET_CAP = Decimal("1.50")
@@ -376,7 +376,7 @@ class Vunder(AdvisorBase):
 
         Target scales with watchlist p/fv: cheaper vs fair value → higher TP multiplier
         (capped). Stop is a fixed % below cost. PEAKED / DESCENDING_TREND protect gains
-        when momentum fades; AFTER_DAYS limits dead money.
+        when momentum fades; AFTER_DAYS exits in profit after max hold if still green.
         """
         try:
             p_fv = float(entry.get("p_fv") or 1.0)
