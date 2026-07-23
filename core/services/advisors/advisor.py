@@ -220,8 +220,9 @@ class AdvisorBase:
 
     # Default sell instructions (Run 3): PEAKED harvest + profit-only time exit +
     # gated −4% rebuy (capped until tranche-cap alerts exist) + DT→LLM loss exit.
+    # PEAKED: value1=giveback 15%, value2=min peak 8%; min exit = value2/2 (→ +4%).
     sell_instructions = [
-        ("PEAKED", 20.0, 20.0),
+        ("PEAKED", 15.0, 8.0),
         ("PERCENTAGE_REBUY", 0.04, 10),
         ("DESCENDING_TREND", -0.20, None),
         ("AFTER_DAYS", 20, None),

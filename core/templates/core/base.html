@@ -2266,8 +2266,11 @@
                     // value1 = percentage threshold for price range, value2 = evaluation period in days
                     valueDisplay = `Sell if price range within ${(inst.value * 100).toFixed(0)}% over ${inst.value2} days (when in profit)`;
                 } else if (inst.instruction === 'PEAKED' && inst.value != null) {
-                    // value1 = percentage threshold (e.g., 5 = sell when down 5% from peak since purchase)
-                    valueDisplay = `${inst.value}%`;
+                    // value1 = giveback % of peak gain; min exit derived as min peak / 2 (value2)
+                    valueDisplay = `${inst.value}% giveback`;
+                    if (inst.min_exit_pct != null) {
+                        valueDisplay += ` (min exit +${Number(inst.min_exit_pct).toFixed(0)}%)`;
+                    }
                     if (inst.pct_from_peak != null) {
                         extraInfo = ` (${inst.pct_from_peak >= 0 ? '+' : ''}${inst.pct_from_peak.toFixed(1)}% from peak)`;
                     }

@@ -25,6 +25,7 @@ TRASH_DISCOVERY_COOLDOWN_HOURS = 24
 
 TRASH_REBUY_DROP = Decimal("0.05")
 TRASH_REBUY_MAX_TRANCHES = Decimal("5")
+# Min peak 20 → derived min exit 10% (÷2); arm on a real move, floor still green.
 TRASH_PEAKED_GIVEBACK_PCT = Decimal("15.0")
 TRASH_PEAKED_MIN_GAIN_PCT = Decimal("20.0")
 TRASH_PROFIT_FLAT_RANGE = Decimal("0.05")

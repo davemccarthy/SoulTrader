@@ -1012,13 +1012,22 @@ def analyze_holdings(sa, funds):
                         elif instruction.instruction == 'PEAKED':
                             if not peaked_allowed:
                                 continue
+                            min_peak_gain_pct = float(instruction.value2 or 5.0)
+                            min_exit_pct = holding.stock.peaked_min_exit_pct(min_peak_gain_pct)
                             if holding.stock.downturned(
                                 discovery.created,
                                 buy_price=buy_price,
                                 giveback_pct=float(instruction.value1),
-                                min_peak_gain_pct=float(instruction.value2 or 5.0),
+                                min_peak_gain_pct=min_peak_gain_pct,
+                                min_exit_pct=min_exit_pct,
                             ):
-                                execute_sell(sa, fund, holding,f"{holding.stock.symbol} down {instruction.value1}% from peak")
+                                execute_sell(
+                                    sa,
+                                    fund,
+                                    holding,
+                                    f"{holding.stock.symbol} down {instruction.value1}% from peak "
+                                    f"(min exit +{min_exit_pct:.0f}%)",
+                                )
                                 break
 
                         elif instruction.instruction == 'END_DAY' and end_day:

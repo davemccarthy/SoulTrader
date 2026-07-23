@@ -727,16 +727,19 @@ def holding_detail(request, stock_id):
                     instruction_data['max_days'] = int(instruction.value2) if instruction.value2 is not None else 28
                     instruction_data['status'] = 'pending'  # Status determined during analysis
                 elif instruction.instruction == 'PEAKED' and instruction.value1 and discovery and discovery.created:
-                    # value1 = percentage threshold of peak gain giveback (e.g., 33 = give back 33% of peak gain)
+                    # value1 = giveback % of peak gain; value2 = min peak %; min exit = min peak / 2
                     giveback_pct = float(instruction.value1)
                     min_peak_gain_pct = float(instruction.value2) if instruction.value2 is not None else 5.0
+                    min_exit_pct = holding.stock.peaked_min_exit_pct(min_peak_gain_pct)
                     buy_price = float(avg_price) if avg_price else float(discovery.price) if discovery.price else None
                     instruction_data['status'] = 'active' if buy_price is not None and holding.stock.downturned(
                         discovery.created,
                         buy_price=buy_price,
                         giveback_pct=giveback_pct,
                         min_peak_gain_pct=min_peak_gain_pct,
+                        min_exit_pct=min_exit_pct,
                     ) else 'pending'
+                    instruction_data['min_exit_pct'] = min_exit_pct
                     instruction_data['current_price'] = float(current_price)
                     peak_price = holding.stock.peak_since(discovery.created)
                     if peak_price and peak_price > 0:
@@ -1045,16 +1048,19 @@ def holding_history(request, stock_id):
                 instruction_data['max_days'] = int(instruction.value2) if instruction.value2 is not None else 28
                 instruction_data['status'] = 'pending'  # Status determined during analysis
             elif instruction.instruction == 'PEAKED' and instruction.value1 and discovery_obj and discovery_obj.created:
-                # value1 = percentage threshold of peak gain giveback (e.g., 33 = give back 33% of peak gain)
+                # value1 = giveback % of peak gain; value2 = min peak %; min exit = min peak / 2
                 giveback_pct = float(instruction.value1)
                 min_peak_gain_pct = float(instruction.value2) if instruction.value2 is not None else 5.0
+                min_exit_pct = stock.peaked_min_exit_pct(min_peak_gain_pct)
                 buy_price = float(avg_price) if avg_price else float(discovery_obj.price) if discovery_obj.price else None
                 instruction_data['status'] = 'active' if buy_price is not None and stock.downturned(
                     discovery_obj.created,
                     buy_price=buy_price,
                     giveback_pct=giveback_pct,
                     min_peak_gain_pct=min_peak_gain_pct,
+                    min_exit_pct=min_exit_pct,
                 ) else 'pending'
+                instruction_data['min_exit_pct'] = min_exit_pct
                 instruction_data['current_price'] = float(current_price)
                 peak_price = stock.peak_since(discovery_obj.created)
                 if peak_price and peak_price > 0:

@@ -364,7 +364,19 @@ class Stock(models.Model):
             logger.warning(f"Could not check trending status for {self.symbol}: {e}")
             return None
 
-    def downturned(self, since_date, buy_price, giveback_pct=33.0, min_peak_gain_pct=5.0):
+    @staticmethod
+    def peaked_min_exit_pct(min_peak_gain_pct) -> float:
+        """True min profit at PEAKED sell: min_peak / 2 (SI only stores giveback + min_peak)."""
+        return float(min_peak_gain_pct) / 2.0
+
+    def downturned(
+        self,
+        since_date,
+        buy_price,
+        giveback_pct=33.0,
+        min_peak_gain_pct=5.0,
+        min_exit_pct=None,
+    ):
         """
         True if current gain has given back giveback_pct of peak gain since since_date.
 
@@ -377,6 +389,9 @@ class Stock(models.Model):
             buy_price: Decimal/float - cost basis anchor.
             giveback_pct: float - percent of peak gain allowed to be given back.
             min_peak_gain_pct: float - activate trailing only after this peak gain.
+            min_exit_pct: float|None - min current gain %% vs buy at sell.
+                None → still green only (>0). Pass Stock.peaked_min_exit_pct(min_peak)
+                for the default min_peak/2 floor (arm high, exit floor lower).
         """
         logger = logging.getLogger(__name__)
 
@@ -393,16 +408,21 @@ class Stock(models.Model):
             if current is None:
                 return False
 
+            current_gain_pct = ((current - buy) / buy) * 100.0
+            # First check: true min profit at exit (backtest --peaked-min-exit).
+            if min_exit_pct is not None:
+                if current_gain_pct < float(min_exit_pct):
+                    return False
+            elif current_gain_pct <= 0:
+                # PEAKED protects gains; do not sell at/below break-even.
+                return False
+
             peak_gain_pct = ((peak - buy) / buy) * 100.0
             if peak_gain_pct < float(min_peak_gain_pct):
                 return False
             if peak_gain_pct <= 0:
                 return False
 
-            current_gain_pct = ((current - buy) / buy) * 100.0
-            # PEAKED is intended to protect gains; do not sell at/below break-even.
-            if current_gain_pct <= 0:
-                return False
             giveback_ratio = (peak_gain_pct - current_gain_pct) / peak_gain_pct
 
             return giveback_ratio >= (float(giveback_pct) / 100.0)
