@@ -1120,18 +1120,19 @@ def holding_history(request, stock_id):
             if cost_basis > 0:
                 pl_percent = float(((Decimal(str(trade.price)) - cost_basis) / cost_basis) * 100)
         elif trade.action == 'BUY':
-            # Unrealized P&L for BUY trades
+            # Unrealized P&L for BUY trades (informational only; keep neutral colors)
             buy_price = Decimal(str(trade.price))
             pl_amount = float((current_price - buy_price) * trade.shares)
             if buy_price > 0:
                 pl_percent = float(((current_price - buy_price) / buy_price) * 100)
         
-        if pl_amount is not None:
+        # Signed green/red only for realized SELL P&L — buy mark-to-market is not an outcome.
+        if trade.action == 'SELL' and pl_amount is not None:
             pl_class = 'positive' if pl_amount >= 0 else 'negative'
         
-        # Calculate current price class for colorization
+        # Current-vs-trade price coloring only for SELLs (post-exit drift); BUY stays neutral.
         current_price_class = 'neutral'
-        if current_price and trade.price:
+        if trade.action == 'SELL' and current_price and trade.price:
             if current_price > trade.price:
                 current_price_class = 'positive'
             elif current_price < trade.price:
@@ -1247,17 +1248,15 @@ def trades(request):
         pl_amount = data.get('pl_amount')
         realized = data.get('realized', False)
 
-        if pl_amount is not None and pl_amount > 0:
+        # Signed green/red only for realized SELL P&L — buy mark-to-market is not an outcome.
+        if realized and pl_amount is not None and pl_amount > 0:
             pl_class = 'positive'
-        elif pl_amount is not None and pl_amount < 0:
+        elif realized and pl_amount is not None and pl_amount < 0:
             pl_class = 'negative'
         else:
             pl_class = 'neutral'
-        
-        if realized:
-            price_class = pl_class
-        else:
-            price_class = 'neutral'
+
+        price_class = pl_class if realized else 'neutral'
 
         discovery_obj = _trade_discovery(trade, discoveries_map)
 
