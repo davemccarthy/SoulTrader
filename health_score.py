@@ -80,7 +80,11 @@ def _print_summary(symbol: str, rows: List[Tuple[str, str, float, Any]]) -> None
     print(f"  {'-' * 26} {'-' * 5}  {'-' * 8}")
     for _key, title, weight, result in rows:
         sc = f"{result.score:.1f}" if result.score is not None else "—"
-        err = f"  ({result.error})" if result.score is None and result.error else ""
+        err = ""
+        if result.score is None and getattr(result, "neutral_fallback", False):
+            err = "  (excluded — no coverage; weights renormalize)"
+        elif result.score is None and result.error:
+            err = f"  ({result.error})"
         print(f"  {title:<26} {weight * 100:>4.0f}%  {sc:>8}{err}")
 
     weight_sum = sum(w for _, _, w, r in rows if r.score is not None)
@@ -96,7 +100,11 @@ def _print_summary(symbol: str, rows: List[Tuple[str, str, float, Any]]) -> None
 
 
 def _print_component(title: str, result) -> None:
-    if result.error and result.score is None:
+    excluded = (
+        result.score is None
+        and getattr(result, "neutral_fallback", False)
+    )
+    if result.error and result.score is None and not excluded:
         print(f"ERROR {result.symbol}: {result.error}")
         return
 
@@ -106,6 +114,13 @@ def _print_component(title: str, result) -> None:
     print(f"\n{'-' * 60}")
     print(f"{title} — {result.symbol}")
     print(f"{'-' * 60}")
+    if excluded:
+        print(f"  Score (0–100):     — (excluded; no coverage)")
+        print(f"  Final model share: {share_pct} (renormalized out when missing)")
+        if result.error:
+            print(f"  Reason:            {result.error}")
+        print()
+        return
     print(f"  Score (0–100):     {result.score}")
     print(f"  Final model share: {share_pct} (when combined)")
 
@@ -134,7 +149,10 @@ def _print_component(title: str, result) -> None:
         print(f"  Price / fair:      ${price:.2f} / ${fair:.2f}")
     if getattr(result, "neutral_fallback", False):
         reason = getattr(result, "fallback_reason", "") or "neutral"
-        print(f"  Neutral fallback:  {reason} (scored {result.score})")
+        if result.score is None:
+            print(f"  Excluded:          {reason or result.error or 'no coverage'}")
+        else:
+            print(f"  Neutral fallback:  {reason} (scored {result.score})")
 
     rec = getattr(result, "recommendation_key", None)
     upside = getattr(result, "upside_to_mean_pct", None)

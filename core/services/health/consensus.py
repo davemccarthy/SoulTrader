@@ -2,6 +2,10 @@
 Analyst consensus component (15% of final buy score in v2 model).
 
 Street rating + target upside from yfinance (no LLM). Uses financial.yahoo.get_consensus_snapshot.
+
+No usable coverage is excluded (score=None, neutral_fallback=True) so composite /
+Opportunity blends renormalize — not treated as a mid-neutral 50. Thin coverage
+(< MIN_ANALYST_COUNT analysts) still blends the rating leg halfway toward 50.
 """
 
 from __future__ import annotations
@@ -188,7 +192,7 @@ def score_consensus_health(symbol: str) -> ConsensusHealthResult:
     if not snap.get("is_usable"):
         return ConsensusHealthResult(
             symbol=sym,
-            score=NEUTRAL_FALLBACK_SCORE,
+            score=None,
             neutral_fallback=True,
             error="no analyst consensus data",
         )
@@ -275,7 +279,7 @@ def score_consensus_health(symbol: str) -> ConsensusHealthResult:
     if weight_total <= 0:
         return ConsensusHealthResult(
             symbol=sym,
-            score=NEUTRAL_FALLBACK_SCORE,
+            score=None,
             recommendation_key=rec_key,
             recommendation_mean=rec_mean,
             analyst_count=analyst_count,
