@@ -580,6 +580,10 @@ class Holding(models.Model):
     discovery = models.ForeignKey('Discovery', null=True, blank=True, on_delete=models.DO_NOTHING)
     shares = models.IntegerField(default=0)
     average_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.0)
+    tranches = models.PositiveIntegerField(
+        default=0,
+        help_text="Number of buys on this open position (initial=1; each rebuy increments).",
+    )
     created = models.DateTimeField(auto_now_add=True, null=True, blank=True)  # When holding was first created (backfilled from first BUY trade)
 
 

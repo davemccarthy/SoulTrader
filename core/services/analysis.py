@@ -98,50 +98,6 @@ RUNNER_MIN_CLOSE_POSITION = 0.6
 RUNNER_MIN_SIGNALS = 4
 
 
-def factor_sentiment(fund: Profile) -> Decimal:
-    """
-    Resolve fund sentiment to a scalar.
-    - Manual presets: map via Profile.SENTIMENT (float values).
-    - AUTO: derive from cash / wealth thresholds.
-    Always returns a Decimal.
-    """
-
-    sentiment_key = fund.sentiment or "AUTO"
-    if sentiment_key != "AUTO":
-        return Decimal(Profile.SENTIMENT.get(sentiment_key, 1.0))
-
-    cash_value = fund.cash or Decimal("0")
-    holdings_value = Decimal("0")
-    for holding in Holding.objects.filter(fund=fund).select_related("stock"):
-        if holding.stock and holding.stock.price and holding.shares:
-            holdings_value += Decimal(str(holding.stock.price)) * Decimal(str(holding.shares))
-
-    wealth = cash_value + holdings_value
-    if wealth <= 0:
-        logger.warning(
-            f"{fund.name}: AUTO sentiment fallback to STAG (wealth <= 0). "
-            f"cash={cash_value}, holdings={holdings_value}"
-        )
-        return Decimal(1.0)
-
-    cash_ratio = float(cash_value / wealth)
-    if cash_ratio < 0.25:
-        band = "STRONG_BEAR"
-    elif cash_ratio < 0.50:
-        band = "BEAR"
-    else:
-        band = "STAG"
-
-    sentiment = Profile.SENTIMENT[band]
-
-    if sentiment < 1.0:
-        logger.info(
-            f"{fund.name}: AUTO sentiment {band} ({sentiment:.2f}) "
-            f"cash_ratio={cash_ratio:.3f}, cash={cash_value}, holdings={holdings_value}, wealth={wealth}"
-        )
-
-    return Decimal(str(sentiment))
-
 def _recent_intraday_peak(stock, since_date, lookback_hours=RECENT_TP_LOOKBACK_HOURS):
     if not since_date:
         return None
@@ -171,11 +127,11 @@ def _recent_intraday_peak(stock, since_date, lookback_hours=RECENT_TP_LOOKBACK_H
         return None
 
 
-def analyse_target(holding, target, sentiment, discovery=None):
+def analyse_target(holding, target, discovery=None):
 
     current = holding.stock.price
     buy_price = holding.average_price or Decimal(0.0)
-    target = buy_price + (Decimal(str(target)) - buy_price) * sentiment
+    target = Decimal(str(target))
 
     # Case 1: Targets should only trigger sells at a profit, not at a loss.
     if current <= buy_price:
@@ -725,8 +681,6 @@ def analyze_holdings(sa, funds):
     # Iterate thru funds
     for fund in funds:
 
-        sentiment = factor_sentiment(fund)
-
         for holding in Holding.objects.filter(fund=fund).select_related(
             "stock", "discovery", "discovery__advisor"
         ):
@@ -785,7 +739,7 @@ def analyze_holdings(sa, funds):
                                     break
 
                         elif instruction.instruction == 'TARGET_PRICE':
-                            if analyse_target(holding, instruction.value1, sentiment, discovery):
+                            if analyse_target(holding, instruction.value1, discovery):
                                 execute_sell(
                                     sa, fund, holding,
                                     f"{holding.stock.symbol} reached target price of ${instruction.value1:.2f}",
@@ -796,7 +750,7 @@ def analyze_holdings(sa, funds):
                             avg = holding.average_price or discovery.price
                             if instruction.value1 and avg:
                                 target_px = Decimal(str(instruction.value1)) * Decimal(str(avg))
-                                if analyse_target(holding, target_px, sentiment, discovery):
+                                if analyse_target(holding, target_px, discovery):
                                     execute_sell(
                                         sa, fund, holding,
                                         f"{holding.stock.symbol} reached target "
@@ -826,7 +780,7 @@ def analyze_holdings(sa, funds):
                                 else:
                                     current_target = float(buy_price)  # After max_days, target = buy_price (break-even)
 
-                                if analyse_target(holding, Decimal(str(current_target)), sentiment, discovery):
+                                if analyse_target(holding, Decimal(str(current_target)), discovery):
                                     execute_sell(sa, fund, holding, f"{holding.stock.symbol} diminishing target ${current_target:.2f} (day {days_held}/{max_days})")
                                     break
                             else:
@@ -842,7 +796,7 @@ def analyze_holdings(sa, funds):
                                 target_value = base_allowance * (Decimal('1.0') + ratio)
                                 target_price = target_value / Decimal(str(holding.shares))
                                 
-                                if analyse_target(holding, target_price, sentiment, discovery):
+                                if analyse_target(holding, target_price, discovery):
                                     execute_sell(sa, fund, holding, f"{holding.stock.symbol} reached profit target (target price: ${target_price:.2f})")
                                     break
                             else:
@@ -868,7 +822,8 @@ def analyze_holdings(sa, funds):
                                 logger.warning(f"{instruction.instruction} invalid threshold (value1={instruction.value1}, buy_price={buy_price})")
                         elif instruction.instruction == 'PERCENTAGE_REBUY':
                             # value1 = drop fraction from average (e.g. 0.02 = 2%); add one fund tranche at current price.
-                            # value2 = max tranche count cap (default 5 when null). value2 <= 0 = unlimited (cash only).
+                            # value2 = max tranche count cap vs holding.tranches (default 5 when null).
+                            # value2 <= 0 = unlimited (cash only).
                             # Intraday gate (RTH): calc_trend(2h) > -0.10 and price above 30m and 5m references.
                             if instruction.value1 and holding.shares > 0 and buy_price:
                                 drop_pct = Decimal(str(instruction.value1))
@@ -879,28 +834,24 @@ def analyze_holdings(sa, funds):
                                     ):
                                         continue
 
-                                    tranche_amount = fund.average_spend() * Decimal(str(sentiment))
+                                    tranche_amount = fund.average_spend()
+
                                     if instruction.value2 is not None:
-                                        max_tranches = Decimal(str(instruction.value2))
+                                        max_tranches = int(Decimal(str(instruction.value2)))
                                     else:
-                                        max_tranches = REBUY_MAX_TRANCHES_DEFAULT
+                                        max_tranches = int(REBUY_MAX_TRANCHES_DEFAULT)
 
-                                    if max_tranches > 0:
-                                        current_book = Decimal(str(holding.average_price)) * Decimal(str(holding.shares))
-                                        max_book = tranche_amount * max_tranches
-                                        if current_book >= max_book:
-                                            logger.info(
-                                                "%s rebuy skipped: max tranches reached (book=$%.2f cap=$%.2f tranches=%s)",
-                                                holding.stock.symbol,
-                                                float(current_book),
-                                                float(max_book),
-                                                int(max_tranches),
-                                            )
-                                            continue
-                                        rebuy_amount = min(tranche_amount, max_book - current_book)
-                                    else:
-                                        rebuy_amount = tranche_amount
+                                    current_tranches = int(holding.tranches or 0)
+                                    if max_tranches > 0 and current_tranches >= max_tranches:
+                                        logger.info(
+                                            "%s rebuy skipped: max tranches reached (%s/%s)",
+                                            holding.stock.symbol,
+                                            current_tranches,
+                                            max_tranches,
+                                        )
+                                        continue
 
+                                    rebuy_amount = tranche_amount
                                     if rebuy_amount <= 0:
                                         continue
                                     execute_buy(
@@ -1091,8 +1042,8 @@ def analyze_discovery(sa, funds, advisors):
     for fund in funds:
         logger.info(f"Buying ------------- {fund.name}")
 
-        sentiment = factor_sentiment(fund)
         allowed_advisors = list(fund.advisors or [])
+
         if not allowed_advisors:
             logger.info("%s: no advisors configured; skip discovery buys", fund.name)
             continue
@@ -1129,7 +1080,6 @@ def analyze_discovery(sa, funds, advisors):
             continue
 
         allowance = fund.average_spend()
-        allowance *= sentiment
 
         for discovery in unique_discoveries:
 

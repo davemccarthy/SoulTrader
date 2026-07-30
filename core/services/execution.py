@@ -148,6 +148,12 @@ def execute_buy(sa, fund, stock, allowance, explanation="", force = False, disco
     else:
         holding.average_price = stock.price
 
+    # Tranche count: first buy on an empty position = 1; each add increments.
+    if old_shares <= 0:
+        holding.tranches = 1
+    else:
+        holding.tranches = int(holding.tranches or 0) + 1
+
     holding.save()
     fund.save()
 
@@ -235,6 +241,12 @@ def execute_buy_exact_shares(
         holding.average_price = total_cost / Decimal(holding.shares)
     else:
         holding.average_price = price
+
+    # Transfers / exact buys: empty receiver = 1st buy; add to existing increments.
+    if old_shares <= 0:
+        holding.tranches = 1
+    else:
+        holding.tranches = int(holding.tranches or 0) + 1
 
     holding.save()
     fund.save()

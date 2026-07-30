@@ -459,6 +459,7 @@ def holdings(request):
             'discovery_logo': _advisor_logo_url(discovery_advisor),
             'stock_id': stock.id,
             'shares': shares,
+            'tranches': int(holding.tranches or 0),
             'average_price': avg_price,
             'total_value': total_value,
             'price_class': price_class,
@@ -847,6 +848,7 @@ def holding_history(request, stock_id):
     if holding is not None:
         shares = holding.shares or 0
         avg_price = holding.average_price or Decimal('0')
+        tranches = int(holding.tranches or 0)
     else:
         # Reconstruct current position from trade ledger for closed positions.
         position_shares = Decimal('0')
@@ -866,6 +868,8 @@ def holding_history(request, stock_id):
 
         shares = position_shares
         avg_price = position_avg_price
+        # Closed / reconstructed positions: no live tranche counter; treat as single.
+        tranches = 1
 
     current_price = stock.price or Decimal('0')
     worth = current_price * shares
@@ -919,6 +923,7 @@ def holding_history(request, stock_id):
         'average_price': float(avg_price),
         'worth': float(worth),
         'shares': shares,
+        'tranches': tranches,
         'price': float(current_price),
         'change_percent': change_percent,
         'price_class': 'positive' if change_percent >= 0 else 'negative',

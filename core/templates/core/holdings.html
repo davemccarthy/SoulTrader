@@ -60,7 +60,11 @@
                     </div>
                     <div class="holdings-col holdings-col-symbol">
                         <span class="holdings-symbol">{{ holding.symbol }}</span>
-                        <span class="holdings-symbol-value">SHARES {{ holding.shares|intcomma }}</span>
+                        {% if holding.tranches > 1 %}
+                            <span class="holdings-symbol-value">TRANCHES <strong>{{ holding.tranches }}</strong></span>
+                        {% else %}
+                            <span class="holdings-symbol-value">SHARES {{ holding.shares|intcomma }}</span>
+                        {% endif %}
                     </div>
                     <div class="holdings-col holdings-col-company">
                         <span class="holdings-company" title="{{ holding.company }}">{{ holding.company|default:"—"|truncatechars:30 }}</span>
