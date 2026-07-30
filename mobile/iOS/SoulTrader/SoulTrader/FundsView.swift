@@ -45,7 +45,7 @@ struct FundsView: View {
                             value: fund.name.isEmpty ? "Unnamed" : fund.name,
                             expands: false
                         )
-                        .frame(width: 64, alignment: .leading)
+                        .frame(width: 72, alignment: .leading)
 
                         MetricColumn(
                             title: "PORTFOLIO",
