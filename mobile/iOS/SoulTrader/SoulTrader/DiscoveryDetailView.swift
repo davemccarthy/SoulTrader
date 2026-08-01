@@ -206,11 +206,7 @@ struct DiscoveryDetailView: View {
     }
 
     private func formatCurrency(_ value: Decimal?) -> String {
-        guard let value else { return "—" }
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        formatter.maximumFractionDigits = 2
-        return formatter.string(from: NSDecimalNumber(decimal: value)) ?? "—"
+        Theme.formatCurrency(value, nilPlaceholder: "—")
     }
 
     private func formatPercent(_ value: Double?) -> String {

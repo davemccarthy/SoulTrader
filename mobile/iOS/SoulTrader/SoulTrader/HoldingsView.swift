@@ -259,11 +259,7 @@ struct HoldingsView: View {
     }
 
     private func formatCurrency(_ value: Decimal?) -> String {
-        guard let value else { return "$0.00" }
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        formatter.maximumFractionDigits = 2
-        return formatter.string(from: NSDecimalNumber(decimal: value)) ?? "$0.00"
+        Theme.formatCurrency(value)
     }
 
     private func formatPercent(_ value: Double?) -> String {
@@ -537,11 +533,7 @@ struct HoldingDetailView: View {
     }
 
     private func formatCurrency(_ value: Decimal?) -> String {
-        guard let value else { return "$0.00" }
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        formatter.maximumFractionDigits = 2
-        return formatter.string(from: NSDecimalNumber(decimal: value)) ?? "$0.00"
+        Theme.formatCurrency(value)
     }
 
     private func formatSignedCurrency(_ value: Decimal?) -> String {

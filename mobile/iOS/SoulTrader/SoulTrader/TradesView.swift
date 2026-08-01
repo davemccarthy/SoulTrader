@@ -134,14 +134,20 @@ struct TradesView: View {
         let total = Decimal(trade.shares) * priceDecimal
         let isBuy = trade.action.uppercased() == "BUY"
         let actionColor: Color = isBuy ? Theme.positive : Theme.negative
+        let sellPct = sellPnlPercent(for: trade)
         let totalColor: Color = {
             guard !isBuy else { return Theme.valuePrimary }
+            if let sellPct { return Theme.signedColor(for: sellPct) }
             guard let cost = decimal(from: trade.cost), cost != 0 else { return Theme.valuePrimary }
             return Theme.signedColor(for: priceDecimal - cost)
         }()
+        let topValue: String = {
+            if let sellPct { return formatSignedPercent(sellPct) }
+            return formatCurrency(total)
+        }()
 
         return VStack(alignment: .trailing, spacing: Theme.metricSpacing) {
-            Text(formatCurrency(total))
+            Text(topValue)
                 .appStyle(.metricValue, color: totalColor)
                 .lineLimit(1)
 
@@ -152,17 +158,27 @@ struct TradesView: View {
         .frame(minWidth: 78, alignment: .trailing)
     }
 
+    /// Realized P&L % for SELL rows (sell price vs avg cost). Nil when not a sell or cost missing.
+    private func sellPnlPercent(for trade: TradeResponse) -> Double? {
+        guard trade.action.uppercased() == "SELL" else { return nil }
+        guard let sellPrice = decimal(from: trade.price),
+              let avgCost = decimal(from: trade.cost),
+              avgCost != 0 else { return nil }
+        let pct = ((sellPrice / avgCost) - 1) * 100
+        return NSDecimalNumber(decimal: pct).doubleValue
+    }
+
+    private func formatSignedPercent(_ value: Double) -> String {
+        String(format: "%@%.2f%%", value >= 0 ? "+" : "", value)
+    }
+
     private func decimal(from text: String?) -> Decimal? {
         guard let text, !text.isEmpty else { return nil }
         return Decimal(string: text)
     }
 
     private func formatCurrency(_ value: Decimal?) -> String {
-        guard let value else { return "$0.00" }
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        formatter.maximumFractionDigits = 2
-        return formatter.string(from: NSDecimalNumber(decimal: value)) ?? "$0.00"
+        Theme.formatCurrency(value)
     }
 
     private func formatPercent(_ value: Double?) -> String {
@@ -465,11 +481,7 @@ struct TradeDetailView: View {
     }
 
     private func formatCurrency(_ value: Decimal?) -> String {
-        guard let value else { return "—" }
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        formatter.maximumFractionDigits = 2
-        return formatter.string(from: NSDecimalNumber(decimal: value)) ?? "—"
+        Theme.formatCurrency(value, nilPlaceholder: "—")
     }
 
     private func formatSignedCurrency(_ value: Decimal) -> String {

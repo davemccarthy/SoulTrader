@@ -58,4 +58,16 @@ enum Theme {
         }
         return String(format: "%@$%.0f", sign, absValue)
     }
+
+    /// Dollar amounts — always USD, independent of device locale (e.g. Ireland → EUR).
+    static func formatCurrency(_ value: Decimal?, nilPlaceholder: String = "$0.00") -> String {
+        guard let value else { return nilPlaceholder }
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.currencyCode = "USD"
+        formatter.locale = Locale(identifier: "en_US")
+        formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 2
+        return formatter.string(from: NSDecimalNumber(decimal: value)) ?? nilPlaceholder
+    }
 }
