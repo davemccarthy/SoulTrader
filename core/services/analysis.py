@@ -41,6 +41,90 @@ RECENT_TP_LOOKBACK_HOURS = 4
 RUNNER_SKIP_IPC = False
 
 
+def _holding_cost_basis(holding: Holding) -> Decimal:
+    avg = holding.average_price or Decimal("0")
+    return Decimal(str(holding.shares or 0)) * Decimal(str(avg))
+
+
+def _holding_unrealized_pnl(holding: Holding) -> Decimal:
+    px = Decimal(str(holding.stock.price or 0))
+    mv = Decimal(str(holding.shares or 0)) * px
+    return mv - _holding_cost_basis(holding)
+
+
+def recycle_equity_cap(sa, fund: Profile) -> int:
+    """
+    When sentiment is enabled and equity is at/over target, sell holdings that
+    clear min_recycle_profit (2% of one tranche), preferring higher cost basis
+    (more tranches), until under the equity cap.
+
+    Returns number of positions sold. No-op when sentiment is DISABLED.
+    """
+    if not fund.sentiment_enabled():
+        return 0
+    if not fund.at_or_over_equity_cap():
+        return 0
+
+    target = fund.equity_target()
+    min_profit = fund.min_recycle_profit()
+
+    logger.info(
+        "%s: equity cap recycle — ratio=%.3f target=%s min_profit=$%s",
+        fund.name,
+        float(fund.equity_ratio()),
+        target,
+        min_profit,
+    )
+
+    # Refresh once, rank eligible by cost desc, then sell down the list.
+    # Avoids re-hitting yfinance for every holding after each sale.
+    candidates = []
+    for holding in Holding.objects.filter(fund=fund, shares__gt=0).select_related(
+        "stock", "discovery"
+    ):
+        holding.stock.refresh()
+        pnl = _holding_unrealized_pnl(holding)
+        if pnl < min_profit:
+            continue
+        candidates.append((holding, _holding_cost_basis(holding), pnl))
+
+    if not candidates:
+        logger.info(
+            "%s: equity cap over target but no holding meets min_recycle_profit $%s",
+            fund.name,
+            min_profit,
+        )
+        return 0
+
+    candidates.sort(key=lambda row: row[1], reverse=True)
+    sold = 0
+
+    for holding, cost, pnl in candidates:
+        if not fund.at_or_over_equity_cap():
+            break
+        # Holding may already be gone if somehow sold earlier in this SA.
+        if not Holding.objects.filter(pk=holding.pk).exists():
+            continue
+        execute_sell(
+            sa,
+            fund,
+            holding,
+            f"{holding.stock.symbol} equity-cap recycle "
+            f"(pnl ${pnl:.2f} >= ${min_profit}; cost ${cost:.2f}; "
+            f"target {target})",
+        )
+        sold += 1
+
+    if sold:
+        logger.info(
+            "%s: equity cap recycle sold %s position(s); ratio now %.3f",
+            fund.name,
+            sold,
+            float(fund.equity_ratio()),
+        )
+    return sold
+
+
 def _percentage_rebuy_intraday_allows(stock, current_price) -> bool:
     """
     PERCENTAGE_REBUY recovery gate (global): RTH only, short-term uptick, mild 2h trend.
@@ -681,6 +765,9 @@ def analyze_holdings(sa, funds):
     # Iterate thru funds
     for fund in funds:
 
+        # Sentiment equity-cap recycle (min-profit cuts) before per-holding SIs.
+        recycle_equity_cap(sa, fund)
+
         for holding in Holding.objects.filter(fund=fund).select_related(
             "stock", "discovery", "discovery__advisor"
         ):
@@ -1043,6 +1130,23 @@ def analyze_discovery(sa, funds, advisors):
         logger.info(f"Buying ------------- {fund.name}")
 
         allowed_advisors = list(fund.advisors or [])
+
+        if fund.sentiment_enabled() and fund.at_or_over_equity_cap():
+            blocked = 0
+            if allowed_advisors:
+                blocked_qs = Discovery.objects.filter(sa=sa).filter(
+                    advisor__python_class__in=allowed_advisors
+                )
+                blocked = blocked_qs.values("stock_id").distinct().count()
+            logger.info(
+                "%s: at/over equity cap (ratio=%.3f target=%s); "
+                "skip discovery buys (blocked=%s)",
+                fund.name,
+                float(fund.equity_ratio()),
+                fund.equity_target(),
+                blocked,
+            )
+            continue
 
         if not allowed_advisors:
             logger.info("%s: no advisors configured; skip discovery buys", fund.name)

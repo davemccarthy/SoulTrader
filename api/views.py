@@ -54,13 +54,14 @@ def _compose_fund_description_for_api(fund: Profile, dashboard: Dict[str, Any]) 
         "STRONG_BULL": "strong bull",
         "BULL": "bull",
         "STAG": "neutral",
-        "AUTO": "auto",
         "BEAR": "bear",
         "STRONG_BEAR": "strong bear",
+        "DISABLED": "disabled",
+        "AUTO": "disabled",  # legacy
     }
     sentiment_label = sentiment_labels.get(
         fund.sentiment,
-        (fund.sentiment or "AUTO").replace("_", " ").lower(),
+        (fund.sentiment or "DISABLED").replace("_", " ").lower(),
     )
 
     age_days = max(int(dashboard.get("estab_days") or 1), 1)

@@ -91,8 +91,9 @@ class ProfileAdminForm(forms.ModelForm):
         exclude = ('user',)
         help_texts = {
             'sentiment': (
-                'Buy/sell sizing and target behavior. Presets map to multipliers in Profile.SENTIMENT; '
-                'AUTO is placeholder until liquidity-based calculation is wired.'
+                'Target equity fraction of wealth (cash + holdings). '
+                'STRONG_BULL=100%, BULL=80%, STAG=60%, BEAR=40%, STRONG_BEAR=0%. '
+                'DISABLED = no sentiment-driven buy/sell decisions.'
             ),
         }
 

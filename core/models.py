@@ -45,15 +45,20 @@ class Profile(models.Model):
         "NANO": 10,
     }
 
-    # But / sell sentiment
+    # Target equity fraction of wealth (cash + holdings MV).
+    # DISABLED = no sentiment-driven buy/sell (no equity target).
     SENTIMENT = {
-        "STRONG_BULL": 1.2,
-        "BULL": 1.1,
-        "STAG": 1.0,
-        "AUTO": 1.0,
-        "BEAR": 0.9,
-        "STRONG_BEAR": 0.8
+        "STRONG_BULL": 1,
+        "BULL": 0.8,
+        "STAG": 0.6,
+        "BEAR": 0.4,
+        "STRONG_BEAR": 0.0,
+        "DISABLED": None,
     }
+
+    # Cap-recycle min profit: 2% of one average_spend tranche
+    # (1-tranche needs >2% P&L; 2-tranche >1%; …).
+    RECYCLE_PROFIT_OF_TRANCHE = Decimal("0.02")
 
     user = models.ForeignKey(User, on_delete=models.DO_NOTHING)
     name = models.CharField(max_length=120, blank=True, default="")
@@ -63,13 +68,74 @@ class Profile(models.Model):
     advisors = ArrayField(models.CharField(max_length=100), default=list, blank=True)
     risk = models.CharField(max_length=20, choices=[(key, key) for key in RISK_LEVELS], default='MODERATE')
     spread = models.CharField(max_length=10, choices=[(key, key) for key in SPREAD.keys()], null=True, blank=True)
-    sentiment = models.CharField(max_length=16, choices=[(key, key) for key in SENTIMENT.keys()], null=False, default='AUTO')
+    sentiment = models.CharField(
+        max_length=16,
+        choices=[(key, key) for key in SENTIMENT.keys()],
+        null=False,
+        default="DISABLED",
+    )
     investment = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('100000.00'))
     cash = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('100000.00'))
 
     def average_spend(self):
         num_stocks = Decimal(Profile.SPREAD[self.spread])
         return self.investment / num_stocks
+
+    def sentiment_enabled(self) -> bool:
+        """False when sentiment is DISABLED (or legacy AUTO) — no cap recycle / buy gate."""
+        key = (self.sentiment or "DISABLED").upper()
+        return key not in ("DISABLED", "AUTO")
+
+    def equity_target(self) -> Optional[Decimal]:
+        """
+        Target holdings MV / wealth for this fund's sentiment.
+        None when sentiment is DISABLED (no equity policy).
+        """
+        if not self.sentiment_enabled():
+            return None
+        key = self.sentiment or "STAG"
+        raw = Profile.SENTIMENT.get(key, Profile.SENTIMENT["STAG"])
+        if raw is None:
+            return None
+        return Decimal(str(raw))
+
+    def holdings_market_value(self) -> Decimal:
+        """Sum of shares × last price for this fund's holdings."""
+        total = Decimal("0")
+        for holding in Holding.objects.filter(fund=self, shares__gt=0).select_related("stock"):
+            if holding.stock and holding.stock.price is not None:
+                total += Decimal(str(holding.shares)) * Decimal(str(holding.stock.price))
+        return total
+
+    def wealth(self) -> Decimal:
+        """Cash + holdings market value."""
+        return (self.cash or Decimal("0")) + self.holdings_market_value()
+
+    def equity_ratio(self) -> Decimal:
+        """Holdings MV / wealth. 0 when wealth <= 0."""
+        w = self.wealth()
+        if w <= 0:
+            return Decimal("0")
+        return self.holdings_market_value() / w
+
+    def at_or_over_equity_cap(self) -> bool:
+        """
+        True when equity_ratio >= sentiment equity target.
+        Always False when sentiment is DISABLED.
+        """
+        target = self.equity_target()
+        if target is None:
+            return False
+        return self.equity_ratio() >= target
+
+    def min_recycle_profit(self) -> Decimal:
+        """
+        Dollar floor to recycle a holding when over the equity cap.
+        Equal to RECYCLE_PROFIT_OF_TRANCHE × average_spend (2% of one tranche).
+        """
+        return (self.average_spend() * Profile.RECYCLE_PROFIT_OF_TRANCHE).quantize(
+            Decimal("0.01")
+        )
 
     def risk_floors(self) -> dict:
         """min_stability and min_opportunity for this profile's risk band."""
