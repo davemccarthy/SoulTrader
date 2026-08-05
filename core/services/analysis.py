@@ -753,6 +753,12 @@ def analyze_holdings(sa, funds):
         if current_time >= end_day_check_time:
             end_day = True
 
+    # Minutes left until the 4:00 PM ET close. Used by END_DAY cutoff overrides
+    # where SellInstruction.value2 is interpreted as "minutes before close".
+    market_close_time = datetime.strptime("16:00", "%H:%M").time()
+    close_dt = datetime.combine(now_et.date(), market_close_time, tzinfo=et)
+    minutes_left_to_close = (close_dt - now_et).total_seconds() / 60.0
+
     # Check if it's Friday and market is open (anytime during trading hours)
     if weekday == 4:  # Friday
         market_open_time = datetime.strptime("09:30", "%H:%M").time()
@@ -1079,6 +1085,27 @@ def analyze_holdings(sa, funds):
                                     f"({instruction.value1}× avg ${avg:.2f})",
                                 )
                                 break
+
+                        elif instruction.instruction == 'END_DAY' and weekday < 5:
+                            # END_DAY cutoff override:
+                            # - instruction.value1 is still the "flat at X× avg" threshold
+                            # - instruction.value2 (if set) is interpreted as "minutes before close"
+                            #   where END_DAY can trigger.
+                            cutoff_minutes = float(instruction.value2) if instruction.value2 is not None else 60.0
+                            if minutes_left_to_close <= cutoff_minutes:
+                                avg = holding.average_price or discovery.price
+                                target_px = _session_exit_threshold_px(instruction.value1, avg)
+                                if target_px and holding.stock.price >= target_px:
+                                    execute_sell(
+                                        sa,
+                                        fund,
+                                        holding,
+                                        f"{holding.stock.symbol} end of day "
+                                        f"({cutoff_minutes:.0f}m before close) "
+                                        f"${holding.stock.price:.2f} >= ${target_px:.2f} "
+                                        f"({instruction.value1}× avg ${avg:.2f})",
+                                    )
+                                    break
 
                         elif instruction.instruction == 'END_WEEK' and end_day and end_week:
                             min_days = int(instruction.value2) if instruction.value2 is not None else 0

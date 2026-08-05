@@ -15,8 +15,8 @@ Entry:
   persist green/yellow/red on Advisor.blob (default red); skip discovers on red or yellow;
   push superusers on status change.
 
-Exit/add: TARGET_INTRADAY (+0.2% / 0.2% giveback), -2% rebuy (default max tranches; 2h trend + 5m/30m recovery),
-END_DAY flat at 3:30 ET (1.00× avg). No END_WEEK, DT, or SL.
+Exit/add: TARGET_INTRADAY (+0.5% / 0.5% giveback), -2% rebuy (default max tranches; 2h trend + 5m/30m recovery),
+END_DAY flat ~2h before close (value2 minutes-before-close; default experimental use is 120). No END_WEEK, DT, or SL.
 
 Shadow: when enabled, logs IMPULSE/COMBO hits once per cache bucket (same gates as live).
 """
@@ -56,10 +56,11 @@ PULSE_MAX_PRICE_DRIFT_FROM_SEED = 0.50
 PULSE_MAX_QUOTE_DRIFT_FROM_BAR = 0.02
 PULSE_DISCOVERY_COOLDOWN_HOURS = 6
 
-PULSE_TP_MULT = Decimal("1.002")
-PULSE_INTRADAY_GIVEBACK = Decimal("0.002")
+PULSE_TP_MULT = Decimal("1.005")  # IPC activation: +0.5%
+PULSE_INTRADAY_GIVEBACK = Decimal("0.005")  # IPC giveback: 0.5% off high-water
 PULSE_REBUY_DROP = Decimal("0.02")
 PULSE_ENDDAY_TAKE = Decimal("1.00")
+PULSE_ENDDAY_MINUTES_BEFORE_CLOSE = Decimal("120")
 
 # Opportunity floor at discover (Oracle uses C at pre-discover gate).
 PULSE_MIN_OPPORTUNITY_GRADE = "C"
@@ -910,7 +911,7 @@ class Pulse(AdvisorBase):
         sell_instructions = [
             ("TARGET_INTRADAY", PULSE_TP_MULT, PULSE_INTRADAY_GIVEBACK),
             ("PERCENTAGE_REBUY", PULSE_REBUY_DROP, None),
-            ("END_DAY", PULSE_ENDDAY_TAKE, None),
+            ("END_DAY", PULSE_ENDDAY_TAKE, PULSE_ENDDAY_MINUTES_BEFORE_CLOSE),
         ]
 
         attention, recovery_candidates = self._ensure_pulse_cache()
