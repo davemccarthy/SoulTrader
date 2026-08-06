@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 DT_EXIT_CONFIDENCE_MIN = 0.70
 # analyse_drop: only honor EXIT when model tags catalyst as fresh (see _build_drop_prompt).
 DT_FRESH_CATALYST_AGES = frozenset({"today", "1d", "2d"})
+# Shadow DT exits: still run LLM triage, log would-SELL, do not execute (avoids fighting REBUY).
+DT_SHADOW_MODE = True
 REBUY_STABILIZE_MINUTES = STABILIZE_MINUTES_DEFAULT
 REBUY_SHORT_MINUTES = 5
 REBUY_TREND_HOURS = 2
@@ -696,7 +698,8 @@ def analyse_drop(sa, dropped_stocks):
         return
 
     logger.info(
-        "analyse_drop: exiting %s symbols from %s DT candidates (model=%s)",
+        "analyse_drop: %s %s symbols from %s DT candidates (model=%s)",
+        "SHADOW would-exit" if DT_SHADOW_MODE else "exiting",
         len(exit_by_symbol),
         len(dropped_stocks),
         model,
@@ -715,6 +718,22 @@ def analyse_drop(sa, dropped_stocks):
         reason = decision["reason"] or "Recent material downside catalyst after descending trend."
         conf = decision["confidence"]
         age = decision.get("catalyst_age") or "?"
+        buy_price = item.get("buy_price")
+        current_price = holding.stock.price
+        if DT_SHADOW_MODE:
+            logger.warning(
+                "analyse_drop SHADOW would-SELL %s fund=%s holding_id=%s "
+                "px=%s cost=%s conf=%.2f catalyst_age=%s reason=%s",
+                symbol,
+                fund.name,
+                holding.id,
+                current_price,
+                buy_price,
+                conf,
+                age,
+                (reason or "")[:120],
+            )
+            continue
         logger.info(
             "analyse_drop executing SELL %s fund=%s holding_id=%s conf=%.2f catalyst_age=%s",
             symbol,
