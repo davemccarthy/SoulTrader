@@ -1,11 +1,19 @@
 """
-Edgar advisor (ED-8): 8-K earnings filings, filters 1-6, analyze_8k,
-plus on-demand Form 4 enrichment.
+Edgar advisor (EDDIE-8): two-stage 8-K earnings pipeline + Form 4 enrichment.
 
-Test independently: python manage.py run_edgar
+Stage 1 — Item 2.02 8-K → EX-99 LLM + score → watch() (Pending).
+Stage 1b — media LLM after delay (AH +2h / pre/RTH +1h) → media_gate pass/fail.
+Stage 2 — after RTH open (+15m): Goldilocks tape → discovered() on pass setups.
 
-Production: discover() fetches latest 8-Ks, filters, and self.discovered(...)
-for passing stocks.
+Test independently:
+    python manage.py run_edgar
+    python manage.py run_edgar --accession 0001193125-26-084267
+    python manage.py run_edgar --watch SHOP,WULF,KYMR
+    python manage.py run_edgar --open-check-only
+    python manage.py run_edgar --open-check-only --force-open-check --dry-run
+
+Open-check (Goldilocks −3%…+8% vs prior close): needs media_gate=pass and
+known EPS beat. Cliffs Excluded; rockets stay Pending (no chase).
 Form 4 helpers live in ``core.services.sec.form4``.
 """
 
@@ -38,6 +46,280 @@ set_identity("Dave McCarthy dave@klynt.com")
 # 8-K helpers and constants
 # ---------------------------------------------------------------------------
 _CIK_TO_TICKER_CACHE: Dict[str, Optional[str]] = {}
+
+_ET = ZoneInfo("US/Eastern")
+_RTH_OPEN = dt_time(9, 30)
+_RTH_CLOSE = dt_time(16, 0)
+
+# Open-check: Goldilocks band on media-pass watches; SA hits :00/:15 → need ≥15m.
+# Legacy grind constants kept for classify_open_bucket() reference helpers.
+OPEN_CHECK_MIN_MINUTES = 15
+_GOLDILOCKS_LO = -3.0  # exclusive of cliff: vs_close <= LO → cliff
+_GOLDILOCKS_HI = 8.0  # exclusive of rocket: vs_close >= HI → rocket
+# SEC current-feed lag vs acceptance time: only skip filings older than
+# (prev_SA_started - this window). Bare prev_ts cut drops laggy 8-Ks (e.g. SLVM).
+FILING_FEED_LAG_MINUTES = 45
+# Stage 1b media delay from filing acceptance (ET): AH ≥16:00 → +2h; else +1h.
+MEDIA_DELAY_POST_MARKET_HOURS = 2
+MEDIA_DELAY_PRE_MARKET_HOURS = 1
+MEDIA_BATCH_MAX = 5  # max media LLM calls per SA / discover pass
+MEDIA_MAX_ATTEMPTS = 3  # parse/LLM failures before exclude
+_GRIND_GAP_LO = 2.0
+_GRIND_GAP_HI = 8.0
+_GRIND_MAX_PB = 2.0
+_GRIND_MIN_VS_VWAP = -0.25
+_HEALTHY_DIP_LO = 1.5
+_HEALTHY_DIP_HI = 5.0
+_ROCKET_VS_CLOSE = 8.0
+_ROCKET_MAX_PB = 2.0
+
+
+def _parse_meta_datetime(raw: Any) -> Optional[datetime]:
+    """Parse ISO datetime from watch meta (UTC preferred)."""
+    if isinstance(raw, datetime):
+        if raw.tzinfo is None:
+            return raw.replace(tzinfo=dt_timezone.utc)
+        return raw.astimezone(dt_timezone.utc)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            dt = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=dt_timezone.utc)
+        return dt.astimezone(dt_timezone.utc)
+    return None
+
+
+def _watch_filing_dt(w) -> Optional[datetime]:
+    """Filing acceptance UTC from meta.filing_dt, else watch.created."""
+    meta = w.meta if isinstance(getattr(w, "meta", None), dict) else {}
+    dt = _parse_meta_datetime(meta.get("filing_dt"))
+    if dt is not None:
+        return dt
+    created = getattr(w, "created", None)
+    if isinstance(created, datetime):
+        if created.tzinfo is None:
+            return created.replace(tzinfo=dt_timezone.utc)
+        return created.astimezone(dt_timezone.utc)
+    return None
+
+
+def media_delay_hours(filing_dt: datetime) -> int:
+    """
+    Hours to wait after filing before media LLM.
+
+    Post-market (acceptance ET ≥ 16:00) → +2h; pre-market / RTH → +1h.
+    """
+    et = filing_dt.astimezone(_ET)
+    if et.time() >= _RTH_CLOSE:
+        return MEDIA_DELAY_POST_MARKET_HOURS
+    return MEDIA_DELAY_PRE_MARKET_HOURS
+
+
+def media_due_at(filing_dt: datetime) -> datetime:
+    """UTC datetime when Stage 1b media check is allowed."""
+    return filing_dt + timedelta(hours=media_delay_hours(filing_dt))
+
+
+def _safe_float(x: Any) -> Optional[float]:
+    try:
+        if x is None:
+            return None
+        v = float(x)
+        if v != v:  # NaN
+            return None
+        return v
+    except (TypeError, ValueError):
+        return None
+
+
+def _pct(a: Optional[float], b: Optional[float]) -> Optional[float]:
+    if a is None or b is None or b == 0:
+        return None
+    return 100.0 * (a - b) / b
+
+
+def _session_vwap(hist) -> Optional[float]:
+    if hist is None or getattr(hist, "empty", True) or "Close" not in hist.columns:
+        return None
+    vol = hist["Volume"] if "Volume" in hist.columns else None
+    if vol is None or float(vol.sum()) <= 0:
+        return _safe_float(hist["Close"].iloc[-1])
+    typical = (hist["High"] + hist["Low"] + hist["Close"]) / 3.0
+    total_vol = float(vol.sum())
+    if total_vol <= 0:
+        return None
+    return float((typical * vol.astype(float)).sum() / total_vol)
+
+
+def earnings_open_tape(symbol: str) -> Optional[Dict[str, Any]]:
+    """
+    Live open-tape snapshot vs prior close (gap, vs_close, pullback, VWAP).
+
+    Uses yfinance 1m bars with prepost; prior close from fast_info when available.
+    """
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return None
+    try:
+        t = yf.Ticker(sym)
+        prior = None
+        last = None
+        try:
+            fi = t.fast_info
+            if isinstance(fi, dict):
+                prior = _safe_float(fi.get("previousClose") or fi.get("previous_close"))
+                last = _safe_float(fi.get("lastPrice") or fi.get("last_price"))
+            else:
+                prior = _safe_float(getattr(fi, "previous_close", None))
+                last = _safe_float(getattr(fi, "last_price", None))
+        except Exception:
+            pass
+
+        hist = t.history(period="1d", interval="1m", prepost=True)
+        if hist is None or hist.empty:
+            hist = t.history(period="1d", interval="1m")
+        if hist is None or hist.empty:
+            if prior is None or last is None:
+                return None
+            return {
+                "prior_close": prior,
+                "open_px": None,
+                "last": last,
+                "high": last,
+                "gap_pct": None,
+                "vs_close_pct": _pct(last, prior),
+                "vs_open_pct": None,
+                "pullback_pct": None,
+                "vwap": None,
+                "vs_vwap_pct": None,
+            }
+
+        idx = hist.index
+        try:
+            idx_et = idx.tz_convert(_ET) if getattr(idx, "tz", None) else idx
+        except Exception:
+            idx_et = idx
+        times = [ts.time() if hasattr(ts, "time") else ts for ts in idx_et]
+        rth_mask = [_RTH_OPEN <= tm <= _RTH_CLOSE for tm in times]
+        rth = hist.loc[rth_mask] if any(rth_mask) else hist.iloc[0:0]
+
+        open_px = None
+        if not rth.empty and "Open" in rth.columns:
+            open_px = _safe_float(rth["Open"].iloc[0])
+        if open_px is None and "Open" in hist.columns:
+            open_px = _safe_float(hist["Open"].iloc[0])
+
+        high = _safe_float(hist["High"].max()) if "High" in hist.columns else None
+        bar_last = _safe_float(hist["Close"].iloc[-1]) if "Close" in hist.columns else None
+        if last is None:
+            last = bar_last
+        if prior is None:
+            daily = t.history(period="10d", interval="1d", auto_adjust=True)
+            if daily is not None and not daily.empty and "Close" in daily.columns:
+                closes = daily["Close"].astype(float).dropna()
+                if len(closes) >= 2:
+                    # Last completed session close when today already has a bar.
+                    prior = _safe_float(closes.iloc[-2])
+                elif len(closes) == 1:
+                    prior = _safe_float(closes.iloc[-1])
+
+        vwap = _session_vwap(hist if hist is not None else rth)
+        pb = None
+        if last is not None and high is not None and high > 0:
+            pb = max(0.0, 100.0 * (high - last) / high)
+
+        return {
+            "prior_close": prior,
+            "open_px": open_px,
+            "last": last,
+            "high": high,
+            "gap_pct": _pct(open_px, prior),
+            "vs_close_pct": _pct(last, prior),
+            "vs_open_pct": _pct(last, open_px),
+            "pullback_pct": pb,
+            "vwap": vwap,
+            "vs_vwap_pct": _pct(last, vwap),
+        }
+    except Exception as e:
+        logger.warning("earnings_open_tape(%s) failed: %s", sym, e)
+        return None
+
+
+def classify_goldilocks_bucket(tape: Dict[str, Any]) -> str:
+    """
+    Goldilocks open-check (mimics remote backtest bands): cliff | goldilocks | rocket | unclear.
+
+    cliff:      vs prior close ≤ −3% → dismiss
+    goldilocks: −3% < vs < +8% → punt at live quote (soft red included)
+    rocket:     vs ≥ +8% → no chase
+    unclear:    no vs_close
+    """
+    vs_close = tape.get("vs_close_pct")
+    if vs_close is None:
+        return "unclear"
+    if vs_close <= _GOLDILOCKS_LO:
+        return "cliff"
+    if vs_close >= _GOLDILOCKS_HI:
+        return "rocket"
+    return "goldilocks"
+
+
+def classify_open_bucket(tape: Dict[str, Any]) -> str:
+    """
+    Legacy four-way open-check: down | grinder | rocket | unclear.
+
+    Prefer classify_goldilocks_bucket() for the live earnings path.
+    """
+    vs_close = tape.get("vs_close_pct")
+    gap = tape.get("gap_pct")
+    vs_open = tape.get("vs_open_pct")
+    pb = tape.get("pullback_pct")
+    vs_vwap = tape.get("vs_vwap_pct")
+
+    if vs_close is None:
+        return "unclear"
+    if vs_close <= 0.0:
+        return "down"
+
+    if vs_close >= _ROCKET_VS_CLOSE and (pb is None or pb < _ROCKET_MAX_PB):
+        return "rocket"
+
+    # Healthy dip reclaim (gap–dip–rip forming with VWAP hold).
+    if (
+        pb is not None
+        and _HEALTHY_DIP_LO <= pb <= _HEALTHY_DIP_HI
+        and vs_vwap is not None
+        and vs_vwap >= -0.5
+        and vs_close >= 1.0
+    ):
+        return "grinder"
+
+    # Classic gap & grind.
+    if (
+        gap is not None
+        and _GRIND_GAP_LO <= gap <= _GRIND_GAP_HI
+        and pb is not None
+        and pb < _GRIND_MAX_PB
+        and vs_vwap is not None
+        and vs_vwap >= _GRIND_MIN_VS_VWAP
+        and vs_open is not None
+        and vs_open >= -0.5
+        and vs_close >= 1.0
+    ):
+        return "grinder"
+
+    # Softer grind: +2–8% vs prior, above VWAP, shallow PB.
+    if (
+        2.0 <= vs_close <= 8.0
+        and vs_vwap is not None
+        and vs_vwap >= _GRIND_MIN_VS_VWAP
+        and (pb is None or pb < 3.0)
+    ):
+        return "grinder"
+
+    return "unclear"
 
 
 def cik_to_ticker(cik: str) -> Optional[str]:
@@ -210,7 +492,20 @@ GREEN_FLAGS = {
 # Filing filter (Filter 4): earnings release structure
 EARNINGS_CONTEXT = ["earnings", "financial results", "results of operations", "quarter ended", "fiscal quarter"]
 TABLE_HINTS = ["gaap", "non-gaap", "q/q", "y/y", "%"]
-EPS_NUMBER_PATTERN = re.compile(r"(earnings per share|eps|diluted).{0,60}?(-?\d+\.\d+)", re.IGNORECASE)
+# EPS evidence in EX-99 text. Allow keyword→number and "$x.xx per (diluted) share"
+# (SLVM-style), plus parenthetical losses like (0.28).
+EPS_NUMBER_PATTERN = re.compile(
+    r"(?:"
+    r"(?:earnings(?:\s*\(\s*loss\s*\))?\s+per\s+share|\beps\b|\bdiluted\b)"
+    r".{0,60}?"
+    r"\(?-?\$?\d+\.\d{1,4}\)?"
+    r"|"
+    r"\(?-?\$?\d+\.\d{1,4}\)?"
+    r".{0,24}?"
+    r"per\s+(?:diluted\s+|basic\s+)?share"
+    r")",
+    re.IGNORECASE,
+)
 
 
 def _filter4_normalize(text: str) -> str:
@@ -571,6 +866,44 @@ EVENT_SCORE_PASS_MIN = 5
 # First pipe segment of discovery explanation: optional lead from media LLM headlines
 _EXPLANATION_HEADLINE_MAX_LEN = 180
 
+# Media gate: require a known EPS beat (Fri autopsy: unknown only hit losers TDS/AD).
+_MEDIA_EPS_PASS = frozenset({"beat", "strong_beat"})
+
+
+def media_passes_gate(media: Optional[Dict[str, Any]]) -> bool:
+    """
+    True when media reaction is buy-eligible.
+
+    Hard fails: no media, sentiment in {no_coverage, mixed, negative}, eps miss,
+    or eps not in {beat, strong_beat} (unknown/other fail — no confirmed beat).
+    """
+    if not isinstance(media, dict) or not media:
+        return False
+    sentiment = media.get("sentiment")
+    eps = media.get("eps")
+    if sentiment in ("no_coverage", "mixed", "negative"):
+        return False
+    if eps == "miss" or eps not in _MEDIA_EPS_PASS:
+        return False
+    return True
+
+
+def _media_gate_explanation_segment(media: Optional[Dict[str, Any]]) -> str:
+    """Short UI segment: media sentiment/eps/revenue (e.g. media +/beat/beat)."""
+    if not isinstance(media, dict) or not media:
+        return ""
+    sent = str(media.get("sentiment") or "?")
+    eps = str(media.get("eps") or "?")
+    rev = str(media.get("revenue") or "?")
+    sent_short = {
+        "strong_positive": "++",
+        "positive": "+",
+        "mixed": "~",
+        "negative": "-",
+        "no_coverage": "nc",
+    }.get(sent, sent[:8])
+    return f"media {sent_short}/{eps}/{rev}"
+
 
 def _first_media_headline_for_explanation(media: dict) -> str:
     """First non-empty headline, safe for pipe-delimited explanation strings."""
@@ -697,6 +1030,31 @@ def _edgar_detail_explanation_segments(
             segments.append(f"Form4: {' '.join(form4_bits)}")
 
     return segments
+
+
+def resolve_latest_8k(symbol: str):
+    """
+    Latest 8-K for ticker via edgar Company. Prefer Item 2.02 (earnings) when present.
+    Returns filing or None.
+    """
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return None
+    try:
+        company = Company(sym)
+        filings = list(company.get_filings(form="8-K").head(8))
+    except Exception as e:
+        logger.warning("resolve_latest_8k(%s): %s", sym, e)
+        return None
+    if not filings:
+        return None
+
+    def _items(f) -> str:
+        raw = getattr(f, "items", None) or ""
+        return str(raw)
+
+    earnings = [f for f in filings if "2.02" in _items(f)]
+    return earnings[0] if earnings else filings[0]
 
 
 # ---------------------------------------------------------------------------
@@ -1195,19 +1553,6 @@ class Edgar(AdvisorBase):
         red_flags = parsed.get("red_flags")
         summary = parsed.get("summary")
 
-        # Media-driven hard fail
-        if sentiment in ["no_coverage", "mixed", "negative"] or eps in ["miss"]:
-            logger.info(
-                "ticker=%s, accession=%s media LLM: "
-                "(eps=%s, revenue=%s, sentiment=%s) -> fail",
-                ticker,
-                accession,
-                eps,
-                revenue,
-                sentiment or "N/A",
-            )
-            return None
-
         result: Dict[str, Optional[object]] = {
             "sentiment": sentiment,
             "eps": eps,
@@ -1217,15 +1562,27 @@ class Edgar(AdvisorBase):
             "summary": summary if isinstance(summary, str) else None
         }
 
-        logger.info(
-            "ticker=%s, accession=%s media LLM: "
-            "(eps=%s, revenue=%s, sentiment=%s) -> pass",
-            ticker,
-            accession,
-            eps,
-            revenue,
-            sentiment or "N/A",
-        )
+        # Caller applies media_passes_gate; always return parsed result when available.
+        if not media_passes_gate(result):
+            logger.info(
+                "ticker=%s, accession=%s media LLM: "
+                "(eps=%s, revenue=%s, sentiment=%s) -> fail",
+                ticker,
+                accession,
+                eps,
+                revenue,
+                sentiment or "N/A",
+            )
+        else:
+            logger.info(
+                "ticker=%s, accession=%s media LLM: "
+                "(eps=%s, revenue=%s, sentiment=%s) -> pass",
+                ticker,
+                accession,
+                eps,
+                revenue,
+                sentiment or "N/A",
+            )
 
         return result
 
@@ -1556,14 +1913,34 @@ class Edgar(AdvisorBase):
         return score, bonuses, penalties
 
     def analyze_8k_earnings(self, filing, cik, ticker, accession, sa):
+        """
+        Item 2.02 earnings path.
 
+        Returns True when this filing is owned as earnings (pass → watch, or
+        rejected with a logged reason). Returns False only when not an
+        earnings filing (no Item 2.02) so callers may try pharma/event.
+        """
         # Verify item 2.02
         if not self.has_item(filing, "2.02"):
-            logger.info("ticker=%s, CIK=%s, accession=%s no item 2.02 -> not earnings filing ", ticker, cik, accession)
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s no item 2.02 -> not earnings filing",
+                ticker,
+                cik,
+                accession,
+            )
             return False
 
         # Verify earnings text
         exhibit_99_text = _get_ex99_text(filing)
+        if not (exhibit_99_text or "").strip():
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s earnings text gate fail "
+                "(no EX-99 text) -> fail",
+                ticker,
+                cik,
+                accession,
+            )
+            return True
 
         text = _filter4_normalize(exhibit_99_text)
         checks = {
@@ -1574,17 +1951,47 @@ class Edgar(AdvisorBase):
             "comparables": _filter4_has_comparables(text),
         }
         if not checks["earnings_context"]:
-            return False
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s earnings text gate fail "
+                "(earnings_context) -> fail",
+                ticker,
+                cik,
+                accession,
+            )
+            return True
         if not checks["eps_evidence"]:
-            return False
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s earnings text gate fail "
+                "(eps_evidence) -> fail",
+                ticker,
+                cik,
+                accession,
+            )
+            return True
         if checks["numeric_density"] < 15:
-            return False
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s earnings text gate fail "
+                "(numeric_density=%s < 15) -> fail",
+                ticker,
+                cik,
+                accession,
+                checks["numeric_density"],
+            )
+            return True
 
         score = sum([checks["table_structure"], checks["comparables"]])
 
         # Check soft fail
         if score < 1:
-            logger.info("ticker=%s, CIK=%s, accession=%s earnings score -> fail ", ticker, cik, accession)
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s earnings soft score -> fail "
+                "(table=%s comparables=%s)",
+                ticker,
+                cik,
+                accession,
+                checks["table_structure"],
+                checks["comparables"],
+            )
             return True
 
         # Try and see if EPS intel in AV or Filing
@@ -1592,16 +1999,26 @@ class Edgar(AdvisorBase):
 
         # First hard-fail
         if eps_beat == "miss":
-            logger.info("ticker=%s, CIK=%s, accession=%s eps miss -> fail ", ticker, cik, accession)
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s eps miss -> fail",
+                ticker,
+                cik,
+                accession,
+            )
             return True
 
-        # First AI - anaylase ex99.1 8-K attachment
+        # First AI - analyse ex99.1 8-K attachment
         if (ex99 := self.analyse_ex99_llm(filing)) is None:
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s EX-99 LLM -> fail",
+                ticker,
+                cik,
+                accession,
+            )
             return True
-        
-        # Second AI - media_reaction_llm
-        if (media := self.media_reaction_llm(filing)) is None:
-            return True
+
+        # Media LLM skipped (too soon after filing; open-tape stage gates buys).
+        media: Dict[str, Any] = {}
 
         # Form4 association
         form4 = self.match_form4(filing)
@@ -1625,14 +2042,34 @@ class Edgar(AdvisorBase):
             )
         )
 
-        self.discovered(sa, ticker, explanation=explanation, weight=Decimal(weight))
+        # Watch only — Stage 1b media + Stage 2 open-check promote later.
+        filing_dt = _filing_datetime(filing)
+        self.watch(
+            ticker,
+            explanation=explanation,
+            days=2,
+            meta={
+                "source": "edgar_earnings",
+                "accession": accession,
+                "filing_dt": filing_dt.isoformat() if filing_dt else None,
+                "weight": float(weight),
+                "sa_id": getattr(sa, "id", None),
+            },
+            status="Pending",
+        )
         return True
 
     def analyze_8k_pharma(self, filing, cik, ticker, accession, sa):
 
-        # Verify no item 2.02
+        # Verify no item 2.02 (earnings owns those; should not reach here if
+        # analyze_8k_earnings returned True for a 2.02 filing).
         if self.has_item(filing, "2.02"):
-            logger.info("ticker=%s, CIK=%s, accession=%s has item 2.02 -> not pharma filing ", ticker, cik, accession)
+            logger.debug(
+                "ticker=%s, CIK=%s, accession=%s has item 2.02 -> skip pharma",
+                ticker,
+                cik,
+                accession,
+            )
             return False
 
         has_701 = self.has_item(filing, "7.01")
@@ -1957,7 +2394,7 @@ class Edgar(AdvisorBase):
         )
         return True
 
-    def analyze_8k(self, filing, sa):
+    def analyze_8k(self, filing, sa, *, force: bool = False):
 
         cik = str(getattr(filing, "cik", "") or "")
         ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik)
@@ -1968,7 +2405,7 @@ class Edgar(AdvisorBase):
             return
 
         # Check if already discovered - rediscover if >1 days ago
-        if not self.allow_discovery(ticker, period=24):
+        if not force and not self.allow_discovery(ticker, period=24):
             return
 
         # Check the basics
@@ -1991,59 +2428,662 @@ class Edgar(AdvisorBase):
         if self.analyze_8k_event(filing, cik, ticker, accession, sa):
             return
 
-        # Unknown category
-        logger.info("ticker=%s, CIK=%s, accession=%s unknown category -> fail ",ticker , cik, accession)
+        # Unknown category (no earnings / pharma / event ownership)
+        logger.info(
+            "ticker=%s, CIK=%s, accession=%s no earnings/pharma/event match -> fail",
+            ticker,
+            cik,
+            accession,
+        )
 
-    def discover(self, sa):
-
-        logger.info("Fetching latest filings...")
-
-        prev_ts = self.get_previous_sa_timestamp(sa)
-
-        try:
-            latest = get_latest_filings()
-            filings = list(latest)
-        except Exception as e:
-            logger.warning("❌ Error converting latest filings to list: %s", e)
-            return
-
+    def analyze_tickers(self, sa, symbols: List[str]) -> Dict[str, int]:
         """
-        filing1 = find("0001193125-26-084267")
-        filing2 = find("0001193125-26-084207")
-        filing3 = find("0000078003-26-000005")
+        Stage 1 pass/fail on latest 8-Ks for a manual ticker list.
 
-        filings = [filing1]
+        Resolves each ticker's newest earnings-ish 8-K (prefers Item 2.02),
+        then runs full analyze_8k (filters + EX-99 LLM → watch on pass).
+        Bypasses 24h discovery cooldown so Bizfeed-discovered names still get scored.
         """
-        # Filter latest to 8-Ks only
-        filings_8k = [f for f in filings if getattr(f, "form", None) == "8-K"]
-        if not filings_8k:
-            logger.info("No latest 8-K filings found.")
-            return
+        counts = {"analyzed": 0, "no_filing": 0, "errors": 0}
+        # Drop prior MANUAL seed watches for these symbols so pass/fail isn't muddied.
+        self._exclude_manual_watches(symbols)
 
-        logger.info("Found %d 8-K filings. Running basic inspection (filing + financial filters)...", len(filings_8k))
-
-        for filing in filings_8k:
+        for raw in symbols:
+            symbol = (raw or "").strip().upper()
+            if not symbol:
+                continue
             try:
-                filing_dt = _filing_datetime(filing)
-                if prev_ts is not None and filing_dt is not None and filing_dt < prev_ts:
-                    accession = getattr(filing, "accession_no", None) or getattr(filing, "accession_number", None) or ""
-                    logger.warning("Filing 8-K %s (filing_time=%s) is before prev SA %s — skipping",
-                                   accession, filing_dt, prev_ts)
+                filing = resolve_latest_8k(symbol)
+                if filing is None:
+                    logger.info("Analyze ticker %s: no 8-K found", symbol)
+                    counts["no_filing"] += 1
+                    continue
+                accession = (
+                    getattr(filing, "accession_no", None)
+                    or getattr(filing, "accession_number", None)
+                    or ""
+                )
+                items = getattr(filing, "items", None)
+                logger.info(
+                    "Analyze ticker %s: accession=%s items=%s filing_date=%s",
+                    symbol,
+                    accession,
+                    items,
+                    getattr(filing, "filing_date", None),
+                )
+                self.analyze_8k(filing, sa, force=True)
+                counts["analyzed"] += 1
+            except Exception as e:
+                counts["errors"] += 1
+                logger.error("Analyze ticker %s failed: %s", symbol, e)
+
+        logger.info("Analyze tickers done: %s", counts)
+        return counts
+
+    def _exclude_manual_watches(self, symbols: List[str]) -> int:
+        """Mark meta.manual Pending watches Excluded for the given symbols."""
+        from core.models import Watchlist
+
+        want = {(s or "").strip().upper() for s in symbols if (s or "").strip()}
+        if not want:
+            return 0
+        n = 0
+        for w in self.watchlist().select_related("stock"):
+            sym = (getattr(getattr(w, "stock", None), "symbol", None) or "").strip().upper()
+            meta = w.meta if isinstance(w.meta, dict) else {}
+            if sym in want and meta.get("manual"):
+                w.status = "Excluded"
+                w.explanation = f"Replaced by Stage-1 analyze | {w.explanation}"[:500]
+                w.save(update_fields=["status", "explanation"])
+                n += 1
+                logger.info("Excluded manual watch %s (id=%s)", sym, w.id)
+        return n
+
+    def seed_earnings_watches(self, symbols: List[str]) -> Dict[str, int]:
+        """
+        Manually seed Pending edgar_earnings watches (open-check tape only).
+
+        Skips symbols that already have a non-expired Pending edgar_earnings watch.
+        Prefer analyze_tickers() when you need Stage-1 pass/fail.
+        """
+        counts = {"added": 0, "skipped": 0, "errors": 0}
+        pending = {
+            (getattr(getattr(w, "stock", None), "symbol", None) or "").strip().upper()
+            for w in self.watchlist()
+            if isinstance(getattr(w, "meta", None), dict)
+            and w.meta.get("source") == "edgar_earnings"
+        }
+
+        for raw in symbols:
+            symbol = (raw or "").strip().upper()
+            if not symbol:
+                continue
+            if symbol in pending:
+                logger.info("Seed watch %s: already Pending — skip", symbol)
+                counts["skipped"] += 1
+                continue
+            try:
+                entry = self.watch(
+                    symbol,
+                    explanation=f"MANUAL earnings watch | {symbol}",
+                    days=2,
+                    meta={
+                        "source": "edgar_earnings",
+                        "manual": True,
+                        "weight": 1.0,
+                    },
+                    status="Pending",
+                )
+                if entry is None:
+                    logger.warning("Seed watch %s: watch() returned None", symbol)
+                    counts["errors"] += 1
+                    continue
+                pending.add(symbol)
+                counts["added"] += 1
+                logger.info("Seed watch %s: Pending edgar_earnings", symbol)
+            except Exception as e:
+                counts["errors"] += 1
+                logger.error("Seed watch %s failed: %s", symbol, e)
+
+        logger.info("Seed watches done: %s", counts)
+        return counts
+
+    def process_earnings_media(
+        self, sa, *, dry_run: bool = False, force: bool = False
+    ) -> Dict[str, int]:
+        """
+        Stage 1b: media LLM on Pending edgar_earnings watches that are due.
+
+        Due when now >= filing_dt + delay (AH ≥16:00 ET → +2h; else +1h).
+        Caps at MEDIA_BATCH_MAX calls per pass. Pass → media_gate=pass;
+        fail → media_gate=fail + Excluded; LLM/parse miss → retry up to
+        MEDIA_MAX_ATTEMPTS then exclude.
+        """
+        counts = {
+            "pending": 0,
+            "due": 0,
+            "pass": 0,
+            "fail": 0,
+            "retry": 0,
+            "skipped": 0,
+            "errors": 0,
+        }
+        now = datetime.now(dt_timezone.utc)
+        watches = [
+            w
+            for w in self.watchlist()
+            if isinstance(getattr(w, "meta", None), dict)
+            and w.meta.get("source") == "edgar_earnings"
+        ]
+        counts["pending"] = len(watches)
+
+        due = []
+        for w in watches:
+            meta = w.meta or {}
+            gate = str(meta.get("media_gate") or "").strip().lower()
+            if gate in ("pass", "fail"):
+                counts["skipped"] += 1
+                continue
+            accession = str(meta.get("accession") or "").strip()
+            if not accession:
+                # Tape-only / manual seeds have no filing — cannot run media.
+                counts["skipped"] += 1
+                continue
+            filing_dt = _watch_filing_dt(w)
+            if filing_dt is None:
+                counts["skipped"] += 1
+                continue
+            due_at = media_due_at(filing_dt)
+            if not force and now < due_at:
+                counts["skipped"] += 1
+                continue
+            attempts = int(meta.get("media_attempts") or 0)
+            if attempts >= MEDIA_MAX_ATTEMPTS:
+                counts["skipped"] += 1
+                continue
+            due.append((w, accession, filing_dt, due_at, attempts))
+
+        due.sort(key=lambda row: row[2])  # oldest filing first
+        batch = due[:MEDIA_BATCH_MAX]
+        counts["due"] = len(batch)
+        logger.info(
+            "Media gate: %d Pending earnings, %d due (batch=%d%s)%s",
+            counts["pending"],
+            len(due),
+            len(batch),
+            f", force" if force else "",
+            " DRY-RUN" if dry_run else "",
+        )
+        if not batch:
+            return counts
+
+        for w, accession, filing_dt, due_at, attempts in batch:
+            symbol = (
+                getattr(getattr(w, "stock", None), "symbol", None) or ""
+            ).strip().upper()
+            try:
+                filing = find(accession)
+            except Exception as e:
+                counts["errors"] += 1
+                logger.warning(
+                    "Media %s: find(%s) failed: %s", symbol or "?", accession, e
+                )
+                continue
+            if filing is None:
+                counts["errors"] += 1
+                logger.warning(
+                    "Media %s: find(%s) returned None", symbol or "?", accession
+                )
+                continue
+
+            delay_h = media_delay_hours(filing_dt)
+            logger.info(
+                "Media %s: accession=%s filing_dt=%s delay=%sh due_at=%s",
+                symbol or "?",
+                accession,
+                filing_dt.isoformat(),
+                delay_h,
+                due_at.isoformat(),
+            )
+
+            try:
+                media = self.media_reaction_llm(filing)
+            except Exception as e:
+                counts["errors"] += 1
+                logger.error("Media %s LLM failed: %s", symbol or "?", e)
+                media = None
+
+            meta = dict(w.meta or {})
+            meta["media_attempts"] = attempts + 1
+            meta["media_attempted_at"] = now.isoformat()
+
+            if media is None:
+                counts["retry"] += 1
+                if meta["media_attempts"] >= MEDIA_MAX_ATTEMPTS:
+                    meta["media_gate"] = "fail"
+                    expl = (
+                        f"MEDIA fail (no parse after {MEDIA_MAX_ATTEMPTS} tries) | "
+                        f"{w.explanation or ''}"
+                    )[:500]
+                    if dry_run:
+                        logger.info(
+                            "Media %s: DRY-RUN would exclude (no parse)", symbol
+                        )
+                    else:
+                        w.meta = meta
+                        w.status = "Excluded"
+                        w.explanation = expl
+                        w.save(update_fields=["meta", "status", "explanation"])
+                        counts["fail"] += 1
+                        logger.info(
+                            "Media %s: no parse after %d tries → Excluded",
+                            symbol,
+                            MEDIA_MAX_ATTEMPTS,
+                        )
+                elif dry_run:
+                    logger.info("Media %s: DRY-RUN would retry (no parse)", symbol)
+                else:
+                    w.meta = meta
+                    w.save(update_fields=["meta"])
+                    logger.info(
+                        "Media %s: no parse — retry later (attempt %d/%d)",
+                        symbol,
+                        meta["media_attempts"],
+                        MEDIA_MAX_ATTEMPTS,
+                    )
+                continue
+
+            meta["media"] = media
+            if media_passes_gate(media):
+                meta["media_gate"] = "pass"
+                counts["pass"] += 1
+                if dry_run:
+                    logger.info(
+                        "Media %s: DRY-RUN would PASS (%s)",
+                        symbol,
+                        _media_gate_explanation_segment(media),
+                    )
+                else:
+                    w.meta = meta
+                    w.save(update_fields=["meta"])
+                    logger.info(
+                        "Media %s: PASS (%s)",
+                        symbol,
+                        _media_gate_explanation_segment(media),
+                    )
+            else:
+                meta["media_gate"] = "fail"
+                counts["fail"] += 1
+                expl = (
+                    f"MEDIA fail ({_media_gate_explanation_segment(media) or 'gate'}) | "
+                    f"{w.explanation or ''}"
+                )[:500]
+                if dry_run:
+                    logger.info(
+                        "Media %s: DRY-RUN would FAIL/exclude (%s)",
+                        symbol,
+                        _media_gate_explanation_segment(media),
+                    )
+                else:
+                    w.meta = meta
+                    w.status = "Excluded"
+                    w.explanation = expl
+                    w.save(update_fields=["meta", "status", "explanation"])
+                    logger.info(
+                        "Media %s: FAIL → Excluded (%s)",
+                        symbol,
+                        _media_gate_explanation_segment(media),
+                    )
+
+        logger.info("Media gate done: %s", counts)
+        return counts
+
+    def process_earnings_watches(
+        self, sa, *, force: bool = False, dry_run: bool = False
+    ) -> Dict[str, int]:
+        """
+        Goldilocks open-check on Pending edgar_earnings watches with media_gate=pass
+        and a known EPS beat (meta.media eps in beat/strong_beat).
+
+        Buckets (vs prior close):
+          cliff      (≤ −3%) → Excluded
+          goldilocks (−3%…+8%) → discovered() at live quote, watch → Executed
+          rocket     (≥ +8%) → leave Pending (no chase)
+          unclear    → leave Pending
+
+        Requires market open ≥ OPEN_CHECK_MIN_MINUTES (15) unless force=True.
+        dry_run: classify + log only.
+        """
+        from core.services.market.session import market_open
+
+        counts = {
+            "checked": 0,
+            "cliff": 0,
+            "goldilocks": 0,
+            "rocket": 0,
+            "unclear": 0,
+            "skipped": 0,
+            "no_media_pass": 0,
+            "errors": 0,
+        }
+
+        mins = market_open()
+        # market_open(): None = closed/AH/weekend; negative = premarket (mins until open);
+        # positive = minutes since 9:30. Need mins >= OPEN_CHECK_MIN_MINUTES.
+        if not force:
+            if mins is None:
+                logger.info("Open-check: market closed — skip")
+                return counts
+            if mins < OPEN_CHECK_MIN_MINUTES:
+                logger.info(
+                    "Open-check: market_open=%sm (need >= %sm) — skip",
+                    mins,
+                    OPEN_CHECK_MIN_MINUTES,
+                )
+                return counts
+        else:
+            logger.info(
+                "Open-check: FORCE (market_open=%s)%s",
+                mins,
+                " DRY-RUN" if dry_run else "",
+            )
+
+        watches = [
+            w
+            for w in self.watchlist()
+            if isinstance(getattr(w, "meta", None), dict)
+            and w.meta.get("source") == "edgar_earnings"
+        ]
+        if not watches:
+            logger.info("Open-check: no Pending edgar_earnings watches")
+            return counts
+
+        eligible = []
+        for w in watches:
+            meta = w.meta or {}
+            if str(meta.get("media_gate") or "").strip().lower() != "pass":
+                counts["no_media_pass"] += 1
+                continue
+            # Defense in depth: old tags may say pass with eps=unknown.
+            if not media_passes_gate(meta.get("media")):
+                counts["no_media_pass"] += 1
+                logger.info(
+                    "Open-check %s: media_gate=pass but eps beat missing — skip",
+                    getattr(getattr(w, "stock", None), "symbol", "?"),
+                )
+                continue
+            eligible.append(w)
+
+        logger.info(
+            "Open-check: %d Pending earnings (%d media-eligible, %d skipped no-pass)",
+            len(watches),
+            len(eligible),
+            counts["no_media_pass"],
+        )
+        if not eligible:
+            return counts
+
+        for w in eligible:
+            symbol = getattr(getattr(w, "stock", None), "symbol", None) or ""
+            symbol = symbol.strip().upper()
+            if not symbol:
+                counts["skipped"] += 1
+                continue
+
+            meta = dict(w.meta or {})
+            # Already promoted this session — don't double-discover.
+            if meta.get("open_bucket") == "goldilocks" and w.status == "Executed":
+                counts["skipped"] += 1
+                continue
+
+            try:
+                tape = earnings_open_tape(symbol)
+                if not tape or tape.get("vs_close_pct") is None:
+                    logger.info("Open-check %s: no tape — unclear", symbol)
+                    bucket = "unclear"
+                    tape = tape or {}
+                else:
+                    bucket = classify_goldilocks_bucket(tape)
+
+                counts["checked"] += 1
+                counts[bucket] = counts.get(bucket, 0) + 1
+
+                vs = tape.get("vs_close_pct")
+                gap = tape.get("gap_pct")
+                pb = tape.get("pullback_pct")
+                vs_vwap = tape.get("vs_vwap_pct")
+                logger.info(
+                    "Open-check %s → %s (vs_close=%.2f%% gap=%s pb=%s vs_vwap=%s last=%s)",
+                    symbol,
+                    bucket,
+                    vs if vs is not None else float("nan"),
+                    f"{gap:.2f}%" if gap is not None else "n/a",
+                    f"{pb:.2f}%" if pb is not None else "n/a",
+                    f"{vs_vwap:.2f}%" if vs_vwap is not None else "n/a",
+                    tape.get("last"),
+                )
+
+                meta["open_bucket"] = bucket
+                meta["open_check"] = {
+                    "mode": "goldilocks",
+                    "vs_close_pct": vs,
+                    "gap_pct": gap,
+                    "vs_open_pct": tape.get("vs_open_pct"),
+                    "pullback_pct": pb,
+                    "vs_vwap_pct": vs_vwap,
+                    "last": tape.get("last"),
+                    "prior_close": tape.get("prior_close"),
+                    "forced": bool(force),
+                    "dry_run": bool(dry_run),
+                }
+
+                if dry_run:
+                    logger.info("Open-check %s DRY-RUN — no write/discover", symbol)
                     continue
 
-                self.analyze_8k(filing, sa)
+                w.meta = meta
+
+                if bucket == "cliff":
+                    w.status = "Excluded"
+                    note = (
+                        f"OPEN cliff ({vs:+.1f}% vs close)"
+                        if vs is not None
+                        else "OPEN cliff"
+                    )
+                    w.explanation = f"{note} | {w.explanation}"[:500]
+                    w.save(update_fields=["status", "meta", "explanation"])
+                    continue
+
+                if bucket == "rocket":
+                    note = (
+                        f"OPEN rocket ({vs:+.1f}% vs close) — no chase"
+                        if vs is not None
+                        else "OPEN rocket — no chase"
+                    )
+                    w.explanation = f"{note} | {w.explanation}"[:500]
+                    w.save(update_fields=["meta", "explanation"])
+                    continue
+
+                if bucket == "unclear":
+                    w.save(update_fields=["meta"])
+                    continue
+
+                # goldilocks → discover at live quote
+                weight = float(meta.get("weight") or 1.0)
+                stock = w.stock
+                try:
+                    stock.refresh()
+                except Exception as e:
+                    logger.warning("Open-check %s refresh failed: %s", symbol, e)
+
+                live = _safe_float(stock.price) or tape.get("last")
+                media_seg = _media_gate_explanation_segment(meta.get("media"))
+                lead = (
+                    f"OPEN goldilocks @ {live:.2f} ({vs:+.1f}% vs close)"
+                    if live is not None and vs is not None
+                    else "OPEN goldilocks"
+                )
+                parts = [lead]
+                if media_seg:
+                    parts.append(media_seg)
+                if w.explanation:
+                    parts.append(w.explanation)
+                expl = " | ".join(parts)
+                self.discovered(sa, symbol, expl[:500], weight=weight)
+                w.status = "Executed"
+                w.explanation = expl[:500]
+                w.save(update_fields=["status", "meta", "explanation"])
 
             except Exception as e:
-                logger.error("⚠️ Error inspecting filing: %s", e)
+                counts["errors"] += 1
+                logger.error("Open-check %s failed: %s", symbol, e)
 
+        logger.info("Open-check done: %s", counts)
+        return counts
+
+    def _accession_already_handled(self, accession: str) -> bool:
+        """True if this advisor already has a watch tied to this 8-K accession."""
+        acc = (accession or "").strip()
+        if not acc:
+            return False
+        from core.models import Watchlist
+
+        return Watchlist.objects.filter(
+            advisor=self.advisor,
+            meta__accession=acc,
+        ).exists()
+
+    def discover(
+        self,
+        sa,
+        accessions: Optional[List[str]] = None,
+        *,
+        open_check_only: bool = False,
+        force_open_check: bool = False,
+        dry_run_open_check: bool = False,
+        seed_watches: Optional[List[str]] = None,
+        analyze_symbols: Optional[List[str]] = None,
+    ):
+        """
+        Process latest 8-Ks (or accessions), then media gate, then open-check.
+
+        When accessions is set, prev-SA time filter is skipped.
+        Live feed uses a FILING_FEED_LAG_MINUTES lookback vs prev SA so
+        acceptance-time vs feed-lag does not permanently drop filings.
+        open_check_only: skip filing fetch; still runs media + open-check.
+        force_open_check: bypass RTH/+15m gate (local lab only).
+        dry_run_open_check: classify only; no watch writes / discover.
+        seed_watches: optional tickers → Pending watches (tape-only, no Stage 1).
+        analyze_symbols: optional tickers → full Stage 1 on latest 8-Ks.
+        """
+        if seed_watches:
+            self.seed_earnings_watches(seed_watches)
+
+        if analyze_symbols:
+            self.analyze_tickers(sa, analyze_symbols)
+
+        if not open_check_only and (accessions or not analyze_symbols):
+            prev_ts = None
+            if accessions:
+                logger.info("Fetching %d accession(s) via find()...", len(accessions))
+                filings = []
+                for raw in accessions:
+                    acc = (raw or "").strip()
+                    if not acc:
+                        continue
+                    try:
+                        filing = find(acc)
+                    except Exception as e:
+                        logger.warning("find(%s) failed: %s", acc, e)
+                        continue
+                    if filing is None:
+                        logger.warning("find(%s) returned None", acc)
+                        continue
+                    filings.append(filing)
+            else:
+                logger.info(
+                    "Fetching latest 8-K filings (page_size=100, lag=%sm)...",
+                    FILING_FEED_LAG_MINUTES,
+                )
+                prev_ts = self.get_previous_sa_timestamp(sa)
+                try:
+                    latest = get_latest_filings(form="8-K", page_size=100)
+                    filings = list(latest)
+                except Exception as e:
+                    logger.warning("❌ Error converting latest filings to list: %s", e)
+                    filings = []
+
+            filings_8k = [f for f in filings if getattr(f, "form", None) == "8-K"]
+            if not filings_8k:
+                logger.info("No 8-K filings to process.")
+            else:
+                logger.info(
+                    "Found %d 8-K filings. Running basic inspection "
+                    "(filing + financial filters)...",
+                    len(filings_8k),
+                )
+                cutoff = None
+                if prev_ts is not None:
+                    cutoff = prev_ts - timedelta(minutes=FILING_FEED_LAG_MINUTES)
+
+                for filing in filings_8k:
+                    try:
+                        accession = (
+                            getattr(filing, "accession_no", None)
+                            or getattr(filing, "accession_number", None)
+                            or ""
+                        )
+                        if accession and self._accession_already_handled(accession):
+                            logger.info(
+                                "Filing 8-K %s already handled (watch exists) — skipping",
+                                accession,
+                            )
+                            continue
+
+                        filing_dt = _filing_datetime(filing)
+                        if (
+                            cutoff is not None
+                            and filing_dt is not None
+                            and filing_dt < cutoff
+                        ):
+                            logger.warning(
+                                "Filing 8-K %s (filing_time=%s) older than "
+                                "prev SA lookback %s (prev_sa=%s lag=%sm) — skipping",
+                                accession,
+                                filing_dt,
+                                cutoff,
+                                prev_ts,
+                                FILING_FEED_LAG_MINUTES,
+                            )
+                            continue
+
+                        self.analyze_8k(filing, sa)
+
+                    except Exception as e:
+                        logger.error("⚠️ Error inspecting filing: %s", e)
+
+        self.process_earnings_media(sa, dry_run=dry_run_open_check)
+        self.process_earnings_watches(
+            sa, force=force_open_check, dry_run=dry_run_open_check
+        )
         return
 
-def run_edgar_standalone():
-    """
-    Minimal entry point for the `run_edgar` management command.
 
-    No params yet; instantiates the advisor via python_class (same as production)
-    and calls discover(sa) with a minimal SmartAnalysis().
+def run_edgar_standalone(
+    accessions: Optional[List[str]] = None,
+    *,
+    open_check_only: bool = False,
+    force_open_check: bool = False,
+    dry_run_open_check: bool = False,
+    seed_watches: Optional[List[str]] = None,
+    analyze_symbols: Optional[List[str]] = None,
+):
+    """
+    Entry point for the `run_edgar` management command.
+
+    accessions: optional SEC accession numbers instead of get_latest_filings().
+    analyze_symbols: optional tickers → full Stage 1 on latest 8-Ks.
+    seed_watches: optional tickers to seed as Pending watches (tape-only).
     """
     from core.services import advisors as advisor_modules
     from core.models import Advisor, SmartAnalysis
@@ -2053,16 +3093,39 @@ def run_edgar_standalone():
     except Advisor.DoesNotExist:
         return None, "ED-8 advisor not found in Advisor table"
 
-    # Resolve class via python_class (same pattern as smartanalyse)
     module_name = advisor_row.python_class.lower()
     module = getattr(advisor_modules, module_name)
     PythonClass = getattr(module, advisor_row.python_class)
 
     sa = SmartAnalysis()
     impl = PythonClass(advisor_row)
-    impl.discover(sa)
+    impl.discover(
+        sa,
+        accessions=accessions,
+        open_check_only=open_check_only,
+        force_open_check=force_open_check,
+        dry_run_open_check=dry_run_open_check,
+        seed_watches=seed_watches,
+        analyze_symbols=analyze_symbols,
+    )
 
-    return "EDDIE-8 discover() stub completed", None
+    if analyze_symbols:
+        return (
+            f"EDDIE-8 Stage-1 analyze completed for {len(analyze_symbols)} ticker(s)",
+            None,
+        )
+    if seed_watches and open_check_only:
+        return (
+            f"EDDIE-8 seeded {len(seed_watches)} watch(es) + open-check completed",
+            None,
+        )
+    if open_check_only:
+        return "EDDIE-8 open-check completed", None
+    if accessions:
+        return f"EDDIE-8 discover() completed for {len(accessions)} accession(s)", None
+    if seed_watches:
+        return f"EDDIE-8 discover() completed (seeded {len(seed_watches)} watch(es))", None
+    return "EDDIE-8 discover() completed", None
 
 
 register(name="EDDIE-8", python_class="Edgar")
