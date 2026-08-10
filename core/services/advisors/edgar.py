@@ -3,6 +3,7 @@ Edgar advisor (EDDIE-8): two-stage 8-K earnings pipeline + Form 4 enrichment.
 
 Stage 1 — Item 2.02 8-K → EX-99 LLM + score → watch() (Pending).
 Stage 1b — media LLM after delay (AH +2h / pre/RTH +1h) → media_gate pass/fail.
+         Batch caps per SA: AH 2 (overnight drip), pre/RTH 5 (morning burst).
 Stage 2 — after RTH open (+15m): Goldilocks tape → discovered() on pass setups.
 
 Test independently:
@@ -35,6 +36,12 @@ from edgar import Company, find, set_identity, get_latest_filings
 from core.services.advisors.advisor import AdvisorBase, register
 from core.services.sec.form4 import get_form4_intel
 
+# Slim Linux images often lack OS tzdata; the PyPI package supplies IANA zones.
+try:
+    import tzdata  # noqa: F401
+except ImportError:
+    pass
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -47,7 +54,7 @@ set_identity("Dave McCarthy dave@klynt.com")
 # ---------------------------------------------------------------------------
 _CIK_TO_TICKER_CACHE: Dict[str, Optional[str]] = {}
 
-_ET = ZoneInfo("US/Eastern")
+_ET = ZoneInfo("America/New_York")
 _RTH_OPEN = dt_time(9, 30)
 _RTH_CLOSE = dt_time(16, 0)
 
@@ -62,7 +69,9 @@ FILING_FEED_LAG_MINUTES = 45
 # Stage 1b media delay from filing acceptance (ET): AH ≥16:00 → +2h; else +1h.
 MEDIA_DELAY_POST_MARKET_HOURS = 2
 MEDIA_DELAY_PRE_MARKET_HOURS = 1
-MEDIA_BATCH_MAX = 5  # max media LLM calls per SA / discover pass
+# Media LLM batch per SA: drip AH overnight; fuller pre/RTH into the open.
+MEDIA_BATCH_MAX_AH = 2
+MEDIA_BATCH_MAX_PRE = 5
 MEDIA_MAX_ATTEMPTS = 3  # parse/LLM failures before exclude
 _GRIND_GAP_LO = 2.0
 _GRIND_GAP_HI = 8.0
@@ -105,14 +114,18 @@ def _watch_filing_dt(w) -> Optional[datetime]:
     return None
 
 
+def is_post_market_filing(filing_dt: datetime) -> bool:
+    """True when acceptance time is AH (ET ≥ 16:00)."""
+    return filing_dt.astimezone(_ET).time() >= _RTH_CLOSE
+
+
 def media_delay_hours(filing_dt: datetime) -> int:
     """
     Hours to wait after filing before media LLM.
 
     Post-market (acceptance ET ≥ 16:00) → +2h; pre-market / RTH → +1h.
     """
-    et = filing_dt.astimezone(_ET)
-    if et.time() >= _RTH_CLOSE:
+    if is_post_market_filing(filing_dt):
         return MEDIA_DELAY_POST_MARKET_HOURS
     return MEDIA_DELAY_PRE_MARKET_HOURS
 
@@ -120,6 +133,27 @@ def media_delay_hours(filing_dt: datetime) -> int:
 def media_due_at(filing_dt: datetime) -> datetime:
     """UTC datetime when Stage 1b media check is allowed."""
     return filing_dt + timedelta(hours=media_delay_hours(filing_dt))
+
+
+def select_media_batch(
+    due: List[Tuple[Any, str, datetime, datetime, int]],
+) -> List[Tuple[Any, str, datetime, datetime, int]]:
+    """
+    Cap media LLM work per SA: up to MEDIA_BATCH_MAX_AH post-market filings
+    and MEDIA_BATCH_MAX_PRE pre/RTH, oldest-first within each bucket.
+    """
+    ah: List[Tuple[Any, str, datetime, datetime, int]] = []
+    pre: List[Tuple[Any, str, datetime, datetime, int]] = []
+    for row in due:
+        filing_dt = row[2]
+        if is_post_market_filing(filing_dt):
+            if len(ah) < MEDIA_BATCH_MAX_AH:
+                ah.append(row)
+        elif len(pre) < MEDIA_BATCH_MAX_PRE:
+            pre.append(row)
+    batch = ah + pre
+    batch.sort(key=lambda r: r[2])
+    return batch
 
 
 def _safe_float(x: Any) -> Optional[float]:
@@ -2555,13 +2589,17 @@ class Edgar(AdvisorBase):
         Stage 1b: media LLM on Pending edgar_earnings watches that are due.
 
         Due when now >= filing_dt + delay (AH ≥16:00 ET → +2h; else +1h).
-        Caps at MEDIA_BATCH_MAX calls per pass. Pass → media_gate=pass;
-        fail → media_gate=fail + Excluded; LLM/parse miss → retry up to
-        MEDIA_MAX_ATTEMPTS then exclude.
+        Per-SA caps: MEDIA_BATCH_MAX_AH (2) post-market, MEDIA_BATCH_MAX_PRE (5)
+        pre/RTH. Pass → media_gate=pass; fail → media_gate=fail + Excluded;
+        LLM/parse miss → retry up to MEDIA_MAX_ATTEMPTS then exclude.
         """
         counts = {
             "pending": 0,
             "due": 0,
+            "due_ah": 0,
+            "due_pre": 0,
+            "batch_ah": 0,
+            "batch_pre": 0,
             "pass": 0,
             "fail": 0,
             "retry": 0,
@@ -2604,13 +2642,24 @@ class Edgar(AdvisorBase):
             due.append((w, accession, filing_dt, due_at, attempts))
 
         due.sort(key=lambda row: row[2])  # oldest filing first
-        batch = due[:MEDIA_BATCH_MAX]
-        counts["due"] = len(batch)
+        counts["due"] = len(due)
+        counts["due_ah"] = sum(1 for r in due if is_post_market_filing(r[2]))
+        counts["due_pre"] = counts["due"] - counts["due_ah"]
+        batch = select_media_batch(due)
+        counts["batch_ah"] = sum(1 for r in batch if is_post_market_filing(r[2]))
+        counts["batch_pre"] = len(batch) - counts["batch_ah"]
         logger.info(
-            "Media gate: %d Pending earnings, %d due (batch=%d%s)%s",
+            "Media gate: %d Pending, %d due (ah=%d pre=%d) → batch %d "
+            "(ah=%d/%d pre=%d/%d%s)%s",
             counts["pending"],
-            len(due),
+            counts["due"],
+            counts["due_ah"],
+            counts["due_pre"],
             len(batch),
+            counts["batch_ah"],
+            MEDIA_BATCH_MAX_AH,
+            counts["batch_pre"],
+            MEDIA_BATCH_MAX_PRE,
             f", force" if force else "",
             " DRY-RUN" if dry_run else "",
         )
