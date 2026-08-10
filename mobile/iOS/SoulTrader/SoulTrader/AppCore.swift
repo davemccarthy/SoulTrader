@@ -1617,7 +1617,7 @@ struct FundSecondarySummaryCard: View {
             SummaryMetricItem(
                 title: "EQUITY",
                 value: formatPercent(equityPercent),
-                color: Theme.signedColor(for: equityPercent),
+                color: Theme.valuePrimary,
                 alignment: .trailing
             ),
             SummaryMetricItem(
