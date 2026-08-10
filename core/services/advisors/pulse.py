@@ -12,8 +12,9 @@ Entry:
 - Discover qualifying names between 11:00 and 13:30 ET (MEGA spread is expected for initial test funds).
 - Live IMPULSE/COMBO paths (optional): 1m momentum + COMBO (impulse + normal_stable).
 - Market tape (SPY/QQQ): refresh only during Pulse buying hours (11:00–13:30 ET);
-  persist green/yellow/red on Advisor.blob (default red); skip discovers on red or yellow;
-  push superusers on status change.
+  persist red/amber/green/white on Advisor.blob (default red); trade discovers on green or white
+  only (red = none, amber = borderline/no new); push superusers on status change.
+  SI params still fixed — color is log/push + discover gate only for now.
 
 Exit/add: TARGET_INTRADAY (+0.5% / 0.5% giveback), -2% rebuy (default max tranches; 2h trend + 5m/30m recovery),
 END_DAY flat ~2h before close (value2 minutes-before-close; default experimental use is 120). No END_WEEK, DT, or SL.
@@ -33,7 +34,7 @@ import yfinance as yf
 
 from core.services.advisors.advisor import AdvisorBase, register
 from core.services.financial import polygon as financial_polygon
-from core.services.market.tape import evaluate_tape, fetch_tape
+from core.services.market.tape import evaluate_tape, fetch_tape, normalize_tape_state
 from core.services.push import push_super
 
 logger = logging.getLogger(__name__)
@@ -77,10 +78,12 @@ PULSE_IMPULSE_MIN_SIGNALS = 3
 
 # Market tape on Advisor.blob (missing → red). Push titles on status change.
 PULSE_TAPE_DEFAULT = "red"
+PULSE_TAPE_TRADE_STATES: Final[frozenset[str]] = frozenset({"green", "white"})
 PULSE_TAPE_PUSH_TITLES: Final[Dict[str, str]] = {
     "red": "RED MARKET ALERT",
-    "yellow": "YELLOW MARKET WARNING",
+    "amber": "AMBER MARKET CAUTION",
     "green": "GREEN MARKET STABLE",
+    "white": "WHITE MARKET STRONG",
 }
 
 ETF_EXCLUDE_TICKERS: Final[frozenset[str]] = frozenset(
@@ -615,17 +618,17 @@ class Pulse(AdvisorBase):
         """
         Fetch SPY/QQQ tape, persist status on Advisor.blob, push on change.
 
-        Returns green | yellow | red. Missing/failed readings → red.
+        Returns red | amber | green | white. Missing/failed readings → red.
         """
         state = self._advisor_blob_state()
-        prev = str(state.get("tape_status") or PULSE_TAPE_DEFAULT).strip().lower()
-        if prev not in PULSE_TAPE_PUSH_TITLES:
-            prev = PULSE_TAPE_DEFAULT
+        prev = normalize_tape_state(
+            state.get("tape_status"), default=PULSE_TAPE_DEFAULT
+        )
 
         try:
             readings = fetch_tape()
             verdict = evaluate_tape(readings)
-            new_status = verdict.state
+            new_status = normalize_tape_state(verdict.state, default=PULSE_TAPE_DEFAULT)
             reason = verdict.reason
             if not readings or new_status not in PULSE_TAPE_PUSH_TITLES:
                 new_status = PULSE_TAPE_DEFAULT
@@ -904,8 +907,11 @@ class Pulse(AdvisorBase):
             return
 
         tape_status = self._refresh_market_tape()
-        if tape_status != "green":
-            logger.info("Pulse skip: market tape not GREEN (discover paused)")
+        if tape_status not in PULSE_TAPE_TRADE_STATES:
+            logger.info(
+                "Pulse skip: market tape %s (discover only on green/white)",
+                tape_status.upper(),
+            )
             return
 
         sell_instructions = [

@@ -1,6 +1,12 @@
 """
 Intraday market tape: benchmark move vs today's open and prior close.
 
+Four-color posture for new-entry judgment (log + push now; SI params later):
+  RED    — no new trades
+  AMBER  — borderline / caution (formerly yellow)
+  GREEN  — trade (normal)
+  WHITE  — trade (strong tape)
+
 Generic service for manual ops / advisor discover gates (no session-history rules).
 """
 from __future__ import annotations
@@ -13,11 +19,21 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BENCHMARKS: tuple[str, ...] = ("SPY", "QQQ")
 
-# Suggested thresholds for new-entry caution (manual or future auto-gate).
+# Risk-off / caution (any benchmark trips → that color).
 TAPE_RED_VS_OPEN_PCT = -1.5
-TAPE_YELLOW_VS_OPEN_PCT = -1.0
+TAPE_AMBER_VS_OPEN_PCT = -1.0
 TAPE_RED_VS_PRIOR_CLOSE_PCT = -2.0
-TAPE_YELLOW_VS_PRIOR_CLOSE_PCT = -1.0
+TAPE_AMBER_VS_PRIOR_CLOSE_PCT = -1.0
+
+# Strong tape (ALL benchmarks must clear both floors → white).
+TAPE_WHITE_VS_OPEN_PCT = 0.5
+TAPE_WHITE_VS_PRIOR_CLOSE_PCT = 0.75
+
+# Back-compat aliases (yellow → amber).
+TAPE_YELLOW_VS_OPEN_PCT = TAPE_AMBER_VS_OPEN_PCT
+TAPE_YELLOW_VS_PRIOR_CLOSE_PCT = TAPE_AMBER_VS_PRIOR_CLOSE_PCT
+
+TAPE_STATES: frozenset[str] = frozenset({"red", "amber", "green", "white"})
 
 
 @dataclass(frozen=True)
@@ -42,9 +58,19 @@ class TapeReading:
 
 @dataclass(frozen=True)
 class TapeVerdict:
-    state: str  # green | yellow | red
+    state: str  # red | amber | green | white
     reason: str
     readings: Dict[str, TapeReading]
+
+
+def normalize_tape_state(state: Optional[str], default: str = "red") -> str:
+    """Map legacy 'yellow' → 'amber'; unknown → default."""
+    s = str(state or default).strip().lower()
+    if s == "yellow":
+        return "amber"
+    if s in TAPE_STATES:
+        return s
+    return default
 
 
 def _pct(current: Optional[float], base: Optional[float]) -> Optional[float]:
@@ -105,22 +131,35 @@ def evaluate_tape(
     readings: Dict[str, TapeReading],
     *,
     red_vs_open: float = TAPE_RED_VS_OPEN_PCT,
-    yellow_vs_open: float = TAPE_YELLOW_VS_OPEN_PCT,
+    amber_vs_open: float = TAPE_AMBER_VS_OPEN_PCT,
     red_vs_prior_close: float = TAPE_RED_VS_PRIOR_CLOSE_PCT,
-    yellow_vs_prior_close: float = TAPE_YELLOW_VS_PRIOR_CLOSE_PCT,
+    amber_vs_prior_close: float = TAPE_AMBER_VS_PRIOR_CLOSE_PCT,
+    white_vs_open: float = TAPE_WHITE_VS_OPEN_PCT,
+    white_vs_prior_close: float = TAPE_WHITE_VS_PRIOR_CLOSE_PCT,
+    # Deprecated aliases
+    yellow_vs_open: Optional[float] = None,
+    yellow_vs_prior_close: Optional[float] = None,
 ) -> TapeVerdict:
     """
-    Aggregate tape into green / yellow / red for new-entry judgment.
+    Aggregate tape into red / amber / green / white.
 
     RED: any benchmark at or below red thresholds.
-    YELLOW: not red, but any benchmark at or below yellow thresholds.
-    GREEN: otherwise.
+    AMBER: not red, but any benchmark at or below amber thresholds.
+    WHITE: not red/amber, and ALL benchmarks at or above white floors (vs open + prior).
+    GREEN: otherwise (normal trade band).
     """
+    if yellow_vs_open is not None:
+        amber_vs_open = yellow_vs_open
+    if yellow_vs_prior_close is not None:
+        amber_vs_prior_close = yellow_vs_prior_close
+
     if not readings:
-        return TapeVerdict("yellow", "no benchmark readings", {})
+        return TapeVerdict("amber", "no benchmark readings", {})
 
     red_reasons: list[str] = []
-    yellow_reasons: list[str] = []
+    amber_reasons: list[str] = []
+    white_ok = True
+    white_bits: list[str] = []
 
     for reading in readings.values():
         sym = reading.symbol
@@ -130,13 +169,26 @@ def evaluate_tape(
             red_reasons.append(f"{sym} vs open {vo:+.2f}%")
         if vpc is not None and vpc <= red_vs_prior_close:
             red_reasons.append(f"{sym} vs prior close {vpc:+.2f}%")
-        if vo is not None and yellow_vs_open >= vo > red_vs_open:
-            yellow_reasons.append(f"{sym} vs open {vo:+.2f}%")
-        if vpc is not None and yellow_vs_prior_close >= vpc > red_vs_prior_close:
-            yellow_reasons.append(f"{sym} vs prior close {vpc:+.2f}%")
+        if vo is not None and amber_vs_open >= vo > red_vs_open:
+            amber_reasons.append(f"{sym} vs open {vo:+.2f}%")
+        if vpc is not None and amber_vs_prior_close >= vpc > red_vs_prior_close:
+            amber_reasons.append(f"{sym} vs prior close {vpc:+.2f}%")
+
+        if vo is None or vpc is None or vo < white_vs_open or vpc < white_vs_prior_close:
+            white_ok = False
+        else:
+            white_bits.append(
+                f"{sym} vs open {vo:+.2f}% / vs prior {vpc:+.2f}%"
+            )
 
     if red_reasons:
         return TapeVerdict("red", "; ".join(red_reasons), readings)
-    if yellow_reasons:
-        return TapeVerdict("yellow", "; ".join(yellow_reasons), readings)
+    if amber_reasons:
+        return TapeVerdict("amber", "; ".join(amber_reasons), readings)
+    if white_ok and white_bits:
+        return TapeVerdict(
+            "white",
+            f"strong tape ({'; '.join(white_bits)})",
+            readings,
+        )
     return TapeVerdict("green", "benchmarks within normal intraday band", readings)

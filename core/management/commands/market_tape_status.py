@@ -1,12 +1,13 @@
 """
-Print intraday benchmark tape and a suggested new-entry posture.
+Print intraday benchmark tape and suggested new-entry posture.
 
 Usage:
     python manage.py market_tape_status
     python manage.py market_tape_status --symbols SPY,QQQ,IWM
 
-Manual policy: on RED, remove discovery advisors from affected funds until tape
-improves. Existing holdings continue IPC / rebuy / session exits via analyze_holdings.
+Policy: RED = no new trades; AMBER = borderline; GREEN/WHITE = trade
+(Pulse discover gate). Existing holdings continue IPC / rebuy / session exits.
+SI params are not color-driven yet — log + push on change only.
 """
 from __future__ import annotations
 
@@ -15,17 +16,19 @@ from django.utils import timezone
 
 from core.services.market.tape import (
     DEFAULT_BENCHMARKS,
+    TAPE_AMBER_VS_OPEN_PCT,
+    TAPE_AMBER_VS_PRIOR_CLOSE_PCT,
     TAPE_RED_VS_OPEN_PCT,
     TAPE_RED_VS_PRIOR_CLOSE_PCT,
-    TAPE_YELLOW_VS_OPEN_PCT,
-    TAPE_YELLOW_VS_PRIOR_CLOSE_PCT,
+    TAPE_WHITE_VS_OPEN_PCT,
+    TAPE_WHITE_VS_PRIOR_CLOSE_PCT,
     evaluate_tape,
     fetch_tape,
 )
 
 
 class Command(BaseCommand):
-    help = "Show intraday SPY/QQQ tape and suggested green/yellow/red for new entries."
+    help = "Show intraday SPY/QQQ tape and red/amber/green/white posture."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -62,34 +65,38 @@ class Command(BaseCommand):
             )
 
         self.stdout.write("")
-        self.stdout.write("Thresholds (new-entry suggestion):")
+        self.stdout.write("Thresholds:")
         self.stdout.write(
-            f"  RED    vs open <= {TAPE_RED_VS_OPEN_PCT:+.1f}% "
-            f"or vs prior close <= {TAPE_RED_VS_PRIOR_CLOSE_PCT:+.1f}%"
+            f"  RED    any vs open <= {TAPE_RED_VS_OPEN_PCT:+.1f}% "
+            f"or vs prior <= {TAPE_RED_VS_PRIOR_CLOSE_PCT:+.1f}%"
         )
         self.stdout.write(
-            f"  YELLOW vs open <= {TAPE_YELLOW_VS_OPEN_PCT:+.1f}% "
-            f"or vs prior close <= {TAPE_YELLOW_VS_PRIOR_CLOSE_PCT:+.1f}%"
+            f"  AMBER  any vs open <= {TAPE_AMBER_VS_OPEN_PCT:+.1f}% "
+            f"or vs prior <= {TAPE_AMBER_VS_PRIOR_CLOSE_PCT:+.1f}% (not red)"
         )
+        self.stdout.write(
+            f"  WHITE  ALL vs open >= {TAPE_WHITE_VS_OPEN_PCT:+.1f}% "
+            f"and vs prior >= {TAPE_WHITE_VS_PRIOR_CLOSE_PCT:+.1f}%"
+        )
+        self.stdout.write("  GREEN  otherwise (normal trade band)")
         self.stdout.write("")
 
         state = verdict.state.upper()
         style = self.style.SUCCESS
-        if verdict.state == "yellow":
+        if verdict.state == "amber":
             style = self.style.WARNING
         elif verdict.state == "red":
             style = self.style.ERROR
+        elif verdict.state == "white":
+            style = self.style.SUCCESS
         self.stdout.write(style(f"Verdict: {state}"))
         self.stdout.write(f"Reason: {verdict.reason}")
         self.stdout.write("")
         if verdict.state == "red":
-            self.stdout.write(
-                "Manual: remove discovery advisors from funds until tape improves. "
-                "Holdings keep sell/rebuy handling."
-            )
-        elif verdict.state == "yellow":
-            self.stdout.write(
-                "Manual: consider pausing new discoveries if tape keeps weakening."
-            )
+            self.stdout.write("Action: no new Pulse discovers.")
+        elif verdict.state == "amber":
+            self.stdout.write("Action: borderline — no new Pulse discovers.")
+        elif verdict.state == "white":
+            self.stdout.write("Action: strong tape — trade (SI still fixed for now).")
         else:
-            self.stdout.write("Manual: normal to run discovery advisors on funds.")
+            self.stdout.write("Action: normal trade (green).")
