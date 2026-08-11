@@ -1,11 +1,11 @@
 """
 Intraday market tape: benchmark move vs today's open and prior close.
 
-Four-color posture for new-entry judgment (log + push now; SI params later):
+Four-color posture for new-entry judgment (Pulse maps IPC by color):
   RED    — no new trades
-  AMBER  — borderline / caution (formerly yellow)
-  GREEN  — trade (normal)
-  WHITE  — trade (strong tape)
+  AMBER  — caution trade (tight IPC)
+  GREEN  — normal trade
+  WHITE  — strong tape (looser IPC)
 
 Generic service for manual ops / advisor discover gates (no session-history rules).
 """
@@ -21,13 +21,13 @@ DEFAULT_BENCHMARKS: tuple[str, ...] = ("SPY", "QQQ")
 
 # Risk-off / caution (any benchmark trips → that color).
 TAPE_RED_VS_OPEN_PCT = -1.5
-TAPE_AMBER_VS_OPEN_PCT = -1.0
+TAPE_AMBER_VS_OPEN_PCT = -0.75
 TAPE_RED_VS_PRIOR_CLOSE_PCT = -2.0
-TAPE_AMBER_VS_PRIOR_CLOSE_PCT = -1.0
+TAPE_AMBER_VS_PRIOR_CLOSE_PCT = -0.75
 
 # Strong tape (ALL benchmarks must clear both floors → white).
-TAPE_WHITE_VS_OPEN_PCT = 0.5
-TAPE_WHITE_VS_PRIOR_CLOSE_PCT = 0.75
+TAPE_WHITE_VS_OPEN_PCT = 0.75
+TAPE_WHITE_VS_PRIOR_CLOSE_PCT = 1.0
 
 # Back-compat aliases (yellow → amber).
 TAPE_YELLOW_VS_OPEN_PCT = TAPE_AMBER_VS_OPEN_PCT

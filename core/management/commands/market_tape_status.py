@@ -5,9 +5,8 @@ Usage:
     python manage.py market_tape_status
     python manage.py market_tape_status --symbols SPY,QQQ,IWM
 
-Policy: RED = no new trades; AMBER = borderline; GREEN/WHITE = trade
-(Pulse discover gate). Existing holdings continue IPC / rebuy / session exits.
-SI params are not color-driven yet — log + push on change only.
+Pulse: RED = no discover; AMBER/GREEN/WHITE = trade with tape-colored IPC
+(amber 0.2/0.2, green 0.4/0.2, white 0.6/0.4). Push on color change.
 """
 from __future__ import annotations
 
@@ -67,18 +66,20 @@ class Command(BaseCommand):
         self.stdout.write("")
         self.stdout.write("Thresholds:")
         self.stdout.write(
-            f"  RED    any vs open <= {TAPE_RED_VS_OPEN_PCT:+.1f}% "
-            f"or vs prior <= {TAPE_RED_VS_PRIOR_CLOSE_PCT:+.1f}%"
+            f"  RED    any vs open <= {TAPE_RED_VS_OPEN_PCT:+.2f}% "
+            f"or vs prior <= {TAPE_RED_VS_PRIOR_CLOSE_PCT:+.2f}%"
         )
         self.stdout.write(
-            f"  AMBER  any vs open <= {TAPE_AMBER_VS_OPEN_PCT:+.1f}% "
-            f"or vs prior <= {TAPE_AMBER_VS_PRIOR_CLOSE_PCT:+.1f}% (not red)"
+            f"  AMBER  any vs open <= {TAPE_AMBER_VS_OPEN_PCT:+.2f}% "
+            f"or vs prior <= {TAPE_AMBER_VS_PRIOR_CLOSE_PCT:+.2f}% (not red)"
         )
         self.stdout.write(
-            f"  WHITE  ALL vs open >= {TAPE_WHITE_VS_OPEN_PCT:+.1f}% "
-            f"and vs prior >= {TAPE_WHITE_VS_PRIOR_CLOSE_PCT:+.1f}%"
+            f"  WHITE  ALL vs open >= {TAPE_WHITE_VS_OPEN_PCT:+.2f}% "
+            f"and vs prior >= {TAPE_WHITE_VS_PRIOR_CLOSE_PCT:+.2f}%"
         )
-        self.stdout.write("  GREEN  otherwise (normal trade band)")
+        self.stdout.write("  GREEN  otherwise")
+        self.stdout.write("")
+        self.stdout.write("Pulse IPC: amber 0.2/0.2 | green 0.4/0.2 | white 0.6/0.4")
         self.stdout.write("")
 
         state = verdict.state.upper()
@@ -95,8 +96,8 @@ class Command(BaseCommand):
         if verdict.state == "red":
             self.stdout.write("Action: no new Pulse discovers.")
         elif verdict.state == "amber":
-            self.stdout.write("Action: borderline — no new Pulse discovers.")
+            self.stdout.write("Action: caution trade — IPC 0.2/0.2.")
         elif verdict.state == "white":
-            self.stdout.write("Action: strong tape — trade (SI still fixed for now).")
+            self.stdout.write("Action: strong tape — IPC 0.6/0.4.")
         else:
-            self.stdout.write("Action: normal trade (green).")
+            self.stdout.write("Action: normal trade — IPC 0.4/0.2.")

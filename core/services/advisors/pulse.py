@@ -12,12 +12,12 @@ Entry:
 - Discover qualifying names between 11:00 and 13:30 ET (MEGA spread is expected for initial test funds).
 - Live IMPULSE/COMBO paths (optional): 1m momentum + COMBO (impulse + normal_stable).
 - Market tape (SPY/QQQ): refresh only during Pulse buying hours (11:00–13:30 ET);
-  persist red/amber/green/white on Advisor.blob (default red); trade discovers on green or white
-  only (red = none, amber = borderline/no new); push superusers on status change.
-  SI params still fixed — color is log/push + discover gate only for now.
+  persist red/amber/green/white on Advisor.blob (default red); trade on amber/green/white
+  (red = no discover); push superusers on status change.
+  IPC at discovery by tape: amber 0.2/0.2, green 0.4/0.2, white 0.6/0.4.
 
-Exit/add: TARGET_INTRADAY (+0.5% / 0.5% giveback), -2% rebuy (default max tranches; 2h trend + 5m/30m recovery),
-END_DAY flat ~2h before close (value2 minutes-before-close; default experimental use is 120). No END_WEEK, DT, or SL.
+Exit/add: TARGET_INTRADAY (tape-colored arm/giveback), -2% rebuy (default max tranches;
+  2h trend + 5m/30m recovery), END_DAY flat ~2h before close (value2=120). No END_WEEK, DT, or SL.
 
 Shadow: when enabled, logs IMPULSE/COMBO hits once per cache bucket (same gates as live).
 """
@@ -57,11 +57,19 @@ PULSE_MAX_PRICE_DRIFT_FROM_SEED = 0.50
 PULSE_MAX_QUOTE_DRIFT_FROM_BAR = 0.02
 PULSE_DISCOVERY_COOLDOWN_HOURS = 6
 
-PULSE_TP_MULT = Decimal("1.005")  # IPC activation: +0.5%
-PULSE_INTRADAY_GIVEBACK = Decimal("0.005")  # IPC giveback: 0.5% off high-water
+# Fallback IPC when tape color missing (green workhorse).
+PULSE_TP_MULT = Decimal("1.004")
+PULSE_INTRADAY_GIVEBACK = Decimal("0.002")
 PULSE_REBUY_DROP = Decimal("0.02")
 PULSE_ENDDAY_TAKE = Decimal("1.00")
 PULSE_ENDDAY_MINUTES_BEFORE_CLOSE = Decimal("120")
+
+# Tape → IPC (arm multiplier, giveback fraction) at discovery.
+PULSE_IPC_BY_TAPE: Final[Dict[str, tuple[Decimal, Decimal]]] = {
+    "amber": (Decimal("1.002"), Decimal("0.002")),  # 0.2% / 0.2%
+    "green": (Decimal("1.004"), Decimal("0.002")),  # 0.4% / 0.2%
+    "white": (Decimal("1.006"), Decimal("0.004")),  # 0.6% / 0.4%
+}
 
 # Opportunity floor at discover (Oracle uses C at pre-discover gate).
 PULSE_MIN_OPPORTUNITY_GRADE = "C"
@@ -78,13 +86,26 @@ PULSE_IMPULSE_MIN_SIGNALS = 3
 
 # Market tape on Advisor.blob (missing → red). Push titles on status change.
 PULSE_TAPE_DEFAULT = "red"
-PULSE_TAPE_TRADE_STATES: Final[frozenset[str]] = frozenset({"green", "white"})
+PULSE_TAPE_TRADE_STATES: Final[frozenset[str]] = frozenset({"amber", "green", "white"})
 PULSE_TAPE_PUSH_TITLES: Final[Dict[str, str]] = {
     "red": "RED MARKET ALERT",
     "amber": "AMBER MARKET CAUTION",
     "green": "GREEN MARKET STABLE",
     "white": "WHITE MARKET STRONG",
 }
+
+
+def pulse_sell_instructions_for_tape(tape_status: str) -> list[tuple[str, Decimal, Decimal | None]]:
+    """Build Pulse SIs for the current tape color (IPC arm/giveback + rebuy + END_DAY)."""
+    status = normalize_tape_state(tape_status, default="green")
+    tp_mult, giveback = PULSE_IPC_BY_TAPE.get(
+        status, (PULSE_TP_MULT, PULSE_INTRADAY_GIVEBACK)
+    )
+    return [
+        ("TARGET_INTRADAY", tp_mult, giveback),
+        ("PERCENTAGE_REBUY", PULSE_REBUY_DROP, None),
+        ("END_DAY", PULSE_ENDDAY_TAKE, PULSE_ENDDAY_MINUTES_BEFORE_CLOSE),
+    ]
 
 ETF_EXCLUDE_TICKERS: Final[frozenset[str]] = frozenset(
     {
@@ -909,16 +930,21 @@ class Pulse(AdvisorBase):
         tape_status = self._refresh_market_tape()
         if tape_status not in PULSE_TAPE_TRADE_STATES:
             logger.info(
-                "Pulse skip: market tape %s (discover only on green/white)",
+                "Pulse skip: market tape %s (discover on amber/green/white only)",
                 tape_status.upper(),
             )
             return
 
-        sell_instructions = [
-            ("TARGET_INTRADAY", PULSE_TP_MULT, PULSE_INTRADAY_GIVEBACK),
-            ("PERCENTAGE_REBUY", PULSE_REBUY_DROP, None),
-            ("END_DAY", PULSE_ENDDAY_TAKE, PULSE_ENDDAY_MINUTES_BEFORE_CLOSE),
-        ]
+        sell_instructions = pulse_sell_instructions_for_tape(tape_status)
+        tp_mult, giveback = PULSE_IPC_BY_TAPE.get(
+            tape_status, (PULSE_TP_MULT, PULSE_INTRADAY_GIVEBACK)
+        )
+        logger.info(
+            "Pulse tape=%s IPC arm=%s giveback=%s",
+            tape_status.upper(),
+            tp_mult,
+            giveback,
+        )
 
         attention, recovery_candidates = self._ensure_pulse_cache()
         discovered_symbols: set[str] = set()
