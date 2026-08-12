@@ -4,6 +4,7 @@ Edgar advisor (EDDIE-8): two-stage 8-K earnings pipeline + Form 4 enrichment.
 Stage 1 — Item 2.02 8-K → EX-99 LLM + score → watch() (Pending).
 Stage 1b — media LLM after delay (AH +2h / pre/RTH +1h) → media_gate pass/fail.
          Batch caps per SA: AH 2 (overnight drip), pre/RTH 5 (morning burst).
+         eps=unknown/other (non-hostile sentiment) → retry later (NESR); miss → fail.
 Stage 2 — after RTH open (+15m): Goldilocks tape → discovered() on pass setups.
 
 Test independently:
@@ -72,7 +73,7 @@ MEDIA_DELAY_PRE_MARKET_HOURS = 1
 # Media LLM batch per SA: drip AH overnight; fuller pre/RTH into the open.
 MEDIA_BATCH_MAX_AH = 2
 MEDIA_BATCH_MAX_PRE = 5
-MEDIA_MAX_ATTEMPTS = 3  # parse/LLM failures before exclude
+MEDIA_MAX_ATTEMPTS = 3  # parse miss or eps=unknown/other before exclude
 _GRIND_GAP_LO = 2.0
 _GRIND_GAP_HI = 8.0
 _GRIND_MAX_PB = 2.0
@@ -900,8 +901,11 @@ EVENT_SCORE_PASS_MIN = 5
 # First pipe segment of discovery explanation: optional lead from media LLM headlines
 _EXPLANATION_HEADLINE_MAX_LEN = 180
 
-# Media gate: require a known EPS beat (Fri autopsy: unknown only hit losers TDS/AD).
+# Media gate: require a known EPS beat. unknown/other soft-retries (NESR);
+# miss / hostile sentiment hard-fail immediately (AP).
 _MEDIA_EPS_PASS = frozenset({"beat", "strong_beat"})
+_MEDIA_EPS_RETRY = frozenset({"unknown", "other"})
+_MEDIA_SENTIMENT_HARD_FAIL = frozenset({"no_coverage", "mixed", "negative"})
 
 
 def media_passes_gate(media: Optional[Dict[str, Any]]) -> bool:
@@ -909,17 +913,34 @@ def media_passes_gate(media: Optional[Dict[str, Any]]) -> bool:
     True when media reaction is buy-eligible.
 
     Hard fails: no media, sentiment in {no_coverage, mixed, negative}, eps miss,
-    or eps not in {beat, strong_beat} (unknown/other fail — no confirmed beat).
+    or eps not in {beat, strong_beat}. Soft-inconclusive unknown/other is also
+    False here — callers use media_should_retry() to leave Pending for another go.
     """
     if not isinstance(media, dict) or not media:
         return False
     sentiment = media.get("sentiment")
     eps = media.get("eps")
-    if sentiment in ("no_coverage", "mixed", "negative"):
+    if sentiment in _MEDIA_SENTIMENT_HARD_FAIL:
         return False
     if eps == "miss" or eps not in _MEDIA_EPS_PASS:
         return False
     return True
+
+
+def media_should_retry(media: Optional[Dict[str, Any]]) -> bool:
+    """
+    Soft-inconclusive media: eps unknown/other with non-hostile sentiment.
+
+    Early coverage often won't commit a beat label; later SA drips may (NESR).
+    Caller retries until MEDIA_MAX_ATTEMPTS then excludes.
+    """
+    if not isinstance(media, dict) or not media:
+        return False
+    if media.get("sentiment") in _MEDIA_SENTIMENT_HARD_FAIL:
+        return False
+    if media.get("eps") == "miss":
+        return False
+    return media.get("eps") in _MEDIA_EPS_RETRY
 
 
 def _media_gate_explanation_segment(media: Optional[Dict[str, Any]]) -> str:
@@ -2590,8 +2611,9 @@ class Edgar(AdvisorBase):
 
         Due when now >= filing_dt + delay (AH ≥16:00 ET → +2h; else +1h).
         Per-SA caps: MEDIA_BATCH_MAX_AH (2) post-market, MEDIA_BATCH_MAX_PRE (5)
-        pre/RTH. Pass → media_gate=pass; fail → media_gate=fail + Excluded;
-        LLM/parse miss → retry up to MEDIA_MAX_ATTEMPTS then exclude.
+        pre/RTH. Pass → media_gate=pass; hard fail (miss / hostile sentiment) →
+        Excluded; LLM/parse miss or eps=unknown/other → retry up to
+        MEDIA_MAX_ATTEMPTS then exclude.
         """
         counts = {
             "pending": 0,
@@ -2759,6 +2781,53 @@ class Edgar(AdvisorBase):
                         "Media %s: PASS (%s)",
                         symbol,
                         _media_gate_explanation_segment(media),
+                    )
+            elif media_should_retry(media):
+                # Soft-inconclusive (e.g. +/unknown/unknown) — try again next SA.
+                counts["retry"] += 1
+                seg = _media_gate_explanation_segment(media) or "unknown eps"
+                if meta["media_attempts"] >= MEDIA_MAX_ATTEMPTS:
+                    meta["media_gate"] = "fail"
+                    expl = (
+                        f"MEDIA fail ({seg} after {MEDIA_MAX_ATTEMPTS} tries) | "
+                        f"{w.explanation or ''}"
+                    )[:500]
+                    if dry_run:
+                        logger.info(
+                            "Media %s: DRY-RUN would exclude (%s, max retries)",
+                            symbol,
+                            seg,
+                        )
+                    else:
+                        w.meta = meta
+                        w.status = "Excluded"
+                        w.explanation = expl
+                        w.save(update_fields=["meta", "status", "explanation"])
+                        counts["fail"] += 1
+                        logger.info(
+                            "Media %s: still inconclusive after %d tries → Excluded (%s)",
+                            symbol,
+                            MEDIA_MAX_ATTEMPTS,
+                            seg,
+                        )
+                elif dry_run:
+                    logger.info(
+                        "Media %s: DRY-RUN would retry later (%s, attempt %d/%d)",
+                        symbol,
+                        seg,
+                        meta["media_attempts"],
+                        MEDIA_MAX_ATTEMPTS,
+                    )
+                else:
+                    # Leave media_gate unset so next SA can re-run LLM.
+                    w.meta = meta
+                    w.save(update_fields=["meta"])
+                    logger.info(
+                        "Media %s: inconclusive (%s) — retry later (attempt %d/%d)",
+                        symbol,
+                        seg,
+                        meta["media_attempts"],
+                        MEDIA_MAX_ATTEMPTS,
                     )
             else:
                 meta["media_gate"] = "fail"
