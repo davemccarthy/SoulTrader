@@ -4,7 +4,7 @@ Edgar advisor (EDDIE-8): two-stage 8-K earnings pipeline + Form 4 enrichment.
 Stage 1 — Item 2.02 8-K → EX-99 LLM + score → watch() (Pending).
 Stage 1b — media LLM after delay (AH +2h / pre/RTH +1h) → media_gate pass/fail.
          Batch caps per SA: AH 2 (overnight drip), pre/RTH 5 (morning burst).
-         eps=unknown/other (non-hostile sentiment) → retry later (NESR); miss → fail.
+         eps=unknown/other or no_coverage → retry later (NESR/AVEX); miss/mixed → fail.
 Stage 2 — after RTH open (+15m): Goldilocks tape → discovered() on pass setups.
 
 Test independently:
@@ -73,7 +73,7 @@ MEDIA_DELAY_PRE_MARKET_HOURS = 1
 # Media LLM batch per SA: drip AH overnight; fuller pre/RTH into the open.
 MEDIA_BATCH_MAX_AH = 2
 MEDIA_BATCH_MAX_PRE = 5
-MEDIA_MAX_ATTEMPTS = 3  # parse miss or eps=unknown/other before exclude
+MEDIA_MAX_ATTEMPTS = 3  # parse miss, unknown/other, or no_coverage before exclude
 _GRIND_GAP_LO = 2.0
 _GRIND_GAP_HI = 8.0
 _GRIND_MAX_PB = 2.0
@@ -901,19 +901,19 @@ EVENT_SCORE_PASS_MIN = 5
 # First pipe segment of discovery explanation: optional lead from media LLM headlines
 _EXPLANATION_HEADLINE_MAX_LEN = 180
 
-# Media gate: require a known EPS beat. unknown/other soft-retries (NESR);
-# miss / hostile sentiment hard-fail immediately (AP).
+# Media gate: require a known EPS beat. unknown/other/no_coverage soft-retry
+# (NESR, AVEX); miss / mixed / negative hard-fail immediately (AP, INFQ).
 _MEDIA_EPS_PASS = frozenset({"beat", "strong_beat"})
 _MEDIA_EPS_RETRY = frozenset({"unknown", "other"})
-_MEDIA_SENTIMENT_HARD_FAIL = frozenset({"no_coverage", "mixed", "negative"})
+_MEDIA_SENTIMENT_HARD_FAIL = frozenset({"mixed", "negative"})
 
 
 def media_passes_gate(media: Optional[Dict[str, Any]]) -> bool:
     """
     True when media reaction is buy-eligible.
 
-    Hard fails: no media, sentiment in {no_coverage, mixed, negative}, eps miss,
-    or eps not in {beat, strong_beat}. Soft-inconclusive unknown/other is also
+    Hard fails: no media, sentiment in {mixed, negative}, eps miss, or eps not
+    in {beat, strong_beat}. Soft-inconclusive unknown/other/no_coverage is also
     False here — callers use media_should_retry() to leave Pending for another go.
     """
     if not isinstance(media, dict) or not media:
@@ -922,6 +922,8 @@ def media_passes_gate(media: Optional[Dict[str, Any]]) -> bool:
     eps = media.get("eps")
     if sentiment in _MEDIA_SENTIMENT_HARD_FAIL:
         return False
+    if sentiment == "no_coverage":
+        return False
     if eps == "miss" or eps not in _MEDIA_EPS_PASS:
         return False
     return True
@@ -929,10 +931,11 @@ def media_passes_gate(media: Optional[Dict[str, Any]]) -> bool:
 
 def media_should_retry(media: Optional[Dict[str, Any]]) -> bool:
     """
-    Soft-inconclusive media: eps unknown/other with non-hostile sentiment.
+    Soft-inconclusive media: no_coverage, or eps unknown/other with non-hostile
+    sentiment.
 
-    Early coverage often won't commit a beat label; later SA drips may (NESR).
-    Caller retries until MEDIA_MAX_ATTEMPTS then excludes.
+    Early coverage often won't commit a beat (NESR) or Deepseek has no search
+    (AVEX). Caller retries until MEDIA_MAX_ATTEMPTS then excludes.
     """
     if not isinstance(media, dict) or not media:
         return False
@@ -940,6 +943,8 @@ def media_should_retry(media: Optional[Dict[str, Any]]) -> bool:
         return False
     if media.get("eps") == "miss":
         return False
+    if media.get("sentiment") == "no_coverage":
+        return True
     return media.get("eps") in _MEDIA_EPS_RETRY
 
 
@@ -1580,6 +1585,7 @@ class Edgar(AdvisorBase):
             return None
 
         if parsed.get("sentiment") == "no_coverage":
+            deepseek_parsed = parsed
             logger.info(
                 "ticker=%s, CIK=%s, accession=%s media LLM: no_coverage - retrying",
                 ticker or "N/A",
@@ -1587,15 +1593,16 @@ class Edgar(AdvisorBase):
                 accession,
             )
             model, parsed = self.ask_gemini(media_prompt, use_search=True)
-
-        if not parsed or not isinstance(parsed, dict):
-            logger.info(
-                "ticker=%s, CIK=%s, accession=%s media LLM: no result from LLM(s)",
-                ticker or "N/A",
-                cik or "N/A",
-                accession,
-            )
-            return None
+            if not parsed or not isinstance(parsed, dict):
+                # Keep Deepseek so overnight retry is no_coverage, not "no parse".
+                logger.info(
+                    "ticker=%s, CIK=%s, accession=%s media LLM: Gemini no parse "
+                    "— keeping Deepseek no_coverage",
+                    ticker or "N/A",
+                    cik or "N/A",
+                    accession,
+                )
+                parsed = deepseek_parsed
 
         print("-------")
         print(parsed)
@@ -2611,9 +2618,9 @@ class Edgar(AdvisorBase):
 
         Due when now >= filing_dt + delay (AH ≥16:00 ET → +2h; else +1h).
         Per-SA caps: MEDIA_BATCH_MAX_AH (2) post-market, MEDIA_BATCH_MAX_PRE (5)
-        pre/RTH. Pass → media_gate=pass; hard fail (miss / hostile sentiment) →
-        Excluded; LLM/parse miss or eps=unknown/other → retry up to
-        MEDIA_MAX_ATTEMPTS then exclude.
+        pre/RTH. Pass → media_gate=pass; hard fail (miss / mixed / negative) →
+        Excluded; LLM/parse miss, eps=unknown/other, or no_coverage → retry up
+        to MEDIA_MAX_ATTEMPTS then exclude.
         """
         counts = {
             "pending": 0,
