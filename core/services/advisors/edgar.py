@@ -6,6 +6,7 @@ Stage 1b — media LLM after delay (AH +2h / pre/RTH +1h) → media_gate pass/fa
          Batch caps per SA: AH 2 (overnight drip), pre/RTH 5 (morning burst).
          eps=unknown/other or no_coverage → retry later (NESR/AVEX); miss/mixed → fail.
 Stage 2 — after RTH open (+15m): Goldilocks tape → discovered() on pass setups.
+Pharma 8-Ks (7.01/8.01) are log-only for now (no discover); same as events.
 
 Test independently:
     python manage.py run_edgar
@@ -2122,6 +2123,13 @@ class Edgar(AdvisorBase):
         return True
 
     def analyze_8k_pharma(self, filing, cik, ticker, accession, sa):
+        """
+        Item 7.01/8.01 pharma/regulatory path.
+
+        Log-only for now (SLP/DFTX were buying into the earnings test bed).
+        Still scores + LLM so later work has WOULD_DISCOVER logs; no discovered().
+        """
+        _ = sa
 
         # Verify no item 2.02 (earnings owns those; should not reach here if
         # analyze_8k_earnings returned True for a 2.02 filing).
@@ -2236,7 +2244,7 @@ class Edgar(AdvisorBase):
 
         if pharma_score < PHARMA_SCORE_LLM_MIN:
             logger.info(
-                "ticker=%s, CIK=%s, accession=%s pharma score=%d below LLM threshold=%d -> no LLM/discovery",
+                "ticker=%s, CIK=%s, accession=%s pharma score=%d below LLM threshold=%d -> no LLM",
                 ticker,
                 cik,
                 accession,
@@ -2284,19 +2292,22 @@ class Edgar(AdvisorBase):
                 weight = Decimal("1.00")
 
             if weight is not None:
-                explanation = (
-                    f"8-K pharma | Accession: {accession} | Weight:{float(weight):.2f} | "
-                    f"https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude "
-                    f"| Category:{category} Sentiment:{sentiment} Materiality:{materiality}"
+                logger.info(
+                    "*8K_PHARMA_PASS ticker=%s CIK=%s accession=%s "
+                    "would_discover=true weight=%s category=%s sentiment=%s "
+                    "materiality=%s event=%s",
+                    ticker,
+                    cik,
+                    accession,
+                    weight,
+                    category,
+                    sentiment,
+                    materiality,
+                    key_event or "",
                 )
-                if key_event:
-                    explanation += f" | Event:{key_event}"
-                if summary:
-                    explanation += f" | Summary:{summary}"
-                self.discovered(sa, ticker, explanation, weight=weight)
             else:
                 logger.info(
-                    "ticker=%s, CIK=%s, accession=%s pharma sentiment=%s -> no discovery",
+                    "ticker=%s, CIK=%s, accession=%s pharma sentiment=%s -> no-op",
                     ticker,
                     cik,
                     accession,
