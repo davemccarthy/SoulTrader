@@ -3182,15 +3182,6 @@ class Edgar(AdvisorBase):
                             and filing_dt is not None
                             and filing_dt < cutoff
                         ):
-                            logger.warning(
-                                "Filing 8-K %s (filing_time=%s) older than "
-                                "prev SA lookback %s (prev_sa=%s lag=%sm) — skipping",
-                                accession,
-                                filing_dt,
-                                cutoff,
-                                prev_ts,
-                                FILING_FEED_LAG_MINUTES,
-                            )
                             continue
 
                         self.analyze_8k(filing, sa)
