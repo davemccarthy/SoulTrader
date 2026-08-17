@@ -23,6 +23,7 @@ from core.services.health.risk_matrix import (
     so_gate_fail_display,
 )
 from core.services.market import in_opening_noise_window, market_open
+from core.services.sentiment import purge_eligible, purge_score
 
 logger = logging.getLogger(__name__)
 DT_EXIT_CONFIDENCE_MIN = 0.70
@@ -56,9 +57,9 @@ def _holding_unrealized_pnl(holding: Holding) -> Decimal:
 
 def recycle_equity_cap(sa, fund: Profile) -> int:
     """
-    When sentiment is enabled and equity is at/over target, sell holdings that
-    clear min_recycle_profit (2% of one tranche), preferring higher cost basis
-    (more tranches), until under the equity cap.
+    When sentiment is enabled and equity is at/over target, sell holdings ranked
+    by purge_score (highest first) while score >= PURGE_MIN_SCORE, until under
+    the equity cap.
 
     Returns number of positions sold. No-op when sentiment is DISABLED.
     """
@@ -68,61 +69,82 @@ def recycle_equity_cap(sa, fund: Profile) -> int:
         return 0
 
     target = fund.equity_target()
-    min_profit = fund.min_recycle_profit()
+    min_score = Profile.PURGE_MIN_SCORE
 
     logger.info(
-        "%s: equity cap recycle — ratio=%.3f target=%s min_profit=$%s",
+        "%s: equity purge — ratio=%.3f recycle_at=%s min_score=%s",
         fund.name,
         float(fund.equity_ratio()),
         target,
-        min_profit,
+        min_score,
     )
 
-    # Refresh once, rank eligible by cost desc, then sell down the list.
-    # Avoids re-hitting yfinance for every holding after each sale.
+    # Refresh once, rank by purge_score, then sell down the list.
     candidates = []
     for holding in Holding.objects.filter(fund=fund, shares__gt=0).select_related(
         "stock", "discovery"
     ):
         holding.stock.refresh()
+        score, _components = purge_score(holding, fund)
+        cost = _holding_cost_basis(holding)
         pnl = _holding_unrealized_pnl(holding)
-        if pnl < min_profit:
-            continue
-        candidates.append((holding, _holding_cost_basis(holding), pnl))
+        candidates.append((holding, score, cost, pnl))
 
     if not candidates:
-        logger.info(
-            "%s: equity cap over target but no holding meets min_recycle_profit $%s",
+        return 0
+
+    candidates.sort(key=lambda row: (row[1], float(row[2])), reverse=True)
+    eligible = [row for row in candidates if purge_eligible(row[1], fund)]
+
+    if not eligible:
+        best = candidates[0]
+        logger.warning(
+            "%s: equity purge stalled — ratio=%.3f recycle_at=%s; "
+            "no holdings score>=%s (best=%.1f %s)",
             fund.name,
-            min_profit,
+            float(fund.equity_ratio()),
+            target,
+            min_score,
+            best[1],
+            best[0].stock.symbol,
         )
         return 0
 
-    candidates.sort(key=lambda row: row[1], reverse=True)
     sold = 0
-
-    for holding, cost, pnl in candidates:
+    for holding, score, cost, pnl in eligible:
         if not fund.at_or_over_equity_cap():
             break
-        # Holding may already be gone if somehow sold earlier in this SA.
+        if not purge_eligible(score, fund):
+            break
         if not Holding.objects.filter(pk=holding.pk).exists():
             continue
         execute_sell(
             sa,
             fund,
             holding,
-            f"{holding.stock.symbol} equity-cap recycle "
-            f"(pnl ${pnl:.2f} >= ${min_profit}; cost ${cost:.2f}; "
-            f"target {target})",
+            f"{holding.stock.symbol} equity purge "
+            f"(score={score:.1f}; pnl ${pnl:.2f}; cost ${cost:.2f}; "
+            f"recycle_at {target})",
         )
         sold += 1
 
     if sold:
         logger.info(
-            "%s: equity cap recycle sold %s position(s); ratio now %.3f",
+            "%s: equity purge sold %s position(s); ratio now %.3f",
             fund.name,
             sold,
             float(fund.equity_ratio()),
+        )
+    elif fund.at_or_over_equity_cap():
+        best_eligible = eligible[0]
+        logger.warning(
+            "%s: equity purge stalled — ratio=%.3f recycle_at=%s; "
+            "no further sells (best eligible=%.1f %s)",
+            fund.name,
+            float(fund.equity_ratio()),
+            target,
+            best_eligible[1],
+            best_eligible[0].stock.symbol,
         )
     return sold
 
@@ -1177,7 +1199,7 @@ def analyze_discovery(sa, funds, advisors):
 
         allowed_advisors = list(fund.advisors or [])
 
-        if fund.sentiment_enabled() and fund.at_or_over_equity_cap():
+        if fund.sentiment_enabled() and fund.at_or_over_equity_buy_cap():
             blocked = 0
             if allowed_advisors:
                 blocked_qs = Discovery.objects.filter(sa=sa).filter(
@@ -1185,11 +1207,11 @@ def analyze_discovery(sa, funds, advisors):
                 )
                 blocked = blocked_qs.values("stock_id").distinct().count()
             logger.info(
-                "%s: at/over equity cap (ratio=%.3f target=%s); "
+                "%s: over buy cap (ratio=%.3f buy_until=%s); "
                 "skip discovery buys (blocked=%s)",
                 fund.name,
                 float(fund.equity_ratio()),
-                fund.equity_target(),
+                fund.equity_buy_threshold(),
                 blocked,
             )
             continue

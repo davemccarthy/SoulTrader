@@ -60,6 +60,12 @@ class Profile(models.Model):
     # (1-tranche needs >2% P&L; 2-tranche >1%; …).
     RECYCLE_PROFIT_OF_TRANCHE = Decimal("0.02")
 
+    # Discovery buys blocked when equity_ratio >= sentiment + buffer (capped at 1.0).
+    EQUITY_BUY_BUFFER = Decimal("0.10")
+
+    # Never purge a holding below this score, even when over the equity cap.
+    PURGE_MIN_SCORE = 30
+
     user = models.ForeignKey(User, on_delete=models.DO_NOTHING)
     name = models.CharField(max_length=120, blank=True, default="")
     created = models.DateTimeField(null=True, blank=True, auto_now_add=True)
@@ -120,13 +126,37 @@ class Profile(models.Model):
 
     def at_or_over_equity_cap(self) -> bool:
         """
-        True when equity_ratio >= sentiment equity target.
+        True when equity_ratio >= sentiment equity target (purge threshold).
         Always False when sentiment is DISABLED.
         """
         target = self.equity_target()
         if target is None:
             return False
         return self.equity_ratio() >= target
+
+    def equity_buy_threshold(self) -> Optional[Decimal]:
+        """
+        Equity ratio above which discovery buys are blocked.
+        sentiment target + EQUITY_BUY_BUFFER, capped at 1.0.
+        None when sentiment is DISABLED.
+        """
+        target = self.equity_target()
+        if target is None:
+            return None
+        cap = target + Profile.EQUITY_BUY_BUFFER
+        if cap > Decimal("1"):
+            cap = Decimal("1")
+        return cap
+
+    def at_or_over_equity_buy_cap(self) -> bool:
+        """
+        True when equity_ratio >= buy threshold (sentiment + buffer).
+        Always False when sentiment is DISABLED.
+        """
+        threshold = self.equity_buy_threshold()
+        if threshold is None:
+            return False
+        return self.equity_ratio() >= threshold
 
     def min_recycle_profit(self) -> Decimal:
         """

@@ -92,6 +92,8 @@ class ProfileAdminForm(forms.ModelForm):
         help_texts = {
             'sentiment': (
                 'Target equity fraction of wealth (cash + holdings). '
+                'Purge when at/over target; discovery buys blocked at target + 10% '
+                '(capped at 100%). '
                 'STRONG_BULL=100%, BULL=80%, STAG=60%, BEAR=40%, STRONG_BEAR=0%. '
                 'DISABLED = no sentiment-driven buy/sell decisions.'
             ),

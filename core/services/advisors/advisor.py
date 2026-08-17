@@ -218,14 +218,13 @@ class AdvisorBase:
         self.gemini_model = 0
         self._gemini_key_index = 0
 
-    # Default sell instructions (Run 3): PEAKED harvest + profit-only time exit +
-    # gated −4% rebuy (capped until tranche-cap alerts exist) + DT→LLM loss exit.
+    # Default sell instructions (Run 3): PEAKED harvest + gated −4% rebuy +
+    # DT→LLM loss exit. Time-based AFTER_DAYS removed — equity purge handles cash.
     # PEAKED: value1=giveback 15%, value2=min peak 8%; min exit = value2/2 (→ +4%).
     sell_instructions = [
         ("PEAKED", 15.0, 8.0),
         ("PERCENTAGE_REBUY", 0.04, 10),
         ("DESCENDING_TREND", -0.20, None),
-        ("AFTER_DAYS", 20, None),
     ]
 
     def stock_consensus(self, symbol: str) -> Dict[str, Any]:
