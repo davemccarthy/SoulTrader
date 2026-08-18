@@ -940,6 +940,7 @@ def holding_history(request, stock_id):
             'advisor': discovery_obj.advisor.name if discovery_obj.advisor else '',
             'advisor_logo': _advisor_logo_url(discovery_obj.advisor),
             'explanation': discovery_obj.explanation,
+            'discovery_meta': discovery_meta_api(discovery_obj),
             'created': discovery_obj.created.isoformat() if discovery_obj.created else None,
             'sa_id': discovery_obj.sa_id,
             'url': None,  # Extract URL from explanation if present
