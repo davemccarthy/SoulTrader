@@ -191,6 +191,7 @@ struct HoldingResponse: Decodable, Identifiable {
     let discoveryLogo: String?
     let discoveryComment: String?
     let discoveryExplanation: String?
+    let discoveryMeta: DiscoveryMetaPayload?
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -202,6 +203,7 @@ struct HoldingResponse: Decodable, Identifiable {
         case discoveryLogo = "discovery_logo"
         case discoveryComment = "discovery_comment"
         case discoveryExplanation = "discovery_explanation"
+        case discoveryMeta = "discovery_meta"
     }
 }
 
@@ -314,6 +316,89 @@ struct HealthMetaPayload: Decodable {
     let media: HealthMediaPayload?
     let bonuses: [String]?
     let penalties: [String]?
+}
+
+struct DiscoveryOpenPayload: Decodable {
+    let price: Double?
+    let vsClosePct: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case price
+        case vsClosePct = "vs_close_pct"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        if let p = try? c.decode(Double.self, forKey: .price) {
+            price = p
+        } else if let p = try? c.decode(String.self, forKey: .price), let d = Double(p) {
+            price = d
+        } else {
+            price = nil
+        }
+        if let v = try? c.decode(Double.self, forKey: .vsClosePct) {
+            vsClosePct = v
+        } else if let v = try? c.decode(String.self, forKey: .vsClosePct), let d = Double(v) {
+            vsClosePct = d
+        } else {
+            vsClosePct = nil
+        }
+    }
+}
+
+struct DiscoveryMetaPayload: Decodable {
+    let render: String?
+    let lead: String?
+    let accession: String?
+    let weight: Double?
+    let filingDt: String?
+    let secUrl: String?
+    let open: DiscoveryOpenPayload?
+    let ex99: HealthEx99Payload?
+    let media: HealthMediaPayload?
+    let bonuses: [String]?
+    let penalties: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case render, lead, accession, weight, open, ex99, media, bonuses, penalties
+        case filingDt = "filing_dt"
+        case secUrl = "sec_url"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        render = try c.decodeIfPresent(String.self, forKey: .render)
+        lead = try c.decodeIfPresent(String.self, forKey: .lead)
+        accession = try c.decodeIfPresent(String.self, forKey: .accession)
+        filingDt = try c.decodeIfPresent(String.self, forKey: .filingDt)
+        secUrl = try c.decodeIfPresent(String.self, forKey: .secUrl)
+        open = try c.decodeIfPresent(DiscoveryOpenPayload.self, forKey: .open)
+        ex99 = try c.decodeIfPresent(HealthEx99Payload.self, forKey: .ex99)
+        media = try c.decodeIfPresent(HealthMediaPayload.self, forKey: .media)
+        bonuses = try c.decodeIfPresent([String].self, forKey: .bonuses)
+        penalties = try c.decodeIfPresent([String].self, forKey: .penalties)
+        if let w = try? c.decode(Double.self, forKey: .weight) {
+            weight = w
+        } else if let w = try? c.decode(String.self, forKey: .weight), let d = Double(w) {
+            weight = d
+        } else {
+            weight = nil
+        }
+    }
+
+    var isEdgar: Bool {
+        (render ?? "").lowercased() == "edgar"
+    }
+
+    var hasStructuredContent: Bool {
+        guard isEdgar else { return false }
+        if ex99?.hasStructuredContent == true { return true }
+        if media?.hasStructuredContent == true { return true }
+        if let b = bonuses, !b.isEmpty { return true }
+        if let p = penalties, !p.isEmpty { return true }
+        if let a = accession?.trimmingCharacters(in: .whitespacesAndNewlines), !a.isEmpty { return true }
+        return false
+    }
 }
 
 struct HealthEx99Payload: Decodable {
@@ -794,10 +879,12 @@ struct DiscoveryDetailResponse: Decodable {
     let advisor: DiscoveryDetailAdvisor
     let health: HealthHistoryRecord?
     let scoring: DiscoveryScoring?
+    let discoveryMeta: DiscoveryMetaPayload?
 
     private enum CodingKeys: String, CodingKey {
         case id, explanation, created, stock, advisor, health, scoring
         case discoveryPrice = "discovery_price"
+        case discoveryMeta = "discovery_meta"
     }
 }
 

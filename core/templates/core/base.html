@@ -1880,6 +1880,101 @@
             `;
         }
 
+        function renderEdgarDiscoveryMeta(edgar) {
+            if (!edgar || String(edgar.render || '').toLowerCase() !== 'edgar') {
+                return '';
+            }
+            const ex99 = edgar.ex99 && typeof edgar.ex99 === 'object' ? edgar.ex99 : {};
+            const media = edgar.media && typeof edgar.media === 'object' ? edgar.media : {};
+            const bonuses = Array.isArray(edgar.bonuses) ? edgar.bonuses : [];
+            const penalties = Array.isArray(edgar.penalties) ? edgar.penalties : [];
+            const justifications = ex99.justifications && typeof ex99.justifications === 'object'
+                ? ex99.justifications
+                : {};
+            const open = edgar.open && typeof edgar.open === 'object' ? edgar.open : {};
+
+            function kvRow(label, value) {
+                if (value == null || String(value).trim() === '') return '';
+                return `<div class="health-meta-item holdings-history-text"><span class="health-meta-key">${escapeHtml(label)}:</span> <span class="health-meta-value">${escapeHtml(String(value))}</span></div>`;
+            }
+
+            function justificationBlock(title, text) {
+                if (!text) return '';
+                return `<div class="health-meta-item holdings-history-text"><strong>${escapeHtml(title)}:</strong> ${escapeHtml(String(text))}</div>`;
+            }
+
+            function stringList(title, items, maxItems = 4) {
+                if (!items || !items.length) return '';
+                const sliced = items.slice(0, maxItems);
+                return `
+                    <div class="health-meta-item holdings-history-text">
+                        <span class="health-meta-key">${escapeHtml(title)}:</span>
+                        <ul class="health-overlay-list">
+                            ${sliced.map((i) => `<li>${escapeHtml(String(i))}</li>`).join('')}
+                        </ul>
+                    </div>
+                `;
+            }
+
+            const justBlocks = [
+                ['Past Performance', justifications.past_performance],
+                ['Guidance', justifications.guidance],
+                ['Expectation', justifications.expectation],
+                ['Market Reaction', justifications.market_reaction],
+            ].map(([title, text]) => justificationBlock(title, text)).filter(Boolean).join('');
+
+            const ex99Labels = [
+                ['Expectation', ex99.expectation],
+                ['Guidance', ex99.guidance],
+                ['Performance', ex99.past_performance],
+                ['Market', ex99.market_reaction],
+            ].map(([label, value]) => kvRow(label, value)).join('');
+
+            let openLine = '';
+            if (open.price != null) {
+                const vs = open.vs_close_pct != null ? ` (${Number(open.vs_close_pct).toFixed(1)}% vs close)` : '';
+                openLine = kvRow('Open', `${open.price}${vs}`);
+            }
+
+            const headlines = Array.isArray(media.headlines) ? media.headlines : [];
+            const redFlags = Array.isArray(media.red_flags) ? media.red_flags : [];
+            const mediaBlock = (media.summary || media.sentiment || media.eps || media.revenue || headlines.length || redFlags.length) ? `
+                <div class="health-meta-section health-meta-divider">
+                    <div class="health-meta-label">Media</div>
+                    ${media.summary ? `<div class="health-meta-item holdings-history-text">${escapeHtml(String(media.summary))}</div>` : ''}
+                    ${kvRow('Sentiment', media.sentiment)}
+                    ${kvRow('EPS', media.eps)}
+                    ${kvRow('Revenue', media.revenue)}
+                    ${stringList('Headlines', headlines, 4)}
+                    ${stringList('Red Flags', redFlags, 4)}
+                </div>
+            ` : '';
+
+            const secLink = edgar.sec_url
+                ? `<div class="health-meta-section"><div class="health-meta-item holdings-history-text"><a href="${escapeHtml(edgar.sec_url)}" target="_blank" rel="noopener">${escapeHtml(edgar.sec_url)}</a></div></div>`
+                : '';
+
+            return `
+                <div class="disc-edgar-meta health-record-meta health-record-meta-single">
+                    <div class="health-meta-section">
+                        <div class="health-meta-label">${escapeHtml(edgar.lead || '8-K earnings filing')}</div>
+                        ${kvRow('Accession', edgar.accession)}
+                        ${kvRow('Weight', edgar.weight)}
+                        ${ex99Labels}
+                        ${openLine}
+                    </div>
+                    <div class="health-meta-section health-meta-divider">
+                        <div class="health-meta-label">EX-99</div>
+                        ${justBlocks || '<div class="health-meta-item holdings-history-text"><span class="health-meta-value">No EX-99 justifications.</span></div>'}
+                    </div>
+                    ${mediaBlock}
+                    ${bonuses.length ? stringList('Bonuses', bonuses, 6) : ''}
+                    ${penalties.length ? stringList('Penalties', penalties, 6) : ''}
+                    ${secLink}
+                </div>
+            `;
+        }
+
         function renderDiscoverySection(discovery) {
             if (!discovery) return '';
             const advisor = escapeHtml(discovery.advisor || '');
@@ -1887,6 +1982,10 @@
             const explanation = discovery.explanation || '';
             const created = discovery.created ? formatDateTime(discovery.created) : '—';
             const saId = discovery.sa_id || '—';
+
+            const edgarHtml = discovery.discovery_meta
+                ? renderEdgarDiscoveryMeta(discovery.discovery_meta)
+                : '';
 
             // Format explanation - parse segments and handle "Article: {title} | {url}" pattern
             // Split by | and process each segment
@@ -1939,7 +2038,7 @@
             }
             
             // Join segments (all segments are wrapped in <p> tags)
-            const formattedExplanation = processedSegments.join('');
+            const formattedExplanation = edgarHtml || processedSegments.join('');
 
             return `
                 <div class="holdings-history-panel">

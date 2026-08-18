@@ -510,7 +510,7 @@ class AdvisorBase:
     def analyze(self, sa, stock):
         return
 
-    def discovered(self, sa, symbol, explanation, sell_instructions = None, weight = 1.0):
+    def discovered(self, sa, symbol, explanation, sell_instructions=None, weight=1.0, meta=None):
 
         if (stock := self.get_stock(symbol)) is None:
             return None
@@ -528,6 +528,8 @@ class AdvisorBase:
         #discovery.health = health
         discovery.explanation = explanation
         discovery.weight = weight
+        if meta is not None:
+            discovery.meta = meta
         discovery.save()
 
         # Create sell instructions if provided

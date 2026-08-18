@@ -4,7 +4,8 @@ Edgar advisor (EDDIE-8): two-stage 8-K earnings pipeline + Form 4 enrichment.
 Stage 1 — Item 2.02 8-K → EX-99 LLM + score → watch() (Pending).
 Stage 1b — media LLM after delay (AH +2h / pre/RTH +1h) → media_gate pass/fail.
          Batch caps per SA: AH 2 (overnight drip), pre/RTH 5 (morning burst).
-         eps=unknown/other or no_coverage → retry later (NESR/AVEX); miss/mixed → fail.
+         eps=unknown/other or no_coverage → Gemini search then retry later (FLXS/NESR/AVEX);
+         miss/mixed → fail. Max retries still exclude.
 Stage 2 — after RTH open (+15m): Goldilocks tape → discovered() on pass setups.
 Pharma 8-Ks (7.01/8.01) are log-only for now (no discover); same as events.
 
@@ -835,13 +836,14 @@ MEDIA_REACTION_PROMPT_TEMPLATE = """Analyze {company} ({ticker}) {quarter} earni
 
 Search the web for recent business and financial news and analysis about this event.
 
-Use reputable sources such as Bloomberg, Reuters, CNBC, Financial Times, Wall Street Journal, Barron's, MarketWatch, and major broker research (e.g., Goldman Sachs, Morgan Stanley, JPMorgan) where available.
+Use reputable sources such as Bloomberg, Reuters, CNBC, Financial Times, Wall Street Journal, Barron's, MarketWatch, Yahoo Finance, Zacks, MarketBeat, and major broker research (e.g., Goldman Sachs, Morgan Stanley, JPMorgan) where available. Small-cap names often only appear on MarketBeat, Zacks, or Yahoo — those count.
 
 Your tasks:
 1. Assess the overall sentiment of coverage toward the earnings and outlook.
-2. Determine whether the company beat or missed consensus expectations on EPS and Revenue (when such information is available).
+2. Determine whether the company beat or missed consensus expectations on EPS and Revenue (when such information is available). Adjusted or GAAP is fine if compared to the matching consensus.
 3. Identify key positive themes and significant red flags (including analyst downgrades or cautious notes) across articles and broker research.
 
+Do not infer a beat from "strong results", raised guidance, or year-over-year improvement alone. If no vs-consensus figure is found, use "unknown".
 Do not summarize stale pre-earnings consensus ratings; focus on post-release news and fresh commentary.
 
 Respond with STRICT JSON only. No other text before or after:
@@ -899,7 +901,8 @@ PHARMA_SCORE_LLM_MIN = 5
 EVENT_SCORE_REJECT_MAX = 2
 EVENT_SCORE_PASS_MIN = 5
 
-# First pipe segment of discovery explanation: optional lead from media LLM headlines
+# First pipe segment of discovery explanation: short UI summary (_discovery_excerpt).
+_EARNINGS_DISCOVERY_LEAD = "8-K earnings filing"
 _EXPLANATION_HEADLINE_MAX_LEN = 180
 
 # Media gate: require a known EPS beat. unknown/other/no_coverage soft-retry
@@ -936,7 +939,8 @@ def media_should_retry(media: Optional[Dict[str, Any]]) -> bool:
     sentiment.
 
     Early coverage often won't commit a beat (NESR) or Deepseek has no search
-    (AVEX). Caller retries until MEDIA_MAX_ATTEMPTS then excludes.
+    (AVEX, FLXS). Same predicate escalates to Gemini+search in-call, then the
+    caller retries across SAs until MEDIA_MAX_ATTEMPTS and excludes.
     """
     if not isinstance(media, dict) or not media:
         return False
@@ -1001,6 +1005,46 @@ def _sanitize_explanation_segment(text: str, max_len: int = _EXPLANATION_SEGMENT
     if len(s) > max_len:
         s = s[: max_len - 1].rstrip() + "…"
     return s
+
+
+def _build_edgar_discovery_meta(
+    watch_meta: dict,
+    *,
+    ex99: dict,
+    form4: dict,
+    bonuses: list,
+    penalties: list,
+    live: float | None,
+    vs_close_pct: float | None,
+) -> dict:
+    """Structured EDGAR payload persisted on Discovery.meta at goldilocks buy."""
+    wm = watch_meta if isinstance(watch_meta, dict) else {}
+    media = wm.get("media") if isinstance(wm.get("media"), dict) else {}
+    meta: dict = {
+        "render": "edgar",
+        "lead": _EARNINGS_DISCOVERY_LEAD,
+        "source": wm.get("source") or "edgar_earnings",
+        "accession": wm.get("accession"),
+        "filing_dt": wm.get("filing_dt"),
+        "weight": wm.get("weight"),
+        "cik": wm.get("cik"),
+        "sec_url": wm.get("sec_url"),
+        "media_gate": wm.get("media_gate"),
+        "open_bucket": wm.get("open_bucket"),
+        "ex99": ex99 if isinstance(ex99, dict) else {},
+        "media": media,
+        "form4": form4 if isinstance(form4, dict) else {},
+        "bonuses": list(bonuses or []),
+        "penalties": list(penalties or []),
+    }
+    open_block: dict = {}
+    if live is not None:
+        open_block["price"] = round(float(live), 2)
+    if vs_close_pct is not None:
+        open_block["vs_close_pct"] = round(float(vs_close_pct), 1)
+    if open_block:
+        meta["open"] = open_block
+    return meta
 
 
 def _edgar_detail_explanation_segments(
@@ -1585,23 +1629,26 @@ class Edgar(AdvisorBase):
             )
             return None
 
-        if parsed.get("sentiment") == "no_coverage":
+        # Deepseek has no search. Escalate when coverage is missing or EPS
+        # is unknown/other (FLXS: positive tone, no vs-consensus print).
+        if media_should_retry(parsed):
             deepseek_parsed = parsed
             logger.info(
-                "ticker=%s, CIK=%s, accession=%s media LLM: no_coverage - retrying",
+                "ticker=%s, CIK=%s, accession=%s media LLM: %s — Gemini search",
                 ticker or "N/A",
                 cik or "N/A",
                 accession,
+                _media_gate_explanation_segment(parsed) or "retry",
             )
             model, parsed = self.ask_gemini(media_prompt, use_search=True)
             if not parsed or not isinstance(parsed, dict):
-                # Keep Deepseek so overnight retry is no_coverage, not "no parse".
                 logger.info(
                     "ticker=%s, CIK=%s, accession=%s media LLM: Gemini no parse "
-                    "— keeping Deepseek no_coverage",
+                    "— keeping Deepseek %s",
                     ticker or "N/A",
                     cik or "N/A",
                     accession,
+                    _media_gate_explanation_segment(deepseek_parsed) or "result",
                 )
                 parsed = deepseek_parsed
 
@@ -1760,7 +1807,7 @@ class Edgar(AdvisorBase):
             )
         else:
             lead = (
-                f"8-K earnings filing | Accession: {accession} | Weight:{weight:.2f} | "
+                f"{_EARNINGS_DISCOVERY_LEAD} | Accession: {accession} | Weight:{weight:.2f} | "
                 f"https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude "
             )
 
@@ -2091,25 +2138,15 @@ class Edgar(AdvisorBase):
         # Minimize score impact
         weight = (score / 2) + 1.0
 
-        explanation = " | ".join(
-            self.build_info(
-                filing,
-                {
-                    "weight": weight,
-                    "bonuses": bonuses,
-                    "penalties": penalties,
-                    "ex99": ex99,
-                    "media": media,
-                    "form4": form4,
-                },
-            )
+        watch_explanation = (
+            f"{_EARNINGS_DISCOVERY_LEAD} | Accession: {accession} | Weight:{weight:.2f}"
         )
 
         # Watch only — Stage 1b media + Stage 2 open-check promote later.
         filing_dt = _filing_datetime(filing)
         self.watch(
             ticker,
-            explanation=explanation,
+            explanation=watch_explanation,
             days=2,
             meta={
                 "source": "edgar_earnings",
@@ -2117,6 +2154,12 @@ class Edgar(AdvisorBase):
                 "filing_dt": filing_dt.isoformat() if filing_dt else None,
                 "weight": float(weight),
                 "sa_id": getattr(sa, "id", None),
+                "cik": cik,
+                "sec_url": f"https://www.sec.gov/edgar/browse/?CIK={cik}&owner=exclude",
+                "ex99": ex99,
+                "form4": form4 if isinstance(form4, dict) else {},
+                "bonuses": bonuses,
+                "penalties": penalties,
             },
             status="Pending",
         )
@@ -3053,21 +3096,24 @@ class Edgar(AdvisorBase):
                     logger.warning("Open-check %s refresh failed: %s", symbol, e)
 
                 live = _safe_float(stock.price) or tape.get("last")
-                media_seg = _media_gate_explanation_segment(meta.get("media"))
-                lead = (
-                    f"OPEN goldilocks @ {live:.2f} ({vs:+.1f}% vs close)"
-                    if live is not None and vs is not None
-                    else "OPEN goldilocks"
+                wm = dict(w.meta or {})
+                ex99 = wm.get("ex99") if isinstance(wm.get("ex99"), dict) else {}
+                form4 = wm.get("form4") if isinstance(wm.get("form4"), dict) else {}
+                bonuses = wm.get("bonuses") if isinstance(wm.get("bonuses"), list) else []
+                penalties = wm.get("penalties") if isinstance(wm.get("penalties"), list) else []
+                discovery_meta = _build_edgar_discovery_meta(
+                    wm,
+                    ex99=ex99,
+                    form4=form4,
+                    bonuses=bonuses,
+                    penalties=penalties,
+                    live=live,
+                    vs_close_pct=vs,
                 )
-                parts = [lead]
-                if media_seg:
-                    parts.append(media_seg)
-                if w.explanation:
-                    parts.append(w.explanation)
-                expl = " | ".join(parts)
-                self.discovered(sa, symbol, expl[:500], weight=weight)
+                expl = _EARNINGS_DISCOVERY_LEAD
+                self.discovered(sa, symbol, expl, weight=weight, meta=discovery_meta)
                 w.status = "Executed"
-                w.explanation = expl[:500]
+                w.explanation = expl
                 w.save(update_fields=["status", "meta", "explanation"])
 
             except Exception as e:

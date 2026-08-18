@@ -24,6 +24,7 @@ from .serializers import (
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 
+from core.discovery_display import discovery_excerpt, discovery_meta_api
 from core.discovery_scoring import discovery_scoring_context
 from core.health_display import health_record_payload
 from core.models import Advisor, Discovery, Holding, Profile, PushDevice, Snapshot, Trade
@@ -128,14 +129,16 @@ def get_holdings(request):
         if discovery:
             item['discovery_name'] = discovery.advisor.name if discovery.advisor else ""
             item['discovery_logo'] = _advisor_logo_absolute_url(request, discovery.advisor)
-            item['discovery_comment'] = _discovery_comment(discovery.explanation)
+            item['discovery_comment'] = discovery_excerpt(discovery)
             item['discovery_explanation'] = discovery.explanation or ""
+            item['discovery_meta'] = discovery_meta_api(discovery)
         else:
             fallback_advisor = getattr(holding.stock, 'advisor', None)
             item['discovery_name'] = fallback_advisor.name if fallback_advisor else ""
             item['discovery_logo'] = _advisor_logo_absolute_url(request, fallback_advisor)
             item['discovery_comment'] = None
             item['discovery_explanation'] = ""
+            item['discovery_meta'] = None
 
     return Response(payload)
 
@@ -242,25 +245,6 @@ def _advisor_logo_absolute_url(request, advisor):
         return f'{base}{path}'
     return request.build_absolute_uri(path)
 
-
-def _discovery_comment(explanation: str | None):
-    if not explanation:
-        return None
-    normalized = " ".join(explanation.split()).strip()
-    if not normalized:
-        return None
-    segments = [segment.strip() for segment in normalized.split("|") if segment.strip()]
-    for segment in segments:
-        lower = segment.lower()
-        if segment.startswith("http://") or segment.startswith("https://"):
-            continue
-        if lower.startswith("article:"):
-            title = segment.split(":", 1)[1].strip()
-            if title:
-                return title
-            continue
-        return segment
-    return None
 
 
 @api_view(['GET'])
@@ -561,7 +545,8 @@ def get_advisor_discoveries(request, advisor_id: int):
                 'company': (stock.company or '').strip(),
                 'price': str(stock.price),
             },
-            'explanation_line': _discovery_comment(d.explanation) or '',
+            'explanation_line': discovery_excerpt(d) or '',
+            'discovery_meta': discovery_meta_api(d),
             'health_score': scoring.get('composite_score'),
             'scoring': scoring,
         })
@@ -586,6 +571,7 @@ def get_discovery_detail(request, discovery_id: int):
     return Response({
         'id': d.id,
         'explanation': d.explanation or '',
+        'discovery_meta': discovery_meta_api(d),
         'discovery_price': str(d.price) if d.price is not None else None,
         'created': d.created.isoformat() if d.created else None,
         'stock': {

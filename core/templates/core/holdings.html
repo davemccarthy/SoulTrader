@@ -255,6 +255,10 @@ window.detailPanelRenderer = function(data) {
             return '';
         }
 
+        if (typeof renderEdgarDiscoveryMeta === 'function' && discovery.discovery_meta) {
+            return renderEdgarDiscoveryMeta(discovery.discovery_meta);
+        }
+
         const advisor = escapeHtml(discovery.advisor || 'Unknown advisor');
         const started = discovery.sa_started ? escapeHtml(new Date(discovery.sa_started).toLocaleString()) : '';
         const explanation = formatExplanation(discovery.explanation || '');

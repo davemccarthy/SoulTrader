@@ -24,6 +24,12 @@ from .fund_session import (
     set_current_fund,
     clear_fund_session,
 )
+from .discovery_display import (
+    discovery_excerpt,
+    discovery_meta_api,
+    discovery_paragraphs,
+    discovery_template_context,
+)
 from .discovery_scoring import (
     discovery_list_score_column,
     discovery_scoring_context,
@@ -425,25 +431,7 @@ def holdings(request):
             discovery_advisor = discovery_obj.advisor
 
             # Derive a short comment from the discovery explanation (first non-empty clause)
-            explanation = (discovery_obj.explanation or "").strip()
-            if explanation:
-                normalized = " ".join(explanation.split())
-                if normalized:
-                    segments = [segment.strip() for segment in normalized.split("|") if segment.strip()]
-                    for segment in segments:
-                        lower = segment.lower()
-                        # Skip bare URLs
-                        if segment.startswith("http://") or segment.startswith("https://"):
-                            continue
-                        # Handle "Article: Title" style segments
-                        if lower.startswith("article:"):
-                            title = segment.split(":", 1)[1].strip()
-                            if title:
-                                discovery_comment = title
-                                break
-                        else:
-                            discovery_comment = segment
-                            break
+            discovery_comment = discovery_excerpt(discovery_obj)
         else:
             # Fallback to stock.advisor if no discovery found
             discovery = stock.advisor.name if stock.advisor else ""
@@ -640,6 +628,7 @@ def holding_detail(request, stock_id):
                 'advisor': discovery.advisor.name if discovery.advisor else '',
                 'advisor_logo': _advisor_logo_url(discovery.advisor),
                 'explanation': discovery.explanation,
+                'discovery_meta': discovery_meta_api(discovery),
                 'sa_id': discovery.sa_id,
                 'sa_started': discovery.sa.started.isoformat() if discovery.sa and discovery.sa.started else None,
             }
@@ -1453,7 +1442,8 @@ def advisory_discoveries(request, advisor_id: int):
             'pnl_pct': pnl_pct,
             'created': discovery.created,
             'explanation': discovery.explanation or '',
-            'explanation_paragraphs': _discovery_paragraphs(discovery.explanation),
+            'explanation_paragraphs': _discovery_paragraphs(discovery),
+            'discovery_meta': discovery_template_context(discovery),
             'score_kicker': score_column['kicker'],
             'score_value': score_column['value'],
             'scoring': scoring,
@@ -1494,70 +1484,14 @@ def advisory_discoveries(request, advisor_id: int):
     return render(request, 'core/advisory_discoveries.html', context)
 
 
-def _discovery_excerpt(explanation: str | None) -> str:
-    """Short discovery copy from first meaningful explanation segment."""
-    if not explanation:
-        return ""
-    normalized = " ".join(explanation.split()).strip()
-    if not normalized:
-        return ""
-    segments = [segment.strip() for segment in normalized.split("|") if segment.strip()]
-    for segment in segments:
-        if segment.startswith("http://") or segment.startswith("https://"):
-            continue
-        lower = segment.lower()
-        if lower.startswith("article:"):
-            title = segment.split(":", 1)[1].strip()
-            if title:
-                return title
-            continue
-        return segment
-    return ""
-
-
-def _discovery_paragraphs(explanation: str | None) -> list[dict[str, str]]:
+def _discovery_paragraphs(discovery) -> list[dict[str, str]]:
     """Render-ready explanation blocks with article title URL linking."""
-    if not explanation:
+    edgar_ctx = discovery_template_context(discovery)
+    if edgar_ctx:
         return []
-    segments = [
-        segment.strip()
-        for segment in re.split(r"\s*\|\s*|\n+", explanation)
-        if segment and segment.strip()
-    ]
-    if not segments:
-        return []
+    return discovery_paragraphs(getattr(discovery, "explanation", None))
 
-    blocks: list[dict[str, str]] = []
-    i = 0
-    while i < len(segments):
-        segment = segments[i]
-        lower = segment.lower()
-        if lower.startswith("article:") and i + 1 < len(segments):
-            title = segment.split(":", 1)[1].strip()
-            next_segment = segments[i + 1].strip()
-            if title and (next_segment.startswith("http://") or next_segment.startswith("https://")):
-                blocks.append({
-                    "kind": "link",
-                    "label": title,
-                    "url": next_segment,
-                })
-                i += 2
-                continue
 
-        if segment.startswith("http://") or segment.startswith("https://"):
-            blocks.append({
-                "kind": "link",
-                "label": segment,
-                "url": segment,
-            })
-        else:
-            display_text = segment
-            if lower.startswith("article:"):
-                display_text = segment.split(":", 1)[1].strip()
-            blocks.append({
-                "kind": "text",
-                "text": display_text,
-            })
-        i += 1
-
-    return blocks
+def _discovery_excerpt(discovery) -> str:
+    """Short discovery copy from structured meta or first explanation segment."""
+    return discovery_excerpt(discovery)

@@ -1,0 +1,104 @@
+{% if edgar %}
+<div class="disc-edgar-meta health-record-meta health-record-meta-single">
+    <div class="health-meta-section">
+        <div class="health-meta-label">{{ edgar.lead|default:"8-K earnings filing" }}</div>
+        {% if edgar.accession %}
+        <div class="health-meta-item holdings-history-text">
+            <span class="health-meta-key">Accession:</span>
+            <span class="health-meta-value">{{ edgar.accession }}</span>
+        </div>
+        {% endif %}
+        {% if edgar.weight is not None %}
+        <div class="health-meta-item holdings-history-text">
+            <span class="health-meta-key">Weight:</span>
+            <span class="health-meta-value">{{ edgar.weight }}</span>
+        </div>
+        {% endif %}
+        {% for label, value in edgar.ex99_rows %}
+        <div class="health-meta-item holdings-history-text">
+            <span class="health-meta-key">{{ label }}:</span>
+            <span class="health-meta-value">{{ value }}</span>
+        </div>
+        {% endfor %}
+        {% if edgar.open.price is not None %}
+        <div class="health-meta-item holdings-history-text">
+            <span class="health-meta-key">Open:</span>
+            <span class="health-meta-value">
+                {{ edgar.open.price }}{% if edgar.open.vs_close_pct is not None %} ({{ edgar.open.vs_close_pct|floatformat:1 }}% vs close){% endif %}
+            </span>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="health-meta-section health-meta-divider">
+        <div class="health-meta-label">EX-99</div>
+        {% for label, text in edgar.justification_rows %}
+        <div class="health-meta-item holdings-history-text">
+            <strong>{{ label }}:</strong> {{ text }}
+        </div>
+        {% empty %}
+        <div class="health-meta-item holdings-history-text">
+            <span class="health-meta-value">No EX-99 justifications.</span>
+        </div>
+        {% endfor %}
+    </div>
+
+    {% if edgar.media_has_content %}
+    <div class="health-meta-section health-meta-divider">
+        <div class="health-meta-label">Media</div>
+        {% if edgar.media.summary %}
+        <div class="health-meta-item holdings-history-text">{{ edgar.media.summary }}</div>
+        {% endif %}
+        {% for label, value in edgar.media_rows %}
+        <div class="health-meta-item holdings-history-text">
+            <span class="health-meta-key">{{ label }}:</span>
+            <span class="health-meta-value">{{ value }}</span>
+        </div>
+        {% endfor %}
+        {% for list_title, items in edgar.media_lists %}
+        <div class="health-meta-item holdings-history-text">
+            <span class="health-meta-key">{{ list_title }}:</span>
+            <ul class="health-overlay-list">
+                {% for item in items %}
+                <li>{{ item }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if edgar.bonuses or edgar.penalties %}
+    <div class="health-meta-section">
+        {% if edgar.bonuses %}
+        <div class="health-meta-item holdings-history-text">
+            <span class="health-meta-key">Bonuses:</span>
+            <ul class="health-overlay-list">
+                {% for item in edgar.bonuses|slice:":6" %}
+                <li>{{ item }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+        {% if edgar.penalties %}
+        <div class="health-meta-item holdings-history-text">
+            <span class="health-meta-key">Penalties:</span>
+            <ul class="health-overlay-list">
+                {% for item in edgar.penalties|slice:":6" %}
+                <li>{{ item }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if edgar.sec_url %}
+    <div class="health-meta-section">
+        <div class="health-meta-item holdings-history-text">
+            <a href="{{ edgar.sec_url }}" target="_blank" rel="noopener noreferrer">{{ edgar.sec_url }}</a>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endif %}

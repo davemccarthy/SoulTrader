@@ -33,6 +33,8 @@
 		A10000292F84F61A00039EE2 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000282F84F61A00039EE2 /* AppDelegate.swift */; };
 		A100002A2F84F61A00039EE2 /* AssessmentBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100002B2F84F61A00039EE2 /* AssessmentBlockView.swift */; };
 		A10000362F84F61A00039EE2 /* HoldingHeadlinesCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000372F84F61A00039EE2 /* HoldingHeadlinesCard.swift */; };
+		A10000382F84F61A00039EE2 /* EdgarStructuredSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000392F84F61A00039EE2 /* EdgarStructuredSections.swift */; };
+		A100003A2F84F61A00039EE2 /* EdgarDiscoveryMetaCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100003B2F84F61A00039EE2 /* EdgarDiscoveryMetaCard.swift */; };
 		A10000312F84F61A00039EE2 /* AppTypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000302F84F61A00039EE2 /* AppTypography.swift */; };
 		A10000332F84F61A00039EE2 /* MetricColumn.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000322F84F61A00039EE2 /* MetricColumn.swift */; };
 		B2FA00032FB39EE5007D87E5 /* FirebaseMessaging in Frameworks */ = {isa = PBXBuildFile; productRef = B2FA00022FB39EE5007D87E5 /* FirebaseMessaging */; };
@@ -89,6 +91,8 @@
 		A10000282F84F61A00039EE2 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		A100002B2F84F61A00039EE2 /* AssessmentBlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssessmentBlockView.swift; sourceTree = "<group>"; };
 		A10000372F84F61A00039EE2 /* HoldingHeadlinesCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoldingHeadlinesCard.swift; sourceTree = "<group>"; };
+		A10000392F84F61A00039EE2 /* EdgarStructuredSections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgarStructuredSections.swift; sourceTree = "<group>"; };
+		A100003B2F84F61A00039EE2 /* EdgarDiscoveryMetaCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgarDiscoveryMetaCard.swift; sourceTree = "<group>"; };
 		A10000302F84F61A00039EE2 /* AppTypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTypography.swift; sourceTree = "<group>"; };
 		A10000322F84F61A00039EE2 /* MetricColumn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricColumn.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -161,6 +165,8 @@
 				A10000232F84F61A00039EE2 /* HealthHistoryRecordCard.swift */,
 				A100002B2F84F61A00039EE2 /* AssessmentBlockView.swift */,
 				A10000372F84F61A00039EE2 /* HoldingHeadlinesCard.swift */,
+				A10000392F84F61A00039EE2 /* EdgarStructuredSections.swift */,
+				A100003B2F84F61A00039EE2 /* EdgarDiscoveryMetaCard.swift */,
 				A10000242F84F61A00039EE2 /* DiscoveryDetailView.swift */,
 				A100001C2F84F61A00039EE2 /* Theme.swift */,
 				A10000302F84F61A00039EE2 /* AppTypography.swift */,
@@ -358,6 +364,8 @@
 				A10000262F84F61A00039EE2 /* HealthHistoryRecordCard.swift in Sources */,
 				A100002A2F84F61A00039EE2 /* AssessmentBlockView.swift in Sources */,
 				A10000362F84F61A00039EE2 /* HoldingHeadlinesCard.swift in Sources */,
+				A10000382F84F61A00039EE2 /* EdgarStructuredSections.swift in Sources */,
+				A100003A2F84F61A00039EE2 /* EdgarDiscoveryMetaCard.swift in Sources */,
 				A10000272F84F61A00039EE2 /* DiscoveryDetailView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

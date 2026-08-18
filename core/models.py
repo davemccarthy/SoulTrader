@@ -790,6 +790,7 @@ class Discovery(models.Model):
     created = models.DateTimeField(auto_now_add=True)
     weight = models.DecimalField(max_digits=5, decimal_places=2, default=1.0)
     explanation = models.TextField()
+    meta = models.JSONField(default=dict, null=True, blank=True)
 
 class SellInstruction(models.Model):
     choices = [

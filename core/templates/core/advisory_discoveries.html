@@ -498,7 +498,9 @@
                 </summary>
                 <div class="disc-detail-frame">
                     <div class="disc-detail-copy">
-                        {% if row.explanation_paragraphs %}
+                        {% if row.discovery_meta %}
+                            {% include 'core/includes/discovery_edgar_meta.html' with edgar=row.discovery_meta %}
+                        {% elif row.explanation_paragraphs %}
                             {% for paragraph in row.explanation_paragraphs %}
                         <p>{% if paragraph.kind == 'link' %}<a href="{{ paragraph.url }}" target="_blank" rel="noopener noreferrer">{{ paragraph.label }}</a>{% else %}{{ paragraph.text }}{% endif %}</p>
                             {% endfor %}

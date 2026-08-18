@@ -394,10 +394,14 @@ struct HoldingDetailView: View {
                     .lineLimit(1)
             }
 
-            Text(DiscoveryExplanationFormatting.attributed(from: holding.discoveryExplanation))
-                .detailBody()
-                .tint(Theme.link)
-                .multilineTextAlignment(.leading)
+            if let meta = holding.discoveryMeta, meta.hasStructuredContent {
+                EdgarDiscoveryMetaCard(meta: meta)
+            } else {
+                Text(DiscoveryExplanationFormatting.attributed(from: holding.discoveryExplanation))
+                    .detailBody()
+                    .tint(Theme.link)
+                    .multilineTextAlignment(.leading)
+            }
         }
         .cardSurface()
     }
