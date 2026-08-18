@@ -119,11 +119,13 @@ enum EdgarStructuredSections {
     static func edgarKeyValueRow(label: String, value: String?) -> some View {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if trimmed.isEmpty { EmptyView() } else {
-            VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("\(label):")
-                    .appStyle(.detailFieldLabel)
+                    .appStyle(.detailRowLabel)
                 Text(trimmed)
-                    .detailBody()
+                    .appStyle(.detailRowValue)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }

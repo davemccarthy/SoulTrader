@@ -129,15 +129,7 @@ struct HealthHistoryRecordCard: View {
 
     @ViewBuilder
     private func edgarKeyValueRow(label: String, value: String?) -> some View {
-        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if trimmed.isEmpty { EmptyView() } else {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("\(label):")
-                    .appStyle(.detailFieldLabel)
-                Text(trimmed)
-                    .detailBody()
-            }
-        }
+        EdgarStructuredSections.edgarKeyValueRow(label: label, value: value)
     }
 
     @ViewBuilder
