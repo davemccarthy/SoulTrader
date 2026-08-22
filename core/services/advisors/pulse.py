@@ -16,7 +16,7 @@ Entry:
   (red = no discover); push superusers on status change.
   IPC at discovery by tape: amber 0.2/0.2, green 0.4/0.2, white 0.6/0.4.
 
-Exit/add: TARGET_INTRADAY (tape-colored arm/giveback), -2% rebuy (default max tranches;
+Exit/add: TARGET_INTRADAY (tape-colored arm/giveback), -1% rebuy (max 2 tranches;
   2h trend + 5m/30m recovery), END_DAY flat ~2h before close (value2=120). No END_WEEK, DT, or SL.
 
 Shadow: when enabled, logs IMPULSE/COMBO hits once per cache bucket (same gates as live).
@@ -60,7 +60,8 @@ PULSE_DISCOVERY_COOLDOWN_HOURS = 6
 # Fallback IPC when tape color missing (green workhorse).
 PULSE_TP_MULT = Decimal("1.004")
 PULSE_INTRADAY_GIVEBACK = Decimal("0.002")
-PULSE_REBUY_DROP = Decimal("0.02")
+PULSE_REBUY_DROP = Decimal("0.01")
+PULSE_REBUY_MAX_TRANCHES = Decimal("2")
 PULSE_ENDDAY_TAKE = Decimal("1.00")
 PULSE_ENDDAY_MINUTES_BEFORE_CLOSE = Decimal("120")
 
@@ -79,7 +80,8 @@ PULSE_IMPULSE_SHADOW = True
 PULSE_IMPULSE_LIVE = True
 PULSE_COMBO_LIVE = True
 PULSE_IMPULSE_LOOKBACK_MINUTES = 30
-PULSE_IMPULSE_MIN_RET_30M_PCT = 1.0
+# ret30m signal leg: filters marginal +1.0–1.4% impulse (need 3/4 signals to discover).
+PULSE_IMPULSE_MIN_RET_30M_PCT = 1.5
 PULSE_IMPULSE_MIN_VOL_RATIO = 2.0
 PULSE_IMPULSE_MIN_CLOSE_POSITION = 0.6
 PULSE_IMPULSE_MIN_SIGNALS = 3
@@ -103,7 +105,7 @@ def pulse_sell_instructions_for_tape(tape_status: str) -> list[tuple[str, Decima
     )
     return [
         ("TARGET_INTRADAY", tp_mult, giveback),
-        ("PERCENTAGE_REBUY", PULSE_REBUY_DROP, None),
+        ("PERCENTAGE_REBUY", PULSE_REBUY_DROP, PULSE_REBUY_MAX_TRANCHES),
         ("END_DAY", PULSE_ENDDAY_TAKE, PULSE_ENDDAY_MINUTES_BEFORE_CLOSE),
     ]
 
