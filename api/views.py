@@ -266,7 +266,7 @@ def get_trades(request):
 @permission_classes([IsAuthenticated])
 def get_funds(request):
     """Get enabled funds with dashboard metrics (matches web Funds page intent)."""
-    funds = Profile.objects.filter(enabled=True).order_by('id')
+    funds = Profile.objects.filter(enabled=True, visible=True).order_by('id')
     payload = []
 
     for fund in funds:

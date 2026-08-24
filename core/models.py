@@ -71,6 +71,8 @@ class Profile(models.Model):
     created = models.DateTimeField(null=True, blank=True, auto_now_add=True)
     description = models.TextField(blank=True, default="")
     enabled = models.BooleanField(default=True)
+    # UI fund pickers only — hidden funds still trade / count when enabled.
+    visible = models.BooleanField(default=True)
     advisors = ArrayField(models.CharField(max_length=100), default=list, blank=True)
     risk = models.CharField(max_length=20, choices=[(key, key) for key in RISK_LEVELS], default='MODERATE')
     spread = models.CharField(max_length=10, choices=[(key, key) for key in SPREAD.keys()], null=True, blank=True)

@@ -104,12 +104,12 @@ class ProfileAdminForm(forms.ModelForm):
 class ProfileAdmin(admin.ModelAdmin):
     form = ProfileAdminForm
     readonly_fields = ('id', 'created', 'investment', 'cash')
-    list_display = ('id', 'name', 'enabled', 'sentiment', 'investment', 'cash')
+    list_display = ('id', 'name', 'enabled', 'visible', 'sentiment', 'investment', 'cash')
     search_fields = ('name', 'description')
-    list_filter = ('enabled', 'sentiment')
+    list_filter = ('enabled', 'visible', 'sentiment')
 
     fieldsets = (
-        ('Profile', {'fields': ('id', 'name', 'description', 'enabled')}),
+        ('Profile', {'fields': ('id', 'name', 'description', 'enabled', 'visible')}),
         ('Strategy', {'fields': ('risk', 'spread', 'sentiment', 'advisors')}),
         ('Capital', {'fields': ('investment', 'cash')}),
     )

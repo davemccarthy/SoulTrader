@@ -367,7 +367,7 @@ def funds(request):
     # GET: always clear active fund — user must choose (or re-choose) a fund
     clear_fund_session(request)
 
-    fund_list = Profile.objects.filter(enabled=True).order_by('id')
+    fund_list = Profile.objects.filter(enabled=True, visible=True).order_by('id')
     current = get_current_fund(request)
     fund_rows = [
         {
