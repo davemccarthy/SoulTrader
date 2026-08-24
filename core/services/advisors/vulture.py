@@ -14,7 +14,6 @@ import logging
 import os
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
-from decimal import Decimal
 from typing import Any, Dict, Iterable, Optional, Sequence, Tuple
 
 import pandas as pd
@@ -35,10 +34,6 @@ WATCHLIST_DAYS = 28
 BUY_READY_STREAK_DAYS = 2
 DISCOVERY_COOLDOWN_HOURS = 72
 DISCOVERY_WEIGHT = 1.0
-
-VULTURE_STOP_MULT = Decimal("0.88")
-VULTURE_TARGET_MULT = Decimal("1.15")
-VULTURE_MAX_HOLD_DAYS = 21
 
 # --- Shared filters ---
 DEFAULT_MIN_PRICE = 5.0
@@ -792,12 +787,6 @@ build_candidates = build_scan_candidates
 class Vulture(AdvisorBase):
     """EOD drop intake, diagnostic watchlist, persistence-gated recovery discoveries."""
 
-    sell_instructions = [
-        ("TARGET_PERCENTAGE", VULTURE_TARGET_MULT, None),
-        ("STOP_PERCENTAGE", VULTURE_STOP_MULT, None),
-        ("AFTER_DAYS", VULTURE_MAX_HOLD_DAYS, None),
-    ]
-
     def discover(self, sa) -> None:
         session_date = resolve_eod_session_date()
         target_date = session_date.isoformat()
@@ -1032,7 +1021,6 @@ class Vulture(AdvisorBase):
                 sa,
                 symbol,
                 explanation,
-                sell_instructions=list(self.sell_instructions),
                 weight=DISCOVERY_WEIGHT,
             ):
                 discoveries += 1
