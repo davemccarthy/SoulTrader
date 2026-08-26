@@ -26,8 +26,9 @@ TAPE_RED_VS_PRIOR_CLOSE_PCT = -2.0
 TAPE_AMBER_VS_PRIOR_CLOSE_PCT = -0.75
 
 # Strong tape (ALL benchmarks must clear both floors → white).
-TAPE_WHITE_VS_OPEN_PCT = 0.75
-TAPE_WHITE_VS_PRIOR_CLOSE_PCT = 1.0
+# Loosened from 0.75/1.0 so white can fire on solid up days (never hit old bar).
+TAPE_WHITE_VS_OPEN_PCT = 0.50
+TAPE_WHITE_VS_PRIOR_CLOSE_PCT = 0.75
 
 # Back-compat aliases (yellow → amber).
 TAPE_YELLOW_VS_OPEN_PCT = TAPE_AMBER_VS_OPEN_PCT
