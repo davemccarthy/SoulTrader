@@ -17,7 +17,8 @@ Entry:
   IPC at discovery by tape: amber 0.2/0.2, green 0.4/0.2, white 0.6/0.4.
 
 Exit/add: TARGET_INTRADAY (tape-colored arm/giveback), -1% rebuy (max 2 tranches;
-  2h trend + 5m/30m recovery), END_DAY flat ~2h before close (value2=120). No END_WEEK, DT, or SL.
+  2h trend + 5m/30m recovery), dual END_DAY: 1.00× avg from 120m before close,
+  then 0.99× avg in last 30m (near-flat / mild-red clutter). No END_WEEK, DT, or SL.
 
 Shadow: when enabled, logs IMPULSE/COMBO hits once per cache bucket (same gates as live).
 """
@@ -62,8 +63,11 @@ PULSE_TP_MULT = Decimal("1.004")
 PULSE_INTRADAY_GIVEBACK = Decimal("0.002")
 PULSE_REBUY_DROP = Decimal("0.01")
 PULSE_REBUY_MAX_TRANCHES = Decimal("2")
+# Dual END_DAY: bank ≥breakeven from ~2pm ET; flatten mild red in last 30m.
 PULSE_ENDDAY_TAKE = Decimal("1.00")
 PULSE_ENDDAY_MINUTES_BEFORE_CLOSE = Decimal("120")
+PULSE_ENDDAY_CLUTTER_TAKE = Decimal("0.99")
+PULSE_ENDDAY_CLUTTER_MINUTES_BEFORE_CLOSE = Decimal("30")
 
 # Tape → IPC (arm multiplier, giveback fraction) at discovery.
 PULSE_IPC_BY_TAPE: Final[Dict[str, tuple[Decimal, Decimal]]] = {
@@ -107,6 +111,7 @@ def pulse_sell_instructions_for_tape(tape_status: str) -> list[tuple[str, Decima
         ("TARGET_INTRADAY", tp_mult, giveback),
         ("PERCENTAGE_REBUY", PULSE_REBUY_DROP, PULSE_REBUY_MAX_TRANCHES),
         ("END_DAY", PULSE_ENDDAY_TAKE, PULSE_ENDDAY_MINUTES_BEFORE_CLOSE),
+        ("END_DAY", PULSE_ENDDAY_CLUTTER_TAKE, PULSE_ENDDAY_CLUTTER_MINUTES_BEFORE_CLOSE),
     ]
 
 ETF_EXCLUDE_TICKERS: Final[frozenset[str]] = frozenset(
