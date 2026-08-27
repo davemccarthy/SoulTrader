@@ -2,16 +2,16 @@
 Pulse advisor — daily attention universe + stable intraday entry.
 
 Entry:
-- Build a broad liquid-stock seed after 11:00 ET from Polygon grouped daily aggs.
+- Build a broad liquid-stock seed after 10:30 ET from Polygon grouped daily aggs.
 - Rank/filter that seed by today's intraday 15m volume so far.
 - Exclude common ETF/fund tickers.
 - Keep names with recovery + stability at build time:
   executable quote below 30m ago and above 1m ago (1m bars; short-term bounce after pullback),
   executable quote >= 60m ago * 0.995, executable quote >= open * 0.99 (15m anchors).
 - Require recent 60m intraday range >= 1.25%.
-- Discover qualifying names between 11:00 and 13:30 ET (MEGA spread is expected for initial test funds).
+- Discover qualifying names between 10:30 and 13:00 ET (earlier window = more IPC runway).
 - Live IMPULSE/COMBO paths (optional): 1m momentum + COMBO (impulse + normal_stable).
-- Market tape (SPY/QQQ): refresh only during Pulse buying hours (11:00–13:30 ET);
+- Market tape (SPY/QQQ): refresh only during Pulse buying hours (10:30–13:00 ET);
   persist red/amber/green/white on Advisor.blob (default red); trade on amber/green/white
   (red = no discover); push superusers on status change.
   IPC at discovery by tape: amber 0.2/0.2, green 0.4/0.2, white 0.6/0.4.
@@ -42,8 +42,8 @@ logger = logging.getLogger(__name__)
 
 ET = pytz.timezone("US/Eastern")
 PULSE_CANDIDATE_VERSION = 11
-PULSE_BUILD_TIME_ET = time(11, 0)
-PULSE_DISCOVERY_END_TIME_ET = time(13, 30)
+PULSE_BUILD_TIME_ET = time(10, 30)
+PULSE_DISCOVERY_END_TIME_ET = time(13, 0)
 PULSE_SEED_UNIVERSE = 500
 PULSE_TOP_DAILY_VOLUME = 100
 PULSE_MIN_PRICE = 5.0
