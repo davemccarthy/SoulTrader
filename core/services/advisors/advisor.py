@@ -220,12 +220,16 @@ class AdvisorBase:
 
     # Default sell instructions (Run 3): PEAKED harvest + gated −4% rebuy +
     # DT→LLM loss exit. Time-based AFTER_DAYS removed — equity purge handles cash.
-    # PEAKED: value1=giveback 15%, value2=min peak 8%; min exit = value2/2 (→ +4%).
+    # PEAKED: value1=giveback 15%, value2=min peak 4%; min exit = value2/2 (→ +2%).
+    # PERCENTAGE_REBUY value2 = max tranches (matches analysis.REBUY_MAX_TRANCHES_DEFAULT).
     sell_instructions = [
-        ("PEAKED", 15.0, 8.0),
-        ("PERCENTAGE_REBUY", 0.04, 10),
+        ("PEAKED", 15.0, 4.0),
+        ("PERCENTAGE_REBUY", 0.04, 5),
         ("DESCENDING_TREND", -0.20, None),
     ]
+
+    # Skip discovery / buy when Stage 1 weight is below this (e.g. TGT at -0.04).
+    MIN_DISCOVERY_WEIGHT = 0.5
 
     def stock_consensus(self, symbol: str) -> Dict[str, Any]:
         """

@@ -2941,6 +2941,7 @@ class Edgar(AdvisorBase):
             "goldilocks": 0,
             "rocket": 0,
             "unclear": 0,
+            "low_weight": 0,
             "skipped": 0,
             "no_media_pass": 0,
             "errors": 0,
@@ -3089,6 +3090,20 @@ class Edgar(AdvisorBase):
 
                 # goldilocks → discover at live quote
                 weight = float(meta.get("weight") or 1.0)
+                min_weight = AdvisorBase.MIN_DISCOVERY_WEIGHT
+                if weight < min_weight:
+                    counts["low_weight"] = counts.get("low_weight", 0) + 1
+                    w.status = "Excluded"
+                    note = f"Low weight ({weight:.2f} < {min_weight}) — skip discover"
+                    w.explanation = f"{note} | {w.explanation}"[:500]
+                    w.save(update_fields=["status", "meta", "explanation"])
+                    logger.info(
+                        "Open-check %s → low_weight (%.2f) — Excluded",
+                        symbol,
+                        weight,
+                    )
+                    continue
+
                 stock = w.stock
                 try:
                     stock.refresh()

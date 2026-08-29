@@ -17,6 +17,7 @@ from core.services.intraday_stabilize import (
     price_above_minutes_ago,
 )
 from core.services.llm.gemini import ask_gemini as llm_ask_gemini
+from core.services.advisors.advisor import AdvisorBase
 from core.services.health.risk_matrix import (
     discovery_axes,
     discovery_passes_risk_gate,
@@ -1257,6 +1258,17 @@ def analyze_discovery(sa, funds, advisors):
 
             stability, opportunity = discovery_axes(discovery)
             if stability is None and opportunity is None:
+                continue
+
+            if discovery.weight is not None and float(discovery.weight) < AdvisorBase.MIN_DISCOVERY_WEIGHT:
+                logger.info(
+                    "%s: %s discovery %s weight gate fail (%.2f < %.2f)",
+                    fund.name,
+                    discovery.advisor.name,
+                    discovery.stock.symbol,
+                    float(discovery.weight),
+                    AdvisorBase.MIN_DISCOVERY_WEIGHT,
+                )
                 continue
 
             if discovery_passes_risk_gate(discovery, fund.risk):
