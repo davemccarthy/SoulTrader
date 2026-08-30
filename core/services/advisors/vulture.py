@@ -5,33 +5,34 @@ Daily flow (after US cash session):
   1. Weekly chronic-damage scan (Path 1, ~every 7 days) → diagnostic watch intake
   2. EOD large-drop scan + LLM triage (Path 2) → watchlist intake (monitor only)
   3. Re-score pending watchlist via health.diagnostic
-  4. BUY READY persistence → rare discovery
+  4. BUY READY persistence → rare discovery (WARM or RECOVERY; 1-day streak)
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from typing import Any, Dict, Iterable, Optional, Sequence, Tuple
 
 import pandas as pd
 import yfinance as yf
-from django.conf import settings
 
 from core.services.advisors.advisor import AdvisorBase, register
 from core.services.financial import polygon as financial_polygon
+from core.services.financial.polygon import fetch_grouped_daily_map
 from core.services.health.diagnostic import analyze_symbol, diagnostic_to_dict
 from core.services.market import last_completed_trading_day, prior_trading_day, resolve_eod_session_date
 
 logger = logging.getLogger(__name__)
 
 # --- Advisor runtime ---
-PROCESS_CUTOFF_HOUR_UTC = 21
+# Run after ~7 AM ET so Polygon grouped daily for the prior session is published
+# (21:00 UTC = 5 PM ET still hits NOT_AUTHORIZED "before end of day" on lower tiers).
+PROCESS_CUTOFF_HOUR_UTC = 11
 SCAN_REBUILD_DAYS = 7
 WATCHLIST_DAYS = 28
-BUY_READY_STREAK_DAYS = 2
+BUY_READY_STREAK_DAYS = 1
 DISCOVERY_COOLDOWN_HOURS = 72
 DISCOVERY_WEIGHT = 1.0
 
@@ -97,6 +98,8 @@ class VultureScanCandidate:
     near_extreme_collapse: bool
     damage_score: float
     trigger: str
+    max_drop_date: Optional[str] = None
+    max_drop_pct: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -248,6 +251,29 @@ def _down_from_high(price: float, high: Optional[float]) -> Optional[float]:
     return (price - high) / high * 100.0
 
 
+def _largest_session_drop(hist: pd.DataFrame, lookback: int = 90) -> tuple[Optional[str], Optional[float]]:
+    """Worst single-session close-to-close return in the last `lookback` sessions."""
+    if hist.empty or "close" not in hist.columns:
+        return None, None
+    closes = hist["close"].dropna().astype(float)
+    if len(closes) < 2:
+        return None, None
+    window = closes.tail(lookback + 1)
+    if len(window) < 2:
+        return None, None
+    rets = window.pct_change().dropna() * 100.0
+    if rets.empty:
+        return None, None
+    idx = rets.idxmin()
+    if hasattr(idx, "strftime"):
+        drop_date = idx.strftime("%Y-%m-%d")
+    elif hasattr(idx, "date"):
+        drop_date = idx.date().isoformat()
+    else:
+        drop_date = str(idx)[:10]
+    return drop_date, float(rets.min())
+
+
 def _trigger_label(
     damage_3m: Optional[float],
     damage_52w: Optional[float],
@@ -297,6 +323,7 @@ def build_scan_candidates(
             continue
 
         damage_score = max(abs(damage_3m or 0.0), abs(damage_52w or 0.0))
+        max_drop_date, max_drop_pct = _largest_session_drop(hist)
         candidates.append(
             VultureScanCandidate(
                 rank=0,
@@ -312,6 +339,8 @@ def build_scan_candidates(
                 near_extreme_collapse=extreme,
                 damage_score=damage_score,
                 trigger=trigger,
+                max_drop_date=max_drop_date,
+                max_drop_pct=max_drop_pct,
             )
         )
 
@@ -373,6 +402,75 @@ def build_weekly_scan_candidates(
     return candidates, stats
 
 
+def _weekly_collapse_reason(candidate: VultureScanCandidate) -> str:
+    dmg = candidate.damage_52w_pct if candidate.damage_52w_pct is not None else candidate.damage_3m_pct
+    dmg_str = f"{dmg:+.1f}" if dmg is not None else "n/a"
+    if candidate.max_drop_date and candidate.max_drop_pct is not None:
+        return (
+            f"{candidate.max_drop_pct:+.1f}% session drop; "
+            f"chronic {dmg_str}% from {candidate.trigger} highs"
+        )
+    return f"Chronic damage {dmg_str}% from {candidate.trigger} highs"
+
+
+def _eod_collapse_reason(candidate: EodDropCandidate) -> str:
+    if candidate.llm_reason:
+        return candidate.llm_reason[:200]
+    parts: list[str] = []
+    if candidate.llm_damage_type:
+        parts.append(candidate.llm_damage_type)
+    parts.append(f"EOD drop {candidate.day_change_pct:+.1f}%")
+    return " — ".join(parts)
+
+
+def _collapse_context_from_meta(meta: dict[str, Any]) -> tuple[str, str]:
+    meta = meta or {}
+    raw_date = (
+        meta.get("collapse_date")
+        or meta.get("session_date")
+        or meta.get("max_drop_date")
+        or ""
+    )
+    date = str(raw_date).strip()[:10]
+
+    reason = (meta.get("collapse_reason") or meta.get("llm_reason") or "").strip()
+    if reason:
+        return date, reason
+
+    intake = meta.get("intake") or meta.get("source") or ""
+    if intake == "weekly_scan":
+        trigger = meta.get("trigger") or "?"
+        dmg = meta.get("damage_52w_pct")
+        if dmg is None:
+            dmg = meta.get("damage_3m_pct")
+        max_pct = meta.get("max_drop_pct")
+        max_date = str(meta.get("max_drop_date") or "").strip()[:10]
+        if max_pct is not None and dmg is not None and max_date:
+            reason = f"{max_pct:+.1f}% on {max_date}; chronic {dmg:+.1f}% from {trigger} highs"
+        elif dmg is not None:
+            reason = f"Chronic damage {dmg:+.1f}% from {trigger} highs"
+    elif intake == "eod_drop" or meta.get("source") == "eod_drop":
+        dmg_type = meta.get("llm_damage_type") or "EOD drop"
+        day_pct = meta.get("day_change_pct")
+        if day_pct is not None:
+            reason = f"{dmg_type} ({day_pct:+.1f}%)"
+        else:
+            reason = dmg_type
+    return date, reason
+
+
+def _format_collapse_clause(meta: dict[str, Any]) -> str:
+    date, reason = _collapse_context_from_meta(meta)
+    if not date and not reason:
+        return ""
+    parts: list[str] = []
+    if date:
+        parts.append(f"collapse {date}")
+    if reason:
+        parts.append(reason[:120])
+    return " | ".join(parts)
+
+
 def scan_candidate_to_meta(candidate: VultureScanCandidate) -> dict[str, Any]:
     return {
         "intake": "weekly_scan",
@@ -382,6 +480,10 @@ def scan_candidate_to_meta(candidate: VultureScanCandidate) -> dict[str, Any]:
         "damage_52w_pct": candidate.damage_52w_pct,
         "damage_score": candidate.damage_score,
         "dollar_volume": candidate.dollar_volume,
+        "max_drop_date": candidate.max_drop_date,
+        "max_drop_pct": candidate.max_drop_pct,
+        "collapse_date": candidate.max_drop_date,
+        "collapse_reason": _weekly_collapse_reason(candidate),
     }
 
 
@@ -390,33 +492,6 @@ def qualifies_for_weekly_watch(stage: str) -> bool:
 
 
 # --- Path 2: EOD drop intake ---
-
-
-def fetch_grouped_daily_map(session_date: date) -> dict[str, dict[str, Any]]:
-    from polygon import RESTClient
-
-    polygon_api_key = getattr(settings, "POLYGON_API_KEY", None) or os.getenv("POLYGON_API_KEY")
-    if not polygon_api_key:
-        raise RuntimeError("POLYGON_API_KEY not set in Django settings or environment")
-
-    client = RESTClient(polygon_api_key)
-    reference = session_date.isoformat()
-    aggs = client.get_grouped_daily_aggs(locale="us", date=reference, adjusted=True)
-
-    out: dict[str, dict[str, Any]] = {}
-    for agg in aggs:
-        symbol = str(agg.ticker or "").strip().upper()
-        if not symbol:
-            continue
-        close = _safe_float(agg.close)
-        if close is None or close <= 0:
-            continue
-        out[symbol] = {
-            "open": _safe_float(agg.open) or close,
-            "close": close,
-            "volume": _safe_int(agg.volume),
-        }
-    return out
 
 
 def _name_suggests_leveraged(info: dict[str, Any]) -> bool:
@@ -466,10 +541,16 @@ def build_eod_drop_candidates(
     top: int = EOD_TOP,
 ) -> tuple[list[EodDropCandidate], int]:
     prior_date = prior_trading_day(session_date)
-    session_map = fetch_grouped_daily_map(session_date)
-    prior_map = fetch_grouped_daily_map(prior_date)
+    session_map, resolved_session = fetch_grouped_daily_map(session_date)
+    prior_map, _prior_resolved = fetch_grouped_daily_map(prior_date)
+    if resolved_session != session_date:
+        logger.warning(
+            "Vulture EOD scan requested %s; Polygon resolved session %s",
+            session_date.isoformat(),
+            resolved_session.isoformat(),
+        )
     if not session_map:
-        raise RuntimeError(f"No Polygon grouped daily rows for {session_date}")
+        raise RuntimeError(f"No Polygon grouped daily rows for {resolved_session}")
     if not prior_map:
         raise RuntimeError(f"No Polygon grouped daily rows for prior session {prior_date}")
 
@@ -504,7 +585,7 @@ def build_eod_drop_candidates(
             EodDropCandidate(
                 rank=0,
                 symbol=symbol,
-                session_date=session_date.isoformat(),
+                session_date=resolved_session.isoformat(),
                 close=close,
                 prior_close=prior_close,
                 open=open_px,
@@ -763,6 +844,7 @@ def _eod_triage_verdict_counts(rows: Sequence[EodDropCandidate]) -> dict[str, in
 
 def eod_candidate_to_meta(candidate: EodDropCandidate) -> dict[str, Any]:
     return {
+        "intake": "eod_drop",
         "source": "eod_drop",
         "session_date": candidate.session_date,
         "day_change_pct": round(candidate.day_change_pct, 2),
@@ -772,6 +854,8 @@ def eod_candidate_to_meta(candidate: EodDropCandidate) -> dict[str, Any]:
         "llm_damage_type": candidate.llm_damage_type,
         "llm_reason": candidate.llm_reason,
         "llm_confidence": candidate.llm_confidence,
+        "collapse_date": candidate.session_date,
+        "collapse_reason": _eod_collapse_reason(candidate),
     }
 
 
@@ -814,9 +898,11 @@ class Vulture(AdvisorBase):
             except Exception as exc:
                 logger.exception("Vulture sa=%s: weekly scan intake failed: %s", sa.id, exc)
 
+        eod_ok = True
         try:
             eod_added = self._eod_intake(target_date, session_date)
         except Exception as exc:
+            eod_ok = False
             logger.exception("Vulture sa=%s: EOD intake failed: %s", sa.id, exc)
 
         rescored, discoveries, streaks = self._rescore_watchlist(sa, target_date, streaks)
@@ -829,7 +915,14 @@ class Vulture(AdvisorBase):
         state["last_rescored"] = rescored
         state["last_discoveries"] = discoveries
         self._save_advisor_blob_state(state)
-        self.mark_market_date_processed(target_date)
+        if eod_ok:
+            self.mark_market_date_processed(target_date)
+        else:
+            logger.warning(
+                "Vulture sa=%s: skip mark processed for %s (EOD intake failed; will retry)",
+                sa.id,
+                target_date,
+            )
 
         logger.info(
             "Vulture sa=%s session=%s weekly_added=%s eod_added=%s rescored=%s discoveries=%s",
@@ -889,16 +982,18 @@ class Vulture(AdvisorBase):
 
             dmg = row.damage_52w_pct if row.damage_52w_pct is not None else row.damage_3m_pct
             dmg_str = f"{dmg:+.1f}" if dmg is not None else "n/a"
-            explanation = (
-                f"Vulture weekly scan {row.trigger} | "
-                f"dmg {dmg_str}% | stage {diag.status} | "
-                f"quality {diag.candidate_quality_pct}%"
-            )[:500]
             meta = scan_candidate_to_meta(row)
             meta["intake_date"] = target_date
             meta["diagnostic"] = diagnostic_to_dict(diag)
             meta["recovery_stage"] = diag.status
             meta["decision"] = diag.decision
+            collapse = _format_collapse_clause(meta)
+            explanation = (
+                f"Vulture weekly scan {row.trigger} | "
+                f"{collapse + ' | ' if collapse else ''}"
+                f"dmg {dmg_str}% | stage {diag.status} | "
+                f"quality {diag.candidate_quality_pct}%"
+            )[:500]
             if self.watch(row.symbol, explanation, days=WATCHLIST_DAYS, meta=meta):
                 added += 1
 
@@ -954,12 +1049,14 @@ class Vulture(AdvisorBase):
             if self.watched(row.symbol):
                 logger.debug("Vulture skip watch %s: already on watchlist", row.symbol)
                 continue
-            explanation = (
-                f"Vulture EOD drop {row.day_change_pct:+.1f}% | "
-                f"{row.llm_damage_type or 'n/a'} | {row.llm_reason or 'monitor'}"
-            )[:500]
             meta = eod_candidate_to_meta(row)
             meta["intake_date"] = target_date
+            collapse = _format_collapse_clause(meta)
+            explanation = (
+                f"Vulture EOD drop {row.day_change_pct:+.1f}% | "
+                f"{collapse + ' | ' if collapse else ''}"
+                f"{row.llm_damage_type or 'n/a'} | {row.llm_reason or 'monitor'}"
+            )[:500]
             if self.watch(row.symbol, explanation, days=WATCHLIST_DAYS, meta=meta):
                 added += 1
         return added
@@ -1016,7 +1113,7 @@ class Vulture(AdvisorBase):
             if not self.allow_discovery(symbol, period=DISCOVERY_COOLDOWN_HOURS):
                 continue
 
-            explanation = self._discovery_explanation(symbol, diag, streaks[symbol])
+            explanation = self._discovery_explanation(symbol, diag, streaks[symbol], meta)
             if self.discovered(
                 sa,
                 symbol,
@@ -1028,14 +1125,30 @@ class Vulture(AdvisorBase):
 
         return rescored, discoveries, streaks
 
-    def _discovery_explanation(self, symbol: str, diag, streak: int) -> str:
-        return (
-            f"Vulture recovery BUY READY x{streak}d | {symbol} "
+    def _discovery_explanation(
+        self,
+        symbol: str,
+        diag,
+        streak: int,
+        meta: Optional[dict[str, Any]] = None,
+    ) -> str:
+        collapse = _format_collapse_clause(meta or {})
+        snap = diag.snapshot or {}
+        dmg_52w = snap.get("damage_52w_pct")
+        dmg_clause = f"still {dmg_52w:+.1f}% vs 52w" if dmg_52w is not None else ""
+        stage_label = "WARM early" if diag.status == "WARM" else "RECOVERY"
+        base = (
+            f"Vulture {stage_label} BUY READY x{streak}d | {symbol} "
             f"score {diag.score}/{diag.max_score} "
             f"quality {diag.candidate_quality_pct}% "
-            f"recovery {diag.recovery_confidence_pct}% | "
-            f"{diag.decision_reason[:120]}"
-        )[:500]
+            f"recovery {diag.recovery_confidence_pct}%"
+        )
+        if dmg_clause:
+            base = f"{base} | {dmg_clause}"
+        base = f"{base} | {diag.decision_reason[:100]}"
+        if collapse:
+            return f"{base} | {collapse}"[:500]
+        return base[:500]
 
     def analyze(self, sa, stock) -> None:
         return

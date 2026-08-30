@@ -28,7 +28,10 @@ WATCH_THRESHOLD = 9
 WARM_THRESHOLD = 13
 RECOVERY_THRESHOLD = 16
 BUY_READY_MIN_CANDIDATE_QUALITY_PCT = 75.0
-BUY_READY_MIN_RECOVERY_CONFIDENCE_PCT = 70.0
+BUY_READY_MIN_RECOVERY_CONFIDENCE_RECOVERY_PCT = 55.0
+BUY_READY_MIN_RECOVERY_CONFIDENCE_WARM_PCT = 45.0
+RECOVERY_5D_GAIN_MIN_PCT = 2.0
+RECOVERY_HIGHER_LOWS_DAYS = 2
 SEVERE_DEBT_TO_EQUITY_MAX = 300.0
 SEVERE_CURRENT_RATIO_MIN = 0.75
 CAP_MARKET_BELIEF_DISPERSION_MAX = 75.0
@@ -467,7 +470,7 @@ def analyze_symbol(symbol: str, *, headline_limit: int = 3) -> DiagnosticResult:
     vol_20d = _realized_volatility(hist)
     high_vol = vol_20d is not None and vol_20d > 90.0
     no_new_low = _no_new_low(hist)
-    raw_higher_lows = _has_higher_lows(hist)
+    raw_higher_lows = _has_higher_lows(hist, days=RECOVERY_HIGHER_LOWS_DAYS)
     higher_lows = no_new_low and raw_higher_lows
     volume_cooling = _volume_cooling(hist)
 
@@ -482,9 +485,9 @@ def analyze_symbol(symbol: str, *, headline_limit: int = 3) -> DiagnosticResult:
     _factor(
         factors,
         "Recovery",
-        "5-day price gain above 3%",
+        f"5-day price gain above {RECOVERY_5D_GAIN_MIN_PCT:.0f}%",
         2,
-        gain_5d is not None and gain_5d >= 3.0,
+        gain_5d is not None and gain_5d >= RECOVERY_5D_GAIN_MIN_PCT,
         _fmt_pct(gain_5d),
     )
     _factor(
@@ -611,17 +614,33 @@ def analyze_symbol(symbol: str, *, headline_limit: int = 3) -> DiagnosticResult:
         status = "PASS"
 
     buy_ready = (
-        status == "RECOVERY"
+        status in ("WARM", "RECOVERY")
         and candidate_quality_pct is not None
         and candidate_quality_pct >= BUY_READY_MIN_CANDIDATE_QUALITY_PCT
         and recovery_confidence_pct is not None
-        and recovery_confidence_pct >= BUY_READY_MIN_RECOVERY_CONFIDENCE_PCT
         and not risk_flags
+        and (
+            (
+                status == "RECOVERY"
+                and recovery_confidence_pct >= BUY_READY_MIN_RECOVERY_CONFIDENCE_RECOVERY_PCT
+            )
+            or (
+                status == "WARM"
+                and recovery_confidence_pct >= BUY_READY_MIN_RECOVERY_CONFIDENCE_WARM_PCT
+            )
+        )
     )
 
     if buy_ready:
         decision = "BUY READY"
-        decision_reason = "Candidate quality and recovery confirmation are both strong enough for a discovery candidate."
+        if status == "WARM":
+            decision_reason = (
+                "Early entry: WARM stage with sufficient quality and initial recovery tape."
+            )
+        else:
+            decision_reason = (
+                "Candidate quality and recovery confirmation are both strong enough for a discovery candidate."
+            )
     elif status == "RECOVERY":
         decision = "WAIT"
         if risk_flags:
@@ -630,9 +649,23 @@ def analyze_symbol(symbol: str, *, headline_limit: int = 3) -> DiagnosticResult:
             decision_reason = (
                 f"Recovery structure is present, but BUY READY requires candidate quality >= "
                 f"{BUY_READY_MIN_CANDIDATE_QUALITY_PCT:.0f}% and recovery confidence >= "
-                f"{BUY_READY_MIN_RECOVERY_CONFIDENCE_PCT:.0f}%."
+                f"{BUY_READY_MIN_RECOVERY_CONFIDENCE_RECOVERY_PCT:.0f}%."
             )
-    elif status in ("WATCH", "WARM"):
+    elif status == "WARM":
+        decision = "WAIT"
+        if risk_flags:
+            decision_reason = (
+                f"{_score_band(candidate_quality_pct)} long-term candidate, "
+                f"but blocked by: {'; '.join(risk_flags)}."
+            )
+        else:
+            decision_reason = (
+                f"{_score_band(candidate_quality_pct)} long-term candidate; "
+                f"WARM BUY READY requires recovery confidence >= "
+                f"{BUY_READY_MIN_RECOVERY_CONFIDENCE_WARM_PCT:.0f}% "
+                f"(currently {_score_band(recovery_confidence_pct).lower()})."
+            )
+    elif status == "WATCH":
         decision = "WAIT"
         if risk_flags:
             decision_reason = (

@@ -1,7 +1,7 @@
 import logging
 import os
-from datetime import datetime, timedelta
-from typing import Optional
+from datetime import date, datetime, timedelta
+from typing import Any, Optional
 
 import pandas as pd
 from django.conf import settings
@@ -44,6 +44,114 @@ def get_last_trading_day(test_date: Optional[str] = None) -> Optional[str]:
     return previous_day.strftime("%Y-%m-%d")
 
 
+def _polygon_client():
+    polygon_api_key = getattr(settings, "POLYGON_API_KEY", None) or os.getenv("POLYGON_API_KEY")
+    if not polygon_api_key:
+        raise RuntimeError("POLYGON_API_KEY not set in Django settings or environment")
+    from polygon import RESTClient
+
+    return RESTClient(polygon_api_key)
+
+
+def polygon_eod_data_unavailable(exc: BaseException) -> bool:
+    """True when Polygon rejects grouped daily because EOD bars are not published yet."""
+    text = str(exc).lower()
+    return (
+        "not_authorized" in text
+        or "before end of day" in text
+        or ("end of day" in text and "upgrade" in text)
+    )
+
+
+def _prior_weekday(day: date) -> date:
+    current = day - timedelta(days=1)
+    while current.weekday() >= 5:
+        current -= timedelta(days=1)
+    return current
+
+
+def _fetch_grouped_daily_aggs(reference_date: str, *, adjusted: bool) -> list[Any]:
+    client = _polygon_client()
+    logger.info("Fetching Polygon grouped daily for %s (adjusted=%s)...", reference_date, adjusted)
+    return list(
+        client.get_grouped_daily_aggs(
+            locale="us",
+            date=reference_date,
+            adjusted=adjusted,
+        )
+    )
+
+
+def fetch_grouped_daily_map(
+    session_date: date | str,
+    *,
+    adjusted: bool = True,
+    max_lookback: int = 5,
+) -> tuple[dict[str, dict[str, Any]], date]:
+    """
+    Grouped daily OHLCV map for one US session.
+
+    Lower-tier Polygon plans reject same-calendar-day requests until EOD bars are
+    published; on NOT_AUTHORIZED / "before end of day" we step back to prior sessions.
+    """
+    from core.services.market import prior_trading_day
+
+    current = date.fromisoformat(session_date) if isinstance(session_date, str) else session_date
+    last_error: Optional[BaseException] = None
+
+    for _ in range(max_lookback):
+        reference = current.isoformat()
+        try:
+            aggs = _fetch_grouped_daily_aggs(reference, adjusted=adjusted)
+        except Exception as exc:
+            last_error = exc
+            if polygon_eod_data_unavailable(exc):
+                logger.warning(
+                    "Polygon grouped daily unavailable for %s (%s); trying prior session",
+                    reference,
+                    exc,
+                )
+                current = prior_trading_day(current)
+                continue
+            raise
+
+        out: dict[str, dict[str, Any]] = {}
+        for agg in aggs:
+            symbol = str(getattr(agg, "ticker", "") or "").strip().upper()
+            if not symbol:
+                continue
+            close = float(agg.close)
+            if close <= 0:
+                continue
+            out[symbol] = {
+                "open": float(getattr(agg, "open", None) or close),
+                "close": close,
+                "volume": int(getattr(agg, "volume", None) or 0),
+            }
+
+        if out:
+            requested = session_date.isoformat() if isinstance(session_date, date) else str(session_date)
+            if reference != requested:
+                logger.info(
+                    "Polygon grouped daily resolved %s -> %s (%s symbols)",
+                    session_date,
+                    reference,
+                    len(out),
+                )
+            return out, current
+
+        logger.warning("No Polygon grouped daily rows for %s (may be holiday)", reference)
+        current = prior_trading_day(current)
+
+    if last_error is not None:
+        raise RuntimeError(
+            f"No Polygon grouped daily data within {max_lookback} sessions of {session_date}"
+        ) from last_error
+    raise RuntimeError(
+        f"No Polygon grouped daily data within {max_lookback} sessions of {session_date}"
+    )
+
+
 def _fetch_polygon_stocks_for_date(reference_date: str) -> pd.DataFrame:
     """
     Fetch stocks using Polygon's get_grouped_daily_aggs (1 API call for all stocks on a date).
@@ -51,44 +159,24 @@ def _fetch_polygon_stocks_for_date(reference_date: str) -> pd.DataFrame:
     Returns a DataFrame with columns: ticker, price, today_volume.
     Returns empty DataFrame on errors.
     """
-    polygon_api_key = getattr(settings, "POLYGON_API_KEY", None)
-    if not polygon_api_key:
-        polygon_api_key = os.getenv("POLYGON_API_KEY")
-
-    if not polygon_api_key:
-        logger.warning("POLYGON_API_KEY not set in Django settings or environment")
-        return pd.DataFrame()
-
     try:
-        from polygon import RESTClient
-
-        client = RESTClient(polygon_api_key)
-        logger.info("Fetching all stocks for %s using Polygon (1 API call)...", reference_date)
-        aggs = client.get_grouped_daily_aggs(
-            locale="us",
-            date=reference_date,
-            adjusted=False,
-        )
-
-        rows = []
-        for agg in aggs:
-            rows.append(
-                {
-                    "ticker": agg.ticker,
-                    "price": float(agg.close),
-                    "today_volume": int(agg.volume),
-                }
-            )
-
-        df = pd.DataFrame(rows, columns=_POLYGON_STOCK_COLUMNS)
-        if not df.empty:
-            logger.info("Fetched %s stocks from Polygon for %s", len(df), reference_date)
-        else:
-            logger.warning("No stocks returned from Polygon for %s (may be holiday)", reference_date)
-        return df
+        session_map, _resolved = fetch_grouped_daily_map(reference_date, adjusted=False, max_lookback=1)
     except Exception as exc:
         logger.error("Error fetching stocks from Polygon for %s: %s", reference_date, exc, exc_info=True)
         return pd.DataFrame()
+
+    rows = [
+        {
+            "ticker": symbol,
+            "price": values["close"],
+            "today_volume": values["volume"],
+        }
+        for symbol, values in session_map.items()
+    ]
+    df = pd.DataFrame(rows, columns=_POLYGON_STOCK_COLUMNS)
+    if not df.empty:
+        logger.info("Fetched %s stocks from Polygon for %s", len(df), reference_date)
+    return df
 
 
 def get_filtered_stocks(
@@ -109,15 +197,13 @@ def get_filtered_stocks(
             logger.warning("No valid trading date available (Mon/weekend/holiday)")
             return pd.DataFrame()
 
-        attempts = 1 if test_date else 5
+        attempts = 5
         for _ in range(attempts):
             _polygon_stocks_cache = _fetch_polygon_stocks_for_date(reference_date)
             if _polygon_stocks_cache is not None and not _polygon_stocks_cache.empty:
                 break
 
-            previous_day = datetime.strptime(reference_date, "%Y-%m-%d").date() - timedelta(days=1)
-            while previous_day.weekday() >= 5:
-                previous_day -= timedelta(days=1)
+            previous_day = _prior_weekday(datetime.strptime(reference_date, "%Y-%m-%d").date())
             reference_date = previous_day.strftime("%Y-%m-%d")
         else:
             logger.warning("No stocks fetched from Polygon after %s attempts", attempts)
