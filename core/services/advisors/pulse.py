@@ -16,7 +16,7 @@ Entry:
   (red = no discover); push superusers on status change.
   IPC at discovery by tape: amber 0.2/0.2, green 0.4/0.2, white 0.6/0.4.
 
-Exit/add: TARGET_INTRADAY (tape-colored arm/giveback), -1% rebuy (max 2 tranches;
+Exit/add: TARGET_INTRADAY (tape-colored arm/giveback), -2% rebuy (max 3 tranches;
   2h trend + 5m/30m recovery), dual END_DAY: 1.00× avg from 120m before close,
   then 0.99× avg in last 30m (near-flat / mild-red clutter). No END_WEEK, DT, or SL.
 
@@ -61,8 +61,8 @@ PULSE_DISCOVERY_COOLDOWN_HOURS = 6
 # Fallback IPC when tape color missing (green workhorse).
 PULSE_TP_MULT = Decimal("1.004")
 PULSE_INTRADAY_GIVEBACK = Decimal("0.002")
-PULSE_REBUY_DROP = Decimal("0.01")
-PULSE_REBUY_MAX_TRANCHES = Decimal("2")
+PULSE_REBUY_DROP = Decimal("0.02")
+PULSE_REBUY_MAX_TRANCHES = Decimal("3")
 # Dual END_DAY: bank ≥breakeven from ~2pm ET; flatten mild red in last 30m.
 PULSE_ENDDAY_TAKE = Decimal("1.00")
 PULSE_ENDDAY_MINUTES_BEFORE_CLOSE = Decimal("120")
