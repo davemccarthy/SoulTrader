@@ -11,6 +11,8 @@ Entry:
 - Require recent 60m intraday range >= 1.25%.
 - Discover qualifying names between 10:30 and 13:00 ET (earlier window = more IPC runway).
 - Live IMPULSE/COMBO paths (optional): 1m momentum + COMBO (impulse + normal_stable).
+- Shadow TROUGH (optional): high-vol attention name near session day low
+  (day_position <= threshold); log only — no live discover yet.
 - Market tape (SPY/QQQ): refresh only during Pulse buying hours (10:30–13:00 ET);
   persist red/amber/green/white on Advisor.blob (default red); trade on amber/green/white
   (red = no discover); push superusers on status change.
@@ -20,7 +22,7 @@ Exit/add: TARGET_INTRADAY (tape-colored arm/giveback), -2% rebuy (max 3 tranches
   2h trend + 5m/30m recovery), dual END_DAY: 1.00× avg from 120m before close,
   then 0.99× avg in last 30m (near-flat / mild-red clutter). No END_WEEK, DT, or SL.
 
-Shadow: when enabled, logs IMPULSE/COMBO hits once per cache bucket (same gates as live).
+Shadow: when enabled, logs IMPULSE/COMBO/TROUGH hits once per cache bucket.
 """
 from __future__ import annotations
 
@@ -41,7 +43,7 @@ from core.services.push import push_super
 logger = logging.getLogger(__name__)
 
 ET = pytz.timezone("US/Eastern")
-PULSE_CANDIDATE_VERSION = 11
+PULSE_CANDIDATE_VERSION = 12
 PULSE_BUILD_TIME_ET = time(10, 30)
 PULSE_DISCOVERY_END_TIME_ET = time(13, 0)
 PULSE_SEED_UNIVERSE = 500
@@ -89,6 +91,12 @@ PULSE_IMPULSE_MIN_RET_30M_PCT = 1.5
 PULSE_IMPULSE_MIN_VOL_RATIO = 2.0
 PULSE_IMPULSE_MIN_CLOSE_POSITION = 0.6
 PULSE_IMPULSE_MIN_SIGNALS = 3
+
+# TROUGH: high-vol attention near session LOD (shadow only; prune stinkers later).
+PULSE_TROUGH_SHADOW = True
+PULSE_TROUGH_LIVE = False
+PULSE_TROUGH_MAX_DAY_POSITION = 0.10  # bottom 10% of session range so far
+PULSE_TROUGH_NEAR_LOD_BP = 25.0  # or within 25bp of LOD
 
 # Market tape on Advisor.blob (missing → red). Push titles on status change.
 PULSE_TAPE_DEFAULT = "red"
@@ -249,6 +257,48 @@ def _range_pct_last_minutes(hist: pd.DataFrame, minutes: int) -> Optional[float]
     if hi is None or lo is None or lo <= 0:
         return None
     return (hi / lo - 1.0) * 100.0
+
+
+def _session_range_metrics(
+    hist: pd.DataFrame,
+    price_now: Optional[float],
+    *,
+    max_day_position: float = PULSE_TROUGH_MAX_DAY_POSITION,
+    near_lod_bp: float = PULSE_TROUGH_NEAR_LOD_BP,
+) -> Dict[str, Any]:
+    """Session HOD/LOD vs price: day_position + trough gate (bottom of range)."""
+    empty: Dict[str, Any] = {
+        "hod_so_far": None,
+        "lod_so_far": None,
+        "pull_from_hod_pct": None,
+        "pull_from_lod_bp": None,
+        "day_position": None,
+        "trough_pass": False,
+    }
+    if hist.empty or price_now is None or price_now <= 0:
+        return empty
+    if "High" not in hist.columns or "Low" not in hist.columns:
+        return empty
+    hod = _safe_float(hist["High"].max())
+    lod = _safe_float(hist["Low"].min())
+    if hod is None or lod is None or hod <= 0 or lod <= 0:
+        return empty
+    pull_from_hod_pct = (hod - price_now) / hod * 100.0
+    pull_from_lod_bp = (price_now - lod) / lod * 10000.0
+    if hod > lod:
+        day_position = (price_now - lod) / (hod - lod)
+    else:
+        day_position = 0.5
+    near_lod = pull_from_lod_bp <= near_lod_bp
+    trough_pass = day_position <= max_day_position or near_lod
+    return {
+        "hod_so_far": round(hod, 4),
+        "lod_so_far": round(lod, 4),
+        "pull_from_hod_pct": round(pull_from_hod_pct, 4),
+        "pull_from_lod_bp": round(pull_from_lod_bp, 2),
+        "day_position": round(day_position, 4),
+        "trough_pass": trough_pass,
+    }
 
 
 def _volume_so_far(hist: pd.DataFrame) -> int:
@@ -483,6 +533,43 @@ def _enrich_attention_impulse(attention_rows: List[Dict[str, Any]], *, log_shado
             PULSE_IMPULSE_MIN_RET_30M_PCT,
             PULSE_IMPULSE_MIN_SIGNALS,
         )
+
+
+def _log_attention_trough_shadow(attention_rows: List[Dict[str, Any]]) -> None:
+    """Log TROUGH hits (high-vol attention near session LOD). Shadow only."""
+    trough_hits = 0
+    for row in attention_rows:
+        if not row.get("trough_pass"):
+            continue
+        range_pct = row.get("range_pct")
+        if range_pct is None or float(range_pct) < PULSE_MIN_RANGE_PCT:
+            continue
+        trough_hits += 1
+        logger.info(
+            "pulse_shadow path=TROUGH symbol=%s rank=%s price=%s day_pos=%s "
+            "pull_hod=%s%% pull_lod_bp=%s hod=%s lod=%s range_pct=%s pct_open=%s "
+            "normal_stable=%s impulse_pass=%s",
+            row.get("symbol"),
+            row.get("rank"),
+            row.get("price"),
+            row.get("day_position"),
+            row.get("pull_from_hod_pct"),
+            row.get("pull_from_lod_bp"),
+            row.get("hod_so_far"),
+            row.get("lod_so_far"),
+            range_pct,
+            row.get("pct_open"),
+            row.get("normal_stable"),
+            row.get("impulse_pass"),
+        )
+    logger.info(
+        "pulse_shadow trough summary attention=%d trough=%d "
+        "max_day_pos=%s near_lod_bp=%s",
+        len(attention_rows),
+        trough_hits,
+        PULSE_TROUGH_MAX_DAY_POSITION,
+        PULSE_TROUGH_NEAR_LOD_BP,
+    )
 
 
 def _attention_row_to_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -805,6 +892,7 @@ class Pulse(AdvisorBase):
             stable_60 = price_now is not None and px_60 is not None and price_now >= px_60 * 0.995
             stable_open = price_now is not None and open_px is not None and price_now >= open_px * 0.99
             normal_stable = recovering and stable_60 and stable_open
+            session = _session_range_metrics(hist, price_now)
 
             attention_row = {
                 "symbol": symbol,
@@ -823,6 +911,7 @@ class Pulse(AdvisorBase):
                 "stable_60": stable_60,
                 "stable_open": stable_open,
                 "normal_stable": normal_stable,
+                **session,
             }
             attention.append(attention_row)
 
@@ -853,6 +942,8 @@ class Pulse(AdvisorBase):
                 attention,
                 log_shadow=PULSE_IMPULSE_SHADOW,
             )
+        if PULSE_TROUGH_SHADOW:
+            _log_attention_trough_shadow(attention)
 
         candidates.sort(key=lambda r: float(r["range_pct"]), reverse=True)
         return attention, candidates
