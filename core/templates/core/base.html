@@ -888,30 +888,67 @@
             font-weight: 700;
         }
 
-        .holding-heading-title-row {
+        .holding-heading-title-bar {
             display: flex;
             justify-content: space-between;
-            align-items: baseline;
+            align-items: flex-start;
             gap: 1rem;
             margin: 0 0 1rem;
             flex-wrap: wrap;
         }
 
-        .holding-heading-title-row h2 {
+        .holding-heading-title-block {
             margin: 0;
-            flex: 1;
             min-width: 0;
+            flex: 1;
+        }
+
+        .holding-heading-title-block h2 {
+            margin: 0;
         }
 
         .holding-heading-industry {
+            display: block;
+            margin-top: 0.2rem;
             font-size: 0.8125rem;
             font-weight: 500;
             color: #475569;
-            text-align: right;
-            max-width: 55%;
+            text-align: left;
             line-height: 1.35;
             white-space: normal;
             overflow-wrap: anywhere;
+        }
+
+        .holding-chart-periods {
+            display: flex;
+            gap: 0.25rem;
+            flex-shrink: 0;
+            align-items: center;
+        }
+
+        .holding-chart-period {
+            appearance: none;
+            border: 1px solid #cbd5e1;
+            background: #fff;
+            color: #475569;
+            font-size: 0.75rem;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            padding: 0.25rem 0.55rem;
+            border-radius: 4px;
+            cursor: pointer;
+            line-height: 1.2;
+        }
+
+        .holding-chart-period:hover {
+            border-color: #00843D;
+            color: #00843D;
+        }
+
+        .holding-chart-period.is-active {
+            background: #00843D;
+            border-color: #00843D;
+            color: #fff;
         }
 
         .holding-heading-chart-wrapper {
@@ -1635,7 +1672,7 @@
         }
 
         // Render heading section
-        function renderHeadingSection(heading, priceHistory) {
+        function renderHeadingSection(heading, priceHistoryByPeriod, defaultPeriod, availablePeriods) {
             if (!heading) return '';
             const symbol = escapeHtml(heading.symbol || '');
             const company = escapeHtml(heading.company || '');
@@ -1659,10 +1696,25 @@
             const trendValueClass =
                 trendClass === 'positive' ? 'positive' : (trendClass === 'negative' ? 'negative' : '');
 
-            const hasPriceHistory =
-                Array.isArray(priceHistory) && priceHistory.length > 0;
+            const byPeriod = priceHistoryByPeriod && typeof priceHistoryByPeriod === 'object'
+                ? priceHistoryByPeriod
+                : {};
+            const periods = Array.isArray(availablePeriods) && availablePeriods.length
+                ? availablePeriods
+                : ['1d', '5d', '1m', '6m'].filter(
+                      (key) => Array.isArray(byPeriod[key]) && byPeriod[key].length > 0
+                  );
+            const hasAnyHistory = periods.length > 0;
+            const activePeriod = periods.includes(defaultPeriod)
+                ? defaultPeriod
+                : (periods[0] || '1m');
+            const periodButtons = periods.map((key) => {
+                const label = key.toUpperCase();
+                const activeClass = key === activePeriod ? ' is-active' : '';
+                return `<button type="button" class="holding-chart-period${activeClass}" data-period="${key}">${label}</button>`;
+            }).join('');
 
-            const chartHtml = hasPriceHistory
+            const chartHtml = hasAnyHistory
                 ? `
                     <div class="holding-heading-chart-wrapper">
                         <canvas id="holding-heading-chart"></canvas>
@@ -1670,14 +1722,21 @@
                   `
                 : '';
 
+            const periodHtml = hasAnyHistory
+                ? `<div class="holding-chart-periods" role="group" aria-label="Chart period">${periodButtons}</div>`
+                : '';
+
             return `
                 <div class="holding-heading">
                     <div class="holding-heading-info">
                         ${image ? `<img src="${escapeHtml(image)}" alt="${symbol}" class="holding-heading-logo" onerror="this.style.display='none';">` : ''}
 
-                        <div class="holding-heading-title-row">
-                            <h2>${symbol} · ${company}</h2>
-                            <span class="holding-heading-industry">${escapeHtml(industry)}</span>
+                        <div class="holding-heading-title-bar">
+                            <div class="holding-heading-title-block">
+                                <h2>${symbol} · ${company}</h2>
+                                <span class="holding-heading-industry">${escapeHtml(industry)}</span>
+                            </div>
+                            ${periodHtml}
                         </div>
                         ${chartHtml}
                         <div class="holding-heading-metrics">
@@ -1723,7 +1782,61 @@
             `;
         }
 
-        function initPriceChart(priceHistory, trades) {
+        /**
+         * Periods whose window can still include the first BUY.
+         * Once a buy is older than a period, that shorter zoom is omitted.
+         */
+        function resolveHoldingChartPeriods(trades, priceHistoryByPeriod) {
+            const allPeriods = [
+                { key: '1d', maxDays: 1 },
+                { key: '5d', maxDays: 5 },
+                { key: '1m', maxDays: 31 },
+                { key: '6m', maxDays: Infinity },
+            ];
+            const byPeriod = priceHistoryByPeriod || {};
+            const hasData = (key) => Array.isArray(byPeriod[key]) && byPeriod[key].length > 0;
+
+            const buys = (trades || []).filter(
+                (t) => (t.action || '').toUpperCase() === 'BUY' && t.created
+            );
+            let daysHeld = null;
+            if (buys.length) {
+                let earliest = Infinity;
+                for (const b of buys) {
+                    const t = new Date(b.created).getTime();
+                    if (!Number.isNaN(t) && t < earliest) earliest = t;
+                }
+                if (Number.isFinite(earliest)) {
+                    daysHeld = (Date.now() - earliest) / (1000 * 60 * 60 * 24);
+                }
+            }
+
+            const available = allPeriods
+                .filter((p) => {
+                    if (!hasData(p.key)) return false;
+                    // No buy date → keep any series that has data.
+                    if (daysHeld == null) return true;
+                    // Buy older than this window → buy marker would fall off-chart.
+                    return daysHeld < p.maxDays;
+                })
+                .map((p) => p.key);
+
+            // Always keep the longest series with data as a fallback.
+            if (!available.length) {
+                for (let i = allPeriods.length - 1; i >= 0; i -= 1) {
+                    if (hasData(allPeriods[i].key)) {
+                        available.push(allPeriods[i].key);
+                        break;
+                    }
+                }
+            }
+
+            // Default = shortest remaining window (first in list).
+            const defaultPeriod = available[0] || '6m';
+            return { available, defaultPeriod };
+        }
+
+        function initPriceChart(priceHistory, trades, period) {
             if (!Array.isArray(priceHistory) || priceHistory.length === 0) {
                 return;
             }
@@ -1736,11 +1849,32 @@
                 return;
             }
 
+            const existing = typeof Chart.getChart === 'function' ? Chart.getChart(canvas) : null;
+            if (existing) {
+                existing.destroy();
+            }
+
             const ctx = canvas.getContext('2d');
+            const showTime = period === '1d' || period === '5d';
 
             const labels = priceHistory.map((p) => {
                 try {
                     const d = new Date(p.date);
+                    if (Number.isNaN(d.getTime())) return String(p.date ?? '');
+                    if (showTime && period === '1d') {
+                        return d.toLocaleTimeString('en-US', {
+                            hour: 'numeric',
+                            minute: '2-digit',
+                        });
+                    }
+                    if (showTime) {
+                        return d.toLocaleString('en-US', {
+                            month: 'short',
+                            day: 'numeric',
+                            hour: 'numeric',
+                            minute: '2-digit',
+                        });
+                    }
                     return d.toLocaleDateString('en-US', {
                         month: 'short',
                         day: 'numeric',
@@ -1759,42 +1893,54 @@
                     t.price != null
             );
 
-            const buyPoints = buys.map((b) => {
-                let idx = -1;
-                try {
-                    const tradeDate = new Date(b.created);
-                    const tradeDateStr = tradeDate.toISOString().slice(0, 10);
-                    idx = priceHistory.findIndex(
-                        (p) => String(p.date).slice(0, 10) === tradeDateStr
-                    );
-                } catch (e) {
-                    idx = -1;
-                }
+            const findBuyBarIndex = (tradeCreated) => {
+                const tradeDate = new Date(tradeCreated);
+                if (Number.isNaN(tradeDate.getTime())) return -1;
 
-                // If exact match not found, try to find the closest date (buy date or later)
-                if (idx === -1) {
-                    try {
-                        const tradeDate = new Date(b.created);
-                        // Find the first price history entry on or after the trade date
-                        idx = priceHistory.findIndex((p) => {
-                            const pDate = new Date(p.date);
-                            return pDate >= tradeDate;
-                        });
-                        // If still not found (trade date is after all price history), skip this buy point
-                        if (idx === -1) {
-                            return null;
+                if (showTime) {
+                    // Prefer the first bar at/after the buy, else the nearest bar.
+                    let atOrAfter = -1;
+                    let bestIdx = -1;
+                    let bestDelta = Infinity;
+                    for (let i = 0; i < priceHistory.length; i += 1) {
+                        const pDate = new Date(priceHistory[i].date);
+                        if (Number.isNaN(pDate.getTime())) continue;
+                        const delta = pDate.getTime() - tradeDate.getTime();
+                        if (delta >= 0 && atOrAfter === -1) {
+                            atOrAfter = i;
                         }
-                    } catch (e) {
-                        // Skip this buy point if we can't process the date
-                        return null;
+                        const abs = Math.abs(delta);
+                        if (abs < bestDelta) {
+                            bestDelta = abs;
+                            bestIdx = i;
+                        }
                     }
+                    return atOrAfter >= 0 ? atOrAfter : bestIdx;
                 }
 
-                return {
-                    x: labels[idx],
-                    y: b.price,
-                };
-            }).filter(Boolean);  // Filter out null entries (buy dates outside price history range)
+                const tradeDateStr = tradeDate.toISOString().slice(0, 10);
+                let idx = priceHistory.findIndex(
+                    (p) => String(p.date).slice(0, 10) === tradeDateStr
+                );
+                if (idx === -1) {
+                    idx = priceHistory.findIndex((p) => {
+                        const pDate = new Date(p.date);
+                        return pDate >= tradeDate;
+                    });
+                }
+                return idx;
+            };
+
+            // Null-padded series keeps buys on the correct bar index (scatter +
+            // category labels was snapping markers to the first axis tick).
+            const buySeries = priceHistory.map(() => null);
+            buys.forEach((b) => {
+                const idx = findBuyBarIndex(b.created);
+                if (idx < 0 || idx >= buySeries.length) return;
+                const px = Number(b.price);
+                if (!Number.isFinite(px)) return;
+                buySeries[idx] = px;
+            });
 
             try {
                 new Chart(ctx, {
@@ -1810,15 +1956,19 @@
                                 borderWidth: 1.5,
                                 tension: 0.2,
                                 pointRadius: 0,
+                                spanGaps: false,
                             },
                             {
-                                type: 'scatter',
                                 label: 'Buys',
-                                data: buyPoints,
-                                pointRadius: 4,
-                                pointBackgroundColor: 'rgba(34, 197, 94, 1)',
+                                data: buySeries,
+                                showLine: false,
+                                borderColor: 'rgba(34, 197, 94, 1)',
+                                backgroundColor: 'rgba(34, 197, 94, 1)',
+                                pointRadius: (ctx) => (ctx.raw == null ? 0 : 4),
+                                pointHoverRadius: (ctx) => (ctx.raw == null ? 0 : 5),
                                 pointBorderColor: '#ffffff',
                                 pointBorderWidth: 1.5,
+                                spanGaps: false,
                             },
                         ],
                     },
@@ -1833,12 +1983,13 @@
                             tooltip: {
                                 mode: 'index',
                                 intersect: false,
+                                filter: (item) => item.raw != null,
                             },
                         },
                         scales: {
                             x: {
                                 ticks: {
-                                    maxTicksLimit: 6,
+                                    maxTicksLimit: showTime ? 8 : 6,
                                 },
                             },
                             y: {
@@ -1857,6 +2008,29 @@
             } catch (e) {
                 console.error('Error creating holdings price chart:', e);
             }
+        }
+
+        function bindHoldingChartPeriodControls(priceHistoryByPeriod, trades, initialPeriod) {
+            const group = document.querySelector('.holding-chart-periods');
+            if (!group) return;
+
+            const setActive = (period) => {
+                group.querySelectorAll('.holding-chart-period').forEach((btn) => {
+                    btn.classList.toggle('is-active', btn.dataset.period === period);
+                });
+            };
+
+            group.addEventListener('click', (event) => {
+                const btn = event.target.closest('.holding-chart-period');
+                if (!btn || btn.disabled) return;
+                const period = btn.dataset.period;
+                const series = (priceHistoryByPeriod && priceHistoryByPeriod[period]) || [];
+                if (!series.length) return;
+                setActive(period);
+                initPriceChart(series, trades || [], period);
+            });
+
+            setActive(initialPeriod);
         }
 
         // Render discovery section
@@ -2400,12 +2574,23 @@
 
         // Main rendering logic
         try {
-            const priceHistory = Array.isArray(data.price_history)
-                ? data.price_history
-                : [];
+            const priceHistoryByPeriod =
+                data.price_history_by_period && typeof data.price_history_by_period === 'object'
+                    ? data.price_history_by_period
+                    : {
+                          '1m': Array.isArray(data.price_history) ? data.price_history : [],
+                      };
+            const chartPeriods = resolveHoldingChartPeriods(
+                data.trades || [],
+                priceHistoryByPeriod
+            );
+            const defaultPeriod = chartPeriods.defaultPeriod;
+            const activeSeries = priceHistoryByPeriod[defaultPeriod] || [];
             const headingSection = renderHeadingSection(
                 data.heading,
-                priceHistory
+                priceHistoryByPeriod,
+                defaultPeriod,
+                chartPeriods.available
             );
             const headlinesSection = renderHeadlinesSection(data.headlines || []);
             const discoverySection = renderDiscoverySection(data.discovery);
@@ -2429,7 +2614,12 @@
             // Initialize price chart after DOM has been updated
             setTimeout(() => {
                 try {
-                    initPriceChart(priceHistory, data.trades || []);
+                    initPriceChart(activeSeries, data.trades || [], defaultPeriod);
+                    bindHoldingChartPeriodControls(
+                        priceHistoryByPeriod,
+                        data.trades || [],
+                        defaultPeriod
+                    );
                 } catch (chartError) {
                     console.error(
                         'Error initializing holdings history price chart:',

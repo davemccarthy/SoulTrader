@@ -792,6 +792,62 @@ def holding_detail(request, stock_id):
     return JsonResponse(payload)
 
 
+_HOLDING_CHART_PERIODS = ("1d", "5d", "1m", "6m")
+
+
+def _yf_history_points(symbol: str, period: str, interval: str) -> list:
+    """Yahoo history rows as ``{date, close}``; ``date`` is ISO date or datetime."""
+    points = []
+    hist = yf.Ticker(symbol).history(period=period, interval=interval)
+    if hist.empty or "Close" not in hist.columns:
+        return points
+    intraday = interval.endswith("m") or interval.endswith("h")
+    for ts, row in hist.iterrows():
+        close = row.get("Close")
+        if close is None:
+            continue
+        try:
+            close_value = float(close)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(close_value):
+            continue
+        if intraday:
+            # Keep timezone offset when present so the chart can show session time.
+            date_str = ts.isoformat()
+        else:
+            date_str = ts.date().isoformat()
+        points.append({"date": date_str, "close": close_value})
+    return points
+
+
+def _holding_price_history_by_period(symbol: str) -> dict:
+    """
+    Chart series for 1D / 5D / 1M / 6M.
+
+    Two Yahoo pulls: 5d×15m (covers 1d+5d) and 6mo×1d (covers 1m+6m).
+    """
+    by_period = {key: [] for key in _HOLDING_CHART_PERIODS}
+    try:
+        five_day = _yf_history_points(symbol, period="5d", interval="15m")
+        six_month = _yf_history_points(symbol, period="6mo", interval="1d")
+    except Exception as e:
+        logger.warning("Could not fetch price history for %s: %s", symbol, e)
+        return by_period
+
+    by_period["5d"] = five_day
+    if five_day:
+        last_day = max(p["date"][:10] for p in five_day)
+        by_period["1d"] = [p for p in five_day if p["date"][:10] == last_day]
+
+    by_period["6m"] = six_month
+    if six_month:
+        cutoff = (timezone.now().date() - datetime.timedelta(days=31)).isoformat()
+        by_period["1m"] = [p for p in six_month if p["date"][:10] >= cutoff]
+
+    return by_period
+
+
 @login_required
 def holding_history(request, stock_id):
     """Holdings history view - unified view with heading, discovery, health history, and trade history"""
@@ -863,29 +919,15 @@ def holding_history(request, stock_id):
     current_price = stock.price or Decimal('0')
     worth = current_price * shares
 
-    # Recent price history for chart (e.g., last 60 days, daily closes)
-    price_history = []
-    try:
-        hist = yf.Ticker(stock.symbol).history(period="2mo", interval="1d")
-        if not hist.empty and "Close" in hist.columns:
-            for ts, row in hist.iterrows():
-                close = row.get("Close")
-                if close is None:
-                    continue
-                try:
-                    close_value = float(close)
-                except (TypeError, ValueError):
-                    continue
-                if not math.isfinite(close_value):
-                    continue
-                price_history.append(
-                    {
-                        "date": ts.date().isoformat(),
-                        "close": close_value,
-                    }
-                )
-    except Exception as e:
-        logger.warning(f"Could not fetch price history for {stock.symbol}: {e}")
+    price_history_by_period = _holding_price_history_by_period(stock.symbol)
+    # Prefer 1m for legacy single-series consumers; fall back to any non-empty period.
+    price_history = (
+        price_history_by_period.get("1m")
+        or price_history_by_period.get("6m")
+        or price_history_by_period.get("5d")
+        or price_history_by_period.get("1d")
+        or []
+    )
 
     # Calculate change (from average price, like holdings view)
     stock.refresh()
@@ -1164,6 +1206,7 @@ def holding_history(request, stock_id):
         'trades': trades_data,
         'sell_instructions': sell_instructions,
         'price_history': price_history,
+        'price_history_by_period': price_history_by_period,
     }
 
     return JsonResponse(payload)
