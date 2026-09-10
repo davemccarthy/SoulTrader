@@ -12,7 +12,8 @@ Entry:
 - Discover qualifying names between 10:30 and 13:00 ET (earlier window = more IPC runway).
 - Live IMPULSE/COMBO paths (optional): 1m momentum + COMBO (impulse + normal_stable).
 - Shadow TROUGH (optional): high-vol attention name near session day low
-  (day_position <= threshold); log only — no live discover yet.
+  (day_position / near-LOD) with light bounce (up 1m or LOD held);
+  log only — no live discover yet.
 - Market tape (SPY/QQQ): refresh only during Pulse buying hours (10:30–13:00 ET);
   persist red/amber/green/white on Advisor.blob (default red); trade on amber/green/white
   (red = no discover); push superusers on status change.
@@ -43,7 +44,7 @@ from core.services.push import push_super
 logger = logging.getLogger(__name__)
 
 ET = pytz.timezone("US/Eastern")
-PULSE_CANDIDATE_VERSION = 12
+PULSE_CANDIDATE_VERSION = 13
 PULSE_BUILD_TIME_ET = time(10, 30)
 PULSE_DISCOVERY_END_TIME_ET = time(13, 0)
 PULSE_SEED_UNIVERSE = 500
@@ -97,6 +98,8 @@ PULSE_TROUGH_SHADOW = True
 PULSE_TROUGH_LIVE = False
 PULSE_TROUGH_MAX_DAY_POSITION = 0.10  # bottom 10% of session range so far
 PULSE_TROUGH_NEAR_LOD_BP = 25.0  # or within 25bp of LOD
+# Light bounce (shadow): up 1m on 1m bars, and/or no new LOD for N minutes.
+PULSE_TROUGH_BOUNCE_HOLD_MINUTES = 10.0
 
 # Market tape on Advisor.blob (missing → red). Push titles on status change.
 PULSE_TAPE_DEFAULT = "red"
@@ -298,6 +301,56 @@ def _session_range_metrics(
         "pull_from_lod_bp": round(pull_from_lod_bp, 2),
         "day_position": round(day_position, 4),
         "trough_pass": trough_pass,
+    }
+
+
+def _lod_age_minutes(hist: pd.DataFrame) -> Optional[float]:
+    """Minutes since the most recent bar that printed session LOD."""
+    if hist.empty or "Low" not in hist.columns:
+        return None
+    lows = hist["Low"].astype(float)
+    lod = _safe_float(lows.min())
+    if lod is None or lod <= 0:
+        return None
+    tol = lod * 5e-5
+    at_lod = lows <= lod + tol
+    if not bool(at_lod.any()):
+        return None
+    last_lod_ts = pd.to_datetime(hist.index[at_lod][-1], utc=True)
+    now_ts = pd.Timestamp.now(tz="UTC")
+    return max(0.0, (now_ts - last_lod_ts).total_seconds() / 60.0)
+
+
+def _trough_bounce_metrics(
+    hist_1m: pd.DataFrame,
+    price_now: Optional[float],
+    *,
+    hold_minutes: float = PULSE_TROUGH_BOUNCE_HOLD_MINUTES,
+) -> Dict[str, Any]:
+    """
+    Light bounce on 1m bars for TROUGH shadow.
+
+    bounce_up_1m: price now > close 1m ago
+    bounce_hold: session LOD age >= hold_minutes (no new LOD)
+    bounce_light: up_1m OR hold
+    """
+    empty: Dict[str, Any] = {
+        "bounce_up_1m": False,
+        "bounce_hold": False,
+        "bounce_light": False,
+        "bounce_lod_age_min": None,
+    }
+    if price_now is None or price_now <= 0:
+        return empty
+    px_1 = _bar_close_at_or_before(hist_1m, PULSE_RECOVERY_SHORT_MINUTES)
+    up_1m = px_1 is not None and price_now > px_1
+    lod_age = _lod_age_minutes(hist_1m)
+    hold = lod_age is not None and lod_age >= hold_minutes
+    return {
+        "bounce_up_1m": bool(up_1m),
+        "bounce_hold": bool(hold),
+        "bounce_light": bool(up_1m or hold),
+        "bounce_lod_age_min": None if lod_age is None else round(lod_age, 1),
     }
 
 
@@ -536,8 +589,9 @@ def _enrich_attention_impulse(attention_rows: List[Dict[str, Any]], *, log_shado
 
 
 def _log_attention_trough_shadow(attention_rows: List[Dict[str, Any]]) -> None:
-    """Log TROUGH hits (high-vol attention near session LOD). Shadow only."""
+    """Log TROUGH hits (near LOD + light bounce flags). Shadow only."""
     trough_hits = 0
+    trough_bounce_hits = 0
     for row in attention_rows:
         if not row.get("trough_pass"):
             continue
@@ -545,9 +599,13 @@ def _log_attention_trough_shadow(attention_rows: List[Dict[str, Any]]) -> None:
         if range_pct is None or float(range_pct) < PULSE_MIN_RANGE_PCT:
             continue
         trough_hits += 1
+        bounce_light = bool(row.get("bounce_light"))
+        if bounce_light:
+            trough_bounce_hits += 1
         logger.info(
             "pulse_shadow path=TROUGH symbol=%s rank=%s price=%s day_pos=%s "
             "pull_hod=%s%% pull_lod_bp=%s hod=%s lod=%s range_pct=%s pct_open=%s "
+            "bounce_up_1m=%s bounce_hold=%s bounce_light=%s lod_age=%s "
             "normal_stable=%s impulse_pass=%s",
             row.get("symbol"),
             row.get("rank"),
@@ -559,16 +617,22 @@ def _log_attention_trough_shadow(attention_rows: List[Dict[str, Any]]) -> None:
             row.get("lod_so_far"),
             range_pct,
             row.get("pct_open"),
+            row.get("bounce_up_1m"),
+            row.get("bounce_hold"),
+            bounce_light,
+            row.get("bounce_lod_age_min"),
             row.get("normal_stable"),
             row.get("impulse_pass"),
         )
     logger.info(
-        "pulse_shadow trough summary attention=%d trough=%d "
-        "max_day_pos=%s near_lod_bp=%s",
+        "pulse_shadow trough summary attention=%d trough=%d trough_bounce=%d "
+        "max_day_pos=%s near_lod_bp=%s bounce_hold>=%sm",
         len(attention_rows),
         trough_hits,
+        trough_bounce_hits,
         PULSE_TROUGH_MAX_DAY_POSITION,
         PULSE_TROUGH_NEAR_LOD_BP,
+        PULSE_TROUGH_BOUNCE_HOLD_MINUTES,
     )
 
 
@@ -893,6 +957,7 @@ class Pulse(AdvisorBase):
             stable_open = price_now is not None and open_px is not None and price_now >= open_px * 0.99
             normal_stable = recovering and stable_60 and stable_open
             session = _session_range_metrics(hist, price_now)
+            bounce = _trough_bounce_metrics(hist_1m, price_now)
 
             attention_row = {
                 "symbol": symbol,
@@ -912,6 +977,7 @@ class Pulse(AdvisorBase):
                 "stable_open": stable_open,
                 "normal_stable": normal_stable,
                 **session,
+                **bounce,
             }
             attention.append(attention_row)
 

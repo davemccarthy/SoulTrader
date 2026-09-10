@@ -27,6 +27,13 @@ Usage:
     --bandwagon-lookback-minutes 5
   python test_pulse_scan.py --recovery-gate-backtest --from 2026-06-22 --to 2026-07-17 \\
     --exit-type IPC --activate-pct 0.002 --giveback-pct 0.002
+  python test_pulse_scan.py --hod-backtest --from 2026-08-17 --to 2026-08-25 \\
+    --exit-type IPC --activate-pct 0.004 --giveback-pct 0.002 --entry-time 11:30 \\
+    --max-day-position 0.90 --min-pull-from-hod-bp 25
+  python test_pulse_scan.py --trough-backtest --from 2026-08-17 --to 2026-09-09 \\
+    --exit-type IPC --activate-pct 0.004 --giveback-pct 0.002 --entry-time 11:00 \\
+    --rebuy-pct 0.02 --max-tranches 1
+  # trough_bounce / trough_and_bounce need 1m bars (light uptick); trough_hold = no new LOD
 """
 from __future__ import annotations
 
@@ -58,6 +65,47 @@ IMPULSE_MIN_RET_30M_PCT = 1.5
 IMPULSE_MIN_VOL_RATIO = 2.0
 IMPULSE_MIN_CLOSE_POSITION = 0.6
 IMPULSE_MIN_SIGNALS_DEFAULT = 3
+# Session-range at discover: odds of buying the daily high so far.
+HOD_AT_BP_DEFAULT = 10.0
+HOD_NEAR_BP_DEFAULT = 25.0
+HOD_BACKTEST_BUCKETS = ("recovery", "impulse_only", "both", "impulse_any")
+HOD_DAY_POSITION_BANDS: tuple[tuple[float, float, str], ...] = (
+    (0.0, 0.6, "bot60"),
+    (0.6, 0.8, "60-80"),
+    (0.8, 0.95, "80-95"),
+    (0.95, 1.01, "top5%"),
+)
+HOD_GATE_GRID_MAX_DAY_POSITION: tuple[Optional[float], ...] = (None, 0.85, 0.90, 0.95)
+HOD_GATE_GRID_MIN_PULL_BP: tuple[float, ...] = (0.0, 10.0, 25.0, 50.0)
+# Session close for END_DAY minutes-left (Pulse: 1.00@120m, 0.99@30m).
+SESSION_CLOSE_ET = time(16, 0)
+PULSE_ENDDAY_TAKE_DEFAULT = 1.00
+PULSE_ENDDAY_MINUTES_DEFAULT = 120.0
+PULSE_ENDDAY_CLUTTER_TAKE_DEFAULT = 0.99
+PULSE_ENDDAY_CLUTTER_MINUTES_DEFAULT = 30.0
+# TROUGH: high-vol attention near session LOD (mirrors pulse.py shadow).
+TROUGH_MAX_DAY_POSITION_DEFAULT = 0.10
+TROUGH_NEAR_LOD_BP_DEFAULT = 25.0
+# Light bounce: 1m green tick and/or LOD held (no new low) for N minutes.
+TROUGH_BOUNCE_HOLD_MINUTES_DEFAULT = 10
+TROUGH_COMPARE_BUCKETS = (
+    "trough",
+    "trough_and",
+    "trough_flat",
+    "trough_bounce",
+    "trough_and_bounce",
+    "trough_hold",
+    "recovery",
+    "impulse_only",
+)
+TROUGH_GAP_BANDS: tuple[tuple[str, Optional[float], Optional[float]], ...] = (
+    ("gap<=-8%", None, -8.0),
+    ("gap -8..-5%", -8.0, -5.0),
+    ("gap -5..-2%", -5.0, -2.0),
+    ("gap -2..0%", -2.0, 0.0),
+    ("flat/up >=0%", 0.0, None),
+)
+
 # Bandwagon partner (vol spike + sharp price up); independent of 1m impulse scoring.
 BANDWAGON_LOOKBACK_MINUTES_DEFAULT = 15
 BANDWAGON_MIN_VOL_RATIO_DEFAULT = 1.5
@@ -446,6 +494,161 @@ def _range_pct_at_or_before(hist: pd.DataFrame, as_of_ts: pd.Timestamp) -> Optio
     return (hi / lo - 1.0) * 100.0
 
 
+def _session_hod_metrics(
+    hist: pd.DataFrame,
+    as_of_ts: pd.Timestamp,
+    price: Optional[float],
+    *,
+    at_hod_bp: float = HOD_AT_BP_DEFAULT,
+    near_hod_bp: float = HOD_NEAR_BP_DEFAULT,
+    trough_max_day_position: float = TROUGH_MAX_DAY_POSITION_DEFAULT,
+    trough_near_lod_bp: float = TROUGH_NEAR_LOD_BP_DEFAULT,
+) -> dict[str, str]:
+    """Session HOD/LOD through as_of vs entry price (pullback + day_position + trough)."""
+    empty = {
+        "hod_so_far": "",
+        "lod_so_far": "",
+        "pull_from_hod_pct": "",
+        "pull_from_lod_bp": "",
+        "day_position": "",
+        "at_hod": "",
+        "near_hod": "",
+        "near_lod": "",
+        "trough_pass": "",
+        "trough_and_pass": "",
+    }
+    if hist.empty or price is None or price <= 0:
+        return empty
+    idx = pd.to_datetime(hist.index, utc=True)
+    eligible = idx <= as_of_ts
+    if not eligible.any():
+        return empty
+    sub = hist.loc[eligible]
+    if "High" not in sub.columns or "Low" not in sub.columns:
+        return empty
+    hod = _safe_float(sub["High"].max())
+    lod = _safe_float(sub["Low"].min())
+    if hod is None or lod is None or hod <= 0 or lod <= 0:
+        return empty
+    pull_pct = (hod - price) / hod * 100.0
+    pull_lod_bp = (price - lod) / lod * 10000.0
+    day_pos = (price - lod) / (hod - lod) if hod > lod else 0.5
+    at_hod = pull_pct <= at_hod_bp / 100.0
+    near_hod = pull_pct <= near_hod_bp / 100.0
+    near_lod = pull_lod_bp <= trough_near_lod_bp
+    # Negative day_pos (quote under bar LOD) counts as at-bottom.
+    at_bottom = day_pos <= trough_max_day_position
+    trough_pass = at_bottom or near_lod
+    trough_and_pass = at_bottom and near_lod
+    return {
+        "hod_so_far": f"{hod:.4f}",
+        "lod_so_far": f"{lod:.4f}",
+        "pull_from_hod_pct": f"{pull_pct:.4f}",
+        "pull_from_lod_bp": f"{pull_lod_bp:.2f}",
+        "day_position": f"{day_pos:.4f}",
+        "at_hod": _stable_bool(at_hod),
+        "near_hod": _stable_bool(near_hod),
+        "near_lod": _stable_bool(near_lod),
+        "trough_pass": _stable_bool(trough_pass),
+        "trough_and_pass": _stable_bool(trough_and_pass),
+    }
+
+
+def enrich_trough_flat_flag(
+    rows: list[dict[str, str]],
+    *,
+    min_pct_open: float,
+) -> list[dict[str, str]]:
+    """trough_flat_pass = live trough_pass AND pct_from_open >= min (skip gap-down knives)."""
+    out: list[dict[str, str]] = []
+    for row in rows:
+        merged = dict(row)
+        trough = row.get("trough_pass") == "Y"
+        pct_open = _safe_float(row.get("pct_from_open"))
+        flat_ok = pct_open is not None and pct_open >= min_pct_open
+        merged["trough_flat_pass"] = _stable_bool(trough and flat_ok)
+        out.append(merged)
+    return out
+
+
+def _lod_age_minutes(hist: pd.DataFrame, as_of_ts: pd.Timestamp) -> Optional[float]:
+    """Minutes since the most recent bar that printed session LOD (through as_of)."""
+    if hist.empty or "Low" not in hist.columns:
+        return None
+    idx = pd.to_datetime(hist.index, utc=True)
+    eligible = hist.loc[idx <= as_of_ts]
+    if eligible.empty:
+        return None
+    lows = eligible["Low"].astype(float)
+    lod = _safe_float(lows.min())
+    if lod is None or lod <= 0:
+        return None
+    # Float-safe: treat bars within 0.5bp of LOD as printing the low.
+    tol = lod * 5e-5
+    at_lod = lows <= lod + tol
+    if not at_lod.any():
+        return None
+    last_lod_ts = pd.to_datetime(eligible.index[at_lod][-1], utc=True)
+    return max(0.0, (as_of_ts - last_lod_ts).total_seconds() / 60.0)
+
+
+def enrich_trough_bounce(
+    rows: list[dict[str, str]],
+    *,
+    scan_date: date,
+    as_of_time: time,
+    hold_minutes: float = TROUGH_BOUNCE_HOLD_MINUTES_DEFAULT,
+) -> list[dict[str, str]]:
+    """
+    Light bounce flags on 1m bars (backtest only).
+
+    bounce_up_1m: close now > close 1m ago
+    bounce_up_5m: close now > close 5m ago
+    bounce_hold: session LOD was printed at least hold_minutes ago (no new LOD)
+    bounce_light: up_1m OR hold
+    trough_bounce_pass: trough OR + up_1m
+    trough_and_bounce_pass: trough AND + up_1m
+    trough_hold_pass: trough OR + hold
+    """
+    symbols = [str(r.get("symbol") or "").strip().upper() for r in rows if r.get("symbol")]
+    data_1m = _download_intraday_1m(symbols, scan_date=scan_date)
+    as_of_ts = _as_of_timestamp(scan_date, as_of_time)
+    out: list[dict[str, str]] = []
+
+    for row in rows:
+        merged = dict(row)
+        symbol = str(row.get("symbol") or "").strip().upper()
+        hist = _hist_for_date(_symbol_hist(data_1m, symbol), scan_date)
+        px_now = _bar_close_at_as_of(hist, as_of_ts)
+        px_1 = _bar_close_at_or_before(hist, 1, as_of_ts=as_of_ts)
+        px_5 = _bar_close_at_or_before(hist, 5, as_of_ts=as_of_ts)
+        lod_age = _lod_age_minutes(hist, as_of_ts)
+
+        up_1m = px_now is not None and px_1 is not None and px_now > px_1
+        up_5m = px_now is not None and px_5 is not None and px_now > px_5
+        hold = lod_age is not None and lod_age >= hold_minutes
+        light = up_1m or hold
+
+        trough = row.get("trough_pass") == "Y"
+        trough_and = row.get("trough_and_pass") == "Y"
+        merged.update(
+            {
+                "bounce_up_1m": _stable_bool(up_1m if px_1 is not None else None),
+                "bounce_up_5m": _stable_bool(up_5m if px_5 is not None else None),
+                "bounce_lod_age_min": "" if lod_age is None else f"{lod_age:.1f}",
+                "bounce_hold": _stable_bool(hold if lod_age is not None else None),
+                "bounce_light": _stable_bool(light if (px_1 is not None or lod_age is not None) else None),
+                "trough_bounce_pass": _stable_bool(trough and up_1m),
+                "trough_and_bounce_pass": _stable_bool(trough_and and up_1m),
+                "trough_hold_pass": _stable_bool(trough and hold),
+                "trough_bounce_hold_min": f"{hold_minutes:g}",
+            }
+        )
+        out.append(merged)
+
+    return out
+
+
 def _range_pct_between(
     hist: pd.DataFrame,
     *,
@@ -685,6 +888,7 @@ def enrich_stability(
         stable_60 = px_now is not None and px_60 is not None and px_now >= px_60 * 0.995
         stable_open = px_now is not None and open_px is not None and px_now >= open_px * 0.99
         normal_stable = recovering and stable_60 and stable_open
+        hod_fields = _session_hod_metrics(hist, as_of_ts, px_now)
 
         out.update(
             {
@@ -706,11 +910,67 @@ def enrich_stability(
                 "stable_open": _stable_bool(stable_open if open_px is not None else None),
                 "normal_stable": _stable_bool(normal_stable),
                 "stable_as_of_et": as_of_time.strftime("%H:%M"),
+                **hod_fields,
             }
         )
         enriched.append(out)
 
-    return enriched
+    return enrich_trough_flat_flag(enriched, min_pct_open=-5.0)
+
+
+def enrich_session_range(
+    rows: list[dict[str, str]],
+    *,
+    scan_date: date,
+    as_of_time: time,
+    at_hod_bp: float = HOD_AT_BP_DEFAULT,
+    near_hod_bp: float = HOD_NEAR_BP_DEFAULT,
+    trough_max_day_position: float = TROUGH_MAX_DAY_POSITION_DEFAULT,
+    trough_near_lod_bp: float = TROUGH_NEAR_LOD_BP_DEFAULT,
+    trough_min_pct_open: float = -5.0,
+) -> list[dict[str, str]]:
+    """Attach session HOD/LOD/trough metrics at as_of (refreshes cached stable rows)."""
+    symbols = [str(r.get("symbol") or "").strip().upper() for r in rows if r.get("symbol")]
+    data = _download_intraday(symbols, scan_date=scan_date)
+    as_of_ts = _as_of_timestamp(scan_date, as_of_time)
+    out: list[dict[str, str]] = []
+    for row in rows:
+        merged = dict(row)
+        symbol = str(row.get("symbol") or "").strip().upper()
+        hist = _hist_for_date(_symbol_hist(data, symbol), scan_date)
+        px_now = _bar_close_at_as_of(hist, as_of_ts)
+        if px_now is None:
+            px_now = _safe_float(row.get("price_now"))
+        merged.update(
+            _session_hod_metrics(
+                hist,
+                as_of_ts,
+                px_now,
+                at_hod_bp=at_hod_bp,
+                near_hod_bp=near_hod_bp,
+                trough_max_day_position=trough_max_day_position,
+                trough_near_lod_bp=trough_near_lod_bp,
+            )
+        )
+        out.append(merged)
+    return enrich_trough_flat_flag(out, min_pct_open=trough_min_pct_open)
+
+
+def _row_passes_hod_gate(
+    row: dict[str, str],
+    *,
+    min_pull_from_hod_bp: Optional[float],
+    max_day_position: Optional[float],
+) -> bool:
+    if min_pull_from_hod_bp is not None:
+        pull_pct = _safe_float(row.get("pull_from_hod_pct"))
+        if pull_pct is None or pull_pct < min_pull_from_hod_bp / 100.0:
+            return False
+    if max_day_position is not None:
+        day_pos = _safe_float(row.get("day_position"))
+        if day_pos is None or day_pos > max_day_position:
+            return False
+    return True
 
 
 def _normalized_slope_closes(closes: list[float]) -> Optional[float]:
@@ -1220,6 +1480,12 @@ def _row_in_bucket(row: dict[str, str], bucket: str) -> bool:
     stable = row.get("normal_stable") == "Y"
     impulse = row.get("impulse_pass") == "Y"
     bandwagon = row.get("bandwagon_pass") == "Y"
+    trough = row.get("trough_pass") == "Y"
+    trough_and = row.get("trough_and_pass") == "Y"
+    trough_flat = row.get("trough_flat_pass") == "Y"
+    trough_bounce = row.get("trough_bounce_pass") == "Y"
+    trough_and_bounce = row.get("trough_and_bounce_pass") == "Y"
+    trough_hold = row.get("trough_hold_pass") == "Y"
     if bucket == "recovery":
         return stable
     if bucket == "impulse_only":
@@ -1232,6 +1498,18 @@ def _row_in_bucket(row: dict[str, str], bucket: str) -> bool:
         return bandwagon
     if bucket == "bandwagon_only":
         return bandwagon and not stable
+    if bucket == "trough":
+        return trough
+    if bucket == "trough_and":
+        return trough_and
+    if bucket == "trough_flat":
+        return trough_flat
+    if bucket == "trough_bounce":
+        return trough_bounce
+    if bucket == "trough_and_bounce":
+        return trough_and_bounce
+    if bucket == "trough_hold":
+        return trough_hold
     raise ValueError(f"unknown bucket: {bucket}")
 
 
@@ -1266,6 +1544,13 @@ def _first_bar_at_or_after(hist: pd.DataFrame, entry_time: time) -> Optional[int
     return None
 
 
+def _minutes_left_to_close(bar_ts: pd.Timestamp) -> float:
+    """Minutes from bar timestamp to 16:00 ET session close."""
+    et = bar_ts.tz_convert(ET)
+    close_dt = datetime.combine(et.date(), SESSION_CLOSE_ET, tzinfo=ET)
+    return (close_dt - et.to_pydatetime()).total_seconds() / 60.0
+
+
 def simulate_pulse(
     rows: list[dict[str, str]],
     *,
@@ -1282,10 +1567,22 @@ def simulate_pulse(
     min_recent_range_pct: Optional[float],
     max_recent_range_pct: Optional[float],
     bucket: str = "recovery",
+    min_pull_from_hod_bp: Optional[float] = None,
+    max_day_position: Optional[float] = None,
+    end_day_minutes: Optional[float] = None,
+    end_day_take: float = PULSE_ENDDAY_TAKE_DEFAULT,
+    end_day_clutter_minutes: Optional[float] = None,
+    end_day_clutter_take: float = PULSE_ENDDAY_CLUTTER_TAKE_DEFAULT,
 ) -> list[dict[str, str]]:
     entry_rows = []
     for row in rows:
         if not _row_in_bucket(row, bucket):
+            continue
+        if not _row_passes_hod_gate(
+            row,
+            min_pull_from_hod_bp=min_pull_from_hod_bp,
+            max_day_position=max_day_position,
+        ):
             continue
         range_pct = _safe_float(row.get("range_pct_to_asof"))
         if min_range_pct is not None and (range_pct is None or range_pct < min_range_pct):
@@ -1320,6 +1617,7 @@ def simulate_pulse(
 
         closes = hist["Close"].astype(float).reset_index(drop=True)
         highs = hist["High"].astype(float).reset_index(drop=True) if "High" in hist.columns else closes
+        bar_times = pd.to_datetime(hist.index, utc=True)
         entry_px = float(closes.iloc[entry_i])
         avg = entry_px
         tranches = 1
@@ -1333,6 +1631,7 @@ def simulate_pulse(
         for i in range(entry_i + 1, len(closes)):
             close = float(closes.iloc[i])
             high_water = max(high_water, float(highs.iloc[i]))
+            minutes_left = _minutes_left_to_close(bar_times[i])
 
             if exit_type == "IPC":
                 activate_px = avg * (1.0 + activate_pct)
@@ -1343,11 +1642,25 @@ def simulate_pulse(
                     exit_reason = "IPC_GIVEBACK"
                     exit_i = i
                     break
-            else:
+            elif exit_type == "FIXED_TP":
                 tp_px = avg * (1.0 + tp_pct)
                 if float(highs.iloc[i]) >= tp_px:
                     exit_px = tp_px
                     exit_reason = "TP"
+                    exit_i = i
+                    break
+
+            # Pulse dual END_DAY overlay (optional): 1.00x @ ~2pm, 0.99x @ last 30m.
+            if end_day_minutes is not None and minutes_left <= end_day_minutes:
+                if close >= avg * end_day_take:
+                    exit_px = close
+                    exit_reason = "END_DAY"
+                    exit_i = i
+                    break
+            if end_day_clutter_minutes is not None and minutes_left <= end_day_clutter_minutes:
+                if close >= avg * end_day_clutter_take:
+                    exit_px = close
+                    exit_reason = "END_DAY_CLUTTER"
                     exit_i = i
                     break
 
@@ -1378,6 +1691,11 @@ def simulate_pulse(
                 "sim_rebuys": str(rebuys),
                 "sim_bars_held": str(max(0, exit_i - entry_i)),
                 "sim_status": "OK",
+                "pull_from_hod_pct": row.get("pull_from_hod_pct", ""),
+                "day_position": row.get("day_position", ""),
+                "at_hod": row.get("at_hod", ""),
+                "near_hod": row.get("near_hod", ""),
+                "impulse_signals": row.get("impulse_signals", ""),
             }
         )
         out.append(result)
@@ -1478,6 +1796,334 @@ def print_impulse_bucket_report(
         )
 
 
+def _hod_pct(rows: list[dict[str, str]], flag: str) -> float:
+    ok = [r for r in rows if r.get("sim_status") == "OK"]
+    if not ok:
+        return 0.0
+    return sum(1 for r in ok if r.get(flag) == "Y") / len(ok) * 100.0
+
+
+def _avg_sim_ret(rows: list[dict[str, str]]) -> float:
+    ok = [r for r in rows if r.get("sim_status") == "OK"]
+    if not ok:
+        return 0.0
+    return sum(float(r.get("sim_return_pct") or 0) for r in ok) / len(ok)
+
+
+def _sim_exit_pct(rows: list[dict[str, str]]) -> float:
+    ok = [r for r in rows if r.get("sim_status") == "OK"]
+    if not ok:
+        return 0.0
+    exits = sum(1 for r in ok if r.get("sim_exit_reason") != "EOD")
+    return exits / len(ok) * 100.0
+
+
+def print_hod_at_entry_report(
+    rows: list[dict[str, str]],
+    *,
+    scan_date: Optional[date] = None,
+    buckets: Iterable[str] = HOD_BACKTEST_BUCKETS,
+) -> None:
+    if scan_date is not None:
+        print(f"\n=== HOD at entry {scan_date.isoformat()} ===")
+    else:
+        print("\n=== HOD at entry (aggregated) ===")
+    print(
+        f"{'bucket':<14} {'n':>4} {'at_hod%':>8} {'near_hod%':>10} "
+        f"{'avg_pull':>9} {'med_dpos':>9} {'avg_ret':>8} {'ex%':>6}"
+    )
+    for bucket in buckets:
+        sub = [r for r in rows if r.get("sim_bucket") == bucket and r.get("sim_status") == "OK"]
+        if not sub:
+            print(f"{bucket:<14}    0")
+            continue
+        pulls = sorted(float(r["pull_from_hod_pct"]) for r in sub if r.get("pull_from_hod_pct"))
+        dpos = sorted(float(r["day_position"]) for r in sub if r.get("day_position"))
+        med_dpos = dpos[len(dpos) // 2] if dpos else 0.0
+        avg_pull = sum(pulls) / len(pulls) if pulls else 0.0
+        print(
+            f"{bucket:<14} {len(sub):>4} {_hod_pct(sub, 'at_hod'):>7.1f}% "
+            f"{_hod_pct(sub, 'near_hod'):>9.1f}% {avg_pull:>+8.2f}% {med_dpos:>8.2f} "
+            f"{_avg_sim_ret(sub):>+7.2f}% {_sim_exit_pct(sub):>5.1f}%"
+        )
+
+
+def print_hod_day_position_report(
+    rows: list[dict[str, str]],
+    *,
+    scan_date: Optional[date] = None,
+    buckets: Iterable[str] = ("recovery", "impulse_only"),
+) -> None:
+    if scan_date is not None:
+        print(f"\n=== Day position vs return {scan_date.isoformat()} ===")
+    else:
+        print("\n=== Day position vs return (aggregated) ===")
+    ok = [
+        r
+        for r in rows
+        if r.get("sim_status") == "OK" and (r.get("sim_bucket") or "") in set(buckets)
+    ]
+    print(f"{'band':>6} {'n':>4} {'at_hod%':>8} {'avg_ret':>8} {'ex%':>6}  rec  imp")
+    for lo, hi, label in HOD_DAY_POSITION_BANDS:
+        sub = [
+            r
+            for r in ok
+            if (dpos := _safe_float(r.get("day_position"))) is not None and lo <= dpos < hi
+        ]
+        if not sub:
+            continue
+        rec = sum(1 for r in sub if r.get("sim_bucket") == "recovery")
+        imp = len(sub) - rec
+        print(
+            f"{label:>6} {len(sub):>4} {_hod_pct(sub, 'at_hod'):>7.1f}% "
+            f"{_avg_sim_ret(sub):>+7.2f}% {_sim_exit_pct(sub):>5.1f}%  {rec:>3} {imp:>3}"
+        )
+
+
+def print_hod_pullback_report(
+    rows: list[dict[str, str]],
+    *,
+    scan_date: Optional[date] = None,
+    buckets: Iterable[str] = ("recovery", "impulse_only"),
+) -> None:
+    if scan_date is not None:
+        print(f"\n=== Pullback from HOD vs return {scan_date.isoformat()} ===")
+    else:
+        print("\n=== Pullback from HOD vs return (aggregated) ===")
+    ok = [
+        r
+        for r in rows
+        if r.get("sim_status") == "OK" and (r.get("sim_bucket") or "") in set(buckets)
+    ]
+    bands: tuple[tuple[str, float, Optional[float]], ...] = (
+        ("at HOD (<=10bp)", 0.0, 0.10),
+        ("pull 10-25bp", 0.10, 0.25),
+        ("pull 25bp-1%", 0.25, 1.0),
+        ("pull 1-3%", 1.0, 3.0),
+        ("pull >3%", 3.0, None),
+    )
+    print(f"{'band':<18} {'n':>4} {'avg_ret':>8} {'ex%':>6} {'win%':>6}")
+    for label, lo, hi in bands:
+        sub = []
+        for r in ok:
+            pull = _safe_float(r.get("pull_from_hod_pct"))
+            if pull is None:
+                continue
+            if hi is None and pull > lo:
+                sub.append(r)
+            elif hi is not None and lo <= pull < hi:
+                sub.append(r)
+        if not sub:
+            continue
+        wins = sum(1 for r in sub if float(r.get("sim_return_pct") or 0) > 0)
+        print(
+            f"{label:<18} {len(sub):>4} {_avg_sim_ret(sub):>+7.2f}% "
+            f"{_sim_exit_pct(sub):>5.1f}% {wins / len(sub) * 100:>5.1f}%"
+        )
+
+
+def print_hod_impulse_signal_report(rows: list[dict[str, str]]) -> None:
+    ok = [
+        r
+        for r in rows
+        if r.get("sim_status") == "OK" and r.get("sim_bucket") == "impulse_only"
+    ]
+    if not ok:
+        return
+    print("\n=== impulse_only: signal combo vs HOD ===")
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for r in ok:
+        sig = r.get("impulse_signals") or "none"
+        grouped.setdefault(sig, []).append(r)
+    print(f"{'signals':<30} {'n':>4} {'at_hod%':>8} {'avg_pull':>9} {'avg_ret':>8}")
+    for sig, sub in sorted(grouped.items(), key=lambda x: (-len(x[1]), x[0])):
+        pulls = [float(r["pull_from_hod_pct"]) for r in sub if r.get("pull_from_hod_pct")]
+        avg_pull = sum(pulls) / len(pulls) if pulls else 0.0
+        print(
+            f"{sig:<30} {len(sub):>4} {_hod_pct(sub, 'at_hod'):>7.1f}% "
+            f"{avg_pull:>+8.2f}% {_avg_sim_ret(sub):>+7.2f}%"
+        )
+
+
+def print_hod_gate_grid(
+    rows: list[dict[str, str]],
+    *,
+    buckets: Iterable[str] = ("recovery", "impulse_only"),
+) -> None:
+    base = [
+        r
+        for r in rows
+        if r.get("sim_status") == "OK" and (r.get("sim_bucket") or "") in set(buckets)
+    ]
+    if not base:
+        return
+    print("\n=== HOD gate grid (counterfactual on simulated entries) ===")
+    print(f"{'max_dpos':>8} {'min_pull':>8} {'n':>4} {'kept%':>6} {'at_hod%':>8} {'avg_ret':>8} {'ex%':>6}")
+    for max_dpos in HOD_GATE_GRID_MAX_DAY_POSITION:
+        for min_pull_bp in HOD_GATE_GRID_MIN_PULL_BP:
+            kept = [
+                r
+                for r in base
+                if _row_passes_hod_gate(
+                    r,
+                    min_pull_from_hod_bp=min_pull_bp,
+                    max_day_position=max_dpos,
+                )
+            ]
+            if not kept:
+                continue
+            dpos_label = "none" if max_dpos is None else f"{max_dpos:.2f}"
+            print(
+                f"{dpos_label:>8} {min_pull_bp:>6.0f}bp {len(kept):>4} "
+                f"{len(kept) / len(base) * 100:>5.1f}% {_hod_pct(kept, 'at_hod'):>7.1f}% "
+                f"{_avg_sim_ret(kept):>+7.2f}% {_sim_exit_pct(kept):>5.1f}%"
+            )
+
+
+def print_hod_reports(
+    rows: list[dict[str, str]],
+    *,
+    scan_date: Optional[date] = None,
+) -> None:
+    print_hod_at_entry_report(rows, scan_date=scan_date)
+    print_hod_day_position_report(rows, scan_date=scan_date)
+    print_hod_pullback_report(rows, scan_date=scan_date)
+    print_hod_impulse_signal_report(rows)
+    print_hod_gate_grid(rows)
+
+
+def print_trough_bucket_report(
+    summaries: dict[str, dict[str, Any]],
+    *,
+    scan_date: Optional[date] = None,
+) -> None:
+    if scan_date is not None:
+        print(f"\n=== Trough backtest {scan_date.isoformat()} ===")
+    else:
+        print("\n=== Trough backtest (aggregated) ===")
+    print(
+        f"{'bucket':<18} {'n':>4} {'ex':>3} {'ex%':>6} {'avg_ret':>8} "
+        f"{'win%':>6} {'avg_tr':>7} {'worst':>8} {'best':>8}"
+    )
+    for bucket in TROUGH_COMPARE_BUCKETS:
+        s = summaries.get(bucket) or {}
+        if not s.get("n"):
+            print(f"{bucket:<18}    0")
+            continue
+        print(
+            f"{bucket:<18} {s['n']:>4} {s['exits']:>3} {s['exit_pct']:>5.1f}% "
+            f"{s['avg_ret']:>+7.2f}% {s['win_pct']:>5.1f}% {s['avg_tranches']:>7.2f} "
+            f"{s['worst']:>+7.2f}% {s['best']:>+7.2f}%"
+        )
+
+
+def print_trough_gap_report(rows: list[dict[str, str]]) -> None:
+    """IPC outcomes for trough (OR) entries by gap-from-open band."""
+    ok = [
+        r
+        for r in rows
+        if r.get("sim_status") == "OK" and r.get("sim_bucket") == "trough"
+    ]
+    if not ok:
+        return
+    print("\n=== Trough (OR) by pct_from_open ===")
+    print(f"{'band':<14} {'n':>4} {'avg_ret':>8} {'ex%':>6} {'win%':>6}")
+    for label, lo, hi in TROUGH_GAP_BANDS:
+        sub = []
+        for r in ok:
+            pct = _safe_float(r.get("pct_from_open"))
+            if pct is None:
+                continue
+            if lo is not None and pct < lo:
+                continue
+            if hi is not None and pct >= hi:
+                continue
+            sub.append(r)
+        if not sub:
+            continue
+        wins = sum(1 for r in sub if float(r.get("sim_return_pct") or 0) > 0)
+        print(
+            f"{label:<14} {len(sub):>4} {_avg_sim_ret(sub):>+7.2f}% "
+            f"{_sim_exit_pct(sub):>5.1f}% {wins / len(sub) * 100:>5.1f}%"
+        )
+
+
+
+def print_trough_exit_reason_report(rows: list[dict[str, str]], *, bucket: str = "trough") -> None:
+    """Exit-reason mix for one trough bucket (TP / END_DAY / IPC / EOD)."""
+    ok = [r for r in rows if r.get("sim_status") == "OK" and r.get("sim_bucket") == bucket]
+    if not ok:
+        return
+    counts: dict[str, int] = {}
+    for r in ok:
+        reason = str(r.get("sim_exit_reason") or "?")
+        counts[reason] = counts.get(reason, 0) + 1
+    parts = ", ".join(f"{k}={v}" for k, v in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+    print(f"=== {bucket} exit reasons (n={len(ok)}): {parts} ===")
+
+
+def _prepare_backtest_rows(
+    *,
+    cache_dir: Path,
+    scan_date: date,
+    entry_time: time,
+    range_lookback_minutes: int,
+    min_range_pct: float,
+    min_signals: int,
+    min_ret_30m_pct: float,
+    bandwagon_min_vol_ratio: float,
+    bandwagon_min_ret_pct: float,
+    bandwagon_lookback_minutes: int,
+    at_hod_bp: float,
+    near_hod_bp: float,
+    trough_max_day_position: float = TROUGH_MAX_DAY_POSITION_DEFAULT,
+    trough_near_lod_bp: float = TROUGH_NEAR_LOD_BP_DEFAULT,
+    trough_min_pct_open: float = -5.0,
+) -> list[dict[str, str]]:
+    path = _cache_path(cache_dir, scan_date)
+    stable_path = _stable_cache_path(cache_dir, scan_date)
+    if not path.exists():
+        raise FileNotFoundError(f"Candidate CSV missing: {path}")
+    if not stable_path.exists():
+        enriched = enrich_stability(
+            read_cached(path),
+            scan_date=scan_date,
+            as_of_time=entry_time,
+            range_lookback_minutes=range_lookback_minutes,
+        )
+        write_dict_rows(stable_path, enriched)
+    else:
+        enriched = enrich_session_range(
+            read_cached(stable_path),
+            scan_date=scan_date,
+            as_of_time=entry_time,
+            at_hod_bp=at_hod_bp,
+            near_hod_bp=near_hod_bp,
+            trough_max_day_position=trough_max_day_position,
+            trough_near_lod_bp=trough_near_lod_bp,
+            trough_min_pct_open=trough_min_pct_open,
+        )
+    # Re-apply flat flag with requested gap floor (stability cache may use default).
+    enriched = enrich_trough_flat_flag(enriched, min_pct_open=trough_min_pct_open)
+    with_bandwagon = enrich_bandwagon(
+        enriched,
+        scan_date=scan_date,
+        as_of_time=entry_time,
+        lookback_minutes=bandwagon_lookback_minutes,
+        min_vol_ratio=bandwagon_min_vol_ratio,
+        min_ret_pct=bandwagon_min_ret_pct,
+        min_range_pct=min_range_pct,
+    )
+    return enrich_impulse(
+        with_bandwagon,
+        scan_date=scan_date,
+        as_of_time=entry_time,
+        min_range_pct=min_range_pct,
+        min_signals=min_signals,
+        min_ret_30m_pct=min_ret_30m_pct,
+    )
+
+
 def _iter_dates(date_from: date, date_to: date) -> list[date]:
     out: list[date] = []
     current = date_from
@@ -1508,40 +2154,30 @@ def run_impulse_backtest_for_date(
     bandwagon_lookback_minutes: int,
     rebuy_pct: float,
     max_tranches: int,
+    min_pull_from_hod_bp: Optional[float] = None,
+    max_day_position: Optional[float] = None,
+    at_hod_bp: float = HOD_AT_BP_DEFAULT,
+    near_hod_bp: float = HOD_NEAR_BP_DEFAULT,
+    trough_max_day_position: float = TROUGH_MAX_DAY_POSITION_DEFAULT,
+    trough_near_lod_bp: float = TROUGH_NEAR_LOD_BP_DEFAULT,
+    trough_min_pct_open: float = -5.0,
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, str]]]:
-    path = _cache_path(cache_dir, scan_date)
-    stable_path = _stable_cache_path(cache_dir, scan_date)
-
-    if not path.exists():
-        raise FileNotFoundError(f"Candidate CSV missing: {path}")
-    if not stable_path.exists():
-        rows = read_cached(path)
-        enriched = enrich_stability(
-            rows,
-            scan_date=scan_date,
-            as_of_time=entry_time,
-            range_lookback_minutes=range_lookback_minutes,
-        )
-        write_dict_rows(stable_path, enriched)
-    else:
-        enriched = read_cached(stable_path)
-
-    with_bandwagon = enrich_bandwagon(
-        enriched,
+    with_impulse = _prepare_backtest_rows(
+        cache_dir=cache_dir,
         scan_date=scan_date,
-        as_of_time=entry_time,
-        lookback_minutes=bandwagon_lookback_minutes,
-        min_vol_ratio=bandwagon_min_vol_ratio,
-        min_ret_pct=bandwagon_min_ret_pct,
-        min_range_pct=min_range_pct,
-    )
-    with_impulse = enrich_impulse(
-        with_bandwagon,
-        scan_date=scan_date,
-        as_of_time=entry_time,
+        entry_time=entry_time,
+        range_lookback_minutes=range_lookback_minutes,
         min_range_pct=min_range_pct,
         min_signals=min_signals,
         min_ret_30m_pct=min_ret_30m_pct,
+        bandwagon_min_vol_ratio=bandwagon_min_vol_ratio,
+        bandwagon_min_ret_pct=bandwagon_min_ret_pct,
+        bandwagon_lookback_minutes=bandwagon_lookback_minutes,
+        at_hod_bp=at_hod_bp,
+        near_hod_bp=near_hod_bp,
+        trough_max_day_position=trough_max_day_position,
+        trough_near_lod_bp=trough_near_lod_bp,
+        trough_min_pct_open=trough_min_pct_open,
     )
 
     summaries: dict[str, dict[str, Any]] = {}
@@ -1569,6 +2205,100 @@ def run_impulse_backtest_for_date(
             min_recent_range_pct=None,
             max_recent_range_pct=None,
             bucket=bucket,
+            min_pull_from_hod_bp=min_pull_from_hod_bp,
+            max_day_position=max_day_position,
+        )
+        summaries[bucket] = _summarize_sim_rows(simulated)
+        all_sim.extend(simulated)
+
+    return summaries, all_sim
+
+
+def run_trough_backtest_for_date(
+    *,
+    cache_dir: Path,
+    scan_date: date,
+    entry_time: time,
+    range_lookback_minutes: int,
+    min_range_pct: float,
+    min_signals: int,
+    min_ret_30m_pct: float,
+    exit_type: str,
+    tp_pct: float,
+    activate_pct: float,
+    giveback_pct: float,
+    impulse_activate_pct: float,
+    impulse_giveback_pct: float,
+    bandwagon_min_vol_ratio: float,
+    bandwagon_min_ret_pct: float,
+    bandwagon_lookback_minutes: int,
+    rebuy_pct: float,
+    max_tranches: int,
+    at_hod_bp: float = HOD_AT_BP_DEFAULT,
+    near_hod_bp: float = HOD_NEAR_BP_DEFAULT,
+    trough_max_day_position: float = TROUGH_MAX_DAY_POSITION_DEFAULT,
+    trough_near_lod_bp: float = TROUGH_NEAR_LOD_BP_DEFAULT,
+    trough_min_pct_open: float = -5.0,
+    trough_bounce_hold_minutes: float = TROUGH_BOUNCE_HOLD_MINUTES_DEFAULT,
+    end_day_minutes: Optional[float] = None,
+    end_day_take: float = PULSE_ENDDAY_TAKE_DEFAULT,
+    end_day_clutter_minutes: Optional[float] = None,
+    end_day_clutter_take: float = PULSE_ENDDAY_CLUTTER_TAKE_DEFAULT,
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, str]]]:
+    """Simulate trough OR / AND / flat / bounce variants vs recovery and impulse_only."""
+    rows = _prepare_backtest_rows(
+        cache_dir=cache_dir,
+        scan_date=scan_date,
+        entry_time=entry_time,
+        range_lookback_minutes=range_lookback_minutes,
+        min_range_pct=min_range_pct,
+        min_signals=min_signals,
+        min_ret_30m_pct=min_ret_30m_pct,
+        bandwagon_min_vol_ratio=bandwagon_min_vol_ratio,
+        bandwagon_min_ret_pct=bandwagon_min_ret_pct,
+        bandwagon_lookback_minutes=bandwagon_lookback_minutes,
+        at_hod_bp=at_hod_bp,
+        near_hod_bp=near_hod_bp,
+        trough_max_day_position=trough_max_day_position,
+        trough_near_lod_bp=trough_near_lod_bp,
+        trough_min_pct_open=trough_min_pct_open,
+    )
+    rows = enrich_trough_bounce(
+        rows,
+        scan_date=scan_date,
+        as_of_time=entry_time,
+        hold_minutes=trough_bounce_hold_minutes,
+    )
+
+    summaries: dict[str, dict[str, Any]] = {}
+    all_sim: list[dict[str, str]] = []
+    for bucket in TROUGH_COMPARE_BUCKETS:
+        bucket_activate, bucket_giveback = _ipc_pcts_for_bucket(
+            bucket,
+            activate_pct=activate_pct,
+            giveback_pct=giveback_pct,
+            impulse_activate_pct=impulse_activate_pct,
+            impulse_giveback_pct=impulse_giveback_pct,
+        )
+        simulated = simulate_pulse(
+            rows,
+            scan_date=scan_date,
+            entry_time=entry_time,
+            exit_type=exit_type,
+            tp_pct=tp_pct,
+            activate_pct=bucket_activate,
+            giveback_pct=bucket_giveback,
+            rebuy_pct=rebuy_pct,
+            max_tranches=max_tranches,
+            min_range_pct=min_range_pct,
+            max_range_pct=None,
+            min_recent_range_pct=None,
+            max_recent_range_pct=None,
+            bucket=bucket,
+            end_day_minutes=end_day_minutes,
+            end_day_take=end_day_take,
+            end_day_clutter_minutes=end_day_clutter_minutes,
+            end_day_clutter_take=end_day_clutter_take,
         )
         summaries[bucket] = _summarize_sim_rows(simulated)
         all_sim.extend(simulated)
@@ -1718,13 +2448,13 @@ def parse_args() -> argparse.Namespace:
         "--from",
         dest="date_from",
         metavar="DATE",
-        help="Start date YYYY-MM-DD for --impulse-backtest (inclusive)",
+        help="Start date YYYY-MM-DD for --impulse-backtest / --hod-backtest / --trough-backtest (inclusive)",
     )
     parser.add_argument(
         "--to",
         dest="date_to",
         metavar="DATE",
-        help="End date YYYY-MM-DD for --impulse-backtest (inclusive)",
+        help="End date YYYY-MM-DD for --impulse-backtest / --hod-backtest / --trough-backtest (inclusive)",
     )
     parser.add_argument(
         "--impulse-min-signals",
@@ -1800,6 +2530,91 @@ def parse_args() -> argparse.Namespace:
             "mirrors Stock.calc_trend scale)"
         ),
     )
+    parser.add_argument(
+        "--hod-backtest",
+        action="store_true",
+        help=(
+            "Session-range backtest: P(at HOD), day_position vs IPC return, gate grid "
+            "(requires candidate CSV per date; uses --from/--to)"
+        ),
+    )
+    parser.add_argument(
+        "--hod-report",
+        action="store_true",
+        help="Also print HOD/session-range reports at end of --impulse-backtest",
+    )
+    parser.add_argument(
+        "--max-day-position",
+        type=float,
+        default=None,
+        help="Skip discovers with day_position above this (0-1; e.g. 0.90 = not in top 10%% of range)",
+    )
+    parser.add_argument(
+        "--min-pull-from-hod-bp",
+        type=float,
+        default=None,
+        help="Skip discovers closer than this to session HOD (basis points; e.g. 25 = 0.25%%)",
+    )
+    parser.add_argument(
+        "--hod-at-bp",
+        type=float,
+        default=HOD_AT_BP_DEFAULT,
+        help=f"Flag at_hod when pull from HOD <= this many bp (default {HOD_AT_BP_DEFAULT:g})",
+    )
+    parser.add_argument(
+        "--hod-near-bp",
+        type=float,
+        default=HOD_NEAR_BP_DEFAULT,
+        help=f"Flag near_hod when pull from HOD <= this many bp (default {HOD_NEAR_BP_DEFAULT:g})",
+    )
+    parser.add_argument(
+        "--trough-backtest",
+        action="store_true",
+        help=(
+            "Backtest TROUGH entrants (session LOD): OR/AND/flat/bounce/hold vs "
+            "recovery/impulse_only (requires candidate CSV; uses --from/--to)"
+        ),
+    )
+    parser.add_argument(
+        "--trough-max-day-position",
+        type=float,
+        default=TROUGH_MAX_DAY_POSITION_DEFAULT,
+        help=f"TROUGH: max day_position (default {TROUGH_MAX_DAY_POSITION_DEFAULT})",
+    )
+    parser.add_argument(
+        "--trough-near-lod-bp",
+        type=float,
+        default=TROUGH_NEAR_LOD_BP_DEFAULT,
+        help=f"TROUGH: near-LOD threshold in bp (default {TROUGH_NEAR_LOD_BP_DEFAULT:g})",
+    )
+    parser.add_argument(
+        "--trough-min-pct-open",
+        type=float,
+        default=-5.0,
+        help="trough_flat variant: require pct_from_open >= this (default -5)",
+    )
+    parser.add_argument(
+        "--trough-bounce-hold-minutes",
+        type=float,
+        default=TROUGH_BOUNCE_HOLD_MINUTES_DEFAULT,
+        help=(
+            "trough_hold: require session LOD age >= this many minutes "
+            f"(default {TROUGH_BOUNCE_HOLD_MINUTES_DEFAULT:g})"
+        ),
+    )
+    parser.add_argument(
+        "--pulse-end-day",
+        action="store_true",
+        help=(
+            "Apply Pulse dual END_DAY overlay: flat >=1.00x avg from 120m before close, "
+            ">=0.99x in last 30m (matches live SI; use with FIXED_TP)"
+        ),
+    )
+    parser.add_argument(
+        "--no-pulse-end-day",
+        action="store_true",
+        help="Disable END_DAY overlay even for trough FIXED_TP runs",
+    )
     return parser.parse_args()
 
 
@@ -1809,6 +2624,178 @@ def main() -> int:
     path = _cache_path(args.cache_dir, scan_date)
     stable_path = _stable_cache_path(args.cache_dir, scan_date)
     sim_path = _simulation_cache_path(args.cache_dir, scan_date)
+
+    def _backtest_kwargs(
+        impulse_activate_pct: float,
+        impulse_giveback_pct: float,
+    ) -> dict[str, Any]:
+        return {
+            "cache_dir": args.cache_dir,
+            "entry_time": args.entry_time,
+            "range_lookback_minutes": args.range_lookback_minutes,
+            "min_range_pct": args.impulse_min_range_pct,
+            "min_signals": args.impulse_min_signals,
+            "min_ret_30m_pct": args.impulse_min_ret_30m_pct,
+            "exit_type": args.exit_type,
+            "tp_pct": args.tp_pct,
+            "activate_pct": args.activate_pct,
+            "giveback_pct": args.giveback_pct,
+            "impulse_activate_pct": impulse_activate_pct,
+            "impulse_giveback_pct": impulse_giveback_pct,
+            "bandwagon_min_vol_ratio": args.bandwagon_min_vol_ratio,
+            "bandwagon_min_ret_pct": args.bandwagon_min_ret_15m,
+            "bandwagon_lookback_minutes": args.bandwagon_lookback_minutes,
+            "rebuy_pct": args.rebuy_pct,
+            "max_tranches": args.max_tranches,
+            "min_pull_from_hod_bp": args.min_pull_from_hod_bp,
+            "max_day_position": args.max_day_position,
+            "at_hod_bp": args.hod_at_bp,
+            "near_hod_bp": args.hod_near_bp,
+            "trough_max_day_position": args.trough_max_day_position,
+            "trough_near_lod_bp": args.trough_near_lod_bp,
+            "trough_min_pct_open": args.trough_min_pct_open,
+        }
+
+    if args.trough_backtest:
+        date_from = date.fromisoformat(args.date_from) if args.date_from else scan_date
+        date_to = date.fromisoformat(args.date_to) if args.date_to else date_from
+        if date_to < date_from:
+            print("--to must be on or after --from", file=sys.stderr)
+            return 2
+        if args.bandwagon_lookback_minutes <= 0:
+            print("--bandwagon-lookback-minutes must be positive", file=sys.stderr)
+            return 2
+
+        dates = _iter_dates(date_from, date_to)
+        if not dates:
+            print("No weekdays in date range", file=sys.stderr)
+            return 2
+
+        impulse_activate_pct = (
+            args.impulse_activate_pct if args.impulse_activate_pct is not None else args.activate_pct
+        )
+        impulse_giveback_pct = (
+            args.impulse_giveback_pct if args.impulse_giveback_pct is not None else args.giveback_pct
+        )
+        bt_kwargs = _backtest_kwargs(impulse_activate_pct, impulse_giveback_pct)
+        # HOD skip gates do not apply to trough mode.
+        bt_kwargs.pop("min_pull_from_hod_bp", None)
+        bt_kwargs.pop("max_day_position", None)
+        bt_kwargs["trough_bounce_hold_minutes"] = args.trough_bounce_hold_minutes
+        # Pulse END_DAY (1.00@120m / 0.99@30m): default on for FIXED_TP trough runs.
+        use_end_day = args.pulse_end_day or (
+            args.exit_type == "FIXED_TP" and not args.no_pulse_end_day
+        )
+        if use_end_day:
+            bt_kwargs["end_day_minutes"] = PULSE_ENDDAY_MINUTES_DEFAULT
+            bt_kwargs["end_day_take"] = PULSE_ENDDAY_TAKE_DEFAULT
+            bt_kwargs["end_day_clutter_minutes"] = PULSE_ENDDAY_CLUTTER_MINUTES_DEFAULT
+            bt_kwargs["end_day_clutter_take"] = PULSE_ENDDAY_CLUTTER_TAKE_DEFAULT
+
+        aggregated: dict[str, list[dict[str, str]]] = {b: [] for b in TROUGH_COMPARE_BUCKETS}
+        all_sim: list[dict[str, str]] = []
+        for day in dates:
+            try:
+                summaries, sim_rows = run_trough_backtest_for_date(scan_date=day, **bt_kwargs)
+            except FileNotFoundError as exc:
+                print(f"Skip {day.isoformat()}: {exc}", file=sys.stderr)
+                continue
+            print_trough_bucket_report(summaries, scan_date=day)
+            print_trough_gap_report(sim_rows)
+            print_trough_exit_reason_report(sim_rows, bucket="trough")
+            for row in sim_rows:
+                if row.get("sim_status") != "OK":
+                    continue
+                all_sim.append(row)
+                bucket = row.get("sim_bucket") or ""
+                if bucket in aggregated:
+                    aggregated[bucket].append(row)
+
+        total_summaries = {b: _summarize_sim_rows(aggregated[b]) for b in TROUGH_COMPARE_BUCKETS}
+        print_trough_bucket_report(total_summaries, scan_date=None)
+        print_trough_gap_report(all_sim)
+        print_trough_exit_reason_report(all_sim, bucket="trough")
+        end_day_note = (
+            f"end_day={PULSE_ENDDAY_TAKE_DEFAULT:g}x@{PULSE_ENDDAY_MINUTES_DEFAULT:g}m/"
+            f"{PULSE_ENDDAY_CLUTTER_TAKE_DEFAULT:g}x@{PULSE_ENDDAY_CLUTTER_MINUTES_DEFAULT:g}m"
+            if (
+                args.pulse_end_day
+                or (args.exit_type == "FIXED_TP" and not args.no_pulse_end_day)
+            )
+            else "end_day=off"
+        )
+        print(
+            f"Trough backtest | days={len(dates)} | entry={args.entry_time.strftime('%H:%M')} ET "
+            f"| max_day_pos={args.trough_max_day_position:g} near_lod<={args.trough_near_lod_bp:g}bp "
+            f"| flat pct_open>={args.trough_min_pct_open:g}% "
+            f"| bounce_hold>={args.trough_bounce_hold_minutes:g}m "
+            f"| exit={args.exit_type} tp={args.tp_pct:g} | {end_day_note} "
+            f"| ipc={args.activate_pct:g}/{args.giveback_pct:g} "
+            f"| rebuy={args.rebuy_pct:g} max_tr={args.max_tranches}"
+        )
+        print(
+            "Buckets: trough=OR  trough_and=AND  trough_flat=OR+pct_open  "
+            "trough_bounce=OR+up1m  trough_and_bounce=AND+up1m  "
+            "trough_hold=OR+no_new_LOD  | recovery/impulse_only=baseline"
+        )
+        return 0
+
+    if args.hod_backtest:
+        date_from = date.fromisoformat(args.date_from) if args.date_from else scan_date
+        date_to = date.fromisoformat(args.date_to) if args.date_to else date_from
+        if date_to < date_from:
+            print("--to must be on or after --from", file=sys.stderr)
+            return 2
+        if args.bandwagon_lookback_minutes <= 0:
+            print("--bandwagon-lookback-minutes must be positive", file=sys.stderr)
+            return 2
+
+        dates = _iter_dates(date_from, date_to)
+        if not dates:
+            print("No weekdays in date range", file=sys.stderr)
+            return 2
+
+        impulse_activate_pct = (
+            args.impulse_activate_pct if args.impulse_activate_pct is not None else args.activate_pct
+        )
+        impulse_giveback_pct = (
+            args.impulse_giveback_pct if args.impulse_giveback_pct is not None else args.giveback_pct
+        )
+        bt_kwargs = _backtest_kwargs(impulse_activate_pct, impulse_giveback_pct)
+
+        aggregated: dict[str, list[dict[str, str]]] = {b: [] for b in DISCOVER_BUCKETS}
+        all_sim: list[dict[str, str]] = []
+        for day in dates:
+            try:
+                summaries, sim_rows = run_impulse_backtest_for_date(scan_date=day, **bt_kwargs)
+            except FileNotFoundError as exc:
+                print(f"Skip {day.isoformat()}: {exc}", file=sys.stderr)
+                continue
+            print_impulse_bucket_report(summaries, scan_date=day)
+            print_hod_reports(sim_rows, scan_date=day)
+            for row in sim_rows:
+                if row.get("sim_status") != "OK":
+                    continue
+                all_sim.append(row)
+                bucket = row.get("sim_bucket") or ""
+                if bucket in aggregated:
+                    aggregated[bucket].append(row)
+
+        total_summaries = {b: _summarize_sim_rows(aggregated[b]) for b in DISCOVER_BUCKETS}
+        print_impulse_bucket_report(total_summaries, scan_date=None)
+        print_hod_reports(all_sim, scan_date=None)
+        gate_note = ""
+        if args.max_day_position is not None or args.min_pull_from_hod_bp is not None:
+            gate_note = (
+                f" | gates: max_day_position={args.max_day_position} "
+                f"min_pull_from_hod_bp={args.min_pull_from_hod_bp}"
+            )
+        print(
+            f"HOD backtest | days={len(dates)} | entry={args.entry_time.strftime('%H:%M')} ET "
+            f"| at_hod<={args.hod_at_bp:g}bp near_hod<={args.hod_near_bp:g}bp "
+            f"| exit={args.exit_type}{gate_note}"
+        )
+        return 0
 
     if args.impulse_backtest:
         date_from = date.fromisoformat(args.date_from) if args.date_from else scan_date
@@ -1837,32 +2824,17 @@ def main() -> int:
             else args.giveback_pct
         )
 
+        bt_kwargs = _backtest_kwargs(impulse_activate_pct, impulse_giveback_pct)
+
         for day in dates:
             try:
-                summaries, sim_rows = run_impulse_backtest_for_date(
-                    cache_dir=args.cache_dir,
-                    scan_date=day,
-                    entry_time=args.entry_time,
-                    range_lookback_minutes=args.range_lookback_minutes,
-                    min_range_pct=args.impulse_min_range_pct,
-                    min_signals=args.impulse_min_signals,
-                    min_ret_30m_pct=args.impulse_min_ret_30m_pct,
-                    exit_type=args.exit_type,
-                    tp_pct=args.tp_pct,
-                    activate_pct=args.activate_pct,
-                    giveback_pct=args.giveback_pct,
-                    impulse_activate_pct=impulse_activate_pct,
-                    impulse_giveback_pct=impulse_giveback_pct,
-                    bandwagon_min_vol_ratio=args.bandwagon_min_vol_ratio,
-                    bandwagon_min_ret_pct=args.bandwagon_min_ret_15m,
-                    bandwagon_lookback_minutes=args.bandwagon_lookback_minutes,
-                    rebuy_pct=args.rebuy_pct,
-                    max_tranches=args.max_tranches,
-                )
+                summaries, sim_rows = run_impulse_backtest_for_date(scan_date=day, **bt_kwargs)
             except FileNotFoundError as exc:
                 print(f"Skip {day.isoformat()}: {exc}", file=sys.stderr)
                 continue
             print_impulse_bucket_report(summaries, scan_date=day)
+            if args.hod_report:
+                print_hod_reports(sim_rows, scan_date=day)
             for row in sim_rows:
                 if row.get("sim_status") == "OK":
                     bucket = row.get("sim_bucket") or ""
@@ -1871,6 +2843,9 @@ def main() -> int:
 
         total_summaries = {b: _summarize_sim_rows(aggregated[b]) for b in DISCOVER_BUCKETS}
         print_impulse_bucket_report(total_summaries, scan_date=None)
+        if args.hod_report:
+            all_sim = [r for b in DISCOVER_BUCKETS for r in aggregated[b]]
+            print_hod_reports(all_sim, scan_date=None)
         ipc_note = (
             f"recovery_ipc={args.activate_pct:g}/{args.giveback_pct:g} "
             f"partner_ipc={impulse_activate_pct:g}/{impulse_giveback_pct:g}"
