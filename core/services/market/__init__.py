@@ -1,4 +1,4 @@
-"""Market calendar/session helpers and intraday tape utilities."""
+"""Market calendar/session helpers, intraday tape, and MIDWAY multi-day state."""
 
 from core.services.market.session import (
     in_opening_noise_window,
