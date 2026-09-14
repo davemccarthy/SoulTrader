@@ -224,6 +224,23 @@ def get_filtered_stocks(
     return df
 
 
+def fetch_stock_snapshots(*, include_otc: bool = False) -> list[Any]:
+    """Full-market snapshot (today's bar + prior day + last trade). One Polygon call."""
+    client = _polygon_client()
+    snapshots = client.get_snapshot_all("stocks", include_otc=include_otc)
+    return list(snapshots or [])
+
+
+def fetch_ticker_type(ticker: str) -> str:
+    """Polygon ticker type (CS, ETF, ADRC, …). Empty string when missing."""
+    symbol = (ticker or "").strip().upper()
+    if not symbol:
+        return ""
+    client = _polygon_client()
+    details = client.get_ticker_details(symbol)
+    return str(getattr(details, "type", "") or "").upper()
+
+
 def clear_polygon_cache() -> None:
     """Clear the Polygon stocks cache (useful for testing or between runs)."""
     global _polygon_stocks_cache

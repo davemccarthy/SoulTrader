@@ -28,6 +28,7 @@ _LAZY_MODULES = frozenset(
         "pulse",
         "oracle",
         "etf",
+        "rocket",
     }
 )
 

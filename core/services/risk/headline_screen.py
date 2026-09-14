@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 BLOCK_BANNER = "***** BLOCKED *****"
 
 # News-catalyst advisors: skip generic Yahoo headline gate (they screen their own feed).
-HEADLINE_SCREEN_SKIP_ADVISORS = frozenset({"Pharm", "Bizfeed", "FDA", "User"})
+HEADLINE_SCREEN_SKIP_ADVISORS = frozenset({"Pharm", "Bizfeed", "FDA", "User", "Rocket"})
 
 HEADLINE_SYMBOL_ALIASES: Dict[str, str] = {
     "ZI": "GTM",
