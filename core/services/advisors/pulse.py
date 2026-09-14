@@ -11,9 +11,9 @@ Entry:
 - Require recent 60m intraday range >= 1.25%.
 - Discover qualifying names between 10:30 and 13:00 ET (earlier window = more IPC runway).
 - Live IMPULSE/COMBO paths (optional): 1m momentum + COMBO (impulse + normal_stable).
-- Shadow TROUGH (optional): high-vol attention name near session day low
-  (day_position / near-LOD) with light bounce (up 1m or LOD held);
-  log only — no live discover yet.
+- Live TROUGH (optional): high-vol attention at session LOD with light bounce
+  (near LOD ≤25bp + up 1m or LOD hold); green/white tape only; opp ≥ C;
+  same tape IPC / rebuy / END_DAY SIs. Shadow logs broader OR trough inventory.
 - Market tape (SPY/QQQ): refresh only during Pulse buying hours (10:30–13:00 ET);
   persist red/amber/green/white on Advisor.blob (default red); trade on amber/green/white
   (red = no discover); push superusers on status change.
@@ -44,7 +44,7 @@ from core.services.push import push_super
 logger = logging.getLogger(__name__)
 
 ET = pytz.timezone("US/Eastern")
-PULSE_CANDIDATE_VERSION = 13
+PULSE_CANDIDATE_VERSION = 14
 PULSE_BUILD_TIME_ET = time(10, 30)
 PULSE_DISCOVERY_END_TIME_ET = time(13, 0)
 PULSE_SEED_UNIVERSE = 500
@@ -93,13 +93,15 @@ PULSE_IMPULSE_MIN_VOL_RATIO = 2.0
 PULSE_IMPULSE_MIN_CLOSE_POSITION = 0.6
 PULSE_IMPULSE_MIN_SIGNALS = 3
 
-# TROUGH: high-vol attention near session LOD (shadow only; prune stinkers later).
+# TROUGH: session LOD + light bounce (live on green/white; broader shadow OR gate).
 PULSE_TROUGH_SHADOW = True
-PULSE_TROUGH_LIVE = False
-PULSE_TROUGH_MAX_DAY_POSITION = 0.10  # bottom 10% of session range so far
-PULSE_TROUGH_NEAR_LOD_BP = 25.0  # or within 25bp of LOD
-# Light bounce (shadow): up 1m on 1m bars, and/or no new LOD for N minutes.
+PULSE_TROUGH_LIVE = True
+PULSE_TROUGH_MAX_DAY_POSITION = 0.10  # shadow OR: bottom 10% of session range so far
+PULSE_TROUGH_NEAR_LOD_BP = 25.0  # live: within 25bp of printed LOD (not under-LOD)
+# Light bounce: up 1m on 1m bars, and/or no new LOD for N minutes.
 PULSE_TROUGH_BOUNCE_HOLD_MINUTES = 10.0
+# Live trough only when tape is constructive (skip amber knives).
+PULSE_TAPE_TROUGH_STATES: Final[frozenset[str]] = frozenset({"green", "white"})
 
 # Market tape on Advisor.blob (missing → red). Push titles on status change.
 PULSE_TAPE_DEFAULT = "red"
@@ -276,6 +278,8 @@ def _session_range_metrics(
         "pull_from_hod_pct": None,
         "pull_from_lod_bp": None,
         "day_position": None,
+        "near_lod": False,
+        "at_printed_lod": False,
         "trough_pass": False,
     }
     if hist.empty or price_now is None or price_now <= 0:
@@ -293,6 +297,8 @@ def _session_range_metrics(
     else:
         day_position = 0.5
     near_lod = pull_from_lod_bp <= near_lod_bp
+    # Live "actually at LOD": on or slightly above print low (exclude under-LOD knives).
+    at_printed_lod = 0.0 <= pull_from_lod_bp <= near_lod_bp
     trough_pass = day_position <= max_day_position or near_lod
     return {
         "hod_so_far": round(hod, 4),
@@ -300,6 +306,8 @@ def _session_range_metrics(
         "pull_from_hod_pct": round(pull_from_hod_pct, 4),
         "pull_from_lod_bp": round(pull_from_lod_bp, 2),
         "day_position": round(day_position, 4),
+        "near_lod": near_lod,
+        "at_printed_lod": at_printed_lod,
         "trough_pass": trough_pass,
     }
 
@@ -328,7 +336,7 @@ def _trough_bounce_metrics(
     hold_minutes: float = PULSE_TROUGH_BOUNCE_HOLD_MINUTES,
 ) -> Dict[str, Any]:
     """
-    Light bounce on 1m bars for TROUGH shadow.
+    Light bounce on 1m bars for TROUGH shadow / live.
 
     bounce_up_1m: price now > close 1m ago
     bounce_hold: session LOD age >= hold_minutes (no new LOD)
@@ -589,9 +597,10 @@ def _enrich_attention_impulse(attention_rows: List[Dict[str, Any]], *, log_shado
 
 
 def _log_attention_trough_shadow(attention_rows: List[Dict[str, Any]]) -> None:
-    """Log TROUGH hits (near LOD + light bounce flags). Shadow only."""
+    """Log TROUGH hits (OR inventory + live-gate flags)."""
     trough_hits = 0
     trough_bounce_hits = 0
+    trough_live_hits = 0
     for row in attention_rows:
         if not row.get("trough_pass"):
             continue
@@ -600,12 +609,16 @@ def _log_attention_trough_shadow(attention_rows: List[Dict[str, Any]]) -> None:
             continue
         trough_hits += 1
         bounce_light = bool(row.get("bounce_light"))
+        live_pass = bool(row.get("trough_live_pass"))
         if bounce_light:
             trough_bounce_hits += 1
+        if live_pass:
+            trough_live_hits += 1
         logger.info(
             "pulse_shadow path=TROUGH symbol=%s rank=%s price=%s day_pos=%s "
             "pull_hod=%s%% pull_lod_bp=%s hod=%s lod=%s range_pct=%s pct_open=%s "
             "bounce_up_1m=%s bounce_hold=%s bounce_light=%s lod_age=%s "
+            "at_printed_lod=%s trough_live=%s "
             "normal_stable=%s impulse_pass=%s",
             row.get("symbol"),
             row.get("rank"),
@@ -621,18 +634,22 @@ def _log_attention_trough_shadow(attention_rows: List[Dict[str, Any]]) -> None:
             row.get("bounce_hold"),
             bounce_light,
             row.get("bounce_lod_age_min"),
+            row.get("at_printed_lod"),
+            live_pass,
             row.get("normal_stable"),
             row.get("impulse_pass"),
         )
     logger.info(
         "pulse_shadow trough summary attention=%d trough=%d trough_bounce=%d "
-        "max_day_pos=%s near_lod_bp=%s bounce_hold>=%sm",
+        "trough_live=%d max_day_pos=%s near_lod_bp=%s bounce_hold>=%sm live=%s",
         len(attention_rows),
         trough_hits,
         trough_bounce_hits,
+        trough_live_hits,
         PULSE_TROUGH_MAX_DAY_POSITION,
         PULSE_TROUGH_NEAR_LOD_BP,
         PULSE_TROUGH_BOUNCE_HOLD_MINUTES,
+        PULSE_TROUGH_LIVE,
     )
 
 
@@ -678,6 +695,27 @@ def build_pulse_impulse_discovery_explanation(candidate: Dict[str, Any], row: Di
     range_pct = float(candidate.get("range_pct") or 0)
     segments = [
         f"IMPULSE: {_pulse_impulse_sentence(row)}",
+        _pulse_rank_sentence(candidate),
+        f"{range_pct:.1f}% intraday range",
+        _pulse_price_sentence(candidate),
+        _pulse_volume_sentence(candidate),
+    ]
+    return " | ".join(segments)
+
+
+def build_pulse_trough_discovery_explanation(candidate: Dict[str, Any], row: Dict[str, Any]) -> str:
+    range_pct = float(candidate.get("range_pct") or 0)
+    pull_lod = row.get("pull_from_lod_bp")
+    lod_age = row.get("bounce_lod_age_min")
+    bounce_bits = []
+    if row.get("bounce_up_1m"):
+        bounce_bits.append("up 1m")
+    if row.get("bounce_hold"):
+        bounce_bits.append(f"LOD held {lod_age}m" if lod_age is not None else "LOD held")
+    bounce_txt = " + ".join(bounce_bits) if bounce_bits else "light bounce"
+    pull_txt = f"{float(pull_lod):.0f}bp off LOD" if pull_lod is not None else "near LOD"
+    segments = [
+        f"TROUGH: {pull_txt}, {bounce_txt}",
         _pulse_rank_sentence(candidate),
         f"{range_pct:.1f}% intraday range",
         _pulse_price_sentence(candidate),
@@ -958,6 +996,12 @@ class Pulse(AdvisorBase):
             normal_stable = recovering and stable_60 and stable_open
             session = _session_range_metrics(hist, price_now)
             bounce = _trough_bounce_metrics(hist_1m, price_now)
+            range_ok = range_pct is not None and float(range_pct) >= PULSE_MIN_RANGE_PCT
+            trough_live_pass = bool(
+                session.get("at_printed_lod")
+                and bounce.get("bounce_light")
+                and range_ok
+            )
 
             attention_row = {
                 "symbol": symbol,
@@ -978,6 +1022,7 @@ class Pulse(AdvisorBase):
                 "normal_stable": normal_stable,
                 **session,
                 **bounce,
+                "trough_live_pass": trough_live_pass,
             }
             attention.append(attention_row)
 
@@ -1117,6 +1162,7 @@ class Pulse(AdvisorBase):
         discoveries_combo = 0
         discoveries_recovery = 0
         discoveries_impulse = 0
+        discoveries_trough = 0
 
         if PULSE_COMBO_LIVE:
             for row in attention:
@@ -1186,10 +1232,48 @@ class Pulse(AdvisorBase):
                 elif outcome == "opp":
                     skipped_opp += 1
 
-        discoveries = discoveries_combo + discoveries_recovery + discoveries_impulse
+        if PULSE_TROUGH_LIVE and tape_status in PULSE_TAPE_TROUGH_STATES:
+            for row in attention:
+                if not row.get("trough_live_pass"):
+                    continue
+                # Pure dip sleeve: skip names already tagged recovery/impulse this build.
+                if row.get("normal_stable") or row.get("impulse_pass"):
+                    continue
+                symbol = str(row.get("symbol") or "").strip().upper()
+                if not symbol:
+                    continue
+                candidate = _attention_row_to_candidate(row)
+                explanation = build_pulse_trough_discovery_explanation(candidate, row)
+                outcome = self._discover_pulse_candidate(
+                    sa,
+                    symbol,
+                    explanation,
+                    sell_instructions,
+                    discovered_symbols,
+                    path="TROUGH",
+                )
+                if outcome == "discovered":
+                    discoveries_trough += 1
+                elif outcome == "cooldown":
+                    skipped_cooldown += 1
+                elif outcome == "opp":
+                    skipped_opp += 1
+        elif PULSE_TROUGH_LIVE:
+            logger.info(
+                "Pulse trough skip: tape=%s (live trough on %s only)",
+                tape_status.upper(),
+                "/".join(sorted(PULSE_TAPE_TROUGH_STATES)),
+            )
+
+        discoveries = (
+            discoveries_combo
+            + discoveries_recovery
+            + discoveries_impulse
+            + discoveries_trough
+        )
         logger.info(
             "Pulse discover sa=%s: recovery_cands=%d attention=%d "
-            "discoveries=%d (combo=%d recovery=%d impulse=%d) "
+            "discoveries=%d (combo=%d recovery=%d impulse=%d trough=%d) "
             "skipped_cooldown=%d skipped_opp=%d",
             sa.id,
             len(recovery_candidates),
@@ -1198,6 +1282,7 @@ class Pulse(AdvisorBase):
             discoveries_combo,
             discoveries_recovery,
             discoveries_impulse,
+            discoveries_trough,
             skipped_cooldown,
             skipped_opp,
         )
