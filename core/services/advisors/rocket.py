@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Dict, Iterable, List, Optional
 
+import pandas as pd
 import pytz
 import yfinance as yf
 
@@ -36,6 +37,7 @@ DISCOVER_MIN_MINUTES = 60  # 10:30 ET
 TOP_GAPS = 5
 ROCKET_DISCOVERY_COOLDOWN_HOURS = 24
 LLM_TIMEOUT_S = 180.0
+YAHOO_LIVE_CHUNK = 250
 
 GAP_MIN_PCT = 7.5
 GAP_MAX_PCT = 15.0
@@ -270,6 +272,114 @@ def quotes_from_snapshots(
             last=last,
             prev_close=prev_close,
             prior_dvol_m=prev_close * prev_volume / 1_000_000.0,
+            prior_day_pct=prior_day_pct,
+        )
+        if cand:
+            out.append(cand)
+    out.sort(key=lambda row: (-row.gap_pct, row.ticker))
+    return out
+
+
+def _bar_date(ts: Any) -> Optional[date]:
+    try:
+        stamp = pd.Timestamp(ts)
+        if stamp.tzinfo is not None:
+            stamp = stamp.tz_convert("America/New_York")
+        return stamp.date()
+    except Exception:
+        return None
+
+
+def _yahoo_symbol_frame(data: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    if data is None or getattr(data, "empty", True):
+        return pd.DataFrame()
+    if isinstance(data.columns, pd.MultiIndex):
+        level0 = data.columns.get_level_values(0)
+        level1 = data.columns.get_level_values(1)
+        if symbol in level0:
+            return data[symbol].dropna(how="all")
+        if symbol in level1:
+            return data.xs(symbol, axis=1, level=1).dropna(how="all")
+        return pd.DataFrame()
+    return data.dropna(how="all")
+
+
+def _yahoo_ohlc_map(data: pd.DataFrame, symbols: List[str], session: date) -> Dict[str, Dict[str, float]]:
+    out: Dict[str, Dict[str, float]] = {}
+    if data is None or getattr(data, "empty", True):
+        return out
+
+    for symbol in symbols:
+        frame = _yahoo_symbol_frame(data, symbol)
+        if frame.empty or "Open" not in frame.columns or "Close" not in frame.columns:
+            continue
+        frame = frame.dropna(subset=["Open", "Close"], how="any")
+        if frame.empty or _bar_date(frame.index[-1]) != session:
+            continue
+        open_px = float(frame["Open"].iloc[-1])
+        last = float(frame["Close"].iloc[-1])
+        if open_px <= 0 or last <= 0:
+            continue
+        out[symbol] = {"open": open_px, "close": last}
+    return out
+
+
+def fetch_today_ohlc(symbols: List[str], session: date) -> Dict[str, Dict[str, float]]:
+    """Yahoo 1d bars for today's open/last. Snapshot-all is not on this Polygon plan."""
+    tickers = [s for s in symbols if s]
+    out: Dict[str, Dict[str, float]] = {}
+    for i in range(0, len(tickers), YAHOO_LIVE_CHUNK):
+        chunk = tickers[i : i + YAHOO_LIVE_CHUNK]
+        try:
+            data = yf.download(
+                chunk,
+                period="1d",
+                interval="1d",
+                auto_adjust=True,
+                progress=False,
+                threads=True,
+                group_by="ticker",
+            )
+        except Exception as exc:
+            logger.warning("Rocket Yahoo live chunk failed (%s): %s", len(chunk), exc)
+            continue
+        mapped = _yahoo_ohlc_map(data, chunk, session)
+        logger.info(
+            "Rocket Yahoo live %s/%s: asked=%s got=%s",
+            i + len(chunk),
+            len(tickers),
+            len(chunk),
+            len(mapped),
+        )
+        out.update(mapped)
+    return out
+
+
+def quotes_from_prior_and_today(
+    yesterday: Dict[str, Dict[str, Any]],
+    today: Dict[str, Dict[str, Any]],
+    day_before: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> List[RocketCandidate]:
+    """Live quotes when Polygon snapshot-all is unavailable: prior EOD + today's Yahoo OHLC."""
+    prior_map = day_before or {}
+    out: List[RocketCandidate] = []
+    for ticker, raw_today in today.items():
+        prev = _bar_ohlcv(yesterday.get(ticker) or {})
+        if not prev:
+            continue
+        open_px = float(raw_today.get("open") or 0)
+        last = float(raw_today.get("close") or 0)
+        t2 = _bar_ohlcv(prior_map.get(ticker) or {})
+        if t2:
+            prior_day_pct = _pct(prev["close"], t2["close"])
+        else:
+            prior_day_pct = _pct(prev["close"], prev["open"])
+        cand = candidate_from_quote(
+            ticker=ticker,
+            open_px=open_px,
+            last=last,
+            prev_close=prev["close"],
+            prior_dvol_m=prev["close"] * prev["volume"] / 1_000_000.0,
             prior_day_pct=prior_day_pct,
         )
         if cand:
@@ -594,9 +704,61 @@ class Rocket(AdvisorBase):
             logger.warning("Rocket T-2 grouped failed (%s): %s", t2, exc)
             return {}
 
+    def _prior_session_map(self, session: date) -> Dict[str, Dict[str, Any]]:
+        prior = prior_trading_day(session)
+        try:
+            bars, resolved = financial_polygon.fetch_grouped_daily_map(
+                prior, adjusted=True, max_lookback=1
+            )
+            logger.info("Rocket prior grouped %s -> %s (%s symbols)", prior, resolved, len(bars))
+            return bars
+        except Exception as exc:
+            logger.warning("Rocket prior grouped failed (%s): %s", prior, exc)
+            return {}
+
+    def _liquid_prior_symbols(self, yesterday: Dict[str, Dict[str, Any]]) -> List[str]:
+        symbols: List[str] = []
+        for ticker, raw in yesterday.items():
+            if not keep_ticker_symbol(ticker):
+                continue
+            prev = _bar_ohlcv(raw)
+            if not prev:
+                continue
+            prior_dvol_m = prev["close"] * prev["volume"] / 1_000_000.0
+            if prev["close"] < MIN_PREV_CLOSE or prior_dvol_m < MIN_PRIOR_DVOL_M:
+                continue
+            symbols.append(ticker)
+        symbols.sort()
+        return symbols
+
+    def _scan_live_yahoo(self, session: date, day_before: Dict[str, Dict[str, Any]]) -> List[RocketCandidate]:
+        yesterday = self._prior_session_map(session)
+        if not yesterday:
+            raise RuntimeError(f"Rocket prior session bars empty for {session}")
+        symbols = self._liquid_prior_symbols(yesterday)
+        logger.info("Rocket Yahoo universe %s liquid names", len(symbols))
+        today = fetch_today_ohlc(symbols, session)
+        if symbols and not today:
+            raise RuntimeError("Rocket Yahoo today bars empty (stale or failed)")
+        rows = quotes_from_prior_and_today(yesterday, today, day_before)
+        logger.info("Rocket gap/dvol filter (Yahoo): %s names", len(rows))
+        types = self._resolve_types([row.ticker for row in rows])
+        rows = apply_equity_types(rows, types)
+        highs = week52_highs([row.ticker for row in rows])
+        return attach_52w(rows, highs)
+
     def _scan_live(self, session: date) -> List[RocketCandidate]:
-        snapshots = financial_polygon.fetch_stock_snapshots()
         day_before = self._day_before_map(session)
+        try:
+            snapshots = financial_polygon.fetch_stock_snapshots()
+        except Exception as exc:
+            if not financial_polygon.polygon_not_authorized(exc):
+                raise
+            logger.warning(
+                "Rocket snapshot-all not on this Polygon plan; Yahoo live fallback (%s)",
+                exc,
+            )
+            return self._scan_live_yahoo(session, day_before)
         rows = quotes_from_snapshots(snapshots, day_before)
         logger.info("Rocket gap/dvol filter: %s names", len(rows))
         types = self._resolve_types([row.ticker for row in rows])

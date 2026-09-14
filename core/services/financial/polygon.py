@@ -53,12 +53,21 @@ def _polygon_client():
     return RESTClient(polygon_api_key)
 
 
-def polygon_eod_data_unavailable(exc: BaseException) -> bool:
-    """True when Polygon rejects grouped daily because EOD bars are not published yet."""
+def polygon_not_authorized(exc: BaseException) -> bool:
+    """True when this Polygon plan does not include the endpoint."""
     text = str(exc).lower()
     return (
         "not_authorized" in text
-        or "before end of day" in text
+        or "not entitled" in text
+        or "upgrade your plan" in text
+    )
+
+
+def polygon_eod_data_unavailable(exc: BaseException) -> bool:
+    """True when Polygon rejects grouped daily because EOD bars are not published yet."""
+    text = str(exc).lower()
+    return polygon_not_authorized(exc) or (
+        "before end of day" in text
         or ("end of day" in text and "upgrade" in text)
     )
 
