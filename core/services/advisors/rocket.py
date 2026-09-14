@@ -21,7 +21,7 @@ import pandas as pd
 import pytz
 import yfinance as yf
 
-from core.services.advisors.advisor import AdvisorBase, discovery_trade_explanation_lead, register
+from core.services.advisors.advisor import AdvisorBase, register
 from core.services.financial import polygon as financial_polygon
 from core.services.market.session import prior_trading_day
 
@@ -52,6 +52,7 @@ CATALYST_TYPES = frozenset(
         "analyst",
         "mna",
         "contract",
+        "clinical",
         "product",
         "legal",
         "sector",
@@ -90,12 +91,14 @@ SIGNIFICANCE LADDER (conservative; lean lower when uncertain):
 
 Do NOT judge whether the event is already priced in. Do NOT assess entry quality, extension, or whether the stock will fade or hold. Do NOT use prior-day return, distance from highs, gap size, or opening behaviour as evidence for the score. Those are a separate tape layer.
 
+catalyst_type: clinical = trial readout, approval, or other clinical/regulatory binary. product = commercial product launch or SKU, not a trial.
+
 If you cannot find a clear catalyst, insufficient_event_info=true and significance_score <= 2.
 
 Return ONLY JSON:
 {{
   "catalyst": "short phrase",
-  "catalyst_type": "earnings|guidance|analyst|mna|contract|product|legal|sector|macro|continuation|unexplained",
+  "catalyst_type": "earnings|guidance|analyst|mna|contract|clinical|product|legal|sector|macro|continuation|unexplained",
   "significance_score": 1-5,
   "is_significant": true,
   "significance_reason": "max 2 sentences",
@@ -588,17 +591,26 @@ def parse_rocket_llm(parsed: Any) -> Optional[Dict[str, Any]]:
     }
 
 
+def event_lead(llm: Dict[str, Any]) -> str:
+    """Short first pipe segment for holdings / Trade.explanation."""
+    score = llm.get("significance_score")
+    try:
+        score = int(score)
+    except (TypeError, ValueError):
+        return "Rocket event"
+    return {
+        5: "Significant 5 event",
+        4: "Significant 4 event",
+        3: "Ordinary 3 event",
+        2: "Soft 2 event",
+        1: "Unclear 1 event",
+    }.get(score, "Rocket event")
+
+
 def discovery_explanation(meta: Dict[str, Any]) -> str:
     llm = meta.get("llm") if isinstance(meta.get("llm"), dict) else {}
     summary = _clean_segment(llm.get("summary") or llm.get("catalyst") or "Rocket gap")
-    summary = discovery_trade_explanation_lead(summary)
-    score = llm.get("significance_score")
-    catalyst_type = llm.get("catalyst_type") or "unexplained"
-    if score is None:
-        sig_seg = "sig n/a"
-    else:
-        sig_seg = f"sig={score} {catalyst_type}"
-    parts = [summary, sig_seg]
+    parts = [event_lead(llm), summary]
     reason = _clean_segment(llm.get("significance_reason"))
     if reason:
         parts.append(reason)
