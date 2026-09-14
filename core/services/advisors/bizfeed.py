@@ -29,8 +29,29 @@ Optional env:
     BIZFEED_ARTICLE_MAX_CHARS — max chars of fetched body in LLM INPUT (default 12000)
     BIZFEED_LLM_LOG_DETAIL   — set 1/true/on to log materiality/significance/surprise reasons and catalyst_facts
     BIZFEED_EARNINGS_DENSITY_MIN — minimum metric-density hits before LLM on earnings rows (default 5)
+    BIZFEED_FEED_TIMEOUT       — seconds per RSS feed HTTP fetch (default 20; GlobeNewswire etc.)
 
-After a valid LLM JSON + national listing: allow_discovery(symbol, 24h) then discovered() (same pattern as PHARM).
+Meyka late gate (live by default; shadow CSV still written):
+    MEYKA_BIZFEED_GATE     — default 1; set 0 to keep legacy Bizfeed discovery (skip Meyka)
+    MEYKA_SHADOW_ONLY      — default 0 (live Discoveries); set 1 for score+log only
+    MEYKA_SHADOW_LOG       — CSV path (default meyka_bizfeed_shadow.csv; keeps meyka_shadow.csv archive intact)
+    MEYKA_IMPACT_MIN       — default 35
+    MEYKA_CLARITY_MIN      — default 7
+    MEYKA_REQUIRE_BIAS     — default bullish_unpriced
+    MEYKA_GAP_UP_SOFT_PCT  — default 3; gap >= this raises impact floor
+    MEYKA_GAP_UP_IMPACT_MIN — default 40 when soft gap applies
+    MEYKA_DISCOVER_MIN_MINUTES_AFTER_OPEN — default 30 (10:00 ET); discover only in session
+    MEYKA_MAX_PRIOR_CLOSE_RUN_PCT — default 5; skip live discovery if already up this much vs prior close
+
+With MEYKA_BIZFEED_GATE=1, Bizfeed only creates Discoveries that pass Meyka
+(ideal for a dedicated fund with advisors=["Bizfeed"]). Legacy Bizfeed buys on
+other funds: remove Bizfeed from those funds, or set MEYKA_BIZFEED_GATE=0.
+
+Meyka-gated discoveries use a custom SI pack (PEAKED + STOP 0.95 + dual END_DAY + DT;
+no PERCENTAGE_REBUY). Non-Meyka Bizfeed path keeps AdvisorBase defaults.
+
+After a valid LLM JSON + national listing: allow_discovery(symbol, 24h), optional Meyka gate,
+then discovered() (same pattern as PHARM).
 
 Requires:
     - feedparser
@@ -48,6 +69,7 @@ import html
 import logging
 import os
 from collections import Counter
+from decimal import Decimal
 import re
 import urllib.error
 import urllib.request
@@ -987,6 +1009,9 @@ _BROWSER_UA = (
     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 )
 
+# GlobeNewswire (and some PR wires) stall Chrome-like scripted UAs; curl-style works.
+_FEED_UA = "SoulTrader-Bizfeed/1.0 (+https://localhost; RSS poller)"
+
 
 def _strict_newswire_headers() -> dict[str, str]:
     referer = "https://www.newswire.com/newsroom"
@@ -1011,13 +1036,46 @@ def _needs_strict_fetch(url: str) -> bool:
     return host == "newswire.com" or host.endswith(".newswire.com")
 
 
+def _bizfeed_feed_timeout() -> float:
+    raw = (os.getenv("BIZFEED_FEED_TIMEOUT") or "20").strip()
+    try:
+        return max(5.0, min(120.0, float(raw)))
+    except ValueError:
+        return 20.0
+
+
 def _parse_rss_url(url: str):
-    """Same strategy as test_bizfeed.py (Newswire strict fetch + cloudscraper first)."""
+    """Fetch RSS XML with timeout, then parse with feedparser."""
     if feedparser is None:
         raise RuntimeError("feedparser is not installed")
 
     if not _needs_strict_fetch(url):
-        return feedparser.parse(url, agent=_BROWSER_UA)
+        timeout = _bizfeed_feed_timeout()
+        headers = {
+            "User-Agent": _FEED_UA,
+            "Accept": "application/rss+xml, application/xml, text/xml, */*;q=0.8",
+        }
+        try:
+            import requests
+
+            r = requests.get(url, headers=headers, timeout=timeout)
+            parsed = feedparser.parse(r.content)
+            parsed.status = r.status_code
+            return parsed
+        except ImportError:
+            pass
+        except Exception as exc:
+            raise RuntimeError(f"feed fetch failed ({timeout:.0f}s): {exc}") from exc
+
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = resp.read()
+                parsed = feedparser.parse(body)
+                parsed.status = resp.status
+                return parsed
+        except Exception as exc:
+            raise RuntimeError(f"feed fetch failed ({timeout:.0f}s): {exc}") from exc
 
     headers = _strict_newswire_headers()
 
@@ -1154,14 +1212,25 @@ def _bizfeed_trim_article_boilerplate(text: str) -> str:
 
 
 def _bizfeed_http_get(url: str, *, timeout: float = 25.0) -> tuple[int, bytes]:
-    headers = dict(_strict_newswire_headers())
-    headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    """
+    Fetch article HTML. Newswire keeps browser/cloudscraper-style headers;
+    GlobeNewswire (and similar) stall Chrome UAs — use feed UA there.
+    """
+    if _needs_strict_fetch(url):
+        headers = dict(_strict_newswire_headers())
+        headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    else:
+        headers = {
+            "User-Agent": _FEED_UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
     try:
         import requests
 
         r = requests.get(url, headers=headers, timeout=timeout)
         return int(r.status_code), r.content or b""
-    except Exception:
+    except ImportError:
         pass
     req = urllib.request.Request(url, headers=headers, method="GET")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -1495,6 +1564,25 @@ class Bizfeed(AdvisorBase):
             _bizfeed_earnings_density_min(),
         )
 
+        from core.services.meyka import (
+            append_shadow_log,
+            article_text_from_parts,
+            default_shadow_log_path,
+            evaluate_for_discovery,
+            meyka_bizfeed_gate_enabled,
+            meyka_max_prior_close_run_pct,
+            meyka_sell_instructions,
+            meyka_shadow_only,
+            prior_close_run_pct,
+        )
+
+        meyka_on = meyka_bizfeed_gate_enabled()
+        logger.info(
+            "BIZFEED Meyka gate: %s (shadow_only=%s)",
+            "on" if meyka_on else "off",
+            meyka_shadow_only() if meyka_on else "n/a",
+        )
+
         for i, row in enumerate(llm_batch, start=1):
             task_key = _bizfeed_llm_task_key_for_row(row)
             primary = (row.get("categories") or [None])[0]
@@ -1618,15 +1706,89 @@ class Bizfeed(AdvisorBase):
                 yahoo_exchange=listed_ex or "",
             )
 
+            discovery_meta: dict[str, Any] | None = None
+            sell_instructions = None
+            if meyka_on:
+                meyka_text = article_text_from_parts(
+                    title=str(row.get("title") or ""),
+                    summary=str(row.get("summary") or ""),
+                    body=str(article_payload.get("article_body") or ""),
+                    max_chars=_bizfeed_article_max_chars(),
+                )
+                decision = evaluate_for_discovery(
+                    listed_sym,
+                    meyka_text,
+                    advisor_name=f"{self.advisor.name}-meyka",
+                    market_status=self.market_open(),
+                )
+                try:
+                    append_shadow_log(
+                        default_shadow_log_path(),
+                        decision.raw if decision.scored else {"ticker": listed_sym},
+                        source="bizfeed",
+                        decision=decision,
+                    )
+                except Exception as log_exc:
+                    logger.warning(
+                        "BIZFEED Meyka shadow log failed for %s: %s",
+                        listed_sym,
+                        log_exc,
+                    )
+                logger.info(
+                    "BIZFEED Meyka | %s | scored=%s allow=%s reason=%s | impact=%s bias=%s "
+                    "clarity=%s gap=%s hours=%s shadow=%s",
+                    listed_sym,
+                    decision.scored,
+                    decision.allow_discovery,
+                    decision.reason,
+                    (decision.scores or {}).get("meyka_impact"),
+                    (decision.scores or {}).get("directional_bias"),
+                    (decision.scores or {}).get("repricing_clarity"),
+                    (decision.market_context or {}).get("gap_open_pct"),
+                    decision.trading_hours_detail,
+                    decision.shadow_only,
+                )
+                if not decision.allow_discovery:
+                    continue
+
+                run_pct = prior_close_run_pct(decision.market_context or {})
+                max_run = meyka_max_prior_close_run_pct()
+                if run_pct is not None and run_pct >= max_run:
+                    logger.info(
+                        "BIZFEED Meyka skip discovery: %s already %+0.1f%% vs prior close "
+                        "(max %+0.1f%%) — move spent",
+                        listed_sym,
+                        run_pct,
+                        max_run,
+                    )
+                    continue
+
+                discovery_meta = {"meyka": decision.meta_payload()}
+                sell_instructions = meyka_sell_instructions()
+                # Scale weight mildly by conviction when live discoveries are enabled.
+                try:
+                    mult = float((decision.scores or {}).get("conviction_multiplier") or 1.0)
+                    weight = (weight * Decimal(str(round(mult, 2)))).quantize(Decimal("0.01"))
+                except Exception:
+                    pass
+
             stock = self.discovered(
                 sa,
                 listed_sym,
                 explanation,
-                None,
+                sell_instructions,
                 weight=weight,
+                meta=discovery_meta,
             )
             if stock:
-                logger.info("BIZFEED discovered %s (%s)", listed_sym, primary or "")
+                if sell_instructions:
+                    logger.info(
+                        "BIZFEED discovered %s (%s) with Meyka SIs (PEAKED/STOP/END_DAY/DT, no rebuy)",
+                        listed_sym,
+                        primary or "",
+                    )
+                else:
+                    logger.info("BIZFEED discovered %s (%s)", listed_sym, primary or "")
             else:
                 logger.warning("BIZFEED discovered() returned None for %s", listed_sym)
 
