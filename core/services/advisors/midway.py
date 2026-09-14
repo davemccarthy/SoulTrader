@@ -5,7 +5,7 @@ Funnel:
   market card (stance) → soft-rank opportunity universe → stabilize → discover
 
 Does not use RSS/8-K/Meyka. WHY_SOFT is still a human/LLM gate outside this path;
-v1 relies on soft bar by stance (+ elevated bar when mood is soft) and skips
+v1 relies on soft bar by stance (active_soft ≥ 2.5) and skips
 extremes that usually mark company events.
 
 Exit/add: PEAKED (min exit +4%) + gated PERCENTAGE_REBUY + DESCENDING_TREND.
@@ -41,8 +41,9 @@ DEFAULT_UNIVERSE = (
 # Discover only after opening auction noise (open + 45m ≈ 10:15 ET).
 MIDWAY_MIN_MINUTES_AFTER_OPEN = 45
 
-# Soft bar: stance sets base; nervous/deteriorating raises the bar (bigger discount).
-MIDWAY_SOFT_BAR_BEARISH = 2.0
+# Soft bar: stance sets base; active_soft requires a slightly bigger discount than the
+# shared 1.0 default (today's flood still cleared 2.0 — bump hunt bar).
+MIDWAY_SOFT_BAR_ACTIVE = 2.5
 
 # Soft scores this high are usually company/event soft (DYN/TBBK lesson).
 MIDWAY_SOFT_SCORE_EXTREME = 20.0
@@ -117,8 +118,8 @@ class Midway(AdvisorBase):
         if bar is None:
             logger.info("Midway skip: no soft bar for stance=%s", state.stance)
             return
-        if state.stance == "active_soft" and state.mood in ("deteriorating", "nervous"):
-            bar = max(bar, MIDWAY_SOFT_BAR_BEARISH)
+        if state.stance == "active_soft":
+            bar = max(bar, MIDWAY_SOFT_BAR_ACTIVE)
 
         held = self._held_symbols()
         discoveries = 0
