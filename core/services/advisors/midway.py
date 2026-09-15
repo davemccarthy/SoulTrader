@@ -2,11 +2,11 @@
 Midway advisor — opportunity book: SO+β universe, market-regime soft entries.
 
 Funnel:
-  market card (stance) → soft-rank opportunity universe → stabilize → discover
+  market card (stance) → soft-rank → below session open → stabilize → discover
 
 Does not use RSS/8-K/Meyka. WHY_SOFT is still a human/LLM gate outside this path;
-v1 relies on soft bar by stance (active_soft ≥ 2.5) and skips
-extremes that usually mark company events.
+v1 relies on soft bar by stance (active_soft ≥ 2.5), session discount vs open,
+and stabilize — skips extremes that usually mark company events.
 
 Exit/add: PEAKED (min exit +4%) + gated PERCENTAGE_REBUY + DESCENDING_TREND.
 """
@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 from pathlib import Path
-from typing import Final, List, Optional, Set
+from typing import Final, Optional, Set
 
 from django.conf import settings
 
@@ -60,6 +60,39 @@ MIDWAY_REBUY_MAX_TRANCHES = Decimal("5")
 
 # Optional hard skips (process failures); empty by default — use soft extreme gate.
 MIDWAY_HARD_SKIP: Final[frozenset[str]] = frozenset()
+
+
+def _session_open_px(symbol: str) -> Optional[float]:
+    """Today's session open from Yahoo fast_info; None if unavailable."""
+    import yfinance as yf
+
+    try:
+        info = yf.Ticker(symbol).fast_info
+        raw = info.get("regularMarketOpen") or info.get("open")
+        if raw is None:
+            return None
+        px = float(raw)
+        return px if px > 0 else None
+    except Exception as exc:
+        logger.debug("Midway session open failed for %s: %s", symbol, exc)
+        return None
+
+
+def _price_below_session_open(stock) -> Optional[bool]:
+    """
+    True when last price is strictly below today's open (session discount).
+    False when at/above open. None when open or price missing — skip discover.
+    """
+    try:
+        px = float(stock.price) if stock.price is not None else 0.0
+    except (TypeError, ValueError):
+        return None
+    if px <= 0:
+        return None
+    open_px = _session_open_px(stock.symbol)
+    if open_px is None:
+        return None
+    return px < open_px
 
 
 class Midway(AdvisorBase):
@@ -126,6 +159,7 @@ class Midway(AdvisorBase):
         skipped_held = 0
         skipped_extreme = 0
         skipped_bar = 0
+        skipped_below_open = 0
         skipped_stabilize = 0
         skipped_cooldown = 0
         skipped_hard = 0
@@ -162,6 +196,12 @@ class Midway(AdvisorBase):
             if stock is None:
                 continue
             stock.refresh()
+
+            below_open = _price_below_session_open(stock)
+            if below_open is not True:
+                skipped_below_open += 1
+                continue
+
             stabilized = price_above_minutes_ago(stock, minutes=MIDWAY_STABILIZE_MINUTES)
             if stabilized is not True:
                 skipped_stabilize += 1
@@ -182,6 +222,7 @@ class Midway(AdvisorBase):
                         "so_pair": cand.so_pair,
                         "sleeve": cand.sleeve,
                         "soft_bar": bar,
+                        "below_open": True,
                     }
                 },
             ):
@@ -191,7 +232,7 @@ class Midway(AdvisorBase):
         logger.info(
             "Midway sa=%s: stance=%s mood=%s bar=%s universe=%d "
             "discoveries=%d held_skip=%d extreme_skip=%d bar_skip=%d "
-            "stabilize_skip=%d cooldown_skip=%d hard_skip=%d",
+            "below_open_skip=%d stabilize_skip=%d cooldown_skip=%d hard_skip=%d",
             sa.id,
             state.stance,
             state.mood,
@@ -201,6 +242,7 @@ class Midway(AdvisorBase):
             skipped_held,
             skipped_extreme,
             skipped_bar,
+            skipped_below_open,
             skipped_stabilize,
             skipped_cooldown,
             skipped_hard,
@@ -257,7 +299,7 @@ class Midway(AdvisorBase):
         bar_s = f"{bar:.1f}" if bar is not None else "none"
         return (
             f"Midway soft entry | SO {cand.so_pair} soft={soft} "
-            f"(bar {bar_s}) | vsSPY20 {vs_spy} vsSec20 {vs_sec} | "
+            f"(bar {bar_s}) | below open | vsSPY20 {vs_spy} vsSec20 {vs_sec} | "
             f"sleeve {cand.sleeve} {cand.sector_etf} | "
             f"stance {stance}/{mood} | {MIDWAY_STABILIZE_MINUTES}m stabilize"
         )
