@@ -285,7 +285,9 @@ class Stock(models.Model):
         Args:
             period: Time period for history (default: "1d" for 1 day)
             interval: Data interval (default: "15m" for 15 minutes)
-            hours: Optional - limit to last N hours of data (default: 12 hours)
+            hours: Optional lookback in hours (default 12). Intraday warmup is 2h
+                unless hours is in (0, 2), in which case warmup equals that lookback
+                so calc_trend(hours=1) can run at 10:30 ET.
             latest_price: Optional latest quote to replace most recent close before regression
         
         Returns:
@@ -327,10 +329,23 @@ class Stock(models.Model):
                     logger.debug(f"Markets closed: outside trading hours for {self.symbol}")
                     return None
                 
-                # Check if market just opened (less than 2 hours of trading)
+                # Need enough tape for the lookback. Default / hours>=2 wait 2h
+                # so 15m OLS is stable. hours=1 (Rocket 10:30) waits 1h only.
                 hours_since_open = (now_et - market_open).total_seconds() / 3600
-                if hours_since_open < 2:
-                    logger.debug(f"Market recently opened (< 2 hours) for {self.symbol}")
+                warmup_hours = 2.0
+                if hours is not None:
+                    try:
+                        lookback = float(hours)
+                    except (TypeError, ValueError):
+                        lookback = 2.0
+                    if 0 < lookback < 2:
+                        warmup_hours = lookback
+                if hours_since_open < warmup_hours:
+                    logger.debug(
+                        "Market recently opened (<%sh) for %s",
+                        warmup_hours,
+                        self.symbol,
+                    )
                     return None
 
             ticker = yf.Ticker(self.symbol)

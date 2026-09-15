@@ -3,10 +3,12 @@ Rocket advisor — opening-high tape (gaps Edgar never sees).
 
 Stage A (+30m): watch CS/ADR names that gapped ~7.5–15% with real prior-day dvol.
 Stage B (+45m): Gemini+search on the top 5 gaps — event reason + significance.
-Stage C (+60m): discover those top 5. Explanation = LLM response + tape fields.
+Stage C (+60m): discover a name only if calc_trend(hours=1) > 0.
+Stage D (chase): same check every later SA until 13:00 ET, then give up.
+Explanation = LLM response + tape fields.
 
 News LLM scores the event. Tape (gap, vs-open, prior-day, 52w) is separate.
-Default SIs stay AdvisorBase (PEAKED / gated PERCENTAGE_REBUY / DESCENDING_TREND).
+SIs: PEAKED, gated PERCENTAGE_REBUY, DESCENDING_TREND, END_DAY 1.00× from 14:00 ET (flatten if green).
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
@@ -33,11 +36,15 @@ WATCH_MIN_MINUTES = 30  # 10:00 ET
 WATCH_MAX_MINUTES = 74  # through the 10:30 SA; 10:45 is +75
 WATCH_DAYS = 1
 LLM_MIN_MINUTES = 45  # 10:15 ET
-DISCOVER_MIN_MINUTES = 60  # 10:30 ET
+DISCOVER_MIN_MINUTES = 60  # 10:30 ET Stage C
+CHASE_UNTIL_MINUTES = 210  # 13:00 ET Stage D give-up (Pulse-like; leftover stays Pending)
+DISCOVER_TREND_HOURS = 1
 TOP_GAPS = 5
 ROCKET_DISCOVERY_COOLDOWN_HOURS = 24
 LLM_TIMEOUT_S = 180.0
 YAHOO_LIVE_CHUNK = 250
+ROCKET_ENDDAY_TAKE = Decimal("1.00")
+ROCKET_ENDDAY_MINUTES_BEFORE_CLOSE = Decimal("120")
 
 GAP_MIN_PCT = 7.5
 GAP_MAX_PCT = 15.0
@@ -536,6 +543,9 @@ def tape_explanation_segments(meta: Dict[str, Any]) -> List[str]:
         parts.append(f"prev ${float(dvol):.0f}M dvol")
     except (TypeError, ValueError):
         parts.append("prev dvol n/a")
+    trend_1h = _fmt_signed_pct(meta.get("trend_1h"), digits=2)
+    if trend_1h:
+        parts.append(f"1h trend {trend_1h}")
     return parts
 
 
@@ -630,7 +640,14 @@ def top_gap_watches(entries: List[Any], limit: int = TOP_GAPS) -> List[Any]:
 
 
 class Rocket(AdvisorBase):
-    """Opening-high watcher: Stage A watch, Stage B news LLM, Stage C top-5 discover."""
+    """Opening-high watcher: watch, LLM, trend-gated discover, then chase until 13:00."""
+
+    sell_instructions = [
+        ("PEAKED", 15.0, 4.0),
+        ("PERCENTAGE_REBUY", 0.04, 5),
+        ("DESCENDING_TREND", -0.20, None),
+        ("END_DAY", ROCKET_ENDDAY_TAKE, ROCKET_ENDDAY_MINUTES_BEFORE_CLOSE),
+    ]
 
     def _session_date(self) -> date:
         return datetime.now(ET).date()
@@ -927,6 +944,44 @@ class Rocket(AdvisorBase):
         )
         logger.info("Rocket Stage B done session=%s llm_ok=%s of %s", session, ok, len(entries))
 
+    def _try_discover_watch(self, sa, entry) -> str:
+        """Discover one Pending watch if 1h trend is positive. Returns outcome key."""
+        symbol = entry.stock.symbol
+        if not self.allow_discovery(
+            symbol,
+            period=ROCKET_DISCOVERY_COOLDOWN_HOURS,
+            headline_check=False,
+        ):
+            return "cooldown"
+        stock = entry.stock
+        stock.refresh()
+        trend = stock.calc_trend(
+            period="1d",
+            interval="15m",
+            hours=DISCOVER_TREND_HOURS,
+            latest_price=stock.price,
+        )
+        meta = dict(entry.meta or {})
+        meta["trend_1h"] = None if trend is None else round(float(trend), 4)
+        if trend is None or trend <= 0:
+            entry.meta = meta
+            entry.save(update_fields=["meta"])
+            logger.info(
+                "Rocket chase %s: 1h trend %s (need > 0)",
+                symbol,
+                "n/a" if trend is None else f"{float(trend):+.3f}",
+            )
+            return "trend"
+        explanation = discovery_explanation(meta)
+        if self.discovered(sa, symbol, explanation, meta=meta):
+            meta["stage"] = "scored"
+            entry.meta = meta
+            entry.status = "Executed"
+            entry.explanation = explanation[:500]
+            entry.save(update_fields=["meta", "status", "explanation"])
+            return "discovered"
+        return "failed"
+
     def _maybe_discover(self, sa) -> None:
         mins = self.market_open()
         if mins is None or mins < DISCOVER_MIN_MINUTES:
@@ -935,51 +990,65 @@ class Rocket(AdvisorBase):
         if not self._blob_date_is("rocket_llm_date", session):
             logger.info("Rocket discover skip: Stage B not done session=%s", session)
             return
-        if self._blob_date_is("rocket_discover_date", session):
-            logger.info("Rocket skip: Stage C already done session=%s", session)
+
+        if mins >= CHASE_UNTIL_MINUTES:
+            if not self._blob_date_is("rocket_chase_closed", session):
+                leftover = [e.stock.symbol for e in self._session_watches(session)]
+                self._mark_blob_date(
+                    "rocket_chase_closed",
+                    session,
+                    extra={"rocket_chase_leftover": leftover},
+                )
+                logger.info(
+                    "Rocket Stage D give up session=%s leftover=%s (after +%sm / 13:00 ET)",
+                    session,
+                    leftover,
+                    CHASE_UNTIL_MINUTES,
+                )
             return
 
         entries = top_gap_watches(self._session_watches(session), TOP_GAPS)
+        if not entries:
+            return
+
+        first_pass = not self._blob_date_is("rocket_stage_c_date", session)
+        label = "Stage C" if first_pass else "Stage D"
         logger.info(
-            "Rocket Stage C sa=%s session=%s names=%s",
+            "Rocket %s sa=%s session=%s market_open=%sm names=%s",
+            label,
             sa.id,
             session,
+            mins,
             [entry.stock.symbol for entry in entries],
         )
         discoveries = 0
         skipped = 0
+        skipped_trend = 0
         for entry in entries:
-            symbol = entry.stock.symbol
-            if not self.allow_discovery(
-                symbol,
-                period=ROCKET_DISCOVERY_COOLDOWN_HOURS,
-                headline_check=False,
-            ):
-                skipped += 1
-                continue
-            meta = dict(entry.meta or {})
-            explanation = discovery_explanation(meta)
-            if self.discovered(sa, symbol, explanation, meta=meta):
+            outcome = self._try_discover_watch(sa, entry)
+            if outcome == "discovered":
                 discoveries += 1
-                meta["stage"] = "scored"
-                entry.meta = meta
-                entry.status = "Executed"
-                entry.explanation = explanation[:500]
-                entry.save(update_fields=["meta", "status", "explanation"])
+            elif outcome == "trend":
+                skipped_trend += 1
+            else:
+                skipped += 1
 
-        self._mark_blob_date(
-            "rocket_discover_date",
-            session,
-            extra={
-                "rocket_discover_count": discoveries,
-                "rocket_discover_skipped": skipped,
-            },
-        )
+        extra = {
+            "rocket_discover_count": discoveries,
+            "rocket_discover_skipped": skipped,
+            "rocket_discover_trend_skip": skipped_trend,
+        }
+        if first_pass:
+            self._mark_blob_date("rocket_stage_c_date", session, extra=extra)
+        else:
+            self._mark_blob_date("rocket_stage_d_date", session, extra=extra)
         logger.info(
-            "Rocket Stage C done session=%s discoveries=%s skipped=%s",
+            "Rocket %s done session=%s discoveries=%s skipped=%s trend_skip=%s",
+            label,
             session,
             discoveries,
             skipped,
+            skipped_trend,
         )
 
     def discover(self, sa) -> None:
