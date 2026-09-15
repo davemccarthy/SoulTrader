@@ -12,6 +12,12 @@ from pytz import timezone as tz
 from django.utils import timezone
 from core.models import Holding, Discovery, Advisor, Profile
 from core.services.execution import execute_buy, execute_sell
+from core.services.risk.headline_screen import (
+    log_headline_rebuy_flatten,
+    rebuy_flatten_explanation,
+    rebuy_headline_decision,
+    screen_headlines_for_rebuy,
+)
 from core.services.intraday_stabilize import (
     STABILIZE_MINUTES_DEFAULT,
     price_above_minutes_ago,
@@ -199,6 +205,46 @@ def _percentage_rebuy_intraday_allows(stock, current_price) -> bool:
             return False
 
     return True
+
+
+def _percentage_rebuy_headline_action(holding, drop_pct):
+    """
+    After technical REBUY gates: BUY (default), HOLD, or SELL on company news.
+    Returns (action, HeadlineScreenResult).
+    """
+    stock = holding.stock
+    discovery = holding.discovery
+    advisor_name = ""
+    python_class = ""
+    entered = ""
+    if discovery is not None:
+        entered = (discovery.explanation or "").split(" | ")[0].strip()
+        advisor = getattr(discovery, "advisor", None)
+        if advisor is not None:
+            advisor_name = advisor.name or ""
+            python_class = advisor.python_class or ""
+
+    avg = holding.average_price
+    result = screen_headlines_for_rebuy(
+        stock.symbol,
+        advisor=advisor_name,
+        trigger=f"PERCENTAGE_REBUY {python_class or 'holding'} existing position",
+        position_context={
+            "drop_vs_avg": float(drop_pct),
+            "average_price": str(avg) if avg is not None else "",
+            "last": str(stock.price) if stock.price is not None else "",
+            "tranches": int(holding.tranches or 0),
+            "entered_as": entered,
+        },
+    )
+    action = rebuy_headline_decision(result)
+    if action == "sell":
+        log_headline_rebuy_flatten(advisor_name or "holding", stock.symbol, result)
+    elif action == "hold":
+        logger.info("%s rebuy HOLD: %s", stock.symbol, result.reason or result.stage)
+    return action, result
+
+
 RUNNER_LOOKBACK_MINUTES = 30
 RUNNER_MIN_PROFIT_PCT = 2.0
 RUNNER_MIN_RET_30M_PCT = 1.0
@@ -989,6 +1035,21 @@ def analyze_holdings(sa, funds):
                                     rebuy_amount = tranche_amount
                                     if rebuy_amount <= 0:
                                         continue
+
+                                    action, screen = _percentage_rebuy_headline_action(
+                                        holding, drop_pct
+                                    )
+                                    if action == "hold":
+                                        continue
+                                    if action == "sell":
+                                        execute_sell(
+                                            sa,
+                                            fund,
+                                            holding,
+                                            rebuy_flatten_explanation(screen),
+                                        )
+                                        break
+
                                     execute_buy(
                                         sa,
                                         fund,

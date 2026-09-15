@@ -1,8 +1,9 @@
 """
-Yahoo headline red-flag screen for discovery eligibility.
+Yahoo headline red-flag screen.
 
-Two-stage: regex keyword screen → Gemini gatekeeper on hits only.
-Regex-only hits do not block; LLM BLOCK (risk >= 70) blocks discovery.
+Discovery: regex → Gemini EXECUTE/BLOCK (risk >= 70 blocks). Fail open if LLM down.
+Rebuy: same regex, then Gemini BUY/HOLD/SELL. Fail to HOLD if LLM down. BUY is default
+when headlines have no red-flag keywords.
 """
 from __future__ import annotations
 
@@ -110,6 +111,36 @@ Scoring guide:
 
 BLOCK when risk_score >= 70 or structural tail-risk is clear.
 EXECUTE when risk_score < 70 and headlines are noise, already-priced concerns, or mixed/contextual."""
+
+LLM_REBUY_SYSTEM = """You are a risk gatekeeper for an EXISTING short-term equity position.
+A rebuy (add another tranche) is already technically allowed: the name has dropped vs average
+and short-term tape gates have passed.
+
+Question: Given recent headlines, should we BUY (add), HOLD (keep, do not add), or SELL (flatten)?
+
+This is not an entry gate. Do not output EXECUTE or BLOCK.
+
+Output STRICT JSON only:
+{
+  "action": "BUY" | "HOLD" | "SELL",
+  "risk_score": 0-100,
+  "severity": "LOW" | "MEDIUM" | "HIGH" | "CRITICAL",
+  "main_drivers": ["short bullet", "..."],
+  "counterarguments": ["why risk may be overstated", "..."],
+  "reasoning": "One clear sentence that names the company news if SELL",
+  "risk_type": "NOISE" | "EARNINGS_RISK" | "STRUCTURAL_REGIME_CHANGE"
+}
+
+- BUY: headlines are noise, already priced, mixed, or the same catalyst that justified entry.
+- HOLD: concerning or unclear (downgrade, messy print, known worries). Do not add. Do not flatten.
+- SELL: truly bad company news you can name: offering/dilution, CRL/clinical failure, fraud/probe,
+  bankruptcy, going concern, halt, or a structural guidance/outlook collapse.
+
+SELL reasoning must name the event (e.g. "FDA issued a CRL for the lead asset"). Not "elevated downside".
+ZoomInfo-style downgrade without catastrophe is HOLD. Meta-style monetization noise is BUY or HOLD, not SELL."""
+
+TRADE_EXPLANATION_MAX = 256
+REBUY_FLATTEN_PREFIX = "REBUY flatten: "
 
 
 @dataclass
@@ -229,6 +260,8 @@ def run_llm_gatekeeper(
     trigger: str = "",
     keyword_hits: Sequence[KeywordHit],
     requested_symbol: str = "",
+    system: Optional[str] = None,
+    position_context: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     api_key = os.environ.get("GEMINI_KEY") or os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -242,14 +275,16 @@ def run_llm_gatekeeper(
         logger.warning("Headline screen LLM skip: google-genai not installed")
         return None
 
-    user_payload = {
+    user_payload: Dict[str, Any] = {
         "ticker": symbol,
         "requested_ticker": requested_symbol or symbol,
         "technical_trigger": trigger or "discovery entry signal",
         "live_headlines": list(headlines),
         "regex_flags": [{"label": h.label, "headline": h.headline} for h in keyword_hits],
     }
-    prompt = f"{LLM_SYSTEM}\n\nInput:\n{json.dumps(user_payload, indent=2)}"
+    if position_context:
+        user_payload["position"] = position_context
+    prompt = f"{system or LLM_SYSTEM}\n\nInput:\n{json.dumps(user_payload, indent=2)}"
 
     client = genai.Client(api_key=api_key)
     config = types.GenerateContentConfig(temperature=0.0, top_p=1.0)
@@ -295,18 +330,52 @@ def apply_llm_verdict(result: HeadlineScreenResult, llm: Dict[str, Any]) -> None
         result.reason = f"Unexpected LLM action: {action!r}"
 
 
-def screen_headlines_for_discovery(
-    symbol: str,
-    *,
-    advisor: str = "",
-    trigger: str = "",
-    limit: int = 5,
-    use_llm: bool = True,
-) -> HeadlineScreenResult:
-    """
-    Screen a symbol for discovery. Blocks only on LLM BLOCK after regex hit.
-    Regex-only hits without LLM do not block (fail open if LLM unavailable).
-    """
+def apply_llm_rebuy_verdict(result: HeadlineScreenResult, llm: Dict[str, Any]) -> None:
+    """Map BUY/HOLD/SELL. Do not coerce HOLD to SELL via discovery risk threshold."""
+    result.llm = llm
+    action = str(llm.get("action", "")).strip().upper()
+    reasoning = str(llm.get("reasoning") or "").strip()
+
+    if action == "SELL":
+        result.stage = "llm_sell"
+        result.allowed = False
+        result.reason = reasoning or "LLM SELL"
+    elif action == "HOLD":
+        result.stage = "llm_hold"
+        result.allowed = True
+        result.reason = reasoning or "LLM HOLD"
+    elif action == "BUY":
+        result.stage = "llm_buy"
+        result.allowed = True
+        result.reason = reasoning or "LLM BUY"
+    else:
+        result.stage = "llm_error"
+        result.allowed = True
+        result.reason = f"Unexpected LLM action: {action!r}"
+
+
+def rebuy_headline_decision(result: HeadlineScreenResult) -> str:
+    """BUY default on a clear tape; HOLD if LLM did not give a clean BUY/SELL."""
+    if result.stage in ("clear", "llm_buy"):
+        return "buy"
+    if result.stage == "llm_sell":
+        return "sell"
+    return "hold"
+
+
+def rebuy_flatten_explanation(result: HeadlineScreenResult) -> str:
+    """Trade.explanation (max 256): named company-news sentence from the LLM."""
+    reasoning = str((result.llm or {}).get("reasoning") or result.reason or "company news").strip()
+    reasoning = " ".join(reasoning.split())
+    budget = TRADE_EXPLANATION_MAX - len(REBUY_FLATTEN_PREFIX)
+    if budget < 1:
+        return REBUY_FLATTEN_PREFIX[:TRADE_EXPLANATION_MAX]
+    if len(reasoning) > budget:
+        reasoning = reasoning[: max(budget - 3, 1)].rstrip() + "..."
+    return f"{REBUY_FLATTEN_PREFIX}{reasoning}"
+
+
+def _headline_scan_base(symbol: str, *, limit: int = 5) -> HeadlineScreenResult:
     requested = (symbol or "").strip().upper()
     resolved, headlines, lookback = fetch_headlines(requested, limit=limit)
     hits = scan_keywords(headlines)
@@ -333,28 +402,91 @@ def screen_headlines_for_discovery(
     labels = sorted({h.label for h in hits})
     prefix = f"Headlines from alias {resolved}; " if resolved != requested else ""
     result.reason = f"{prefix}Keyword hit: {', '.join(labels)}"
+    return result
 
-    if not use_llm:
+
+def screen_headlines_for_discovery(
+    symbol: str,
+    *,
+    advisor: str = "",
+    trigger: str = "",
+    limit: int = 5,
+    use_llm: bool = True,
+) -> HeadlineScreenResult:
+    """
+    Screen a symbol for discovery. Blocks only on LLM BLOCK after regex hit.
+    Regex-only hits without LLM do not block (fail open if LLM unavailable).
+    """
+    result = _headline_scan_base(symbol, limit=limit)
+    if result.stage == "clear" or not use_llm:
         return result
 
+    labels = sorted({h.label for h in result.keyword_hits})
     llm = run_llm_gatekeeper(
-        resolved,
-        headlines,
-        trigger=trigger or f"{advisor} discovery" if advisor else "discovery entry signal",
-        keyword_hits=hits,
-        requested_symbol=requested,
+        result.resolved_symbol or result.symbol,
+        result.headlines,
+        trigger=trigger or (f"{advisor} discovery" if advisor else "discovery entry signal"),
+        keyword_hits=result.keyword_hits,
+        requested_symbol=result.symbol,
     )
     if llm is None:
         result.stage = "llm_error"
         result.reason = "LLM unavailable; regex hits not blocking discovery"
         logger.warning(
             "%s: headline regex hit (%s) but LLM unavailable — allowing discovery",
-            requested,
+            result.symbol,
             ", ".join(labels),
         )
         return result
 
     apply_llm_verdict(result, llm)
+    return result
+
+
+def screen_headlines_for_rebuy(
+    symbol: str,
+    *,
+    advisor: str = "",
+    trigger: str = "",
+    position_context: Optional[Dict[str, Any]] = None,
+    limit: int = 5,
+    use_llm: bool = True,
+) -> HeadlineScreenResult:
+    """
+    Screen an existing position before adding a PERCENTAGE_REBUY tranche.
+
+    Always runs (no advisor skip-list). No keyword hits → BUY. Keyword hits + LLM
+    down → HOLD. LLM SELL flattens; HOLD skips the add.
+    """
+    result = _headline_scan_base(symbol, limit=limit)
+    if result.stage == "clear":
+        return result
+    if not use_llm:
+        return result
+
+    labels = sorted({h.label for h in result.keyword_hits})
+    llm = run_llm_gatekeeper(
+        result.resolved_symbol or result.symbol,
+        result.headlines,
+        trigger=trigger or (
+            f"{advisor} PERCENTAGE_REBUY" if advisor else "PERCENTAGE_REBUY existing position"
+        ),
+        keyword_hits=result.keyword_hits,
+        requested_symbol=result.symbol,
+        system=LLM_REBUY_SYSTEM,
+        position_context=position_context,
+    )
+    if llm is None:
+        result.stage = "llm_error"
+        result.reason = "LLM unavailable; regex hits — holding, not adding"
+        logger.warning(
+            "%s: rebuy headline regex hit (%s) but LLM unavailable — HOLD",
+            result.symbol,
+            ", ".join(labels),
+        )
+        return result
+
+    apply_llm_rebuy_verdict(result, llm)
     return result
 
 
@@ -370,6 +502,38 @@ def log_headline_blocked(advisor_name: str, symbol: str, result: HeadlineScreenR
         "\n"
         "%s\n"
         "%s  %s: %s — HEADLINE SCREEN BLOCKED DISCOVERY\n"
+        "  lookback:   %s\n"
+        "  hits:       %s\n"
+        "  risk_score: %s  severity: %s\n"
+        "  reason:     %s\n"
+        "  headlines:\n%s\n"
+        "%s\n",
+        BLOCK_BANNER,
+        BLOCK_BANNER,
+        advisor_name,
+        symbol,
+        result.lookback,
+        hits,
+        risk,
+        severity,
+        reasoning,
+        headline_lines or "    (none)",
+        BLOCK_BANNER,
+    )
+
+
+def log_headline_rebuy_flatten(advisor_name: str, symbol: str, result: HeadlineScreenResult) -> None:
+    """Loud log when rebuy headline screen flattens an existing position."""
+    hits = ", ".join(sorted({h.label for h in result.keyword_hits})) or "none"
+    risk = (result.llm or {}).get("risk_score", "?")
+    severity = (result.llm or {}).get("severity", "?")
+    reasoning = result.reason or "company news"
+    headline_lines = "\n".join(f"    • {h}" for h in result.headlines[:5])
+
+    logger.warning(
+        "\n"
+        "%s\n"
+        "%s  %s: %s — REBUY HEADLINE SELL (flatten)\n"
         "  lookback:   %s\n"
         "  hits:       %s\n"
         "  risk_score: %s  severity: %s\n"
