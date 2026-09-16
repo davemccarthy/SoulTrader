@@ -182,7 +182,7 @@ struct HoldingsView: View {
         let expl = holdingListExplanationLine(holding)
 
         return VStack(alignment: .leading, spacing: 3) {
-            Text(holding.stock.company ?? holding.stock.symbol)
+            Text(holding.listCompanyTitle)
                 .appStyle(.listHeadline)
                 .lineLimit(2)
                 .truncationMode(.tail)

@@ -133,7 +133,6 @@ struct TradesView: View {
         let priceDecimal = decimal(from: trade.price) ?? 0
         let total = Decimal(trade.shares) * priceDecimal
         let isBuy = trade.action.uppercased() == "BUY"
-        let actionColor: Color = isBuy ? Theme.positive : Theme.negative
         let sellPct = sellPnlPercent(for: trade)
         let totalColor: Color = {
             guard !isBuy else { return Theme.valuePrimary }
@@ -151,8 +150,8 @@ struct TradesView: View {
                 .appStyle(.metricValue, color: totalColor)
                 .lineLimit(1)
 
-            Text(trade.action.uppercased())
-                .appStyle(.inlineMetricValue, color: actionColor)
+            Text(trade.actionDisplayLabel)
+                .appStyle(.inlineMetricValue, color: trade.actionDisplayColor)
                 .lineLimit(1)
         }
         .frame(minWidth: 78, alignment: .trailing)
@@ -314,8 +313,7 @@ struct TradeDetailView: View {
     @ViewBuilder
     private var tradeExplanationSection: some View {
         if let text = trimmedTradeExplanation {
-            let action = trade.action.uppercased()
-            let reasonTitle = "REASON FOR \(action)"
+            let reasonTitle = "REASON FOR \(trade.actionDisplayLabel)"
             explanationCard(title: reasonTitle, text: text)
 
             if let buyReason = priorBuyExplanationForSell {
@@ -497,18 +495,10 @@ struct TradeDetailView: View {
     }
 
     private var tradeActionBadge: some View {
-        let action = trade.action.uppercased()
-        let isBuy = action == "BUY"
-        let isSell = action == "SELL"
-        let color: Color = {
-            if isBuy { return .green }
-            if isSell { return .red }
-            return Theme.valuePrimary
-        }()
-        return Text(action)
-            .font(.title3)
-            .fontWeight(.heavy)
-            .foregroundStyle(color)
+        Text(trade.actionDisplayLabel)
+            .font(.headline)
+            .fontWeight(.semibold)
+            .foregroundStyle(trade.actionDisplayColor)
             .lineLimit(1)
             .minimumScaleFactor(0.75)
     }

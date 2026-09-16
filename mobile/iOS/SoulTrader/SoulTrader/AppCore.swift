@@ -187,6 +187,8 @@ struct HoldingResponse: Decodable, Identifiable {
     let stock: StockInfo
     let shares: Int
     let averagePrice: String
+    /// Buys on this open position (initial=1; each rebuy increments).
+    let tranches: Int
     let discoveryName: String?
     let discoveryLogo: String?
     let discoveryComment: String?
@@ -199,11 +201,33 @@ struct HoldingResponse: Decodable, Identifiable {
         case stock
         case shares
         case averagePrice = "average_price"
+        case tranches
         case discoveryName = "discovery_name"
         case discoveryLogo = "discovery_logo"
         case discoveryComment = "discovery_comment"
         case discoveryExplanation = "discovery_explanation"
         case discoveryMeta = "discovery_meta"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int.self, forKey: .id)
+        stockId = try c.decode(Int.self, forKey: .stockId)
+        stock = try c.decode(StockInfo.self, forKey: .stock)
+        shares = try c.decode(Int.self, forKey: .shares)
+        averagePrice = try c.decode(String.self, forKey: .averagePrice)
+        tranches = try c.decodeIfPresent(Int.self, forKey: .tranches) ?? 0
+        discoveryName = try c.decodeIfPresent(String.self, forKey: .discoveryName)
+        discoveryLogo = try c.decodeIfPresent(String.self, forKey: .discoveryLogo)
+        discoveryComment = try c.decodeIfPresent(String.self, forKey: .discoveryComment)
+        discoveryExplanation = try c.decodeIfPresent(String.self, forKey: .discoveryExplanation)
+        discoveryMeta = try c.decodeIfPresent(DiscoveryMetaPayload.self, forKey: .discoveryMeta)
+    }
+
+    /// List title: company, with `(N)` when multiple buy tranches.
+    var listCompanyTitle: String {
+        let name = stock.company ?? stock.symbol
+        return tranches > 1 ? "\(name) (\(tranches))" : name
     }
 }
 
@@ -567,6 +591,26 @@ struct TradeResponse: Decodable, Identifiable {
     let explanation: String?
     let sa: Int?
     let created: String?
+
+    /// PERCENTAGE_REBUY adds still store `action=BUY` with explanation like "Rebuy $…".
+    var isRebuy: Bool {
+        guard action.uppercased() == "BUY" else { return false }
+        let text = (explanation ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.lowercased().hasPrefix("rebuy")
+    }
+
+    var actionDisplayLabel: String {
+        isRebuy ? "REBUY" : action.uppercased()
+    }
+
+    var actionDisplayColor: Color {
+        if isRebuy { return Theme.rebuy }
+        switch action.uppercased() {
+        case "BUY": return Theme.positive
+        case "SELL": return Theme.negative
+        default: return Theme.valuePrimary
+        }
+    }
 }
 
 struct FundAdvisorRow: Decodable, Identifiable {
@@ -909,6 +953,7 @@ struct APIEnvironment {
     static let showHostCredential = true
 
     enum HostOption: String, CaseIterable, Identifiable {
+        case loopback = "127.0.0.1:8000"
         case local1 = "192.168.1.21:8000"
         case local2 = "192.168.1.6:8000"
         case klynt = "klynt.com"
@@ -917,6 +962,8 @@ struct APIEnvironment {
 
         var baseURL: URL {
             switch self {
+            case .loopback:
+                return URL(string: "http://127.0.0.1:8000/api/")!
             case .local1:
                 return URL(string: "http://192.168.1.21:8000/api/")!
             case .local2:

@@ -28,6 +28,8 @@ enum Theme {
     static let secondaryText = Color.white.opacity(0.75)
     static let positive = Color.green
     static let negative = Color.red
+    /// Rebuy / add-on buys — distinct from entry BUY green.
+    static let rebuy = Color(red: 0.95, green: 0.62, blue: 0.12)
     static let link = Color(red: 0.45, green: 0.78, blue: 1.0)
 
     /// Color for signed percent or currency deltas (green / red / neutral).
