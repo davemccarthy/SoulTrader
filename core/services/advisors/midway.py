@@ -2,11 +2,13 @@
 Midway advisor — opportunity book: SO+β universe, market-regime soft entries.
 
 Funnel:
-  market card (stance) → soft-rank → below session open → stabilize → discover
+  market card (stance) → soft-rank → below session open → sector intraday OK
+  → stabilize → discover
 
 Does not use RSS/8-K/Meyka. WHY_SOFT is still a human/LLM gate outside this path;
 v1 relies on soft bar by stance (active_soft ≥ 2.5), session discount vs open,
-and stabilize — skips extremes that usually mark company events.
+sector not freefalling on the day, and stabilize — skips extremes that usually
+mark company events.
 
 Exit/add: PEAKED (min exit +4%) + gated PERCENTAGE_REBUY + DESCENDING_TREND.
 """
@@ -16,7 +18,7 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 from pathlib import Path
-from typing import Final, Optional, Set
+from typing import Dict, Final, Optional, Set, Tuple
 
 from django.conf import settings
 
@@ -62,20 +64,30 @@ MIDWAY_REBUY_MAX_TRANCHES = Decimal("5")
 MIDWAY_HARD_SKIP: Final[frozenset[str]] = frozenset()
 
 
-def _session_open_px(symbol: str) -> Optional[float]:
-    """Today's session open from Yahoo fast_info; None if unavailable."""
+def _session_last_and_open(symbol: str) -> Tuple[Optional[float], Optional[float]]:
+    """Return (last, session open) from Yahoo fast_info; either may be None."""
     import yfinance as yf
 
     try:
         info = yf.Ticker(symbol).fast_info
-        raw = info.get("regularMarketOpen") or info.get("open")
-        if raw is None:
-            return None
-        px = float(raw)
-        return px if px > 0 else None
+        last_raw = info.get("lastPrice") or info.get("regularMarketPrice")
+        open_raw = info.get("regularMarketOpen") or info.get("open")
+        last = float(last_raw) if last_raw is not None else None
+        open_px = float(open_raw) if open_raw is not None else None
+        if last is not None and last <= 0:
+            last = None
+        if open_px is not None and open_px <= 0:
+            open_px = None
+        return last, open_px
     except Exception as exc:
-        logger.debug("Midway session open failed for %s: %s", symbol, exc)
-        return None
+        logger.debug("Midway session quote failed for %s: %s", symbol, exc)
+        return None, None
+
+
+def _session_open_px(symbol: str) -> Optional[float]:
+    """Today's session open from Yahoo fast_info; None if unavailable."""
+    _, open_px = _session_last_and_open(symbol)
+    return open_px
 
 
 def _price_below_session_open(stock) -> Optional[bool]:
@@ -93,6 +105,50 @@ def _price_below_session_open(stock) -> Optional[bool]:
     if open_px is None:
         return None
     return px < open_px
+
+
+def _symbol_stabilized(symbol: str, last: float, minutes: int) -> Optional[bool]:
+    """True when last is above the ~minutes-ago 15m close (same idea as stock stabilize)."""
+    import pandas as pd
+    import yfinance as yf
+
+    try:
+        if last <= 0:
+            return None
+        hist = yf.Ticker(symbol).history(period="1d", interval="15m")
+        if hist.empty or "Close" not in hist.columns:
+            return None
+        idx = pd.to_datetime(hist.index, utc=True)
+        cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(minutes=minutes)
+        eligible = idx <= cutoff
+        if not eligible.any():
+            return None
+        px_ago = float(hist.loc[eligible, "Close"].astype(float).iloc[-1])
+        if px_ago <= 0:
+            return None
+        return last > px_ago
+    except Exception as exc:
+        logger.debug("Midway sector stabilize failed for %s: %s", symbol, exc)
+        return None
+
+
+def _sector_intraday_allows(sector_etf: str) -> Optional[bool]:
+    """
+    Intraday safety for Midway discover (not a multi-day soft-sleeve veto).
+
+    True when sector ETF is flat/green vs open, or below open but stabilizing.
+    False when below open and still falling/flat (hold off).
+    None when quotes missing — skip discover.
+    """
+    etf = (sector_etf or "").strip().upper()
+    if not etf:
+        return None
+    last, open_px = _session_last_and_open(etf)
+    if last is None or open_px is None:
+        return None
+    if last >= open_px:
+        return True
+    return _symbol_stabilized(etf, last, MIDWAY_STABILIZE_MINUTES)
 
 
 class Midway(AdvisorBase):
@@ -160,9 +216,11 @@ class Midway(AdvisorBase):
         skipped_extreme = 0
         skipped_bar = 0
         skipped_below_open = 0
+        skipped_sector = 0
         skipped_stabilize = 0
         skipped_cooldown = 0
         skipped_hard = 0
+        sector_cache: Dict[str, Optional[bool]] = {}
 
         for cand in candidates:
             if discoveries >= MIDWAY_MAX_DISCOVERIES_PER_SESSION:
@@ -202,6 +260,19 @@ class Midway(AdvisorBase):
                 skipped_below_open += 1
                 continue
 
+            etf = (cand.sector_etf or "").strip().upper()
+            if etf not in sector_cache:
+                sector_cache[etf] = _sector_intraday_allows(etf)
+            sector_ok = sector_cache[etf]
+            if sector_ok is not True:
+                skipped_sector += 1
+                logger.info(
+                    "Midway skip %s: sector %s not OK intraday (hold off while sector soft/falling)",
+                    sym,
+                    etf or "?",
+                )
+                continue
+
             stabilized = price_above_minutes_ago(stock, minutes=MIDWAY_STABILIZE_MINUTES)
             if stabilized is not True:
                 skipped_stabilize += 1
@@ -223,6 +294,8 @@ class Midway(AdvisorBase):
                         "sleeve": cand.sleeve,
                         "soft_bar": bar,
                         "below_open": True,
+                        "sector_etf": etf,
+                        "sector_intraday_ok": True,
                     }
                 },
             ):
@@ -232,7 +305,8 @@ class Midway(AdvisorBase):
         logger.info(
             "Midway sa=%s: stance=%s mood=%s bar=%s universe=%d "
             "discoveries=%d held_skip=%d extreme_skip=%d bar_skip=%d "
-            "below_open_skip=%d stabilize_skip=%d cooldown_skip=%d hard_skip=%d",
+            "below_open_skip=%d sector_skip=%d stabilize_skip=%d "
+            "cooldown_skip=%d hard_skip=%d",
             sa.id,
             state.stance,
             state.mood,
@@ -243,6 +317,7 @@ class Midway(AdvisorBase):
             skipped_extreme,
             skipped_bar,
             skipped_below_open,
+            skipped_sector,
             skipped_stabilize,
             skipped_cooldown,
             skipped_hard,
@@ -299,7 +374,8 @@ class Midway(AdvisorBase):
         bar_s = f"{bar:.1f}" if bar is not None else "none"
         return (
             f"Midway soft entry | SO {cand.so_pair} soft={soft} "
-            f"(bar {bar_s}) | below open | vsSPY20 {vs_spy} vsSec20 {vs_sec} | "
+            f"(bar {bar_s}) | below open | sector OK | "
+            f"vsSPY20 {vs_spy} vsSec20 {vs_sec} | "
             f"sleeve {cand.sleeve} {cand.sector_etf} | "
             f"stance {stance}/{mood} | {MIDWAY_STABILIZE_MINUTES}m stabilize"
         )
