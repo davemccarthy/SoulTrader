@@ -20,7 +20,9 @@ from core.services.risk.headline_screen import (
 )
 from core.services.intraday_stabilize import (
     STABILIZE_MINUTES_DEFAULT,
+    is_down_vs_minutes_ago,
     price_above_minutes_ago,
+    sector_etf_for,
 )
 from core.services.llm.gemini import ask_gemini as llm_ask_gemini
 from core.services.advisors.advisor import AdvisorBase
@@ -243,6 +245,39 @@ def _percentage_rebuy_headline_action(holding, drop_pct):
     elif action == "hold":
         logger.info("%s rebuy HOLD: %s", stock.symbol, result.reason or result.stage)
     return action, result
+
+
+def _percentage_rebuy_sector_downer(stock) -> bool:
+    """
+    True = hold off the add: mapped sector ETF is strictly below its ~30m close.
+    Flat/up sector does not block. Unknown sector or missing bars fail open.
+    """
+    etf = sector_etf_for(getattr(stock, "sector", None) or "")
+    if not etf:
+        logger.info(
+            "%s rebuy sector: no ETF for %r — allowing add",
+            stock.symbol,
+            getattr(stock, "sector", None) or "",
+        )
+        return False
+    down = is_down_vs_minutes_ago(etf, minutes=REBUY_STABILIZE_MINUTES)
+    if down is None:
+        logger.info(
+            "%s rebuy sector: no %s %dm reference — allowing add",
+            stock.symbol,
+            etf,
+            REBUY_STABILIZE_MINUTES,
+        )
+        return False
+    if down:
+        logger.info(
+            "%s rebuy deferred: sector %s still down vs %dm",
+            stock.symbol,
+            etf,
+            REBUY_STABILIZE_MINUTES,
+        )
+        return True
+    return False
 
 
 RUNNER_LOOKBACK_MINUTES = 30
@@ -1006,6 +1041,7 @@ def analyze_holdings(sa, funds):
                             # value2 = max tranche count cap vs holding.tranches (default 5 when null).
                             # value2 <= 0 = unlimited (cash only).
                             # Intraday gate (RTH): calc_trend(2h) > -0.10 and price above 30m and 5m references.
+                            # After headline BUY: hold off the add if the sector ETF is still down vs ~30m.
                             if instruction.value1 and holding.shares > 0 and buy_price:
                                 drop_pct = Decimal(str(instruction.value1))
                                 drop_threshold = Decimal(str(buy_price)) * (Decimal("1.0") - drop_pct)
@@ -1049,6 +1085,10 @@ def analyze_holdings(sa, funds):
                                             rebuy_flatten_explanation(screen),
                                         )
                                         break
+
+                                    # News said BUY: still skip the add if the sector ETF is sliding.
+                                    if _percentage_rebuy_sector_downer(holding.stock):
+                                        continue
 
                                     execute_buy(
                                         sa,

@@ -25,6 +25,8 @@ from core.services.risk.headline_screen import (
     rebuy_headline_decision,
     screen_headlines_for_rebuy,
 )
+from core.services.intraday_stabilize import is_down_vs_minutes_ago, sector_etf_for
+import pandas as pd
 
 
 OFFERING_HEADLINE = "Company announces $400 million secondary stock offering"
@@ -124,6 +126,47 @@ class ScreenRebuyTests(unittest.TestCase):
         self.assertEqual(llm.call_args.kwargs.get("position_context"), ctx)
         expl = rebuy_flatten_explanation(result)
         self.assertIn("offering", expl.lower())
+
+
+class SectorDownerTests(unittest.TestCase):
+    def test_maps_yfinance_sector(self):
+        self.assertEqual(sector_etf_for("Healthcare"), "XLV")
+        self.assertEqual(sector_etf_for("Financial Services"), "XLF")
+        self.assertEqual(sector_etf_for("Technology"), "XLK")
+        self.assertIsNone(sector_etf_for(""))
+        self.assertIsNone(sector_etf_for("Unknown Industry"))
+
+    @patch("core.services.intraday_stabilize._intraday_15m")
+    def test_strictly_down_is_downer(self, hist_fn):
+        now = pd.Timestamp.now(tz="UTC")
+        hist_fn.return_value = pd.DataFrame(
+            {"Close": [100.0, 99.0]},
+            index=[now - pd.Timedelta(minutes=30), now],
+        )
+        self.assertTrue(is_down_vs_minutes_ago("XLV", minutes=30))
+
+    @patch("core.services.intraday_stabilize._intraday_15m")
+    def test_flat_is_not_downer(self, hist_fn):
+        now = pd.Timestamp.now(tz="UTC")
+        hist_fn.return_value = pd.DataFrame(
+            {"Close": [100.0, 100.0]},
+            index=[now - pd.Timedelta(minutes=30), now],
+        )
+        self.assertFalse(is_down_vs_minutes_ago("XLV", minutes=30))
+
+    @patch("core.services.intraday_stabilize._intraday_15m")
+    def test_up_is_not_downer(self, hist_fn):
+        now = pd.Timestamp.now(tz="UTC")
+        hist_fn.return_value = pd.DataFrame(
+            {"Close": [100.0, 100.4]},
+            index=[now - pd.Timedelta(minutes=30), now],
+        )
+        self.assertFalse(is_down_vs_minutes_ago("XLV", minutes=30))
+
+    @patch("core.services.intraday_stabilize._intraday_15m")
+    def test_missing_bars_fail_open(self, hist_fn):
+        hist_fn.return_value = None
+        self.assertIsNone(is_down_vs_minutes_ago("XLV", minutes=30))
 
 
 if __name__ == "__main__":
