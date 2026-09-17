@@ -8,6 +8,7 @@ from core.services.market.session import (
     market_open,
     prior_trading_day,
     resolve_eod_session_date,
+    rth_session_open,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "market_open",
     "prior_trading_day",
     "resolve_eod_session_date",
+    "rth_session_open",
 ]

@@ -174,7 +174,14 @@ class Command(BaseCommand):
 
         # Lets go
         if not param_discovery_only:
-            analysis.analyze_holdings(sa, funds)
+            ran_holdings = analysis.analyze_holdings(sa, funds)
+            if not ran_holdings:
+                self.stdout.write(
+                    self.style.WARNING(
+                        "Holdings analysis skipped: market not open "
+                        "(regular session 9:30–16:00 ET on trading days)."
+                    )
+                )
 
         if not param_holdings_only:
             analysis.analyze_discovery(sa, funds, advisors)
@@ -194,7 +201,7 @@ class Command(BaseCommand):
 
             cash_value = fund.cash or Decimal('0')
 
-            # Holdings prices were refreshed in analyze_holdings earlier in this SA run.
+            # Holdings prices were refreshed in analyze_holdings when the session was open.
             holdings_value = Decimal('0')
             for holding in Holding.objects.filter(fund=fund).select_related('stock'):
                 if holding.stock and holding.shares and holding.stock.price:

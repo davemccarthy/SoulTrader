@@ -141,6 +141,16 @@ def market_open():
     return int(minutes_diff)
 
 
+def rth_session_open() -> bool:
+    """True during the regular session: 9:30–16:00 ET on a trading day.
+
+    market_open() is None after the close / weekend / holiday, but before 9:30
+    on a weekday it returns a negative minute count — that is not an open session.
+    """
+    status = market_open()
+    return status is not None and status >= 0
+
+
 def in_opening_noise_window(minutes: int = 60) -> bool:
     """True during the first `minutes` after the 9:30 ET open (regular session)."""
     status = market_open()

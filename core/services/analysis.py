@@ -31,7 +31,7 @@ from core.services.health.risk_matrix import (
     discovery_passes_risk_gate,
     so_gate_fail_display,
 )
-from core.services.market import in_opening_noise_window, market_open
+from core.services.market import in_opening_noise_window, market_open, rth_session_open
 from core.services.sentiment import purge_eligible, purge_score
 
 logger = logging.getLogger(__name__)
@@ -855,9 +855,19 @@ def analyse_drop(sa, dropped_stocks):
 
 
 def analyze_holdings(sa, funds):
+    """Evaluate SIs / recycle. Regular session only (9:30–16:00 ET). Returns False if skipped."""
+    market_status = market_open()
+    if not rth_session_open():
+        logger.warning(
+            "analyze_holdings skipped: market not open (sa=%s market_open=%s). "
+            "SI eval runs 9:30–16:00 ET on trading days only.",
+            getattr(sa, "id", None),
+            market_status,
+        )
+        return False
+
     logger.info(f"Analyzing holdings for SA session {sa.id}")
     dropped_stocks = []
-    market_status = market_open()
     peaked_allowed = market_status is not None and market_status >= PEAKED_MIN_MARKET_MINUTES
 
     # Check if we're in the last 30 minutes of trading day (3:30 PM ET onwards)
@@ -1280,6 +1290,7 @@ def analyze_holdings(sa, funds):
     if dropped_stocks:
         logger.info("DT candidates collected: %s", len(dropped_stocks))
         analyse_drop(sa, dropped_stocks)
+    return True
 
 
 # Discovery new stock
