@@ -373,8 +373,7 @@ class Midway(AdvisorBase):
         )
         bar_s = f"{bar:.1f}" if bar is not None else "none"
         return (
-            f"Midway soft entry | SO {cand.so_pair} soft={soft} "
-            f"(bar {bar_s}) | below open | sector OK | "
+            f"SO {cand.so_pair} soft={soft} (bar {bar_s}) | below open | sector OK | "
             f"vsSPY20 {vs_spy} vsSec20 {vs_sec} | "
             f"sleeve {cand.sleeve} {cand.sector_etf} | "
             f"stance {stance}/{mood} | {MIDWAY_STABILIZE_MINUTES}m stabilize"
