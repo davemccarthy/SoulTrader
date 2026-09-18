@@ -30,6 +30,7 @@ _LAZY_MODULES = frozenset(
         "etf",
         "rocket",
         "midway",
+        "yoyo",
     }
 )
 
