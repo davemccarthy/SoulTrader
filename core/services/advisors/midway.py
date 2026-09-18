@@ -10,7 +10,7 @@ v1 relies on soft bar by stance (active_soft ≥ 2.5), session discount vs open,
 sector not freefalling on the day, and stabilize — skips extremes that usually
 mark company events.
 
-Exit/add: PEAKED (min exit +4%) + gated PERCENTAGE_REBUY + DESCENDING_TREND.
+Exit/add: PEAKED (min exit +3%) + gated PERCENTAGE_REBUY (max 3) + DESCENDING_TREND.
 """
 
 from __future__ import annotations
@@ -54,11 +54,12 @@ MIDWAY_MAX_DISCOVERIES_PER_SESSION = 6
 MIDWAY_DISCOVERY_COOLDOWN_HOURS = 48
 MIDWAY_STABILIZE_MINUTES = 30
 
-# PEAKED: giveback 15%, min peak 8% → min exit +4%. Rebuy −4%, max 5 tranches.
+# PEAKED: giveback 15%, min peak 6% → min exit +3% (balance harvest vs multi-day hold).
+# Rebuy −4%, max 3 tranches (less hole-digging than 5).
 MIDWAY_PEAKED_GIVEBACK = 15.0
-MIDWAY_PEAKED_MIN_PEAK = 8.0
+MIDWAY_PEAKED_MIN_PEAK = 6.0
 MIDWAY_REBUY_DROP = Decimal("0.04")
-MIDWAY_REBUY_MAX_TRANCHES = Decimal("5")
+MIDWAY_REBUY_MAX_TRANCHES = Decimal("3")
 
 # Optional hard skips (process failures); empty by default — use soft extreme gate.
 MIDWAY_HARD_SKIP: Final[frozenset[str]] = frozenset()
