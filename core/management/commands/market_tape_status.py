@@ -6,7 +6,7 @@ Usage:
     python manage.py market_tape_status --symbols SPY,QQQ,IWM
 
 Pulse: RED = no discover; AMBER/GREEN/WHITE = trade with tape-colored IPC
-(amber 0.2/0.2, green 0.4/0.2, white 0.6/0.4). Push on color change.
+(amber 0.4/0.2, green 0.6/0.2, white 0.8/0.2). Push on color change.
 """
 from __future__ import annotations
 
@@ -79,7 +79,7 @@ class Command(BaseCommand):
         )
         self.stdout.write("  GREEN  otherwise")
         self.stdout.write("")
-        self.stdout.write("Pulse IPC: amber 0.2/0.2 | green 0.4/0.2 | white 0.6/0.4")
+        self.stdout.write("Pulse IPC: amber 0.4/0.2 | green 0.6/0.2 | white 0.8/0.2")
         self.stdout.write("")
 
         state = verdict.state.upper()

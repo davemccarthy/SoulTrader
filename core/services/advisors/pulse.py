@@ -17,11 +17,11 @@ Entry:
 - Market tape (SPY/QQQ): refresh only during Pulse buying hours (10:30–13:00 ET);
   persist red/amber/green/white on Advisor.blob (default red); trade on amber/green/white
   (red = no discover); push superusers on status change.
-  IPC at discovery by tape: amber 0.2/0.2, green 0.4/0.2, white 0.6/0.4.
+  IPC at discovery by tape: amber 0.4/0.2, green 0.6/0.2, white 0.8/0.2.
 
 Exit/add: TARGET_INTRADAY (tape-colored arm/giveback), -2% rebuy (max 3 tranches;
   2h trend + 5m/30m recovery), dual END_DAY: 1.00× avg from 120m before close,
-  then 0.99× avg in last 30m (near-flat / mild-red clutter). No END_WEEK, DT, or SL.
+  then 0.995× avg in last 30m (near-flat / mild-red clutter). No END_WEEK, DT, or SL.
 
 Shadow: when enabled, logs IMPULSE/COMBO/TROUGH hits once per cache bucket.
 """
@@ -62,21 +62,22 @@ PULSE_MAX_QUOTE_DRIFT_FROM_BAR = 0.02
 PULSE_DISCOVERY_COOLDOWN_HOURS = 6
 
 # Fallback IPC when tape color missing (green workhorse).
-PULSE_TP_MULT = Decimal("1.004")
+PULSE_TP_MULT = Decimal("1.006")
 PULSE_INTRADAY_GIVEBACK = Decimal("0.002")
 PULSE_REBUY_DROP = Decimal("0.02")
 PULSE_REBUY_MAX_TRANCHES = Decimal("3")
 # Dual END_DAY: bank ≥breakeven from ~2pm ET; flatten mild red in last 30m.
 PULSE_ENDDAY_TAKE = Decimal("1.00")
 PULSE_ENDDAY_MINUTES_BEFORE_CLOSE = Decimal("120")
-PULSE_ENDDAY_CLUTTER_TAKE = Decimal("0.99")
+PULSE_ENDDAY_CLUTTER_TAKE = Decimal("0.995")
 PULSE_ENDDAY_CLUTTER_MINUTES_BEFORE_CLOSE = Decimal("30")
 
 # Tape → IPC (arm multiplier, giveback fraction) at discovery.
+# Ladder shifted up to unstick scrap +0.2–0.4% days (giveback stays 0.2%).
 PULSE_IPC_BY_TAPE: Final[Dict[str, tuple[Decimal, Decimal]]] = {
-    "amber": (Decimal("1.002"), Decimal("0.002")),  # 0.2% / 0.2%
-    "green": (Decimal("1.004"), Decimal("0.002")),  # 0.4% / 0.2%
-    "white": (Decimal("1.006"), Decimal("0.004")),  # 0.6% / 0.4%
+    "amber": (Decimal("1.004"), Decimal("0.002")),  # 0.4% / 0.2%
+    "green": (Decimal("1.006"), Decimal("0.002")),  # 0.6% / 0.2%
+    "white": (Decimal("1.008"), Decimal("0.002")),  # 0.8% / 0.2%
 }
 
 # Opportunity floor at discover (Oracle uses C at pre-discover gate).

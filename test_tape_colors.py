@@ -85,13 +85,16 @@ def test_normalize_yellow_to_amber():
 
 
 def test_ipc_map_and_sell_instructions():
-    assert PULSE_IPC_BY_TAPE["amber"] == (Decimal("1.002"), Decimal("0.002"))
-    assert PULSE_IPC_BY_TAPE["green"] == (Decimal("1.004"), Decimal("0.002"))
-    assert PULSE_IPC_BY_TAPE["white"] == (Decimal("1.006"), Decimal("0.004"))
+    assert PULSE_IPC_BY_TAPE["amber"] == (Decimal("1.004"), Decimal("0.002"))
+    assert PULSE_IPC_BY_TAPE["green"] == (Decimal("1.006"), Decimal("0.002"))
+    assert PULSE_IPC_BY_TAPE["white"] == (Decimal("1.008"), Decimal("0.002"))
     sis = pulse_sell_instructions_for_tape("amber")
-    assert sis[0] == ("TARGET_INTRADAY", Decimal("1.002"), Decimal("0.002"))
+    assert sis[0] == ("TARGET_INTRADAY", Decimal("1.004"), Decimal("0.002"))
     sis_g = pulse_sell_instructions_for_tape("green")
-    assert sis_g[0][1:] == (Decimal("1.004"), Decimal("0.002"))
+    assert sis_g[0][1:] == (Decimal("1.006"), Decimal("0.002"))
+    # Dual END_DAY: 1.00@120m, 0.995@30m
+    assert ("END_DAY", Decimal("1.00"), Decimal("120")) in sis
+    assert ("END_DAY", Decimal("0.995"), Decimal("30")) in sis
 
 
 if __name__ == "__main__":
