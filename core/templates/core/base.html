@@ -2542,6 +2542,13 @@
                     if (inst.value2 != null) {
                         extraInfo = ` (value2 reserved for max-book cap)`;
                     }
+                } else if (inst.instruction === 'PERCENTAGE_DOUBLE' && inst.value != null) {
+                    valueDisplay = `Double shares if price drops ${(inst.value * 100).toFixed(1)}% below avg`;
+                    if (inst.value2 != null && Number(inst.value2) > 0) {
+                        extraInfo = ` (max ${Number(inst.value2).toFixed(0)} tranches)`;
+                    } else if (inst.value2 != null) {
+                        extraInfo = ` (unlimited doubles, cash only)`;
+                    }
                 } else if (inst.instruction === 'PROFIT_FLAT' && inst.value != null && inst.value2 != null) {
                     // value1 = percentage threshold for price range, value2 = evaluation period in days
                     valueDisplay = `Sell if price range within ${(inst.value * 100).toFixed(0)}% over ${inst.value2} days (when in profit)`;

@@ -827,6 +827,7 @@ class SellInstruction(models.Model):
         ("PERCENTAGE_AUGMENTING", "Stop Loss (Percentage augmenting)"),
         ("PROFIT_TARGET", "Target Profit (Fixed Dollar Amount"),
         ("PERCENTAGE_REBUY", "Loss - will gamble a Rebuy"),
+        ("PERCENTAGE_DOUBLE", "Loss - double share count"),
         ("PROFIT_FLAT", "Price flatlined"),
         ("PEAKED", "Sell when down X% from peak since purchase"),
     ]

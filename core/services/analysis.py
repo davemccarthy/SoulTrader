@@ -11,7 +11,7 @@ import pandas as pd
 from pytz import timezone as tz
 from django.utils import timezone
 from core.models import Holding, Discovery, Advisor, Profile
-from core.services.execution import execute_buy, execute_sell
+from core.services.execution import execute_buy, execute_buy_exact_shares, execute_sell
 from core.services.risk.headline_screen import (
     log_headline_rebuy_flatten,
     rebuy_flatten_explanation,
@@ -209,9 +209,9 @@ def _percentage_rebuy_intraday_allows(stock, current_price) -> bool:
     return True
 
 
-def _percentage_rebuy_headline_action(holding, drop_pct):
+def _percentage_rebuy_headline_action(holding, drop_pct, instruction_name="PERCENTAGE_REBUY"):
     """
-    After technical REBUY gates: BUY (default), HOLD, or SELL on company news.
+    After technical REBUY/DOUBLE gates: BUY (default), HOLD, or SELL on company news.
     Returns (action, HeadlineScreenResult).
     """
     stock = holding.stock
@@ -230,7 +230,7 @@ def _percentage_rebuy_headline_action(holding, drop_pct):
     result = screen_headlines_for_rebuy(
         stock.symbol,
         advisor=advisor_name,
-        trigger=f"PERCENTAGE_REBUY {python_class or 'holding'} existing position",
+        trigger=f"{instruction_name} {python_class or 'holding'} existing position",
         position_context={
             "drop_vs_avg": float(drop_pct),
             "average_price": str(avg) if avg is not None else "",
@@ -1046,12 +1046,13 @@ def analyze_holdings(sa, funds):
                                     break
                             else:
                                 logger.warning(f"{instruction.instruction} invalid threshold (value1={instruction.value1}, buy_price={buy_price})")
-                        elif instruction.instruction == 'PERCENTAGE_REBUY':
-                            # value1 = drop fraction from average (e.g. 0.02 = 2%); add one fund tranche at current price.
-                            # value2 = max tranche count cap vs holding.tranches (default 5 when null).
-                            # value2 <= 0 = unlimited (cash only).
-                            # Intraday gate (RTH): calc_trend(2h) > -0.10 and price above 30m and 5m references.
-                            # After headline BUY: hold off the add if the sector ETF is still down vs ~30m.
+                        elif instruction.instruction in ("PERCENTAGE_REBUY", "PERCENTAGE_DOUBLE"):
+                            # value1 = drop fraction from average (e.g. 0.02 = 2%).
+                            # value2 = max tranche count vs holding.tranches (default 5; <=0 = unlimited).
+                            # Recovery: _percentage_rebuy_intraday_allows (RTH, 2h trend, 5m/30m up).
+                            # Then headline BUY/HOLD/SELL and sector-ETF downer — same as rebuy.
+                            # REBUY adds one fund tranche; DOUBLE buys current share count.
+                            double = instruction.instruction == "PERCENTAGE_DOUBLE"
                             if instruction.value1 and holding.shares > 0 and buy_price:
                                 drop_pct = Decimal(str(instruction.value1))
                                 drop_threshold = Decimal(str(buy_price)) * (Decimal("1.0") - drop_pct)
@@ -1061,8 +1062,6 @@ def analyze_holdings(sa, funds):
                                     ):
                                         continue
 
-                                    tranche_amount = fund.average_spend()
-
                                     if instruction.value2 is not None:
                                         max_tranches = int(Decimal(str(instruction.value2)))
                                     else:
@@ -1071,19 +1070,16 @@ def analyze_holdings(sa, funds):
                                     current_tranches = int(holding.tranches or 0)
                                     if max_tranches > 0 and current_tranches >= max_tranches:
                                         logger.info(
-                                            "%s rebuy skipped: max tranches reached (%s/%s)",
+                                            "%s %s skipped: max tranches reached (%s/%s)",
                                             holding.stock.symbol,
+                                            "double" if double else "rebuy",
                                             current_tranches,
                                             max_tranches,
                                         )
                                         continue
 
-                                    rebuy_amount = tranche_amount
-                                    if rebuy_amount <= 0:
-                                        continue
-
                                     action, screen = _percentage_rebuy_headline_action(
-                                        holding, drop_pct
+                                        holding, drop_pct, instruction.instruction
                                     )
                                     if action == "hold":
                                         continue
@@ -1096,22 +1092,41 @@ def analyze_holdings(sa, funds):
                                         )
                                         break
 
-                                    # News said BUY: still skip the add if the sector ETF is sliding.
                                     if _percentage_rebuy_sector_downer(holding.stock):
                                         continue
 
-                                    execute_buy(
-                                        sa,
-                                        fund,
-                                        holding.stock,
-                                        rebuy_amount,
-                                        f"Rebuy ${rebuy_amount:.0f} after {drop_pct * 100:.0f}% drop vs avg",
-                                        force=True,
-                                        discovery=holding.discovery,
-                                    )
+                                    if double:
+                                        add_shares = int(holding.shares)
+                                        if add_shares <= 0:
+                                            continue
+                                        execute_buy_exact_shares(
+                                            sa,
+                                            fund,
+                                            holding.stock,
+                                            add_shares,
+                                            (
+                                                f"Double {add_shares} shares after "
+                                                f"{drop_pct * 100:.0f}% drop vs avg"
+                                            ),
+                                            discovery=holding.discovery,
+                                        )
+                                    else:
+                                        rebuy_amount = fund.average_spend()
+                                        if rebuy_amount <= 0:
+                                            continue
+                                        execute_buy(
+                                            sa,
+                                            fund,
+                                            holding.stock,
+                                            rebuy_amount,
+                                            f"Rebuy ${rebuy_amount:.0f} after {drop_pct * 100:.0f}% drop vs avg",
+                                            force=True,
+                                            discovery=holding.discovery,
+                                        )
                             elif instruction.value1 and holding.shares > 0:
                                 logger.warning(
-                                    "PERCENTAGE_REBUY instruction %s missing buy_price",
+                                    "%s instruction %s missing buy_price",
+                                    instruction.instruction,
                                     instruction.id,
                                 )
 
