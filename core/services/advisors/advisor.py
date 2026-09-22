@@ -223,6 +223,7 @@ class AdvisorBase:
     # PEAKED: value1=giveback 15%, value2=min peak 4%; min exit = value2/2 (→ +2%).
     # PERCENTAGE_REBUY / PERCENTAGE_DOUBLE value2 = max tranches
     # (matches analysis.REBUY_MAX_TRANCHES_DEFAULT). DOUBLE buys current share count.
+    # PROFIT_CASH value1 = unrealized dollar P&L take (not PROFIT_TARGET's spend ratio).
     sell_instructions = [
         ("PEAKED", 15.0, 4.0),
         ("PERCENTAGE_REBUY", 0.04, 5),

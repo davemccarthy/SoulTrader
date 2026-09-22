@@ -826,6 +826,7 @@ class SellInstruction(models.Model):
         ("PERCENTAGE_DIMINISHING", "Target Price (Percentage diminishing)"),
         ("PERCENTAGE_AUGMENTING", "Stop Loss (Percentage augmenting)"),
         ("PROFIT_TARGET", "Target Profit (Fixed Dollar Amount"),
+        ("PROFIT_CASH", "Take profit at dollar P&L"),
         ("PERCENTAGE_REBUY", "Loss - will gamble a Rebuy"),
         ("PERCENTAGE_DOUBLE", "Loss - double share count"),
         ("PROFIT_FLAT", "Price flatlined"),

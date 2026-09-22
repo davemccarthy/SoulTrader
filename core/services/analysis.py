@@ -1028,6 +1028,29 @@ def analyze_holdings(sa, funds):
                             else:
                                 logger.warning(f"PROFIT_TARGET invalid threshold (value1={instruction.value1}, buy_price={buy_price})")
 
+                        elif instruction.instruction == 'PROFIT_CASH':
+                            # value1 = unrealized dollar P&L take (e.g. 200). Independent of share count.
+                            if instruction.value1 and holding.shares > 0:
+                                take = Decimal(str(instruction.value1))
+                                if take > 0:
+                                    pnl = _holding_unrealized_pnl(holding)
+                                    if pnl >= take:
+                                        execute_sell(
+                                            sa,
+                                            fund,
+                                            holding,
+                                            (
+                                                f"{holding.stock.symbol} cash take "
+                                                f"${pnl:.2f} >= ${take:.2f}"
+                                            ),
+                                        )
+                                        break
+                            else:
+                                logger.warning(
+                                    "PROFIT_CASH instruction %s missing value1",
+                                    instruction.id,
+                                )
+
                         elif instruction.instruction in ['STOP_AUGMENTING', 'PERCENTAGE_AUGMENTING']:
                             # Calculate augmenting stop: original_stop → buy_price over max_days
                             # value1 = original stop price, value2 = max_days

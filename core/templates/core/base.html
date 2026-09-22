@@ -2537,6 +2537,8 @@
                 } else if (inst.instruction === 'PROFIT_TARGET' && inst.value != null) {
                     // value1 is a ratio (e.g., 0.10 = 10% profit on average spend)
                     valueDisplay = `${(inst.value * 100).toFixed(0)}% profit on average spend`;
+                } else if (inst.instruction === 'PROFIT_CASH' && inst.value != null) {
+                    valueDisplay = `Sell if unrealized P&L ≥ ${formatCurrency(inst.value)}`;
                 } else if (inst.instruction === 'PERCENTAGE_REBUY' && inst.value != null) {
                     valueDisplay = `Add one tranche if price drops ${(inst.value * 100).toFixed(1)}% below avg`;
                     if (inst.value2 != null) {
