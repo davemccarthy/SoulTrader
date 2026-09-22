@@ -539,11 +539,11 @@ def _advisor_logo_url(advisor):
 
 
 def _trade_is_rebuy(trade) -> bool:
-    """PERCENTAGE_REBUY adds stay action=BUY with explanation like 'Rebuy $…'."""
+    """PERCENTAGE_REBUY / PERCENTAGE_DOUBLE adds stay action=BUY with 'Rebuy…' / 'Double…'."""
     if getattr(trade, 'action', None) != 'BUY':
         return False
     text = (getattr(trade, 'explanation', None) or '').strip().lower()
-    return text.startswith('rebuy')
+    return text.startswith('rebuy') or text.startswith('double')
 
 
 def _position_discovery(holding, trades_for_position=()):

@@ -2419,9 +2419,10 @@
             if (!trades || trades.length === 0) return '';
 
             const tradesHtml = trades.map(trade => {
+                const expl = String(trade.explanation || '').trim().toLowerCase();
                 const isRebuy = Boolean(trade.is_rebuy) || (
                     (trade.action || '').toUpperCase() === 'BUY'
-                    && String(trade.explanation || '').trim().toLowerCase().startsWith('rebuy')
+                    && (expl.startsWith('rebuy') || expl.startsWith('double'))
                 );
                 const action = escapeHtml(isRebuy ? 'REBUY' : (trade.action || 'UNKNOWN'));
                 const shares = formatInteger(trade.shares ?? 0);

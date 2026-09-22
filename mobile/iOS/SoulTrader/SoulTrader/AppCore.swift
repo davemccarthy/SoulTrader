@@ -592,11 +592,13 @@ struct TradeResponse: Decodable, Identifiable {
     let sa: Int?
     let created: String?
 
-    /// PERCENTAGE_REBUY adds still store `action=BUY` with explanation like "Rebuy $…".
+    /// PERCENTAGE_REBUY / PERCENTAGE_DOUBLE adds stay `action=BUY` with "Rebuy…" / "Double…".
     var isRebuy: Bool {
         guard action.uppercased() == "BUY" else { return false }
-        let text = (explanation ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.lowercased().hasPrefix("rebuy")
+        let text = (explanation ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return text.hasPrefix("rebuy") || text.hasPrefix("double")
     }
 
     var actionDisplayLabel: String {
