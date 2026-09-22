@@ -77,6 +77,10 @@
         color: #059669;
     }
 
+    .trade-action.rebuy {
+        color: #f29e1f;
+    }
+
     .trade-action.sell {
         color: #dc2626;
     }
@@ -185,7 +189,11 @@
                         <div class="holding-value-pair">
                             <div class="holding-value-pair-label">ACTION</div>
                             <div class="holding-value-pair-value">
-                                <span class="trade-action {{ trade.action|lower }}">{{ trade.action }}</span>
+                                {% if trade.is_rebuy %}
+                                    <span class="trade-action rebuy">REBUY</span>
+                                {% else %}
+                                    <span class="trade-action {{ trade.action|lower }}">{{ trade.action }}</span>
+                                {% endif %}
                             </div>
                         </div>
                     </div>

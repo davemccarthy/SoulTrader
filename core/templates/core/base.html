@@ -1231,6 +1231,10 @@
             color: #059669;
         }
 
+        .trade-action.rebuy {
+            color: #f29e1f;
+        }
+
         .trade-action.sell {
             color: #dc2626;
         }
@@ -2415,14 +2419,18 @@
             if (!trades || trades.length === 0) return '';
 
             const tradesHtml = trades.map(trade => {
-                const action = escapeHtml(trade.action || 'UNKNOWN');
+                const isRebuy = Boolean(trade.is_rebuy) || (
+                    (trade.action || '').toUpperCase() === 'BUY'
+                    && String(trade.explanation || '').trim().toLowerCase().startsWith('rebuy')
+                );
+                const action = escapeHtml(isRebuy ? 'REBUY' : (trade.action || 'UNKNOWN'));
                 const shares = formatInteger(trade.shares ?? 0);
                 const price = formatCurrency(trade.price);
                 const plAmount = trade.pl_amount != null ? formatCurrency(trade.pl_amount) : '—';
                 const plPercent = trade.pl_percent != null ? formatPercent(trade.pl_percent) : '—';
                 const plClass = trade.pl_class || 'neutral';
                 const created = formatDateTime(trade.created);
-                const actionClass = action.toLowerCase();
+                const actionClass = isRebuy ? 'rebuy' : action.toLowerCase();
 
                 const currentPrice = trade.current_price != null ? formatCurrency(trade.current_price) : '—';
                 const currentPriceClass = trade.current_price_class || 'neutral';

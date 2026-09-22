@@ -538,6 +538,14 @@ def _advisor_logo_url(advisor):
     return static(filename)
 
 
+def _trade_is_rebuy(trade) -> bool:
+    """PERCENTAGE_REBUY adds stay action=BUY with explanation like 'Rebuy $…'."""
+    if getattr(trade, 'action', None) != 'BUY':
+        return False
+    text = (getattr(trade, 'explanation', None) or '').strip().lower()
+    return text.startswith('rebuy')
+
+
 def _position_discovery(holding, trades_for_position=()):
     """Provenance discovery for a position: holding.discovery, else first BUY trade's discovery."""
     if holding is not None and holding.discovery_id:
@@ -619,6 +627,8 @@ def holding_detail(request, stock_id):
             'sa_started': trade.sa.started.isoformat() if trade.sa and trade.sa.started else None,
             'created': trade.created.isoformat() if trade.created else None,
             'value': trade_value,
+            'explanation': trade.explanation,
+            'is_rebuy': _trade_is_rebuy(trade),
         }
 
         discovery = discoveries_map.get(trade.sa_id)
@@ -1194,6 +1204,8 @@ def holding_history(request, stock_id):
             'pl_class': pl_class,
             'created': trade.created.isoformat() if trade.created else None,
             'sa_id': trade.sa_id,
+            'explanation': trade.explanation,
+            'is_rebuy': _trade_is_rebuy(trade),
         }
         trades_data.append(trade_data)
 
@@ -1340,6 +1352,7 @@ def trades(request):
             'price_class': price_class,
             'realized': realized,
             'explanation': trade.explanation,
+            'is_rebuy': _trade_is_rebuy(trade),
             'discovery': discovery_payload,
         })
 

@@ -315,7 +315,11 @@ window.detailPanelRenderer = function(data) {
     }
 
     function renderTradeCard(trade, currentPrice) {
-        const action = escapeHtml(trade.action || 'UNKNOWN');
+        const isRebuy = Boolean(trade.is_rebuy) || (
+            (trade.action || '').toUpperCase() === 'BUY'
+            && String(trade.explanation || '').trim().toLowerCase().startsWith('rebuy')
+        );
+        const action = escapeHtml(isRebuy ? 'REBUY' : (trade.action || 'UNKNOWN'));
         const shares = escapeHtml(formatInteger(trade.shares));
         const price = trade.price != null ? formatCurrency(trade.price) : '—';
         const value = trade.value != null ? formatCurrency(trade.value) : '—';
@@ -336,7 +340,7 @@ window.detailPanelRenderer = function(data) {
         return `
             <div class="trade-card">
                 <div class="trade-card-header">
-                    <h5 class="trade-card-title">${action} ${shares} @ ${price}</h5>
+                    <h5 class="trade-card-title"><span class="trade-action ${isRebuy ? 'rebuy' : (trade.action || '').toLowerCase()}">${action}</span> ${shares} @ ${price}</h5>
                     <div class="trade-card-meta">
                         <span>${valueLabel} ${value}</span>
                         <span>${created}</span>
