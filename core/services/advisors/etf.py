@@ -2,7 +2,7 @@
 ETF advisor — discovers stocks newly added to tracked thematic ETF holdings.
 
 Uses core.services.financial.etf_holdings for snapshot/diff/lookup.
-Exit: PERCENTAGE_REBUY + PROFIT_FLAT (no AFTER_DAYS on v1).
+Exit: PERCENTAGE_REBUY + AFTER_DAYS (profit-only) + PROFIT_FLAT.
 """
 
 from __future__ import annotations
@@ -22,11 +22,13 @@ ETF_DISCOVERY_COOLDOWN_HOURS = 24 * 30
 
 ETF_REBUY_DROP = Decimal("0.05")
 ETF_REBUY_MAX_TRANCHES = Decimal("2")
+ETF_AFTER_DAYS = Decimal("15")
 ETF_PROFIT_FLAT_RANGE = Decimal("0.05")
 ETF_PROFIT_FLAT_DAYS = Decimal("15")
 
 DEFAULT_SELL_INSTRUCTIONS = [
     ("PERCENTAGE_REBUY", ETF_REBUY_DROP, ETF_REBUY_MAX_TRANCHES),
+    ("AFTER_DAYS", ETF_AFTER_DAYS, None),
     ("PROFIT_FLAT", ETF_PROFIT_FLAT_RANGE, ETF_PROFIT_FLAT_DAYS),
 ]
 
