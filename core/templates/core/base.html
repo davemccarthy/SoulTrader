@@ -2483,12 +2483,23 @@
                 let valueDisplay = '';
                 let extraInfo = '';
 
-                if (['STOP_LOSS', 'STOP_PERCENTAGE', 'STOP_PRICE'].includes(inst.instruction) && inst.value != null) {
+                if (inst.instruction === 'STOP_PRICE' && inst.value != null) {
                     valueDisplay = formatCurrency(inst.value);
                     if (inst.current_price != null) {
                         const diff = inst.current_price - inst.value;
                         const diffPercent = inst.current_price > 0 ? ((diff / inst.current_price) * 100) : 0;
                         extraInfo = ` (${diffPercent >= 0 ? '+' : ''}${diffPercent.toFixed(1)}% from current)`;
+                    }
+                } else if (['STOP_LOSS', 'STOP_PERCENTAGE'].includes(inst.instruction) && inst.value != null) {
+                    const stopPx = inst.stop_price != null ? inst.stop_price : inst.value;
+                    valueDisplay = formatCurrency(stopPx);
+                    if (inst.multiplier != null) {
+                        extraInfo = ` (${inst.multiplier}× avg)`;
+                    }
+                    if (inst.current_price != null && stopPx != null) {
+                        const diff = inst.current_price - stopPx;
+                        const diffPercent = inst.current_price > 0 ? ((diff / inst.current_price) * 100) : 0;
+                        extraInfo += ` (${diffPercent >= 0 ? '+' : ''}${diffPercent.toFixed(1)}% from current)`;
                     }
                 } else if (inst.instruction === 'TARGET_PRICE' && inst.value != null) {
                     valueDisplay = formatCurrency(inst.value);
@@ -2509,6 +2520,12 @@
                         const upside = targetPx - inst.current_price;
                         const upsidePercent = inst.current_price > 0 ? ((upside / inst.current_price) * 100) : 0;
                         extraInfo += ` (+${upsidePercent.toFixed(1)}% upside)`;
+                    }
+                } else if (inst.instruction === 'TARGET_INTRADAY' && inst.value != null) {
+                    valueDisplay = `Arm at ${Number(inst.value)}× avg`;
+                    if (inst.value2 != null) {
+                        const givebackPct = Number(inst.value2) * 100;
+                        extraInfo = `; give back ${givebackPct.toFixed(2)}% from intraday peak`;
                     }
                 } else if (inst.instruction === 'AFTER_DAYS' && inst.value != null) {
                     valueDisplay = `${inst.value} days`;
@@ -2541,8 +2558,10 @@
                     valueDisplay = `Sell if unrealized P&L ≥ ${formatCurrency(inst.value)}`;
                 } else if (inst.instruction === 'PERCENTAGE_REBUY' && inst.value != null) {
                     valueDisplay = `Add one tranche if price drops ${(inst.value * 100).toFixed(1)}% below avg`;
-                    if (inst.value2 != null) {
-                        extraInfo = ` (value2 reserved for max-book cap)`;
+                    if (inst.value2 != null && Number(inst.value2) > 0) {
+                        extraInfo = ` (max ${Number(inst.value2).toFixed(0)} tranches)`;
+                    } else if (inst.value2 != null) {
+                        extraInfo = ` (unlimited, cash only)`;
                     }
                 } else if (inst.instruction === 'PERCENTAGE_DOUBLE' && inst.value != null) {
                     valueDisplay = `Double shares if price drops ${(inst.value * 100).toFixed(1)}% below avg`;
@@ -2563,6 +2582,25 @@
                     if (inst.pct_from_peak != null) {
                         extraInfo = ` (${inst.pct_from_peak >= 0 ? '+' : ''}${inst.pct_from_peak.toFixed(1)}% from peak)`;
                     }
+                } else if (inst.instruction === 'END_DAY' && inst.value != null) {
+                    valueDisplay = `Flatten if ≥ ${Number(inst.value)}× avg`;
+                    if (inst.value2 != null) {
+                        extraInfo = ` from ${Number(inst.value2).toFixed(0)}m before close`;
+                    } else {
+                        extraInfo = ` at end of session`;
+                    }
+                } else if (inst.instruction === 'END_WEEK' && inst.value != null) {
+                    valueDisplay = `Flatten if ≥ ${Number(inst.value)}× avg at week end`;
+                    if (inst.value2 != null && Number(inst.value2) > 0) {
+                        extraInfo = ` (min ${Number(inst.value2).toFixed(0)} days held)`;
+                    }
+                } else if (inst.instruction === 'NOT_TRENDING') {
+                    valueDisplay = 'Sell if volume no longer trending';
+                } else {
+                    const parts = [];
+                    if (inst.value != null) parts.push(String(inst.value));
+                    if (inst.value2 != null) parts.push(`value2=${inst.value2}`);
+                    valueDisplay = parts.length ? parts.join(', ') : '—';
                 }
 
                 const statusIndicator = inst.status === 'active' ? ' ⚠️ TRIGGERED' : '';
