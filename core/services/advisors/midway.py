@@ -10,7 +10,8 @@ v1 relies on soft bar by stance (active_soft ≥ 2.5), session discount vs open,
 sector not freefalling on the day, and stabilize — skips extremes that usually
 mark company events.
 
-Exit/add: PEAKED (min exit +3%) + gated PERCENTAGE_REBUY (max 3) + DESCENDING_TREND.
+Exit/add: TP +2%, PEAKED (arm +2% / min exit +1%), rebuy −2% (max 3),
+EOD +2%, DESCENDING_TREND.
 """
 
 from __future__ import annotations
@@ -54,12 +55,17 @@ MIDWAY_MAX_DISCOVERIES_PER_SESSION = 6
 MIDWAY_DISCOVERY_COOLDOWN_HOURS = 48
 MIDWAY_STABILIZE_MINUTES = 30
 
-# PEAKED: giveback 15%, min peak 6% → min exit +3% (balance harvest vs multi-day hold).
-# Rebuy −4%, max 3 tranches (less hole-digging than 5).
+# Exit pack tuned from PLANB/MIDWAY tape: hard TP +2% does the harvesting;
+# PEAKED arms at +2% (min exit +1%) as trailing backup; rebuy −2% / max 3;
+# EOD +2% in last 60m; DT cuts freefalls.
+MIDWAY_TP_MULT = Decimal("1.02")
 MIDWAY_PEAKED_GIVEBACK = 15.0
-MIDWAY_PEAKED_MIN_PEAK = 6.0
-MIDWAY_REBUY_DROP = Decimal("0.04")
+MIDWAY_PEAKED_MIN_PEAK = 2.0
+MIDWAY_REBUY_DROP = Decimal("0.02")
 MIDWAY_REBUY_MAX_TRANCHES = Decimal("3")
+MIDWAY_EOD_MULT = Decimal("1.02")
+MIDWAY_EOD_MINUTES_BEFORE_CLOSE = Decimal("60")
+MIDWAY_DT = -0.20
 
 # Optional hard skips (process failures); empty by default — use soft extreme gate.
 MIDWAY_HARD_SKIP: Final[frozenset[str]] = frozenset()
@@ -156,9 +162,11 @@ class Midway(AdvisorBase):
     """Regime-aware soft discovery on the Midway opportunity universe."""
 
     sell_instructions = [
+        ("TARGET_PERCENTAGE", MIDWAY_TP_MULT, None),
         ("PEAKED", MIDWAY_PEAKED_GIVEBACK, MIDWAY_PEAKED_MIN_PEAK),
         ("PERCENTAGE_REBUY", MIDWAY_REBUY_DROP, MIDWAY_REBUY_MAX_TRANCHES),
-        ("DESCENDING_TREND", -0.20, None),
+        ("END_DAY", MIDWAY_EOD_MULT, MIDWAY_EOD_MINUTES_BEFORE_CLOSE),
+        ("DESCENDING_TREND", MIDWAY_DT, None),
     ]
 
     def discover(self, sa) -> None:
