@@ -41,8 +41,8 @@ DEFAULT_UNIVERSE = (
     Path(settings.BASE_DIR) / ".assessments" / "universe_midway_opportunity_2026-09-10.json"
 )
 
-# Discover only after opening auction noise (open + 45m ≈ 10:15 ET).
-MIDWAY_MIN_MINUTES_AFTER_OPEN = 45
+# Discover only after first-hour noise (open + 60m ≈ 10:30 ET).
+MIDWAY_MIN_MINUTES_AFTER_OPEN = 60
 
 # Soft bar: stance sets base; active_soft requires a slightly bigger discount than the
 # shared 1.0 default (today's flood still cleared 2.0 — bump hunt bar).
