@@ -1,6 +1,8 @@
 """Meyka belief-tension engine (shadow + advisor late gate)."""
 
 from core.services.meyka.scoring import (
+    MEYKA_DEFER_KIND,
+    MEYKA_DEFER_WATCH_DAYS,
     MeykaGateDecision,
     analyze_opportunity,
     append_shadow_log,
@@ -20,6 +22,8 @@ from core.services.meyka.scoring import (
 )
 
 __all__ = [
+    "MEYKA_DEFER_KIND",
+    "MEYKA_DEFER_WATCH_DAYS",
     "MeykaGateDecision",
     "analyze_opportunity",
     "append_shadow_log",

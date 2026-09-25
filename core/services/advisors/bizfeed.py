@@ -40,9 +40,11 @@ Meyka late gate (live by default; shadow CSV still written):
     MEYKA_REQUIRE_BIAS     — default bullish_unpriced
     MEYKA_GAP_UP_SOFT_PCT  — default 3; gap >= this raises impact floor
     MEYKA_GAP_UP_IMPACT_MIN — default 40 when soft gap applies
-    MEYKA_DISCOVER_MIN_MINUTES_AFTER_OPEN — default 30 (10:00 ET); discover only in session
+    MEYKA_DISCOVER_MIN_MINUTES_AFTER_OPEN — default 30 (10:00 ET); live discover only in session
     MEYKA_MAX_PRIOR_CLOSE_RUN_PCT — default 5; skip live discovery if already up this much vs prior close
 
+Premarket / pre-10:00 score-passes are parked on Watchlist (meta.kind=meyka_defer)
+and flushed to Discovery on the next discover once the session gate is open.
 With MEYKA_BIZFEED_GATE=1, Bizfeed only creates Discoveries that pass Meyka
 (ideal for a dedicated fund with advisors=["Bizfeed"]). Legacy Bizfeed buys on
 other funds: remove Bizfeed from those funds, or set MEYKA_BIZFEED_GATE=0.
@@ -1435,6 +1437,193 @@ def fetch_bizfeed_rows(
 class Bizfeed(AdvisorBase):
     """Stub advisor for corporate RSS → keyword routing → LLM (incremental)."""
 
+    def _meyka_pending_defers(self):
+        """Pending Watchlist rows deferred for Meyka post-10:00 flush."""
+        from core.services.meyka import MEYKA_DEFER_KIND
+
+        return [
+            w
+            for w in self.watchlist()
+            if isinstance(getattr(w, "meta", None), dict)
+            and (w.meta or {}).get("kind") == MEYKA_DEFER_KIND
+        ]
+
+    def _meyka_has_pending_defer(self, symbol: str) -> bool:
+        sym = (symbol or "").strip().upper()
+        return any(
+            getattr(getattr(w, "stock", None), "symbol", "").upper() == sym
+            for w in self._meyka_pending_defers()
+        )
+
+    def _meyka_defer_to_watchlist(
+        self,
+        *,
+        symbol: str,
+        explanation: str,
+        weight: Decimal,
+        primary_category: str | None,
+        decision,
+        article_link: str = "",
+    ):
+        """Park a Meyka score-pass until discover window (≥10:00 ET)."""
+        from datetime import datetime, timezone as dt_timezone
+
+        from core.services.meyka import MEYKA_DEFER_KIND, MEYKA_DEFER_WATCH_DAYS
+
+        if self._meyka_has_pending_defer(symbol):
+            logger.info("BIZFEED Meyka defer skip: %s already Pending on watchlist", symbol)
+            return None
+
+        impact = (decision.scores or {}).get("meyka_impact")
+        short = f"Meyka defer (impact={impact}): {(explanation or '')[:200]}"
+        meta = {
+            "kind": MEYKA_DEFER_KIND,
+            "primary_category": primary_category,
+            "weight": str(weight),
+            "explanation": explanation,
+            "article_link": (article_link or "")[:500],
+            "meyka": decision.meta_payload(),
+            "deferred_at": datetime.now(dt_timezone.utc).isoformat(timespec="seconds"),
+            "hours_detail": decision.trading_hours_detail,
+        }
+        entry = self.watch(
+            symbol,
+            short,
+            days=MEYKA_DEFER_WATCH_DAYS,
+            meta=meta,
+            status="Pending",
+        )
+        if entry:
+            logger.info(
+                "BIZFEED Meyka deferred %s until ≥10:00 ET (watch id=%s impact=%s hours=%s)",
+                symbol,
+                entry.id,
+                impact,
+                decision.trading_hours_detail,
+            )
+        return entry
+
+    def _meyka_flush_deferred(self, sa) -> dict[str, int]:
+        """
+        Promote Pending meyka_defer watches to Discovery after the 10:00 ET gate.
+        Re-checks move-spent vs prior close; respects MEYKA_SHADOW_ONLY.
+        """
+        from core.services.meyka import (
+            fetch_market_context,
+            meyka_max_prior_close_run_pct,
+            meyka_sell_instructions,
+            meyka_shadow_only,
+            prior_close_run_pct,
+            trading_hours_ok,
+        )
+
+        counts = {
+            "pending": 0,
+            "discovered": 0,
+            "excluded": 0,
+            "shadow_skip": 0,
+            "hours_skip": 0,
+            "errors": 0,
+        }
+        th_ok, th_detail = trading_hours_ok(market_status=self.market_open())
+        if not th_ok:
+            logger.info("BIZFEED Meyka flush skip: %s", th_detail)
+            counts["hours_skip"] = 1
+            return counts
+
+        watches = self._meyka_pending_defers()
+        counts["pending"] = len(watches)
+        if not watches:
+            logger.info("BIZFEED Meyka flush: no deferred watches")
+            return counts
+
+        if meyka_shadow_only():
+            logger.info(
+                "BIZFEED Meyka flush: %d deferred Pending but shadow_only — leave on watchlist",
+                len(watches),
+            )
+            counts["shadow_skip"] = len(watches)
+            return counts
+
+        max_run = meyka_max_prior_close_run_pct()
+        for w in watches:
+            sym = getattr(getattr(w, "stock", None), "symbol", "") or ""
+            meta = dict(w.meta or {})
+            try:
+                if not self.allow_discovery(sym, period=24):
+                    meta["flush_result"] = "allow_discovery_false"
+                    w.meta = meta
+                    w.status = "Excluded"
+                    w.save(update_fields=["meta", "status"])
+                    counts["excluded"] += 1
+                    logger.info("BIZFEED Meyka flush exclude %s: allow_discovery false", sym)
+                    continue
+
+                ctx = fetch_market_context(sym)
+                run_pct = prior_close_run_pct(ctx)
+                if run_pct is not None and run_pct >= max_run:
+                    meta["flush_result"] = f"move_spent_{run_pct:.1f}"
+                    w.meta = meta
+                    w.status = "Excluded"
+                    w.save(update_fields=["meta", "status"])
+                    counts["excluded"] += 1
+                    logger.info(
+                        "BIZFEED Meyka flush exclude %s: already %+0.1f%% vs prior close",
+                        sym,
+                        run_pct,
+                    )
+                    continue
+
+                explanation = (meta.get("explanation") or w.explanation or "").strip()
+                try:
+                    weight = Decimal(str(meta.get("weight") or "1.0"))
+                except Exception:
+                    weight = Decimal("1.0")
+                meyka_meta = meta.get("meyka") if isinstance(meta.get("meyka"), dict) else {}
+                try:
+                    mult = float(meyka_meta.get("conviction_multiplier") or 1.0)
+                    weight = (weight * Decimal(str(round(mult, 2)))).quantize(Decimal("0.01"))
+                except Exception:
+                    pass
+
+                meyka_meta = {
+                    **meyka_meta,
+                    "flushed_from_defer": True,
+                    "flush_run_pct": run_pct,
+                }
+                stock = self.discovered(
+                    sa,
+                    sym,
+                    explanation,
+                    meyka_sell_instructions(),
+                    weight=weight,
+                    meta={"meyka": meyka_meta},
+                )
+                if stock:
+                    meta["flush_result"] = "discovered"
+                    w.meta = meta
+                    w.status = "Executed"
+                    w.save(update_fields=["meta", "status"])
+                    counts["discovered"] += 1
+                    logger.info(
+                        "BIZFEED Meyka flush discovered %s from defer (watch id=%s)",
+                        sym,
+                        w.id,
+                    )
+                else:
+                    meta["flush_result"] = "discovered_none"
+                    w.meta = meta
+                    w.status = "Excluded"
+                    w.save(update_fields=["meta", "status"])
+                    counts["excluded"] += 1
+                    logger.warning("BIZFEED Meyka flush discovered() None for %s", sym)
+            except Exception as exc:
+                counts["errors"] += 1
+                logger.exception("BIZFEED Meyka flush error %s: %s", sym, exc)
+
+        logger.info("BIZFEED Meyka flush done: %s", counts)
+        return counts
+
     def discover(self, sa):
         logger.info("BIZFEED discover starting")
         prev_ts = self.get_previous_sa_timestamp(sa, username=getattr(sa, "username", None))
@@ -1445,6 +1634,11 @@ class Bizfeed(AdvisorBase):
                 "BIZFEED no previous SA found; fallback since=%s (1-day lookback)",
                 since_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
             )
+
+        from core.services.meyka import meyka_bizfeed_gate_enabled
+
+        if meyka_bizfeed_gate_enabled():
+            self._meyka_flush_deferred(sa)
 
         cap = int(os.getenv("BIZFEED_LIMIT_PER_FEED", str(_DEFAULT_LIMIT_PER_FEED)))
         log_sample = int(os.getenv("BIZFEED_LOG_ROW_SAMPLE", str(_LOG_ROW_SAMPLE)))
@@ -1735,11 +1929,12 @@ class Bizfeed(AdvisorBase):
                         log_exc,
                     )
                 logger.info(
-                    "BIZFEED Meyka | %s | scored=%s allow=%s reason=%s | impact=%s bias=%s "
+                    "BIZFEED Meyka | %s | scored=%s allow=%s defer=%s reason=%s | impact=%s bias=%s "
                     "clarity=%s gap=%s hours=%s shadow=%s",
                     listed_sym,
                     decision.scored,
                     decision.allow_discovery,
+                    decision.defer_for_open,
                     decision.reason,
                     (decision.scores or {}).get("meyka_impact"),
                     (decision.scores or {}).get("directional_bias"),
@@ -1748,19 +1943,37 @@ class Bizfeed(AdvisorBase):
                     decision.trading_hours_detail,
                     decision.shadow_only,
                 )
-                if not decision.allow_discovery:
-                    continue
 
                 run_pct = prior_close_run_pct(decision.market_context or {})
                 max_run = meyka_max_prior_close_run_pct()
                 if run_pct is not None and run_pct >= max_run:
                     logger.info(
-                        "BIZFEED Meyka skip discovery: %s already %+0.1f%% vs prior close "
+                        "BIZFEED Meyka skip: %s already %+0.1f%% vs prior close "
                         "(max %+0.1f%%) — move spent",
                         listed_sym,
                         run_pct,
                         max_run,
                     )
+                    continue
+
+                if decision.defer_for_open:
+                    if not meyka_shadow_only():
+                        self._meyka_defer_to_watchlist(
+                            symbol=listed_sym,
+                            explanation=explanation,
+                            weight=weight,
+                            primary_category=primary,
+                            decision=decision,
+                            article_link=(row.get("link") or "").strip(),
+                        )
+                    else:
+                        logger.info(
+                            "BIZFEED Meyka defer shadow-only: %s (would watch until ≥10:00 ET)",
+                            listed_sym,
+                        )
+                    continue
+
+                if not decision.allow_discovery:
                     continue
 
                 discovery_meta = {"meyka": decision.meta_payload()}

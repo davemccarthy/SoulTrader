@@ -26,6 +26,9 @@ DEFAULT_GAP_UP_IMPACT_MIN = 40.0
 DEFAULT_DISCOVER_MIN_MINUTES_AFTER_OPEN = 30
 # Skip live discovery if price already ran this far vs prior close (move spent).
 DEFAULT_MAX_PRIOR_CLOSE_RUN_PCT = 5.0
+# Premarket score-pass → Watchlist until discover window (≥10:00 ET).
+MEYKA_DEFER_KIND = "meyka_defer"
+MEYKA_DEFER_WATCH_DAYS = 2
 
 # Meyka-only sell pack: harvest pop, hard stop, EOD bank — no averaging down.
 # PEAKED: value1=giveback %, value2=min peak %
@@ -381,6 +384,10 @@ class MeykaGateDecision:
     shadow_only: bool = True
     trading_hours_ok: bool = False
     trading_hours_detail: str = ""
+    score_gate_ok: bool = False
+    score_gate_detail: str = ""
+    # Scores passed but session gate not open yet — watchlist until ≥10:00 ET.
+    defer_for_open: bool = False
     market_context: Dict[str, Any] = field(default_factory=dict)
     scores: Dict[str, Any] = field(default_factory=dict)
     raw: Dict[str, Any] = field(default_factory=dict)
@@ -391,10 +398,12 @@ class MeykaGateDecision:
         return {
             "model": self.model,
             "allow_discovery": self.allow_discovery,
+            "defer_for_open": self.defer_for_open,
             "reason": self.reason,
             "shadow_only": self.shadow_only,
             "trading_hours_ok": self.trading_hours_ok,
             "trading_hours_detail": self.trading_hours_detail,
+            "score_gate_ok": self.score_gate_ok,
             "meyka_impact": s.get("meyka_impact"),
             "conviction_multiplier": s.get("conviction_multiplier"),
             "position_adjustment": s.get("position_adjustment"),
@@ -543,6 +552,14 @@ def evaluate_for_discovery(
         output,
         gap_open_pct=gap if isinstance(gap, (int, float)) else None,
     )
+    decision.score_gate_ok = score_ok
+    decision.score_gate_detail = score_detail
+
+    if score_ok and not th_ok:
+        decision.defer_for_open = True
+        decision.reason = f"hours: {th_detail}; scores: {score_detail}"
+        decision.allow_discovery = False
+        return decision
 
     if not th_ok:
         decision.reason = f"hours: {th_detail}; scores: {score_detail}"
