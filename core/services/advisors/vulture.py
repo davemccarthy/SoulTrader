@@ -1,11 +1,14 @@
 """
-Vulture advisor — damaged-quality recovery watchlist.
+Vulture advisor v2 — cliff-event bounce monitors.
 
-Daily flow (after US cash session):
-  1. Weekly chronic-damage scan (Path 1, ~every 7 days) → diagnostic watch intake
-  2. EOD large-drop scan + LLM triage (Path 2) → watchlist intake (monitor only)
-  3. Re-score pending watchlist via health.diagnostic
-  4. BUY READY persistence → rare discovery (WARM or RECOVERY; 1-day streak)
+Flow:
+  1. EOD cliff intake (once/session after Polygon prior-day bars are available):
+     large single-day drop → LLM triage → dismiss structural/long-term damage;
+     else watch with pre/post cliff prices (14 calendar days).
+  2. RTH monitor (10:30–16:00 ET): discover when opens show early strength,
+     price is still below the pre-cliff print, and analysts remain constructive.
+
+Weekly chronic-damage helpers remain for lab CLIs only (not production discover).
 """
 
 from __future__ import annotations
@@ -16,25 +19,38 @@ from datetime import date, datetime
 from typing import Any, Dict, Iterable, Optional, Sequence, Tuple
 
 import pandas as pd
+import pytz
 import yfinance as yf
 
 from core.services.advisors.advisor import AdvisorBase, register
 from core.services.financial import polygon as financial_polygon
 from core.services.financial.polygon import fetch_grouped_daily_map
-from core.services.health.diagnostic import analyze_symbol, diagnostic_to_dict
-from core.services.market import last_completed_trading_day, prior_trading_day, resolve_eod_session_date
+from core.services.health.consensus import score_consensus_health
+from core.services.market import (
+    last_completed_trading_day,
+    market_open,
+    prior_trading_day,
+    resolve_eod_session_date,
+)
 
 logger = logging.getLogger(__name__)
 
-# --- Advisor runtime ---
-# Run after ~7 AM ET so Polygon grouped daily for the prior session is published
-# (21:00 UTC = 5 PM ET still hits NOT_AUTHORIZED "before end of day" on lower tiers).
-PROCESS_CUTOFF_HOUR_UTC = 11
-SCAN_REBUILD_DAYS = 7
-WATCHLIST_DAYS = 28
-BUY_READY_STREAK_DAYS = 1
+# --- Advisor runtime (v2) ---
+VULTURE_VERSION = 2
+# EOD cliff intake after ~7 AM ET (Polygon prior-session grouped daily).
+EOD_INTAKE_CUTOFF_HOUR_UTC = 11
+WATCHLIST_DAYS = 14
+MONITOR_START_MINUTES_AFTER_OPEN = 60  # 10:30 ET
 DISCOVERY_COOLDOWN_HOURS = 72
 DISCOVERY_WEIGHT = 1.0
+
+# Still below the pre-cliff print / not fully recovered from the event drop.
+MAX_PRICE_FRAC_OF_PRE_CLIFF = 0.95  # at least ~5% below pre-cliff close
+MAX_CLIFF_DROP_RECOVERY_FRAC = 0.50  # recovered at most half of (pre - cliff)
+
+# Analyst belief hard gates
+MIN_CONSENSUS_UPSIDE_PCT = 15.0
+BUY_RECOMMENDATION_KEYS = frozenset({"buy", "strong_buy"})
 
 # --- Shared filters ---
 DEFAULT_MIN_PRICE = 5.0
@@ -50,7 +66,8 @@ ETF_EXCLUDE_TICKERS = frozenset(
     }
 )
 
-# --- Path 1: weekly chronic damage scan ---
+# --- Lab-only: weekly chronic damage scan ---
+SCAN_REBUILD_DAYS = 7
 SCAN_TOP = 50
 SCAN_SEED_UNIVERSE = 1200
 SCAN_BATCH_SIZE = 100
@@ -59,11 +76,12 @@ SCAN_MIN_52W_DAMAGE_PCT = 30.0
 SCAN_MAX_52W_DAMAGE_PCT = 70.0
 WATCHLIST_STAGES = frozenset({"WATCH", "WARM", "RECOVERY"})
 
-# --- Path 2: EOD large-drop intake ---
+# --- EOD cliff intake ---
 EOD_TOP = 25
 EOD_MIN_DAY_DROP_PCT = 7.0
 EOD_LLM_BATCH_SIZE = 10
 MIN_LLM_MONITOR_CONFIDENCE = 0.5
+MONITOR_DAMAGE_TYPES = frozenset({"overreaction"})
 
 NON_EQUITY_QUOTE_TYPES = frozenset({"ETF", "MUTUALFUND", "TRUST"})
 LEVERAGED_NAME_HINTS = (
@@ -625,29 +643,34 @@ def build_llm_context_block(candidates: Sequence[EodDropCandidate]) -> str:
 
 def build_vulture_drop_prompt(context_block: str) -> str:
     return f"""
-You are a Vulture recovery watchlist triage assistant.
+You are a Vulture cliff-event triage assistant.
 
-Large single-session price drops occurred for the tickers below. Your job is NOT to
-recommend buying. Decide whether each name merits Vulture MONITORING (damaged but
-potentially recoverable quality) vs EXCLUDE (terminal/dilution/no edge) vs DEFER (too
-fresh or unclear — recheck in a few days).
+Large single-session price drops ("cliffs") occurred for the tickers below. Your job
+is NOT to recommend buying. Decide whether each name merits SHORT-TERM MONITORING
+for a bounce of an overreaction, vs EXCLUDE (structural / long-term damage), vs DEFER
+(too unclear — do not monitor yet).
 
 Source quality policy:
 - Primary sources (highest trust): Reuters, Bloomberg, Dow Jones Newswires, SEC filings
 - Secondary: Benzinga, company press releases
 - If credible recent evidence is missing, choose DEFER with lower confidence.
 
-MONITOR (add to watchlist for structural recovery scoring later):
-- Company-specific shock with plausible overreaction (earnings miss on intact franchise,
-  guidance reset, isolated legal headline) where business survival does not appear impaired.
-- Drop plausibly explained by news; recovery thesis is conceivable.
+MONITOR (temporary bounce watch — overreaction only):
+- Plausible overreaction where the franchise looks intact: earnings miss on solid business,
+  guidance reset without survival risk, sector/sympathy flush, temporary headline shock.
+- damage_type MUST be "overreaction".
 
-EXCLUDE (do not watch):
+EXCLUDE (dismiss — do not watch):
 - Bankruptcy, going concern, fraud/accounting, clinical/regulatory terminal failure,
-  massive dilutive offering, delisting risk, or thesis clearly broken.
+  massive dilutive offering, delisting risk.
+- Structural / multi-year regime risk: lasting liability, regulatory, or legislative
+  changes that raise ongoing risk (e.g. utility wildfire-liability shield blocked).
+- Clear fundamental thesis break (not a one-day overreaction).
+- Use damage_type "fundamental" or "terminal" with verdict exclude.
 
 DEFER:
-- No clear catalyst found, macro sympathy only, or event too fresh to judge.
+- No clear catalyst found, or event too fresh to judge.
+- damage_type "unclear" when appropriate.
 
 For each ticker return:
 - verdict: "monitor" | "exclude" | "defer"
@@ -659,6 +682,7 @@ For each ticker return:
 Rules:
 - No prose outside JSON.
 - When uncertain, default to defer with lower confidence.
+- Do not MONITOR fundamental or terminal damage.
 - Do not predict future stock prices.
 
 Context:
@@ -824,9 +848,12 @@ def filter_monitor_candidates(
     *,
     min_confidence: float = MIN_LLM_MONITOR_CONFIDENCE,
 ) -> list[EodDropCandidate]:
+    """Only overreaction MONITOR verdicts enter the cliff watchlist."""
     out: list[EodDropCandidate] = []
     for row in rows:
         if row.llm_verdict != "monitor":
+            continue
+        if (row.llm_damage_type or "").strip().lower() not in MONITOR_DAMAGE_TYPES:
             continue
         if row.llm_confidence is not None and row.llm_confidence < min_confidence:
             continue
@@ -843,10 +870,16 @@ def _eod_triage_verdict_counts(rows: Sequence[EodDropCandidate]) -> dict[str, in
 
 
 def eod_candidate_to_meta(candidate: EodDropCandidate) -> dict[str, Any]:
+    """Cliff-monitor meta: pre/post event prices are the discover ceiling anchors."""
     return {
-        "intake": "eod_drop",
+        "vulture_version": VULTURE_VERSION,
+        "intake": "cliff_v2",
         "source": "eod_drop",
+        "cliff_date": candidate.session_date,
         "session_date": candidate.session_date,
+        "pre_cliff_close": round(candidate.prior_close, 4),
+        "cliff_close": round(candidate.close, 4),
+        "cliff_open": round(candidate.open, 4),
         "day_change_pct": round(candidate.day_change_pct, 2),
         "session_change_pct": round(candidate.session_change_pct, 2),
         "close": candidate.close,
@@ -864,148 +897,230 @@ build_drop_candidates = build_eod_drop_candidates
 filter_monitor_rows = filter_monitor_candidates
 build_candidates = build_scan_candidates
 
+# Backward-compatible name used by older call sites / docs.
+PROCESS_CUTOFF_HOUR_UTC = EOD_INTAKE_CUTOFF_HOUR_UTC
+
+
+# --- Cliff monitor helpers ---
+
+
+def in_cliff_monitor_window(now: Optional[datetime] = None) -> bool:
+    """True on a trading day from 10:30 ET through the regular-session close."""
+    status = market_open()
+    if status is None or status < 0:
+        return False
+    return status >= MONITOR_START_MINUTES_AFTER_OPEN
+
+
+def _parse_iso_date(raw: Any) -> Optional[date]:
+    text = str(raw or "").strip()[:10]
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def cliff_monitor_expired(meta: dict[str, Any], *, today: Optional[date] = None) -> bool:
+    """True when cliff_date is older than WATCHLIST_DAYS calendar days."""
+    cliff = _parse_iso_date(meta.get("cliff_date") or meta.get("session_date"))
+    if cliff is None:
+        return True
+    ref = today or datetime.now(pytz.timezone("US/Eastern")).date()
+    return (ref - cliff).days > WATCHLIST_DAYS
+
+
+def _fetch_open_series(symbol: str) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """
+    Return (open_today, open_prior, last_price).
+
+    Today's open prefers live Yahoo regularMarketOpen; prior open is the previous
+    completed daily bar.
+    """
+    sym = (symbol or "").strip().upper()
+    open_today: Optional[float] = None
+    last_price: Optional[float] = None
+    try:
+        info = yf.Ticker(sym).info or {}
+        open_today = _safe_float(info.get("regularMarketOpen") or info.get("open"))
+        last_price = _safe_float(
+            info.get("regularMarketPrice") or info.get("currentPrice") or info.get("previousClose")
+        )
+    except Exception:
+        pass
+
+    open_prior: Optional[float] = None
+    try:
+        hist = yf.Ticker(sym).history(period="15d", interval="1d", auto_adjust=False)
+        if hist is not None and not hist.empty and "Open" in hist.columns:
+            opens = hist["Open"].dropna().astype(float)
+            if not opens.empty:
+                open_prior = float(opens.iloc[-1])
+                # If history already includes today's partial bar, prior is the one before.
+                et = pytz.timezone("US/Eastern")
+                today = datetime.now(et).date()
+                last_idx = opens.index[-1]
+                last_day = last_idx.date() if hasattr(last_idx, "date") else None
+                if last_day == today and len(opens) >= 2:
+                    open_today = open_today or float(opens.iloc[-1])
+                    open_prior = float(opens.iloc[-2])
+                elif open_today is None and last_day == today:
+                    open_today = float(opens.iloc[-1])
+                if last_price is None and "Close" in hist.columns:
+                    closes = hist["Close"].dropna().astype(float)
+                    if not closes.empty:
+                        last_price = float(closes.iloc[-1])
+    except Exception:
+        pass
+
+    return open_today, open_prior, last_price
+
+
+def two_concurrent_opening_highs(open_today: Optional[float], open_prior: Optional[float]) -> bool:
+    """Today's open is higher than the prior session open (rising open pair)."""
+    if open_today is None or open_prior is None:
+        return False
+    if open_today <= 0 or open_prior <= 0:
+        return False
+    return open_today > open_prior
+
+
+def still_below_pre_cliff(
+    price: Optional[float],
+    pre_cliff: Optional[float],
+    cliff_close: Optional[float],
+) -> Tuple[bool, str]:
+    """Price still discounted vs the pre-cliff print / not fully recovered."""
+    if price is None or pre_cliff is None or pre_cliff <= 0:
+        return False, "missing pre-cliff or price"
+    if price > pre_cliff * MAX_PRICE_FRAC_OF_PRE_CLIFF:
+        pct = (price / pre_cliff - 1.0) * 100.0
+        return False, f"price {pct:+.1f}% vs pre-cliff (need <= {(MAX_PRICE_FRAC_OF_PRE_CLIFF - 1) * 100:.0f}%)"
+
+    if cliff_close is not None and cliff_close > 0 and pre_cliff > cliff_close:
+        drop = pre_cliff - cliff_close
+        recovered = (price - cliff_close) / drop
+        if recovered > MAX_CLIFF_DROP_RECOVERY_FRAC:
+            return False, f"recovered {recovered:.0%} of cliff drop (max {MAX_CLIFF_DROP_RECOVERY_FRAC:.0%})"
+
+    return True, "still below pre-cliff"
+
+
+def consensus_supports_buy(symbol: str) -> Tuple[bool, str]:
+    """Hard gate: Buy/Strong Buy and enough mean-target upside."""
+    try:
+        cons = score_consensus_health(symbol)
+    except Exception as exc:
+        return False, f"consensus error: {exc}"
+    rec = (cons.recommendation_key or "").strip().lower()
+    if rec not in BUY_RECOMMENDATION_KEYS:
+        return False, f"rec={rec or 'n/a'} (need buy/strong_buy)"
+    upside = cons.upside_to_mean_pct
+    if upside is None or upside < MIN_CONSENSUS_UPSIDE_PCT:
+        return False, f"upside {upside if upside is not None else 'n/a'}% (need >={MIN_CONSENSUS_UPSIDE_PCT:.0f}%)"
+    return True, f"rec={rec} upside={upside:+.1f}%"
+
 
 # --- Advisor ---
 
 
 class Vulture(AdvisorBase):
-    """EOD drop intake, diagnostic watchlist, persistence-gated recovery discoveries."""
+    """Cliff-event intake + RTH bounce discovery (v2)."""
 
     def discover(self, sa) -> None:
+        state = self._advisor_blob_state()
+        cut = self._ensure_v2_hard_cut(state)
+
         session_date = resolve_eod_session_date()
         target_date = session_date.isoformat()
 
-        if not self.should_process_market_date_once(
-            target_date=target_date,
-            cutoff_hour_utc=PROCESS_CUTOFF_HOUR_UTC,
-        ):
-            return
-
-        state = self._advisor_blob_state()
-        streaks: Dict[str, int] = dict(state.get("buy_ready_streak") or {})
-
-        financial_polygon.clear_polygon_cache()
-
-        weekly_added = 0
         eod_added = 0
-        rescored = 0
-        discoveries = 0
-
-        if self._needs_weekly_scan(state, target_date):
-            try:
-                weekly_added = self._weekly_scan_intake(target_date, session_date)
-                state["last_universe_scan_date"] = target_date
-            except Exception as exc:
-                logger.exception("Vulture sa=%s: weekly scan intake failed: %s", sa.id, exc)
-
+        eod_ran = False
         eod_ok = True
-        try:
-            eod_added = self._eod_intake(target_date, session_date)
-        except Exception as exc:
-            eod_ok = False
-            logger.exception("Vulture sa=%s: EOD intake failed: %s", sa.id, exc)
+        if self.should_process_market_date_once(
+            target_date=target_date,
+            cutoff_hour_utc=EOD_INTAKE_CUTOFF_HOUR_UTC,
+        ):
+            eod_ran = True
+            financial_polygon.clear_polygon_cache()
+            try:
+                eod_added = self._cliff_intake(target_date, session_date)
+            except Exception as exc:
+                eod_ok = False
+                logger.exception("Vulture sa=%s: cliff intake failed: %s", sa.id, exc)
+            if eod_ok:
+                self.mark_market_date_processed(target_date)
+            else:
+                logger.warning(
+                    "Vulture sa=%s: skip mark processed for %s (cliff intake failed; will retry)",
+                    sa.id,
+                    target_date,
+                )
 
-        rescored, discoveries, streaks = self._rescore_watchlist(sa, target_date, streaks)
-
-        state["buy_ready_streak"] = streaks
-        state["last_eod_session"] = target_date
-        state["last_weekly_watches_added"] = weekly_added
-        state["last_eod_watches_added"] = eod_added
-        state["last_watches_added"] = weekly_added + eod_added
-        state["last_rescored"] = rescored
-        state["last_discoveries"] = discoveries
-        self._save_advisor_blob_state(state)
-        if eod_ok:
-            self.mark_market_date_processed(target_date)
+        expired = 0
+        discoveries = 0
+        evaluated = 0
+        if in_cliff_monitor_window():
+            expired, evaluated, discoveries = self._monitor_cliffs(sa)
         else:
-            logger.warning(
-                "Vulture sa=%s: skip mark processed for %s (EOD intake failed; will retry)",
-                sa.id,
-                target_date,
-            )
+            logger.debug("Vulture sa=%s: outside 10:30–close ET monitor window", sa.id)
+
+        state["last_eod_session"] = target_date
+        state["last_eod_watches_added"] = eod_added
+        state["last_watches_added"] = eod_added
+        state["last_cliff_expired"] = expired
+        state["last_cliff_evaluated"] = evaluated
+        state["last_discoveries"] = discoveries
+        state["last_v2_hard_cut"] = cut
+        # Clear legacy streak blob noise
+        state.pop("buy_ready_streak", None)
+        self._save_advisor_blob_state(state)
 
         logger.info(
-            "Vulture sa=%s session=%s weekly_added=%s eod_added=%s rescored=%s discoveries=%s",
+            "Vulture sa=%s session=%s eod_ran=%s eod_added=%s expired=%s evaluated=%s discoveries=%s hard_cut=%s",
             sa.id,
             target_date,
-            weekly_added,
+            eod_ran,
             eod_added,
-            rescored,
+            expired,
+            evaluated,
             discoveries,
+            cut,
         )
 
-    def _needs_weekly_scan(self, state: Dict, target_date: str) -> bool:
-        built = (state.get("last_universe_scan_date") or "").strip()
-        if not built:
-            return True
-        try:
-            built_dt = datetime.strptime(built, "%Y-%m-%d").date()
-            ref_dt = datetime.strptime(target_date, "%Y-%m-%d").date()
-        except ValueError:
-            return True
-        return (ref_dt - built_dt).days >= SCAN_REBUILD_DAYS
+    def _ensure_v2_hard_cut(self, state: Dict) -> int:
+        """One-time delete of all pending watches (legacy chronic + old EOD)."""
+        if state.get("vulture_v2_cutover"):
+            return 0
+        from core.models import Watchlist
 
-    def _weekly_scan_intake(self, target_date: str, session_date) -> int:
-        candidates, stats = build_weekly_scan_candidates(
-            session_date,
-            seed_universe=SCAN_SEED_UNIVERSE,
-            top=SCAN_TOP,
-        )
-        logger.info(
-            "Vulture weekly scan %s: polygon=%s seeds=%s candidates=%s",
-            target_date,
-            stats.get("polygon_rows"),
-            stats.get("seeds"),
-            stats.get("candidates"),
-        )
+        qs = Watchlist.objects.filter(advisor=self.advisor, status="Pending")
+        count = qs.count()
+        if count:
+            qs.delete()
+            logger.warning(
+                "Vulture v2 hard cut: deleted %s pending watchlist rows for advisor=%s",
+                count,
+                self.advisor.id,
+            )
+        state["vulture_v2_cutover"] = True
+        state["vulture_v2_cutover_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        state["vulture_v2_cutover_deleted"] = count
+        self._save_advisor_blob_state(state)
+        return count
 
-        added = 0
-        for row in candidates:
-            if self.watched(row.symbol):
-                logger.debug("Vulture skip weekly watch %s: already on watchlist", row.symbol)
+    def _has_active_cliff_watch(self, symbol: str) -> bool:
+        sym = (symbol or "").strip().upper()
+        for entry in self.watchlist():
+            if entry.stock.symbol.upper() != sym:
                 continue
+            meta = entry.meta or {}
+            if meta.get("vulture_version") == VULTURE_VERSION and meta.get("intake") == "cliff_v2":
+                return True
+        return False
 
-            try:
-                diag = analyze_symbol(row.symbol)
-            except Exception as exc:
-                logger.warning("Vulture weekly diagnostic failed for %s: %s", row.symbol, exc)
-                continue
-
-            if not qualifies_for_weekly_watch(diag.status):
-                logger.debug(
-                    "Vulture skip weekly watch %s: stage=%s decision=%s",
-                    row.symbol,
-                    diag.status,
-                    diag.decision,
-                )
-                continue
-
-            dmg = row.damage_52w_pct if row.damage_52w_pct is not None else row.damage_3m_pct
-            dmg_str = f"{dmg:+.1f}" if dmg is not None else "n/a"
-            meta = scan_candidate_to_meta(row)
-            meta["intake_date"] = target_date
-            meta["diagnostic"] = diagnostic_to_dict(diag)
-            meta["recovery_stage"] = diag.status
-            meta["decision"] = diag.decision
-            collapse = _format_collapse_clause(meta)
-            explanation = (
-                f"Vulture weekly scan {row.trigger} | "
-                f"{collapse + ' | ' if collapse else ''}"
-                f"dmg {dmg_str}% | stage {diag.status} | "
-                f"quality {diag.candidate_quality_pct}%"
-            )[:500]
-            if self.watch(row.symbol, explanation, days=WATCHLIST_DAYS, meta=meta):
-                added += 1
-
-        logger.info(
-            "Vulture weekly intake %s: added=%s of %s candidates",
-            target_date,
-            added,
-            len(candidates),
-        )
-        return added
-
-    def _eod_intake(self, target_date: str, session_date) -> int:
+    def _cliff_intake(self, target_date: str, session_date) -> int:
         rows, raw_count = build_eod_drop_candidates(
             session_date,
             min_price=DEFAULT_MIN_PRICE,
@@ -1015,7 +1130,7 @@ class Vulture(AdvisorBase):
             top=EOD_TOP,
         )
         logger.info(
-            "Vulture EOD scan %s: raw_drops=%s ranked=%s",
+            "Vulture cliff scan %s: raw_drops=%s ranked=%s",
             target_date,
             raw_count,
             len(rows),
@@ -1030,15 +1145,14 @@ class Vulture(AdvisorBase):
         )
         monitor_rows = filter_monitor_candidates(rows)
         logger.info(
-            "Vulture EOD LLM %s: monitor=%s of %s ranked",
+            "Vulture cliff LLM %s: monitor=%s of %s ranked (overreaction only)",
             target_date,
             len(monitor_rows),
             len(rows),
         )
         if not monitor_rows and rows:
             logger.warning(
-                "VULTURE_EOD_NO_MONITORS session=%s ranked=%s verdicts=%s "
-                "(EOD triage needs Gemini with search; rate limits or DeepSeek fallback often defer all)",
+                "VULTURE_CLIFF_NO_MONITORS session=%s ranked=%s verdicts=%s",
                 target_date,
                 len(rows),
                 _eod_triage_verdict_counts(rows),
@@ -1046,109 +1160,102 @@ class Vulture(AdvisorBase):
 
         added = 0
         for row in monitor_rows:
-            if self.watched(row.symbol):
-                logger.debug("Vulture skip watch %s: already on watchlist", row.symbol)
+            if self._has_active_cliff_watch(row.symbol):
+                logger.debug("Vulture skip cliff watch %s: already monitoring", row.symbol)
                 continue
             meta = eod_candidate_to_meta(row)
             meta["intake_date"] = target_date
-            collapse = _format_collapse_clause(meta)
             explanation = (
-                f"Vulture EOD drop {row.day_change_pct:+.1f}% | "
-                f"{collapse + ' | ' if collapse else ''}"
-                f"{row.llm_damage_type or 'n/a'} | {row.llm_reason or 'monitor'}"
+                f"Vulture cliff {row.day_change_pct:+.1f}% on {row.session_date} | "
+                f"pre ${row.prior_close:.2f} → ${row.close:.2f} | "
+                f"{row.llm_damage_type or 'overreaction'} | {row.llm_reason or 'monitor'}"
             )[:500]
             if self.watch(row.symbol, explanation, days=WATCHLIST_DAYS, meta=meta):
                 added += 1
         return added
 
-    def _rescore_watchlist(
-        self,
-        sa,
-        target_date: str,
-        streaks: Dict[str, int],
-    ) -> Tuple[int, int, Dict[str, int]]:
-        rescored = 0
+    def _monitor_cliffs(self, sa) -> Tuple[int, int, int]:
+        """Expire stale cliffs; discover when RTH bounce filters all pass."""
+        expired = 0
+        evaluated = 0
         discoveries = 0
+        et_today = datetime.now(pytz.timezone("US/Eastern")).date()
 
-        for entry in self.watchlist():
+        for entry in list(self.watchlist()):
             symbol = entry.stock.symbol.upper()
-            try:
-                diag = analyze_symbol(symbol)
-            except Exception as exc:
-                logger.warning("Vulture rescore failed for %s: %s", symbol, exc)
+            meta = dict(entry.meta or {})
+
+            if meta.get("vulture_version") != VULTURE_VERSION or meta.get("intake") != "cliff_v2":
+                entry.status = "Excluded"
+                entry.save(update_fields=["status"])
+                expired += 1
                 continue
 
-            meta = dict(entry.meta or {})
-            meta["diagnostic"] = diagnostic_to_dict(diag)
-            meta["last_scored"] = target_date
-            meta["recovery_stage"] = diag.status
-            meta["decision"] = diag.decision
+            if cliff_monitor_expired(meta, today=et_today):
+                entry.status = "Excluded"
+                entry.meta = {**meta, "expire_reason": "cliff_age_gt_14d"}
+                entry.save(update_fields=["status", "meta"])
+                expired += 1
+                logger.info("Vulture expire %s: cliff older than %sd", symbol, WATCHLIST_DAYS)
+                continue
+
+            evaluated += 1
+            ok, reason = self._cliff_buy_ready(symbol, meta)
+            meta["last_monitored"] = et_today.isoformat()
+            meta["last_monitor_reason"] = reason
             entry.meta = meta
             entry.save(update_fields=["meta"])
-            rescored += 1
 
-            if diag.decision == "BUY READY":
-                streaks[symbol] = streaks.get(symbol, 0) + 1
-                logger.info(
-                    "Vulture %s BUY READY streak %s/%s (score %s/%s)",
-                    symbol,
-                    streaks[symbol],
-                    BUY_READY_STREAK_DAYS,
-                    diag.score,
-                    diag.max_score,
-                )
-            else:
-                if streaks.get(symbol):
-                    logger.info(
-                        "Vulture %s streak reset (decision=%s stage=%s)",
-                        symbol,
-                        diag.decision,
-                        diag.status,
-                    )
-                streaks[symbol] = 0
-                continue
-
-            if streaks[symbol] < BUY_READY_STREAK_DAYS:
+            if not ok:
+                logger.debug("Vulture %s not ready: %s", symbol, reason)
                 continue
             if not self.allow_discovery(symbol, period=DISCOVERY_COOLDOWN_HOURS):
                 continue
 
-            explanation = self._discovery_explanation(symbol, diag, streaks[symbol], meta)
-            if self.discovered(
-                sa,
-                symbol,
-                explanation,
-                weight=DISCOVERY_WEIGHT,
-            ):
+            explanation = self._cliff_discovery_explanation(symbol, meta, reason)
+            if self.discovered(sa, symbol, explanation, weight=DISCOVERY_WEIGHT):
                 discoveries += 1
-                streaks[symbol] = 0
+                entry.status = "Executed"
+                entry.save(update_fields=["status"])
 
-        return rescored, discoveries, streaks
+        return expired, evaluated, discoveries
 
-    def _discovery_explanation(
-        self,
-        symbol: str,
-        diag,
-        streak: int,
-        meta: Optional[dict[str, Any]] = None,
-    ) -> str:
-        collapse = _format_collapse_clause(meta or {})
-        snap = diag.snapshot or {}
-        dmg_52w = snap.get("damage_52w_pct")
-        dmg_clause = f"still {dmg_52w:+.1f}% vs 52w" if dmg_52w is not None else ""
-        stage_label = "WARM early" if diag.status == "WARM" else "RECOVERY"
-        base = (
-            f"Vulture {stage_label} BUY READY x{streak}d | {symbol} "
-            f"score {diag.score}/{diag.max_score} "
-            f"quality {diag.candidate_quality_pct}% "
-            f"recovery {diag.recovery_confidence_pct}%"
+    def _cliff_buy_ready(self, symbol: str, meta: dict[str, Any]) -> Tuple[bool, str]:
+        pre_cliff = _safe_float(meta.get("pre_cliff_close"))
+        cliff_close = _safe_float(meta.get("cliff_close"))
+
+        open_today, open_prior, price = _fetch_open_series(symbol)
+        if not two_concurrent_opening_highs(open_today, open_prior):
+            return False, (
+                f"opens not rising (today={open_today}, prior={open_prior})"
+            )
+
+        below, below_detail = still_below_pre_cliff(price, pre_cliff, cliff_close)
+        if not below:
+            return False, below_detail
+
+        cons_ok, cons_detail = consensus_supports_buy(symbol)
+        if not cons_ok:
+            return False, cons_detail
+
+        return True, (
+            f"higher open {open_prior:.2f}->{open_today:.2f}; "
+            f"px {price:.2f} vs pre {pre_cliff:.2f}; {cons_detail}"
         )
-        if dmg_clause:
-            base = f"{base} | {dmg_clause}"
-        base = f"{base} | {diag.decision_reason[:100]}"
-        if collapse:
-            return f"{base} | {collapse}"[:500]
-        return base[:500]
+
+    def _cliff_discovery_explanation(self, symbol: str, meta: dict[str, Any], reason: str) -> str:
+        cliff = meta.get("cliff_date") or "?"
+        pre = meta.get("pre_cliff_close")
+        post = meta.get("cliff_close")
+        dmg = meta.get("day_change_pct")
+        llm = (meta.get("llm_reason") or meta.get("collapse_reason") or "")[:80]
+        pre_s = f"${pre:.2f}" if isinstance(pre, (int, float)) else "?"
+        post_s = f"${post:.2f}" if isinstance(post, (int, float)) else "?"
+        dmg_s = f"{dmg:+.1f}%" if isinstance(dmg, (int, float)) else "?"
+        return (
+            f"Vulture cliff bounce | {symbol} cliff {cliff} {dmg_s} "
+            f"({pre_s}→{post_s}) | {reason} | {llm}"
+        )[:500]
 
     def analyze(self, sa, stock) -> None:
         return
