@@ -3,12 +3,11 @@ Midway advisor — opportunity book: SO+β universe, market-regime soft entries.
 
 Funnel:
   market card (stance) → soft-rank → below session open → sector intraday OK
-  → stabilize → discover
+  → stabilize → WHY_SOFT (LLM) → discover
 
-Does not use RSS/8-K/Meyka. WHY_SOFT is still a human/LLM gate outside this path;
-v1 relies on soft bar by stance (active_soft ≥ 2.5), session discount vs open,
-sector not freefalling on the day, and stabilize — skips extremes that usually
-mark company events.
+Does not use RSS/8-K/Meyka. Soft bar by stance (active_soft ≥ 2.5), session
+discount vs open, sector not freefalling on the day, stabilize, then WHY_SOFT
+A/B gate (market/sector discount — skip C/D company/structural traps).
 
 Exit/add: PEAKED (arm +2% / min exit +1%), rebuy −2% (max 3),
 EOD +2%, DESCENDING_TREND. (No hard TP — overlaps PEAKED arm.)
@@ -19,12 +18,17 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 from pathlib import Path
-from typing import Dict, Final, Optional, Set, Tuple
+from typing import Any, Dict, Final, List, Optional, Set, Tuple
 
 from django.conf import settings
 
 from core.models import Holding, Profile
-from core.services.advisors.advisor import AdvisorBase, register
+from core.services.advisors.advisor import (
+    AdvisorBase,
+    discovery_trade_explanation_lead,
+    register,
+)
+from core.services.financial import yahoo as financial_yahoo
 from core.services.intraday_stabilize import price_above_minutes_ago
 from core.services.market.midway_candidates import (
     SoftCandidate,
@@ -32,7 +36,7 @@ from core.services.market.midway_candidates import (
     rank_soft_candidates,
     soft_bar_for_stance,
 )
-from core.services.market.midway_state import evaluate_midway_market
+from core.services.market.midway_state import MidwayMarketState, evaluate_midway_market
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +59,12 @@ MIDWAY_MAX_DISCOVERIES_PER_SESSION = 6
 MIDWAY_DISCOVERY_COOLDOWN_HOURS = 48
 MIDWAY_STABILIZE_MINUTES = 30
 
+# WHY_SOFT: live LLM class before discover. A/B = market/sector discount (pass);
+# C/D/E/F blocked in phase 1 (company/structural/valuation/mixed — buy-gate later).
+WHY_SOFT_PASS_CLASSES: Final[frozenset[str]] = frozenset({"A", "B"})
+WHY_SOFT_LLM_TIMEOUT_S = 90.0
+WHY_SOFT_HEADLINE_LIMIT = 5
+
 # Exit pack: PEAKED arms at +2% (min exit +1%) — no hard TP (redundant with arm level);
 # rebuy −2% / max 3; EOD +2% in last 60m; DT cuts freefalls.
 MIDWAY_PEAKED_GIVEBACK = 15.0
@@ -67,7 +77,6 @@ MIDWAY_DT = -0.20
 
 # Optional hard skips (process failures); empty by default — use soft extreme gate.
 MIDWAY_HARD_SKIP: Final[frozenset[str]] = frozenset()
-
 
 def _session_last_and_open(symbol: str) -> Tuple[Optional[float], Optional[float]]:
     """Return (last, session open) from Yahoo fast_info; either may be None."""
@@ -156,6 +165,103 @@ def _sector_intraday_allows(sector_etf: str) -> Optional[bool]:
     return _symbol_stabilized(etf, last, MIDWAY_STABILIZE_MINUTES)
 
 
+def _fmt_pct(value: Optional[float]) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:+.2f}%"
+
+
+def _why_soft_allows(parsed: Dict[str, Any]) -> bool:
+    """Phase 1: discover only market/sector discounts (A/B); never SKIP."""
+    why = str(parsed.get("why_soft") or "").strip().upper()
+    action = str(parsed.get("action") or "").strip().upper()
+    if action == "SKIP":
+        return False
+    return why in WHY_SOFT_PASS_CLASSES
+
+
+def _normalize_why_soft_payload(raw: Any, symbol: str) -> Optional[Dict[str, Any]]:
+    """Accept a single object or a one-element / matching-symbol array."""
+    if isinstance(raw, list):
+        if not raw:
+            return None
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("symbol") or "").strip().upper() == symbol:
+                return item
+        return raw[0] if isinstance(raw[0], dict) else None
+    if isinstance(raw, dict):
+        return raw
+    return None
+
+
+def _build_why_soft_prompt(
+    cand: SoftCandidate,
+    state: MidwayMarketState,
+    headlines: List[str],
+) -> str:
+    soft = (
+        f"{cand.soft_score:.2f}" if cand.soft_score is not None else "n/a"
+    )
+    soft_secs = ",".join(state.soft_sectors) or "none"
+    hot_secs = ",".join(state.hot_sectors) or "none"
+    hl_lines = "\n".join(f"- {h}" for h in headlines) or "- (none)"
+    return f"""You are classifying one soft mid-cap for SoulTrader MIDWAY.
+MIDWAY wants quality names sold for market/sector reasons — not broken stories.
+SO already passed. Soft-rank already said this name is relatively weak vs SPY/sector.
+Your job is ONLY: WHY_SOFT class + discount quality. Do NOT invent a buy recommendation.
+You may use search/recent news to judge the cause of softness.
+
+Market context: TREND={state.trend} MOOD={state.mood} STANCE={state.stance} \
+PERMISSION={state.permission} soft_sectors={soft_secs} hot_sectors={hot_secs}
+
+WHY_SOFT classes (pick one letter):
+A = Market selloff (broad pressure; peers also soft)
+B = Sector selloff (sleeve/peers repricing)
+C = Company-specific event (earnings/guidance/litigation/product/management)
+D = Fundamental deterioration (economics correctly worsening)
+E = Valuation reset (business ok; prior valuation unjustified)
+F = Mixed (some real concern + some indiscriminate selling)
+
+Discount quality: HIGH | MEDIUM | LOW
+- HIGH: good business, soft mostly A/B, estimates/story intact
+- MEDIUM: mixed or unresolved but SO intact
+- LOW: C/D heavy, governance/controls, ADR-process miss, litigation, clear broken thesis
+
+Action: FOLLOW | WATCH | SKIP
+- FOLLOW = soft quality worth Midway discovery (prefer A/B, HIGH)
+- WATCH = attractive tape but unresolved fundamental question
+- SKIP = should not be discovered for MIDWAY
+
+Desk row:
+symbol={cand.symbol}
+so_pair={cand.so_pair}
+soft_score={soft}
+sleeve={cand.sleeve}
+sector={cand.sector}
+sector_etf={cand.sector_etf}
+ret_5d_pct={_fmt_pct(cand.ret_5d_pct)}
+ret_20d_pct={_fmt_pct(cand.ret_20d_pct)}
+vs_spy_20d_pct={_fmt_pct(cand.vs_spy_20d_pct)}
+vs_sector_20d_pct={_fmt_pct(cand.vs_sector_20d_pct)}
+
+Recent headlines:
+{hl_lines}
+
+Return ONLY a JSON object (no markdown):
+{{
+  "symbol": "{cand.symbol}",
+  "why_soft": "A"|"B"|"C"|"D"|"E"|"F",
+  "discount_quality": "HIGH"|"MEDIUM"|"LOW",
+  "action": "FOLLOW"|"WATCH"|"SKIP",
+  "primary": "short reason (one sentence)",
+  "unresolved": "one question or null",
+  "confidence": 1-5
+}}
+"""
+
+
 class Midway(AdvisorBase):
     """Regime-aware soft discovery on the Midway opportunity universe."""
 
@@ -224,6 +330,7 @@ class Midway(AdvisorBase):
         skipped_below_open = 0
         skipped_sector = 0
         skipped_stabilize = 0
+        skipped_why_soft = 0
         skipped_cooldown = 0
         skipped_hard = 0
         sector_cache: Dict[str, Optional[bool]] = {}
@@ -284,7 +391,24 @@ class Midway(AdvisorBase):
                 skipped_stabilize += 1
                 continue
 
-            explanation = self._discovery_explanation(cand, state.stance, state.mood, bar)
+            why = self._classify_why_soft(cand, state)
+            if why is None or not _why_soft_allows(why):
+                skipped_why_soft += 1
+                why_s = (why or {}).get("why_soft", "?")
+                act_s = (why or {}).get("action", "fail")
+                primary = str((why or {}).get("primary") or "")[:120]
+                logger.info(
+                    "Midway skip %s: WHY_SOFT why=%s action=%s primary=%s",
+                    sym,
+                    why_s,
+                    act_s,
+                    primary,
+                )
+                continue
+
+            explanation = self._discovery_explanation(
+                cand, state.stance, state.mood, bar, why
+            )
             if self.discovered(
                 sa,
                 sym,
@@ -302,6 +426,11 @@ class Midway(AdvisorBase):
                         "below_open": True,
                         "sector_etf": etf,
                         "sector_intraday_ok": True,
+                        "why_soft": why.get("why_soft"),
+                        "discount_quality": why.get("discount_quality"),
+                        "why_action": why.get("action"),
+                        "why_primary": why.get("primary"),
+                        "why_confidence": why.get("confidence"),
                     }
                 },
             ):
@@ -312,7 +441,7 @@ class Midway(AdvisorBase):
             "Midway sa=%s: stance=%s mood=%s bar=%s universe=%d "
             "discoveries=%d held_skip=%d extreme_skip=%d bar_skip=%d "
             "below_open_skip=%d sector_skip=%d stabilize_skip=%d "
-            "cooldown_skip=%d hard_skip=%d",
+            "why_soft_skip=%d cooldown_skip=%d hard_skip=%d",
             sa.id,
             state.stance,
             state.mood,
@@ -325,12 +454,115 @@ class Midway(AdvisorBase):
             skipped_below_open,
             skipped_sector,
             skipped_stabilize,
+            skipped_why_soft,
             skipped_cooldown,
             skipped_hard,
         )
 
     def analyze(self, sa, stock) -> None:
         return
+
+    def _classify_why_soft(
+        self,
+        cand: SoftCandidate,
+        state: MidwayMarketState,
+    ) -> Optional[Dict[str, Any]]:
+        """LLM WHY_SOFT class; None on failure (fail closed — no discover)."""
+        try:
+            headlines = financial_yahoo.latest_headlines(
+                cand.symbol,
+                limit=WHY_SOFT_HEADLINE_LIMIT,
+                max_age_days=7,
+            )
+        except Exception as exc:
+            logger.debug("Midway WHY_SOFT headlines failed for %s: %s", cand.symbol, exc)
+            headlines = []
+        # Drop placeholder-only lists
+        headlines = [
+            h
+            for h in headlines
+            if h
+            and "No recent public headlines" not in h
+            and "No ticker provided" not in h
+        ]
+
+        prompt = _build_why_soft_prompt(cand, state, headlines)
+        try:
+            model, raw = self.ask_llm(
+                prompt,
+                use_search=True,
+                timeout=WHY_SOFT_LLM_TIMEOUT_S,
+            )
+        except Exception as exc:
+            logger.warning("Midway WHY_SOFT LLM error %s: %s", cand.symbol, exc)
+            return None
+
+        if raw is None:
+            logger.warning("Midway WHY_SOFT no response %s model=%s", cand.symbol, model)
+            return None
+
+        # Some paths return JSON text; prefer already-parsed.
+        if isinstance(raw, str):
+            raw = self._extract_json(raw)
+
+        parsed = _normalize_why_soft_payload(raw, cand.symbol)
+        if not parsed:
+            logger.warning(
+                "Midway WHY_SOFT bad payload %s model=%s type=%s",
+                cand.symbol,
+                model,
+                type(raw).__name__,
+            )
+            return None
+
+        why = str(parsed.get("why_soft") or "").strip().upper()
+        action = str(parsed.get("action") or "").strip().upper()
+        quality = str(parsed.get("discount_quality") or "").strip().upper()
+        primary = str(parsed.get("primary") or "").strip()
+        if why not in {"A", "B", "C", "D", "E", "F"}:
+            logger.warning(
+                "Midway WHY_SOFT invalid class %s why=%r model=%s",
+                cand.symbol,
+                parsed.get("why_soft"),
+                model,
+            )
+            return None
+        if action not in {"FOLLOW", "WATCH", "SKIP"}:
+            logger.warning(
+                "Midway WHY_SOFT invalid action %s action=%r model=%s",
+                cand.symbol,
+                parsed.get("action"),
+                model,
+            )
+            return None
+
+        conf = parsed.get("confidence")
+        try:
+            conf_i = int(conf) if conf is not None else None
+        except (TypeError, ValueError):
+            conf_i = None
+
+        out = {
+            "symbol": cand.symbol,
+            "why_soft": why,
+            "discount_quality": quality or "MEDIUM",
+            "action": action,
+            "primary": primary,
+            "unresolved": parsed.get("unresolved"),
+            "confidence": conf_i,
+            "model": model,
+        }
+        logger.info(
+            "Midway WHY_SOFT %s: why=%s quality=%s action=%s conf=%s model=%s primary=%s",
+            cand.symbol,
+            why,
+            out["discount_quality"],
+            action,
+            conf_i,
+            model,
+            primary[:120],
+        )
+        return out
 
     def _universe_path(self) -> Path:
         raw = self._advisor_blob_state().get("universe_path")
@@ -365,6 +597,7 @@ class Midway(AdvisorBase):
         stance: str,
         mood: str,
         bar: Optional[float],
+        why: Dict[str, Any],
     ) -> str:
         soft = f"{cand.soft_score:.2f}" if cand.soft_score is not None else "n/a"
         vs_spy = (
@@ -378,8 +611,21 @@ class Midway(AdvisorBase):
             else "n/a"
         )
         bar_s = f"{bar:.1f}" if bar is not None else "none"
+        why_letter = str(why.get("why_soft") or "?")
+        primary = str(why.get("primary") or "").strip() or "no primary"
+        # Trade.explanation uses first | segment — lead with class + LLM summary.
+        lead = discovery_trade_explanation_lead(
+            f"WHY_SOFT {why_letter} — {primary}"
+        )
+        quality = str(why.get("discount_quality") or "?")
+        action = str(why.get("action") or "?")
+        conf = why.get("confidence")
+        conf_s = str(conf) if conf is not None else "?"
         return (
-            f"SO {cand.so_pair} soft={soft} (bar {bar_s}) | below open | sector OK | "
+            f"{lead} | "
+            f"SO {cand.so_pair} soft={soft} (bar {bar_s}) | "
+            f"quality {quality} action {action} conf {conf_s} | "
+            f"below open | sector OK | "
             f"vsSPY20 {vs_spy} vsSec20 {vs_sec} | "
             f"sleeve {cand.sleeve} {cand.sector_etf} | "
             f"stance {stance}/{mood} | {MIDWAY_STABILIZE_MINUTES}m stabilize"
