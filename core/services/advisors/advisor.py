@@ -207,7 +207,8 @@ VALUATION_OVERLAY_POINTS_CAP = 15.0  # max +/- points from valuation overlay alo
 
 
 class AdvisorBase:
-    # News advisors (Polygon, StockStory): earliest discover after regular open.
+    # StockStory: earliest discover after regular open.
+    # Polygon scores articles anytime and buys from its watchlist at +60m.
     NEWS_DISCOVER_MINUTES_AFTER_OPEN = 30  # 10:00 ET
 
     # Class-level cache for Polygon stock list (shared across all advisor instances)
@@ -1285,7 +1286,14 @@ Respond with only a single valid JSON object, no other text.
             timeout=timeout,
         )
 
-    def news_flash(self, sa, title, url):
+    def news_flash(self, sa, title, url, on_candidate=None):
+        """
+        Score one headline. BUY / STRONG_BUY normally becomes a Discovery.
+
+        on_candidate: optional callback(dict) for a passing LLM verdict.
+        When set, price gate and discovered() are left to the caller
+        (Polygon watches first, then buys +60m after the open).
+        """
 
         # Check if market is open
         market_status = self.market_open()
@@ -1360,6 +1368,24 @@ Respond with only a single valid JSON object, no other text.
 
         # Anything better than DISMISS is put forward for consensus
         if recommendation != "BUY" and recommendation != "STRONG_BUY":
+            return
+
+        ticker = (ticker or "").strip().upper()
+        if not ticker:
+            logger.info("%s news skip: BUY without ticker | %s", self.advisor.name, (title or "")[:80])
+            return
+
+        candidate = {
+            "ticker": ticker,
+            "title": title or "",
+            "url": url or "",
+            "explanation": explanation,
+            "recommendation": recommendation,
+            "model": model,
+            "weight": 1.15 if recommendation == "STRONG_BUY" else 1.0,
+        }
+        if on_candidate is not None:
+            on_candidate(candidate)
             return
 
         from core.services.health.price import NEWS_FLASH_MIN_PRICE_SCORE, score_price_health

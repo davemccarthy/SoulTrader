@@ -3,9 +3,11 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from core.services.advisors.advisor import AdvisorBase, register
+from core.services.market import is_trading_day
 import logging
 
 from polygon import RESTClient
+import pytz
 import requests
 import pandas as pd
 import pandas_ta as ta
@@ -17,6 +19,11 @@ logger = logging.getLogger(__name__)
 
 # Advisor.blob: newest article published_utc from last fetch (next run uses published_utc.gt).
 POLYGON_NEWS_WATERMARK_KEY = "polygon_news_watermark"
+# Successful articles are watched, then bought once the session is this far open (10:30 ET).
+POLYGON_BUY_MINUTES_AFTER_OPEN = 60
+POLYGON_WATCH_DAYS = 4
+POLYGON_NEWS_KIND = "polygon_news"
+_ET = pytz.timezone("US/Eastern")
 
 
 class Polygon(AdvisorBase):
@@ -26,11 +33,11 @@ class Polygon(AdvisorBase):
     _min_request_interval = 12  # seconds (60 seconds / 5 requests)
 
     def discover(self, sa):
-        skip = self.news_discover_skip_reason()
-        if skip:
-            logger.info("Polygon skip: %s", skip)
-            return
+        """Score new articles anytime; buy watched names from +60m after the open."""
+        self._ingest_news(sa)
+        self._buy_watched(sa)
 
+    def _ingest_news(self, sa):
         try:
             polygon_key = self.advisor.key
             if not polygon_key:
@@ -69,20 +76,172 @@ class Polygon(AdvisorBase):
 
             if not articles:
                 logger.info("No Polygon news to process")
-                return
+            else:
+                for article in articles:
+                    title = article.get("title", "")
+                    article_url = article.get("article_url", "")
+                    if article_url and self._news_already_seen(article_url):
+                        logger.info(
+                            "Polygon skipping article (already seen): %s",
+                            (title or "")[:80],
+                        )
+                        continue
+                    self.news_flash(sa, title, article_url, on_candidate=self._watch_candidate)
 
-            for article in articles:
-                title = article.get("title", "")
-                article_url = article.get("article_url", "")
-                self.news_flash(sa, title, article_url)
-
-            newest_published = (articles[0] or {}).get("published_utc")
-            if newest_published:
-                state[POLYGON_NEWS_WATERMARK_KEY] = newest_published
-                self._save_advisor_blob_state(state)
+                newest_published = (articles[0] or {}).get("published_utc")
+                if newest_published:
+                    state[POLYGON_NEWS_WATERMARK_KEY] = newest_published
+                    self._save_advisor_blob_state(state)
 
         except Exception as e:
             logger.error(f"Discovery error: {e}", exc_info=True)
+
+    def _watch_candidate(self, candidate):
+        """Park a BUY / STRONG_BUY until the +60m open window. Price gate runs then."""
+        ticker = candidate["ticker"]
+        if self.watched(ticker):
+            logger.info("Polygon already watching %s; skip", ticker)
+            return
+        if not self.allow_discovery(ticker, period=168):
+            return
+
+        buy_session = self._target_buy_session().isoformat()
+        title = candidate.get("title") or ""
+        url = candidate.get("url") or ""
+        explanation = candidate.get("explanation") or ""
+        recommendation = candidate.get("recommendation") or ""
+        model = candidate.get("model") or ""
+        discovery_explanation = (
+            f"Article: {title} | {url} | {explanation} | Approved by {model} {recommendation}"
+        )
+        self.watch(
+            ticker,
+            f"Watch until {buy_session} +{POLYGON_BUY_MINUTES_AFTER_OPEN}m: {title}",
+            days=POLYGON_WATCH_DAYS,
+            meta={
+                "kind": POLYGON_NEWS_KIND,
+                "url": url,
+                "title": title,
+                "buy_session": buy_session,
+                "weight": candidate.get("weight") or 1.0,
+                "recommendation": recommendation,
+                "model": model,
+                "discovery_explanation": discovery_explanation,
+            },
+        )
+        logger.info(
+            "Polygon watching %s for buy on %s once session is +%sm",
+            ticker,
+            buy_session,
+            POLYGON_BUY_MINUTES_AFTER_OPEN,
+        )
+
+    def _buy_watched(self, sa):
+        """Discover pending news watches once today's session is >= +60m."""
+        mins = self.market_open()
+        if mins is None:
+            logger.info("Polygon buy skip: market closed")
+            return
+        if mins < 0:
+            logger.info("Polygon buy skip: market opens in %sm", -mins)
+            return
+        if mins < POLYGON_BUY_MINUTES_AFTER_OPEN:
+            logger.info(
+                "Polygon buy skip: %sm after open (need +%sm)",
+                mins,
+                POLYGON_BUY_MINUTES_AFTER_OPEN,
+            )
+            return
+
+        today = datetime.now(_ET).date().isoformat()
+        from core.services.health.price import NEWS_FLASH_MIN_PRICE_SCORE, score_price_health
+
+        for entry in list(self.watchlist()):
+            meta = dict(entry.meta or {})
+            if meta.get("kind") != POLYGON_NEWS_KIND:
+                continue
+            symbol = entry.stock.symbol
+            buy_session = (meta.get("buy_session") or "").strip()
+            if buy_session and buy_session < today:
+                self._close_watch(entry, f"Missed {buy_session} +{POLYGON_BUY_MINUTES_AFTER_OPEN}m window")
+                logger.info("Polygon exclude %s: missed buy session %s", symbol, buy_session)
+                continue
+            if buy_session and buy_session > today:
+                continue
+
+            price_health = score_price_health(symbol)
+            if price_health.score is None:
+                logger.info(
+                    "Polygon price gate retry %s: no score yet | %s",
+                    symbol,
+                    (meta.get("title") or "")[:80],
+                )
+                continue
+            if price_health.score < NEWS_FLASH_MIN_PRICE_SCORE:
+                ch = price_health.change_1d
+                ch_disp = f"{ch * 100:+.1f}%" if ch is not None else "n/a"
+                reason = (
+                    f"Price gate {price_health.score} < {NEWS_FLASH_MIN_PRICE_SCORE} "
+                    f"(1d {ch_disp})"
+                )
+                self._close_watch(entry, reason)
+                logger.info("Polygon exclude %s: %s", symbol, reason)
+                continue
+
+            if not self.allow_discovery(symbol, period=168):
+                self._close_watch(entry, "allow_discovery false")
+                logger.info("Polygon exclude %s: allow_discovery false", symbol)
+                continue
+
+            explanation = (meta.get("discovery_explanation") or entry.explanation or "").strip()
+            try:
+                weight = float(meta.get("weight") or 1.0)
+            except (TypeError, ValueError):
+                weight = 1.0
+            stock = self.discovered(
+                sa,
+                symbol,
+                explanation,
+                None,
+                weight,
+                meta={"polygon_news": {"url": meta.get("url"), "buy_session": buy_session}},
+            )
+            if stock:
+                self._close_watch(entry, "discovered", status="Executed")
+                logger.info("Polygon discovered %s from watch (session %s)", symbol, buy_session or today)
+            else:
+                logger.warning("Polygon discovered() returned None for %s; leave pending", symbol)
+
+    def _target_buy_session(self):
+        """Session date this article should be bought on: today if still pre-close, else next session."""
+        now_et = datetime.now(_ET)
+        today = now_et.date()
+        if self.market_open() is not None:
+            return today
+        nxt = today + timedelta(days=1)
+        for _ in range(10):
+            if is_trading_day(nxt):
+                return nxt
+            nxt += timedelta(days=1)
+        return nxt
+
+    def _news_already_seen(self, url: str) -> bool:
+        from core.models import Discovery, Watchlist
+
+        if Discovery.objects.filter(advisor=self.advisor, explanation__contains=url).exists():
+            return True
+        return Watchlist.objects.filter(advisor=self.advisor, meta__url=url).exists()
+
+    def _close_watch(self, entry, reason: str, status: str = "Excluded") -> None:
+        meta = dict(entry.meta or {})
+        meta["result"] = reason
+        entry.meta = meta
+        entry.status = status
+        if status != "Executed":
+            entry.explanation = f"{reason} | {entry.explanation}"[:500]
+            entry.save(update_fields=["status", "explanation", "meta"])
+        else:
+            entry.save(update_fields=["status", "meta"])
 
     def analyze_defunct(self, sa, stock):
         """Analyze stock using Polygon technical indicators + fundamentals"""
