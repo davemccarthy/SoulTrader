@@ -184,6 +184,20 @@ class Profile(models.Model):
 
 # External advisor services (pairs with python class)
 class Advisor(models.Model):
+    # Discovery run order. Lower runs first.
+    PRIORITY_VERY_HIGH = 1
+    PRIORITY_HIGH = 2
+    PRIORITY_NORMAL = 3
+    PRIORITY_LOW = 4
+    PRIORITY_VERY_LOW = 5
+    PRIORITY_CHOICES = [
+        (PRIORITY_VERY_HIGH, "Very high"),
+        (PRIORITY_HIGH, "High"),
+        (PRIORITY_NORMAL, "Normal"),
+        (PRIORITY_LOW, "Low"),
+        (PRIORITY_VERY_LOW, "Very low"),
+    ]
+
     name = models.CharField(max_length=100, unique=True)
     python_class = models.CharField(max_length=100, unique=True)
     description = models.TextField(blank=True, default="")
@@ -192,6 +206,11 @@ class Advisor(models.Model):
     key = models.CharField(max_length=255, default="")
     blob = models.TextField(blank=True, default="")
     weight = models.DecimalField(max_digits=5, decimal_places=2, default=1.0)  # Win rate
+    priority = models.PositiveSmallIntegerField(
+        choices=PRIORITY_CHOICES,
+        default=PRIORITY_NORMAL,
+        help_text="Discovery run order. Very high runs first, Very low last.",
+    )
 
     def is_enabled(self):
         self.refresh_from_db(fields=['enabled'])

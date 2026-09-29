@@ -119,12 +119,12 @@ class Command(BaseCommand):
 
         param_resuse = options['reuse']
         
-        # TODO: Implement based on your analysis.py smart_analyse() function
         # 1. Create SmartAnalysis session
         # 2. Get funds to analyze
-        # 3. Run analyse_holdings() if not discovery-only
-        # 4. Run analyse_discovery() if not holdings-only
-        # 5. Display results
+        # 3. Run analyse_discovery() if not holdings-only (before holdings so
+        #    intraday buys are not delayed by SI / IPC / purge work)
+        # 4. Run analyse_holdings() if not discovery-only
+        # 5. Snapshot after both, so holdings prices are refreshed first
 
         # Get funds
         funds = []
@@ -151,7 +151,7 @@ class Command(BaseCommand):
         # Get advisor classes
         advisors = []
 
-        for a in Advisor.objects.filter(enabled=True):
+        for a in Advisor.objects.filter(enabled=True).order_by("priority", "name"):
             module_name = a.python_class.lower()
             module = getattr(advisor_modules, module_name)
             pythonClass = getattr(module, a.python_class)
@@ -172,7 +172,11 @@ class Command(BaseCommand):
                     adv.discovered( sa=sa, symbol=symbol, explanation=explanation or "User discovery")
 
 
-        # Lets go
+        # Discovery before holdings: intraday fills should not wait on SI/IPC/purge.
+        # Holdings still runs before the snapshot, so prices used there stay fresh.
+        if not param_holdings_only:
+            analysis.analyze_discovery(sa, funds, advisors)
+
         if not param_discovery_only:
             ran_holdings = analysis.analyze_holdings(sa, funds)
             if not ran_holdings:
@@ -182,9 +186,6 @@ class Command(BaseCommand):
                         "(regular session 9:30–16:00 ET on trading days)."
                     )
                 )
-
-        if not param_holdings_only:
-            analysis.analyze_discovery(sa, funds, advisors)
 
         sa.duration = timezone.now() - sa.started
         # save we all stats from session : users, trades, buys, sells, spend

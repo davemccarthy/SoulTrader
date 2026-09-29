@@ -10,7 +10,7 @@ from typing import Any, Optional
 import pandas as pd
 from pytz import timezone as tz
 from django.utils import timezone
-from core.models import Holding, Discovery, Advisor, Profile
+from core.models import Holding, Discovery, Profile
 from core.services.execution import execute_buy, execute_buy_exact_shares, execute_sell
 from core.services.risk.headline_screen import (
     log_headline_rebuy_flatten,
@@ -1331,111 +1331,110 @@ def analyze_holdings(sa, funds):
     return True
 
 
-# Discovery new stock
-def analyze_discovery(sa, funds, advisors):
-    logger.info(f"Analyzing discovery for SA session {sa.id}")
+def _buy_advisor_discoveries(sa, fund, advisor_row):
+    """Buy this session's discoveries from one advisor for one fund."""
+    discoveries = list(
+        Discovery.objects.filter(sa=sa, advisor=advisor_row)
+        .select_related("advisor", "stock", "assessment")
+        .order_by("id")
+    )
+    if not discoveries:
+        return
 
-    # Clear Polygon cache at start of discovery run to ensure fresh data
-    from core.services.advisors.advisor import AdvisorBase  # TODO: Review
-    AdvisorBase.clear_polygon_cache()
+    if fund.sentiment_enabled() and fund.at_or_over_equity_buy_cap():
+        blocked = len({discovery.stock_id for discovery in discoveries})
+        logger.info(
+            "%s: over buy cap (ratio=%.3f buy_until=%s); "
+            "skip %s discovery buys (blocked=%s)",
+            fund.name,
+            float(fund.equity_ratio()),
+            fund.equity_buy_threshold(),
+            advisor_row.name,
+            blocked,
+        )
+        return
 
-    # 1. Look for new stock
-    for a in advisors:
-        logger.info(f"Discovery ------------- {a.advisor.name}")
-        a.discover(sa)
+    logger.info("Buying ------------- %s / %s", fund.name, advisor_row.name)
 
-    # 2. Filter stocks to buy on a per user basis
-    for fund in funds:
-        logger.info(f"Buying ------------- {fund.name}")
+    # One row per stock. A later advisor can still buy the name if this one does not.
+    seen_stocks = set()
+    allowance = fund.average_spend()
+    for discovery in discoveries:
+        if discovery.stock_id in seen_stocks:
+            continue
+        seen_stocks.add(discovery.stock_id)
 
-        allowed_advisors = list(fund.advisors or [])
+        stability, opportunity = discovery_axes(discovery)
+        if stability is None and opportunity is None:
+            continue
 
-        if fund.sentiment_enabled() and fund.at_or_over_equity_buy_cap():
-            blocked = 0
-            if allowed_advisors:
-                blocked_qs = Discovery.objects.filter(sa=sa).filter(
-                    advisor__python_class__in=allowed_advisors
-                )
-                blocked = blocked_qs.values("stock_id").distinct().count()
+        if discovery.weight is not None and float(discovery.weight) < AdvisorBase.MIN_DISCOVERY_WEIGHT:
             logger.info(
-                "%s: over buy cap (ratio=%.3f buy_until=%s); "
-                "skip discovery buys (blocked=%s)",
+                "%s: %s discovery %s weight gate fail (%.2f < %.2f)",
                 fund.name,
-                float(fund.equity_ratio()),
-                fund.equity_buy_threshold(),
-                blocked,
+                discovery.advisor.name,
+                discovery.stock.symbol,
+                float(discovery.weight),
+                AdvisorBase.MIN_DISCOVERY_WEIGHT,
             )
             continue
 
-        if not allowed_advisors:
-            logger.info("%s: no advisors configured; skip discovery buys", fund.name)
-            continue
-
-        # 1. Filter discoveries by allowed advisors (if specified)
-        discoveries_qs = Discovery.objects.filter(sa=sa)
-        
-        # Get Advisor objects for the allowed advisor python_class values
-        allowed_advisor_objects = Advisor.objects.filter(python_class__in=allowed_advisors)
-
-        if allowed_advisor_objects.exists():
-            discoveries_qs = discoveries_qs.filter(advisor__in=allowed_advisor_objects)
+        if discovery_passes_risk_gate(discovery, fund.risk):
+            if fund.sentiment_enabled() and fund.at_or_over_equity_buy_cap():
+                logger.info(
+                    "%s: over buy cap (ratio=%.3f buy_until=%s); "
+                    "skip remaining %s discovery buys",
+                    fund.name,
+                    float(fund.equity_ratio()),
+                    fund.equity_buy_threshold(),
+                    advisor_row.name,
+                )
+                return
+            explanation = discovery.explanation.split(" | ")[0].strip()
+            execute_buy(sa, fund, discovery.stock, allowance, explanation, discovery=discovery)
         else:
-            logger.warning(f"{fund.name}: no matching advisor")
-            continue
+            logger.info(
+                "%s: %s discovery %s risk gate fail (SO %s)",
+                fund.name,
+                discovery.advisor.name,
+                discovery.stock.symbol,
+                so_gate_fail_display(
+                    stability,
+                    opportunity,
+                    fund.risk,
+                    weight=discovery.weight,
+                ),
+            )
 
-        # 3. Get filtered discoveries
-        filtered_discoveries = list(
-            discoveries_qs.select_related('advisor', 'stock', 'assessment')
+
+# Discovery new stock
+def analyze_discovery(sa, funds, advisors):
+    """Discover then buy, one advisor at a time, highest priority first."""
+    logger.info(f"Analyzing discovery for SA session {sa.id}")
+
+    # Clear Polygon cache at start of discovery run to ensure fresh data
+    AdvisorBase.clear_polygon_cache()
+
+    for fund in funds:
+        if not list(fund.advisors or []):
+            logger.info("%s: no advisors configured; skip discovery buys", fund.name)
+
+    ordered = sorted(
+        advisors,
+        key=lambda adv: (adv.advisor.priority, (adv.advisor.name or "").lower()),
+    )
+    for adv in ordered:
+        logger.info(
+            "Discovery ------------- %s (%s)",
+            adv.advisor.name,
+            adv.advisor.get_priority_display(),
         )
-        
-        if not filtered_discoveries:
-            continue
+        adv.discover(sa)
 
-        # Deduplicate by stock - only process each stock once per user
-        seen_stocks = set()
-        unique_discoveries = []
-        for discovery in filtered_discoveries:
-            if discovery.stock_id not in seen_stocks:
-                seen_stocks.add(discovery.stock_id)
-                unique_discoveries.append(discovery)
-
-        if not unique_discoveries:
-            continue
-
-        allowance = fund.average_spend()
-
-        for discovery in unique_discoveries:
-
-            stability, opportunity = discovery_axes(discovery)
-            if stability is None and opportunity is None:
+        python_class = adv.advisor.python_class
+        for fund in funds:
+            if python_class not in list(fund.advisors or []):
                 continue
-
-            if discovery.weight is not None and float(discovery.weight) < AdvisorBase.MIN_DISCOVERY_WEIGHT:
-                logger.info(
-                    "%s: %s discovery %s weight gate fail (%.2f < %.2f)",
-                    fund.name,
-                    discovery.advisor.name,
-                    discovery.stock.symbol,
-                    float(discovery.weight),
-                    AdvisorBase.MIN_DISCOVERY_WEIGHT,
-                )
-                continue
-
-            if discovery_passes_risk_gate(discovery, fund.risk):
-                explanation = discovery.explanation.split(" | ")[0].strip()
-                execute_buy(sa, fund, discovery.stock, allowance, explanation, discovery=discovery)
-            else:
-                logger.info(
-                    "%s: %s discovery %s risk gate fail (SO %s)",
-                    fund.name,
-                    discovery.advisor.name,
-                    discovery.stock.symbol,
-                    so_gate_fail_display(
-                        stability,
-                        opportunity,
-                        fund.risk,
-                        weight=discovery.weight,
-                    ),
-                )
+            _buy_advisor_discoveries(sa, fund, adv.advisor)
 
 

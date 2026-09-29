@@ -18,8 +18,10 @@ logger = logging.getLogger(__name__)
 
 @admin.register(Advisor)
 class AdvisorAdmin(admin.ModelAdmin):
-    list_display = ('name', 'python_class', 'enabled', 'endpoint', 'key')
-    list_filter = ('enabled',)
+    list_display = ('name', 'python_class', 'priority', 'enabled')
+    list_editable = ('priority',)
+    list_filter = ('enabled', 'priority')
+    ordering = ('priority', 'name')
     search_fields = ('name', 'python_class')
     
     # Make name and python_class read-only
