@@ -1896,13 +1896,19 @@
                     t.created &&
                     t.price != null
             );
+            const sells = (trades || []).filter(
+                (t) =>
+                    (t.action || '').toUpperCase() === 'SELL' &&
+                    t.created &&
+                    t.price != null
+            );
 
-            const findBuyBarIndex = (tradeCreated) => {
+            const findTradeBarIndex = (tradeCreated) => {
                 const tradeDate = new Date(tradeCreated);
                 if (Number.isNaN(tradeDate.getTime())) return -1;
 
                 if (showTime) {
-                    // Prefer the first bar at/after the buy, else the nearest bar.
+                    // Prefer the first bar at/after the trade, else the nearest bar.
                     let atOrAfter = -1;
                     let bestIdx = -1;
                     let bestDelta = Infinity;
@@ -1935,16 +1941,21 @@
                 return idx;
             };
 
-            // Null-padded series keeps buys on the correct bar index (scatter +
+            // Null-padded series keeps markers on the correct bar index (scatter +
             // category labels was snapping markers to the first axis tick).
-            const buySeries = priceHistory.map(() => null);
-            buys.forEach((b) => {
-                const idx = findBuyBarIndex(b.created);
-                if (idx < 0 || idx >= buySeries.length) return;
-                const px = Number(b.price);
-                if (!Number.isFinite(px)) return;
-                buySeries[idx] = px;
-            });
+            const padTradeSeries = (tradesList) => {
+                const series = priceHistory.map(() => null);
+                tradesList.forEach((t) => {
+                    const idx = findTradeBarIndex(t.created);
+                    if (idx < 0 || idx >= series.length) return;
+                    const px = Number(t.price);
+                    if (!Number.isFinite(px)) return;
+                    series[idx] = px;
+                });
+                return series;
+            };
+            const buySeries = padTradeSeries(buys);
+            const sellSeries = padTradeSeries(sells);
 
             try {
                 new Chart(ctx, {
@@ -1968,6 +1979,18 @@
                                 showLine: false,
                                 borderColor: 'rgba(34, 197, 94, 1)',
                                 backgroundColor: 'rgba(34, 197, 94, 1)',
+                                pointRadius: (ctx) => (ctx.raw == null ? 0 : 4),
+                                pointHoverRadius: (ctx) => (ctx.raw == null ? 0 : 5),
+                                pointBorderColor: '#ffffff',
+                                pointBorderWidth: 1.5,
+                                spanGaps: false,
+                            },
+                            {
+                                label: 'Sells',
+                                data: sellSeries,
+                                showLine: false,
+                                borderColor: 'rgba(220, 38, 38, 1)',
+                                backgroundColor: 'rgba(220, 38, 38, 1)',
                                 pointRadius: (ctx) => (ctx.raw == null ? 0 : 4),
                                 pointHoverRadius: (ctx) => (ctx.raw == null ? 0 : 5),
                                 pointBorderColor: '#ffffff',
