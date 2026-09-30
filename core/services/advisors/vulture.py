@@ -1115,6 +1115,9 @@ class Vulture(AdvisorBase):
                 logger.exception("Vulture sa=%s: cliff intake failed: %s", sa.id, exc)
             if eod_ok:
                 self.mark_market_date_processed(target_date)
+                # mark_* saves its own blob snapshot; refresh so the final save
+                # below does not wipe last_processed_date with this stale dict.
+                state = self._advisor_blob_state()
             else:
                 logger.warning(
                     "Vulture sa=%s: skip mark processed for %s (cliff intake failed; will retry)",
