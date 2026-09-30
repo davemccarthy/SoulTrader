@@ -5,8 +5,9 @@ Flow:
   1. EOD cliff intake (once/session after Polygon prior-day bars are available):
      large single-day drop → LLM triage → dismiss structural/long-term damage;
      else watch with pre/post cliff prices (14 calendar days).
-  2. RTH monitor (10:30–16:00 ET): discover when opens show early strength,
-     price is still below the pre-cliff print, and analysts remain constructive.
+  2. RTH monitor (10:30–16:00 ET): discover when opens show early strength
+     (one open lift above noise, OR two consecutive noise-floor lifts),
+     price/open still discounted vs pre-cliff, and analysts remain constructive.
 
 Weekly chronic-damage helpers remain for lab CLIs only (not production discover).
 """
@@ -45,8 +46,17 @@ DISCOVERY_COOLDOWN_HOURS = 72
 DISCOVERY_WEIGHT = 1.0
 
 # Still below the pre-cliff print / not fully recovered from the event drop.
+# These are the ceiling on "too much bounce" — blocks entries that have already
+# walked most of the way back to the pre-cliff print (even on a strong open).
 MAX_PRICE_FRAC_OF_PRE_CLIFF = 0.95  # at least ~5% below pre-cliff close
 MAX_CLIFF_DROP_RECOVERY_FRAC = 0.50  # recovered at most half of (pre - cliff)
+
+# Rising-open strength (noise floor). Path1 OR Path2 must pass.
+# Path1: one open→open lift clearly above noise (filters MGM-style +0.3% ticks).
+# Path2: two consecutive lifts each clearing a small floor (grind confirmation).
+# Upper bound is NOT a max lift % — still_below_pre_cliff on open/price is the cap.
+MIN_SINGLE_OPEN_LIFT_PCT = 2.0
+MIN_CONSEC_OPEN_LIFT_PCT = 0.5
 
 # Analyst belief hard gates
 MIN_CONSENSUS_UPSIDE_PCT = 15.0
@@ -931,12 +941,14 @@ def cliff_monitor_expired(meta: dict[str, Any], *, today: Optional[date] = None)
     return (ref - cliff).days > WATCHLIST_DAYS
 
 
-def _fetch_open_series(symbol: str) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+def _fetch_open_series(
+    symbol: str,
+) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
     """
-    Return (open_today, open_prior, last_price).
+    Return (open_today, open_prior, open_prior2, last_price).
 
-    Today's open prefers live Yahoo regularMarketOpen; prior open is the previous
-    completed daily bar.
+    Today's open prefers live Yahoo regularMarketOpen; prior opens come from
+    completed daily bars (needed for Path2 consecutive-lift checks).
     """
     sym = (symbol or "").strip().upper()
     open_today: Optional[float] = None
@@ -951,22 +963,24 @@ def _fetch_open_series(symbol: str) -> Tuple[Optional[float], Optional[float], O
         pass
 
     open_prior: Optional[float] = None
+    open_prior2: Optional[float] = None
     try:
         hist = yf.Ticker(sym).history(period="15d", interval="1d", auto_adjust=False)
         if hist is not None and not hist.empty and "Open" in hist.columns:
             opens = hist["Open"].dropna().astype(float)
             if not opens.empty:
-                open_prior = float(opens.iloc[-1])
-                # If history already includes today's partial bar, prior is the one before.
                 et = pytz.timezone("US/Eastern")
                 today = datetime.now(et).date()
                 last_idx = opens.index[-1]
                 last_day = last_idx.date() if hasattr(last_idx, "date") else None
-                if last_day == today and len(opens) >= 2:
+                # Align: opens[-1] is today if the daily bar already exists.
+                if last_day == today:
                     open_today = open_today or float(opens.iloc[-1])
-                    open_prior = float(opens.iloc[-2])
-                elif open_today is None and last_day == today:
-                    open_today = float(opens.iloc[-1])
+                    open_prior = float(opens.iloc[-2]) if len(opens) >= 2 else None
+                    open_prior2 = float(opens.iloc[-3]) if len(opens) >= 3 else None
+                else:
+                    open_prior = float(opens.iloc[-1])
+                    open_prior2 = float(opens.iloc[-2]) if len(opens) >= 2 else None
                 if last_price is None and "Close" in hist.columns:
                     closes = hist["Close"].dropna().astype(float)
                     if not closes.empty:
@@ -974,16 +988,66 @@ def _fetch_open_series(symbol: str) -> Tuple[Optional[float], Optional[float], O
     except Exception:
         pass
 
-    return open_today, open_prior, last_price
+    return open_today, open_prior, open_prior2, last_price
 
 
-def two_concurrent_opening_highs(open_today: Optional[float], open_prior: Optional[float]) -> bool:
-    """Today's open is higher than the prior session open (rising open pair)."""
-    if open_today is None or open_prior is None:
-        return False
-    if open_today <= 0 or open_prior <= 0:
-        return False
-    return open_today > open_prior
+def _open_lift_pct(newer: Optional[float], older: Optional[float]) -> Optional[float]:
+    if newer is None or older is None or newer <= 0 or older <= 0:
+        return None
+    return (newer / older - 1.0) * 100.0
+
+
+def rising_open_strength(
+    open_today: Optional[float],
+    open_prior: Optional[float],
+    open_prior2: Optional[float] = None,
+) -> Tuple[bool, str]:
+    """
+    Early-strength gate: Path1 OR Path2.
+
+    Path1 — one open→open lift above noise (MIN_SINGLE_OPEN_LIFT_PCT).
+    Path2 — two consecutive lifts each above MIN_CONSEC_OPEN_LIFT_PCT.
+
+    Does not encode the ceiling; callers must still apply still_below_pre_cliff
+    on open/price so a large gap cannot buy near the pre-cliff print.
+    """
+    lift1 = _open_lift_pct(open_today, open_prior)
+    if lift1 is None:
+        return False, f"opens missing (today={open_today}, prior={open_prior})"
+
+    assert open_today is not None and open_prior is not None  # for type checkers
+    if lift1 > MIN_SINGLE_OPEN_LIFT_PCT:
+        return True, (
+            f"path1 open lift {open_prior:.2f}->{open_today:.2f} "
+            f"({lift1:+.1f}%>{MIN_SINGLE_OPEN_LIFT_PCT:.1f}%)"
+        )
+
+    lift0 = _open_lift_pct(open_prior, open_prior2)
+    if (
+        lift0 is not None
+        and open_prior2 is not None
+        and lift0 > MIN_CONSEC_OPEN_LIFT_PCT
+        and lift1 > MIN_CONSEC_OPEN_LIFT_PCT
+    ):
+        return True, (
+            f"path2 consecutive lifts {open_prior2:.2f}->{open_prior:.2f}->{open_today:.2f} "
+            f"({lift0:+.1f}% then {lift1:+.1f}%, floor {MIN_CONSEC_OPEN_LIFT_PCT:.1f}%)"
+        )
+
+    return False, (
+        f"open strength weak (lift={lift1:+.1f}%; need >{MIN_SINGLE_OPEN_LIFT_PCT:.1f}% "
+        f"once or >{MIN_CONSEC_OPEN_LIFT_PCT:.1f}% twice)"
+    )
+
+
+def two_concurrent_opening_highs(
+    open_today: Optional[float],
+    open_prior: Optional[float],
+    open_prior2: Optional[float] = None,
+) -> bool:
+    """Backward-compatible alias for rising_open_strength(...).ok."""
+    ok, _ = rising_open_strength(open_today, open_prior, open_prior2)
+    return ok
 
 
 def still_below_pre_cliff(
@@ -1224,13 +1288,18 @@ class Vulture(AdvisorBase):
         pre_cliff = _safe_float(meta.get("pre_cliff_close"))
         cliff_close = _safe_float(meta.get("cliff_close"))
 
-        open_today, open_prior, price = _fetch_open_series(symbol)
-        if not two_concurrent_opening_highs(open_today, open_prior):
-            return False, (
-                f"opens not rising (today={open_today}, prior={open_prior})"
-            )
+        open_today, open_prior, open_prior2, price = _fetch_open_series(symbol)
+        strength_ok, strength_detail = rising_open_strength(open_today, open_prior, open_prior2)
+        if not strength_ok:
+            return False, strength_detail
 
-        below, below_detail = still_below_pre_cliff(price, pre_cliff, cliff_close)
+        # Ceiling: reject if open OR last price has already walked too close to pre-cliff.
+        # Use the higher of the two so a gap-up open cannot sneak past a stale last print.
+        level_candidates = [p for p in (open_today, price) if p is not None and p > 0]
+        if not level_candidates:
+            return False, "missing open/price for pre-cliff check"
+        level_px = max(level_candidates)
+        below, below_detail = still_below_pre_cliff(level_px, pre_cliff, cliff_close)
         if not below:
             return False, below_detail
 
@@ -1239,8 +1308,8 @@ class Vulture(AdvisorBase):
             return False, cons_detail
 
         return True, (
-            f"higher open {open_prior:.2f}->{open_today:.2f}; "
-            f"px {price:.2f} vs pre {pre_cliff:.2f}; {cons_detail}"
+            f"{strength_detail}; "
+            f"px {level_px:.2f} vs pre {pre_cliff:.2f}; {cons_detail}"
         )
 
     def _cliff_discovery_explanation(self, symbol: str, meta: dict[str, Any], reason: str) -> str:
