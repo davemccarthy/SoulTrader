@@ -8,7 +8,7 @@ Stage D (chase): same check every later SA until 13:00 ET, then give up.
 Explanation = LLM response + tape fields.
 
 News LLM scores the event. Tape (gap, vs-open, prior-day, 52w) is separate.
-SIs: PEAKED, gated PERCENTAGE_REBUY, DESCENDING_TREND, END_DAY 1.00× from 14:00 ET (flatten if green).
+SIs: PEAKED, gated PERCENTAGE_REBUY, DESCENDING_TREND.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import Decimal
 from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
@@ -43,8 +42,6 @@ TOP_GAPS = 5
 ROCKET_DISCOVERY_COOLDOWN_HOURS = 24
 LLM_TIMEOUT_S = 180.0
 YAHOO_LIVE_CHUNK = 250
-ROCKET_ENDDAY_TAKE = Decimal("1.00")
-ROCKET_ENDDAY_MINUTES_BEFORE_CLOSE = Decimal("120")
 
 GAP_MIN_PCT = 7.5
 GAP_MAX_PCT = 15.0
@@ -646,7 +643,6 @@ class Rocket(AdvisorBase):
         ("PEAKED", 15.0, 4.0),
         ("PERCENTAGE_REBUY", 0.04, 5),
         ("DESCENDING_TREND", -0.20, None),
-        ("END_DAY", ROCKET_ENDDAY_TAKE, ROCKET_ENDDAY_MINUTES_BEFORE_CLOSE),
     ]
 
     def _session_date(self) -> date:
