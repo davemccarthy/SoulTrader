@@ -9,6 +9,8 @@ Entry:
   executable quote below 30m ago and above 1m ago (1m bars; short-term bounce after pullback),
   executable quote >= 60m ago * 0.995, executable quote >= open * 0.99 (15m anchors).
 - Require recent 60m intraday range >= 1.25%.
+- Gap gate (all paths): skip discover when live quote is >+5% vs prior-session
+  close (Polygon seed). Blocks post-print / spike chases (e.g. ACN +22%, QCOM/AKAM).
 - Discover qualifying names between 10:30 and 13:00 ET (earlier window = more IPC runway).
 - Live IMPULSE/COMBO paths (optional): 1m momentum + COMBO (impulse + normal_stable).
 - Live TROUGH (optional): high-vol attention at session LOD with light bounce
@@ -44,7 +46,7 @@ from core.services.push import push_super
 logger = logging.getLogger(__name__)
 
 ET = pytz.timezone("US/Eastern")
-PULSE_CANDIDATE_VERSION = 14
+PULSE_CANDIDATE_VERSION = 15
 PULSE_BUILD_TIME_ET = time(10, 30)
 PULSE_DISCOVERY_END_TIME_ET = time(13, 0)
 PULSE_SEED_UNIVERSE = 500
@@ -59,6 +61,8 @@ PULSE_RECOVERY_SHORT_MINUTES = 1
 PULSE_CANDIDATE_CACHE_MINUTES = 15
 PULSE_MAX_PRICE_DRIFT_FROM_SEED = 0.50
 PULSE_MAX_QUOTE_DRIFT_FROM_BAR = 0.02
+# Max live premium vs prior-session close (Polygon seed). Percent points, not fraction.
+PULSE_MAX_PCT_ABOVE_PRIOR_CLOSE = 5.0
 PULSE_DISCOVERY_COOLDOWN_HOURS = 6
 
 # Fallback IPC when tape color missing (green workhorse).
@@ -668,6 +672,7 @@ def _attention_row_to_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
         "pct_30m": row.get("pct_30m"),
         "pct_60m": row.get("pct_60m"),
         "pct_open": row.get("pct_open"),
+        "pct_prior_close": row.get("pct_prior_close"),
     }
 
 
@@ -1003,6 +1008,13 @@ class Pulse(AdvisorBase):
                 and bounce.get("bounce_light")
                 and range_ok
             )
+            # polygon_price seed = prior session close (get_last_trading_day).
+            prior_close = _safe_float(row.get("polygon_price"))
+            pct_prior_close = _pct(price_now, prior_close)
+            prior_close_ok = (
+                pct_prior_close is None
+                or float(pct_prior_close) <= PULSE_MAX_PCT_ABOVE_PRIOR_CLOSE
+            )
 
             attention_row = {
                 "symbol": symbol,
@@ -1017,6 +1029,10 @@ class Pulse(AdvisorBase):
                 "pct_30m": None if px_30 is None else round(float(_pct(price_now, px_30) or 0), 4),
                 "pct_60m": None if px_60 is None else round(float(_pct(price_now, px_60) or 0), 4),
                 "pct_open": None if open_px is None else round(float(_pct(price_now, open_px) or 0), 4),
+                "pct_prior_close": (
+                    None if pct_prior_close is None else round(float(pct_prior_close), 4)
+                ),
+                "prior_close_ok": prior_close_ok,
                 "recovering": recovering,
                 "stable_60": stable_60,
                 "stable_open": stable_open,
@@ -1046,6 +1062,8 @@ class Pulse(AdvisorBase):
                     "pct_30m": attention_row["pct_30m"],
                     "pct_60m": attention_row["pct_60m"],
                     "pct_open": attention_row["pct_open"],
+                    "pct_prior_close": attention_row["pct_prior_close"],
+                    "prior_close_ok": prior_close_ok,
                 }
             )
 
@@ -1095,12 +1113,27 @@ class Pulse(AdvisorBase):
         discovered_symbols: set[str],
         *,
         path: str,
+        pct_prior_close: Optional[float] = None,
+        prior_close_ok: Optional[bool] = None,
     ) -> str:
-        """Returns discovered | cooldown | opp | dup | failed."""
+        """Returns discovered | cooldown | opp | gap | dup | failed."""
         if symbol in discovered_symbols:
             return "dup"
         if not self.allow_discovery(symbol, period=PULSE_DISCOVERY_COOLDOWN_HOURS):
             return "cooldown"
+
+        gap_ok = prior_close_ok
+        if gap_ok is None and pct_prior_close is not None:
+            gap_ok = float(pct_prior_close) <= PULSE_MAX_PCT_ABOVE_PRIOR_CLOSE
+        if gap_ok is False:
+            logger.info(
+                "pulse_gap_gate block discover %s path=%s pct_prior=%s max=+%.1f%%",
+                symbol,
+                path,
+                f"{float(pct_prior_close):+.2f}%" if pct_prior_close is not None else "n/a",
+                PULSE_MAX_PCT_ABOVE_PRIOR_CLOSE,
+            )
+            return "gap"
 
         opp_ok, opp_detail = _pulse_opportunity_gate(symbol)
         if not opp_ok:
@@ -1115,7 +1148,12 @@ class Pulse(AdvisorBase):
             weight=1.0,
         ):
             discovered_symbols.add(symbol)
-            logger.info("pulse_discover path=%s symbol=%s", path, symbol)
+            logger.info(
+                "pulse_discover path=%s symbol=%s pct_prior=%s",
+                path,
+                symbol,
+                f"{float(pct_prior_close):+.2f}%" if pct_prior_close is not None else "n/a",
+            )
             return "discovered"
         return "failed"
 
@@ -1160,10 +1198,30 @@ class Pulse(AdvisorBase):
         discovered_symbols: set[str] = set()
         skipped_cooldown = 0
         skipped_opp = 0
+        skipped_gap = 0
         discoveries_combo = 0
         discoveries_recovery = 0
         discoveries_impulse = 0
         discoveries_trough = 0
+
+        def _tally(outcome: str, bucket: str) -> None:
+            nonlocal skipped_cooldown, skipped_opp, skipped_gap
+            nonlocal discoveries_combo, discoveries_recovery, discoveries_impulse, discoveries_trough
+            if outcome == "discovered":
+                if bucket == "combo":
+                    discoveries_combo += 1
+                elif bucket == "recovery":
+                    discoveries_recovery += 1
+                elif bucket == "impulse":
+                    discoveries_impulse += 1
+                elif bucket == "trough":
+                    discoveries_trough += 1
+            elif outcome == "cooldown":
+                skipped_cooldown += 1
+            elif outcome == "opp":
+                skipped_opp += 1
+            elif outcome == "gap":
+                skipped_gap += 1
 
         if PULSE_COMBO_LIVE:
             for row in attention:
@@ -1181,13 +1239,10 @@ class Pulse(AdvisorBase):
                     sell_instructions,
                     discovered_symbols,
                     path="COMBO",
+                    pct_prior_close=row.get("pct_prior_close"),
+                    prior_close_ok=row.get("prior_close_ok"),
                 )
-                if outcome == "discovered":
-                    discoveries_combo += 1
-                elif outcome == "cooldown":
-                    skipped_cooldown += 1
-                elif outcome == "opp":
-                    skipped_opp += 1
+                _tally(outcome, "combo")
 
         for candidate in recovery_candidates:
             symbol = str(candidate.get("symbol") or "").strip().upper()
@@ -1201,13 +1256,10 @@ class Pulse(AdvisorBase):
                 sell_instructions,
                 discovered_symbols,
                 path="RECOVERY",
+                pct_prior_close=candidate.get("pct_prior_close"),
+                prior_close_ok=candidate.get("prior_close_ok"),
             )
-            if outcome == "discovered":
-                discoveries_recovery += 1
-            elif outcome == "cooldown":
-                skipped_cooldown += 1
-            elif outcome == "opp":
-                skipped_opp += 1
+            _tally(outcome, "recovery")
 
         if PULSE_IMPULSE_LIVE:
             for row in attention:
@@ -1225,13 +1277,10 @@ class Pulse(AdvisorBase):
                     sell_instructions,
                     discovered_symbols,
                     path="IMPULSE",
+                    pct_prior_close=row.get("pct_prior_close"),
+                    prior_close_ok=row.get("prior_close_ok"),
                 )
-                if outcome == "discovered":
-                    discoveries_impulse += 1
-                elif outcome == "cooldown":
-                    skipped_cooldown += 1
-                elif outcome == "opp":
-                    skipped_opp += 1
+                _tally(outcome, "impulse")
 
         if PULSE_TROUGH_LIVE and tape_status in PULSE_TAPE_TROUGH_STATES:
             for row in attention:
@@ -1252,13 +1301,10 @@ class Pulse(AdvisorBase):
                     sell_instructions,
                     discovered_symbols,
                     path="TROUGH",
+                    pct_prior_close=row.get("pct_prior_close"),
+                    prior_close_ok=row.get("prior_close_ok"),
                 )
-                if outcome == "discovered":
-                    discoveries_trough += 1
-                elif outcome == "cooldown":
-                    skipped_cooldown += 1
-                elif outcome == "opp":
-                    skipped_opp += 1
+                _tally(outcome, "trough")
         elif PULSE_TROUGH_LIVE:
             logger.info(
                 "Pulse trough skip: tape=%s (live trough on %s only)",
@@ -1275,7 +1321,8 @@ class Pulse(AdvisorBase):
         logger.info(
             "Pulse discover sa=%s: recovery_cands=%d attention=%d "
             "discoveries=%d (combo=%d recovery=%d impulse=%d trough=%d) "
-            "skipped_cooldown=%d skipped_opp=%d",
+            "skipped_cooldown=%d skipped_opp=%d skipped_gap=%d "
+            "(max_pct_prior=+%.1f%%)",
             sa.id,
             len(recovery_candidates),
             len(attention),
@@ -1286,6 +1333,8 @@ class Pulse(AdvisorBase):
             discoveries_trough,
             skipped_cooldown,
             skipped_opp,
+            skipped_gap,
+            PULSE_MAX_PCT_ABOVE_PRIOR_CLOSE,
         )
 
     def analyze(self, sa, stock) -> None:
