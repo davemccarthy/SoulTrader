@@ -3,11 +3,11 @@ Rocket advisor — opening-high tape (gaps Edgar never sees).
 
 Stage A (+30m): watch CS/ADR names that gapped ~7.5–15% with real prior-day dvol.
 Stage B (+45m): Gemini+search on the top 5 gaps — event reason + significance.
-Stage C (+60m): discover a name only if calc_trend(hours=1) > 0.
+Stage C (+60m): discover only if calc_trend(hours=1) > 0 and last/open is not at/near the prior 5-session high.
 Stage D (chase): same check every later SA until 13:00 ET, then give up.
 Explanation = LLM response + tape fields.
 
-News LLM scores the event. Tape (gap, vs-open, prior-day, 52w) is separate.
+News LLM scores the event. Tape (gap, vs-open, prior-day, 52w, week high) is separate.
 SIs: PEAKED, gated PERCENTAGE_REBUY, DESCENDING_TREND.
 """
 
@@ -38,6 +38,8 @@ LLM_MIN_MINUTES = 45  # 10:15 ET
 DISCOVER_MIN_MINUTES = 60  # 10:30 ET Stage C
 CHASE_UNTIL_MINUTES = 210  # 13:00 ET Stage D give-up (Pulse-like; leftover stays Pending)
 DISCOVER_TREND_HOURS = 1
+WEEK_LOOKBACK_SESSIONS = 5
+NEAR_WEEK_HIGH_FRAC = 0.03  # skip if last or gap open within 3% of prior 5d high
 TOP_GAPS = 5
 ROCKET_DISCOVERY_COOLDOWN_HOURS = 24
 LLM_TIMEOUT_S = 180.0
@@ -524,6 +526,26 @@ def _fmt_signed_pct(value: Any, digits: int = 1) -> Optional[str]:
         return None
 
 
+def prior_week_high(symbol: str, session: date, lookback: int = WEEK_LOOKBACK_SESSIONS) -> Optional[float]:
+    """Max daily high of the last `lookback` sessions strictly before session."""
+    try:
+        hist = yf.Ticker(symbol).history(period="15d", interval="1d", auto_adjust=True)
+    except Exception as exc:
+        logger.warning("Rocket week high %s failed: %s", symbol, exc)
+        return None
+    if hist is None or hist.empty or "High" not in hist.columns:
+        return None
+    frame = hist.copy()
+    idx = frame.index
+    if getattr(idx, "tz", None) is not None:
+        frame.index = idx.tz_convert(ET).tz_localize(None)
+    prior = frame[frame.index.normalize() < pd.Timestamp(session)]
+    highs = prior["High"].dropna().tail(lookback)
+    if len(highs) < 3:
+        return None
+    return float(highs.max())
+
+
 def tape_explanation_segments(meta: Dict[str, Any]) -> List[str]:
     gap = _fmt_signed_pct(meta.get("gap_pct"))
     vs_open = _fmt_signed_pct(meta.get("vs_open_pct"))
@@ -543,6 +565,14 @@ def tape_explanation_segments(meta: Dict[str, Any]) -> List[str]:
     trend_1h = _fmt_signed_pct(meta.get("trend_1h"), digits=2)
     if trend_1h:
         parts.append(f"1h trend {trend_1h}")
+    week_high = meta.get("week_high")
+    last = meta.get("last")
+    try:
+        if week_high and last:
+            vs_week = (float(last) / float(week_high) - 1.0) * 100.0
+            parts.append(f"vs 5dH {vs_week:+.1f}%")
+    except (TypeError, ValueError, ZeroDivisionError):
+        pass
     return parts
 
 
@@ -637,7 +667,7 @@ def top_gap_watches(entries: List[Any], limit: int = TOP_GAPS) -> List[Any]:
 
 
 class Rocket(AdvisorBase):
-    """Opening-high watcher: watch, LLM, trend-gated discover, then chase until 13:00."""
+    """Opening-high watcher: watch, LLM, trend + not-near-week-high discover, chase until 13:00."""
 
     sell_instructions = [
         ("PEAKED", 15.0, 4.0),
@@ -941,7 +971,7 @@ class Rocket(AdvisorBase):
         logger.info("Rocket Stage B done session=%s llm_ok=%s of %s", session, ok, len(entries))
 
     def _try_discover_watch(self, sa, entry) -> str:
-        """Discover one Pending watch if 1h trend is positive. Returns outcome key."""
+        """Discover one Pending watch if 1h trend is positive and not at/near the week high."""
         symbol = entry.stock.symbol
         if not self.allow_discovery(
             symbol,
@@ -951,13 +981,51 @@ class Rocket(AdvisorBase):
             return "cooldown"
         stock = entry.stock
         stock.refresh()
+        meta = dict(entry.meta or {})
+        try:
+            session = date.fromisoformat(str(meta.get("session") or ""))
+        except ValueError:
+            session = self._session_date()
+        week_high = prior_week_high(symbol, session)
+        last = None
+        if stock.price is not None:
+            try:
+                last = float(stock.price)
+            except (TypeError, ValueError):
+                last = None
+        open_px = None
+        try:
+            if meta.get("open") is not None:
+                open_px = float(meta.get("open"))
+        except (TypeError, ValueError):
+            open_px = None
+        meta["week_high"] = None if week_high is None else round(week_high, 4)
+        if last is not None:
+            meta["last"] = round(last, 4)
+        near = False
+        if week_high and week_high > 0:
+            thresh = week_high * (1.0 - NEAR_WEEK_HIGH_FRAC)
+            last_near = last is not None and last >= thresh
+            open_near = open_px is not None and open_px >= thresh
+            near = bool(last_near or open_near)
+        meta["near_week_high"] = near
+        if near:
+            entry.meta = meta
+            entry.save(update_fields=["meta"])
+            logger.info(
+                "Rocket skip %s: at/near 5d high last=%s open=%s week_high=%.2f",
+                symbol,
+                f"{last:.2f}" if last is not None else "n/a",
+                f"{open_px:.2f}" if open_px is not None else "n/a",
+                week_high,
+            )
+            return "week_high"
         trend = stock.calc_trend(
             period="1d",
             interval="15m",
             hours=DISCOVER_TREND_HOURS,
             latest_price=stock.price,
         )
-        meta = dict(entry.meta or {})
         meta["trend_1h"] = None if trend is None else round(float(trend), 4)
         if trend is None or trend <= 0:
             entry.meta = meta
@@ -1020,12 +1088,15 @@ class Rocket(AdvisorBase):
         discoveries = 0
         skipped = 0
         skipped_trend = 0
+        skipped_week_high = 0
         for entry in entries:
             outcome = self._try_discover_watch(sa, entry)
             if outcome == "discovered":
                 discoveries += 1
             elif outcome == "trend":
                 skipped_trend += 1
+            elif outcome == "week_high":
+                skipped_week_high += 1
             else:
                 skipped += 1
 
@@ -1033,18 +1104,20 @@ class Rocket(AdvisorBase):
             "rocket_discover_count": discoveries,
             "rocket_discover_skipped": skipped,
             "rocket_discover_trend_skip": skipped_trend,
+            "rocket_discover_week_high_skip": skipped_week_high,
         }
         if first_pass:
             self._mark_blob_date("rocket_stage_c_date", session, extra=extra)
         else:
             self._mark_blob_date("rocket_stage_d_date", session, extra=extra)
         logger.info(
-            "Rocket %s done session=%s discoveries=%s skipped=%s trend_skip=%s",
+            "Rocket %s done session=%s discoveries=%s skipped=%s trend_skip=%s week_high_skip=%s",
             label,
             session,
             discoveries,
             skipped,
             skipped_trend,
+            skipped_week_high,
         )
 
     def discover(self, sa) -> None:
