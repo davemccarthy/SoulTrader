@@ -39,9 +39,13 @@ def _score_market_cap(mcap: Optional[float]) -> Optional[float]:
     return 25.0
 
 
+# Pre-revenue / zero-revenue names: fail closed instead of skipping the revenue leg.
+PRE_REVENUE_SCORE = 20.0
+
+
 def _score_revenue(revenue: Optional[float]) -> Optional[float]:
     if revenue is None or revenue <= 0:
-        return None
+        return PRE_REVENUE_SCORE
     b = revenue / 1_000_000_000.0
     if b >= 50:
         return 95.0

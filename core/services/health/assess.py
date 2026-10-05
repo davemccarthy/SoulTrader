@@ -19,13 +19,14 @@ if TYPE_CHECKING:
     from core.models import Assessment, Discovery, Stock
 
 # Final v2 model weights (sum to 1.0); keep in sync with health_score.py _COMPONENT_SPECS.
+# Sector raised to 15% after Oct radar base refresh; taken from price (both are tape).
 COMPONENT_MODEL_WEIGHTS: Dict[str, Decimal] = {
     "financial": Decimal("0.20"),
     "valuation": Decimal("0.20"),
     "intrinsic": Decimal("0.15"),
-    "price": Decimal("0.20"),
+    "price": Decimal("0.15"),
     "consensus": Decimal("0.15"),
-    "sector": Decimal("0.10"),
+    "sector": Decimal("0.15"),
 }
 
 COMPONENT_SCORERS: List[Tuple[str, Callable[[str], Any]]] = [

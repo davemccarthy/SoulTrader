@@ -32,13 +32,14 @@ from core.services.health.valuation import score_valuation_health
 COMPONENTS = ("financial", "valuation", "intrinsic", "price", "consensus", "sector")
 
 # Final-model weights (100%; LLM lives in advisors, not health composite).
+# Keep in sync with assess.COMPONENT_MODEL_WEIGHTS.
 _COMPONENT_SPECS: List[Tuple[str, str, float, Callable[..., Any]]] = [
     ("financial", "Financial health", 0.20, score_financial_health),
     ("valuation", "Valuation", 0.20, score_valuation_health),
     ("intrinsic", "Intrinsic valuation", 0.15, score_intrinsic_health),
-    ("price", "Price position", 0.20, score_price_health),
+    ("price", "Price position", 0.15, score_price_health),
     ("consensus", "Analyst consensus", 0.15, score_consensus_health),
-    ("sector", "Sector / industry", 0.10, score_sector_health),
+    ("sector", "Sector / industry", 0.15, score_sector_health),
 ]
 
 _SCORERS: Dict[str, tuple[str, Callable[..., Any]]] = {

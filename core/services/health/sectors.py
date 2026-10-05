@@ -1,9 +1,11 @@
 """
 Single source for sector/industry tables used by health v2 (and shared with valuation).
 
-Buy-attractiveness tables follow the LLM-reviewed canonical list (v1.1).
-Valuation benchmarks are separate (typical multiples per sector). Keys are
-lowercase substrings matched against yfinance `sector` / `industry`.
+Buy-attractiveness sector bases are a one-time refresh from trending_radar
+(.assessments/trending_radar.json, 2026-10-01): radar 50 → assessment 55,
+scale 0.45. Industry overrides remain curated. Valuation benchmarks are
+separate (typical multiples per sector). Keys are lowercase substrings
+matched against yfinance `sector` / `industry`.
 
 Review helper:
     python -c "from core.services.health.sectors import export_tables_json; print(export_tables_json())"
@@ -18,17 +20,29 @@ from typing import Any, Dict, List, Optional, Tuple
 
 DEFAULT_SECTOR_SCORE = 55.0
 
-# Sector bases only (LLM list). Unlisted sectors → DEFAULT_SECTOR_SCORE (55).
+# Sector bases: one-time refresh from .assessments/trending_radar.json (2026-10-01).
+# Mapping: radar 50 → assessment 55, scale 0.45 → score = 55 + (trend - 50) * 0.45.
+# Unlisted sectors → DEFAULT_SECTOR_SCORE (55). Longer keys first where needed.
 SECTOR_BASE_SCORES: List[Tuple[str, float, str]] = [
-    ("healthcare", 75.0, "Healthcare base"),
-    ("technology", 72.0, "Technology base"),
-    ("industrials", 65.0, "Industrials base"),
-    ("financial services", 62.0, "Financials base"),
-    ("financial", 62.0, "Financials base (alias)"),
-    ("real estate", 52.0, "Real estate base"),
+    ("communication services", 49.0, "Communication Services base (Oct radar)"),
+    ("communication", 49.0, "Communication Services base alias"),
+    ("consumer defensive", 41.0, "Consumer Staples base (Oct radar)"),
+    ("consumer staples", 41.0, "Consumer Staples base alias"),
+    ("consumer cyclical", 39.0, "Consumer Discretionary base (Oct radar)"),
+    ("consumer discretionary", 39.0, "Consumer Discretionary base alias"),
+    ("basic materials", 42.0, "Materials base (Oct radar)"),
+    ("healthcare", 58.0, "Healthcare base (Oct radar)"),
+    ("technology", 67.0, "Technology base (Oct radar)"),
+    ("industrials", 43.0, "Industrials base (Oct radar)"),
+    ("financial services", 44.0, "Financials base (Oct radar)"),
+    ("financial", 44.0, "Financials base alias"),
+    ("real estate", 38.0, "Real Estate base (Oct radar)"),
+    ("materials", 42.0, "Materials base alias"),
+    ("utilities", 35.0, "Utilities base (Oct radar)"),
+    ("energy", 55.0, "Energy base (Oct radar)"),
 ]
 
-# Industry overrides only (LLM list). Checked before sector base; first match wins.
+# Industry overrides. Checked before sector base; first match wins.
 # industry None: sector_sub in sector OR industry. industry set: both must match.
 INDUSTRY_SCORE_OVERRIDES: List[Tuple[str, Optional[str], float, str]] = [
     ("cannabis", None, 10.0, "Cannabis"),
@@ -38,6 +52,8 @@ INDUSTRY_SCORE_OVERRIDES: List[Tuple[str, Optional[str], float, str]] = [
     ("healthcare", "biotechnology", 78.0, "Biotechnology"),
     ("industrials", "aerospace", 76.0, "Aerospace & defense"),
     ("technology", "software", 70.0, "Software"),
+    # META / GOOGL: sit above Communication Services base (49).
+    ("communication", "internet content", 58.0, "Internet Content & Information"),
     ("industrials", "railroads", 68.0, "Railroads"),
     ("industrials", "airlines", 42.0, "Airlines"),
 ]

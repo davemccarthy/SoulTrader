@@ -1,7 +1,8 @@
 """
-Sector attractiveness component (10% of final buy score in v2 model).
+Sector attractiveness component (15% of final buy score in v2 model).
 
-Scores buy-regime favorability from static sector/industry tables in sectors.py.
+Scores buy-regime favorability from static sector/industry tables in sectors.py
+(refreshed from trending radar; not live-wired).
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import yfinance as yf
 
 from core.services.health.sectors import resolve_sector_score
 
-COMPONENT_WEIGHT = 0.10
+COMPONENT_WEIGHT = 0.15
 
 
 @dataclass

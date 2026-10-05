@@ -67,6 +67,11 @@ OPPORTUNITY_WEIGHTS: Dict[str, float] = {
     "fin_growth": 0.10,
 }
 
+# Fail closed: missing profitability / valuation must not inflate SO via renormalization.
+# Pre-revenue / unprofitable names (e.g. clinical biotech) often omit these metrics.
+MISSING_PROFITABILITY_SCORE = 25.0
+MISSING_VALUATION_SCORE = 0.0
+
 
 def risk_floors_for(risk: str) -> Dict[str, Any]:
     """Return letter floors, derived numeric mins, and concatenated SO floor display."""
@@ -111,6 +116,27 @@ def _weighted_blend(parts: Dict[str, Optional[float]], weights: Dict[str, float]
     if den <= 0:
         return None
     return round(num / den, 1)
+
+
+def _with_missing_profitability(
+    parts: Dict[str, Optional[float]],
+) -> Dict[str, Optional[float]]:
+    """Replace absent FCF / operating-margin legs with a harsh default."""
+    out = dict(parts)
+    for key in ("fin_fcf_margin", "fin_operating_margin"):
+        if out.get(key) is None:
+            out[key] = MISSING_PROFITABILITY_SCORE
+    return out
+
+
+def _with_missing_valuation(
+    parts: Dict[str, Optional[float]],
+) -> Dict[str, Optional[float]]:
+    """Treat absent valuation as 0 so Opportunity does not renormalize upward."""
+    out = dict(parts)
+    if out.get("valuation") is None:
+        out["valuation"] = MISSING_VALUATION_SCORE
+    return out
 
 
 def _fin_growth_opportunity(financial: Any) -> Optional[float]:
@@ -183,8 +209,14 @@ def compute_so_snapshot(
     durability = score_business_durability(sym)
     stab_parts = _stab_parts_from_results(results, durability=durability)
     opp_parts = _opp_parts_from_results(sym, results, durability=durability)
-    stability = _weighted_blend(stab_parts, STABILITY_WEIGHTS)
-    opportunity = _weighted_blend(opp_parts, OPPORTUNITY_WEIGHTS)
+    stability = _weighted_blend(
+        _with_missing_profitability(stab_parts),
+        STABILITY_WEIGHTS,
+    )
+    opportunity = _weighted_blend(
+        _with_missing_valuation(opp_parts),
+        OPPORTUNITY_WEIGHTS,
+    )
     return {
         "stability": stability,
         "opportunity": opportunity,
@@ -207,6 +239,7 @@ def _stab_parts_from_assessment(assessment: "Assessment") -> Dict[str, Optional[
     sector = _stored_score(assessment, "sector")
     financial = _stored_score(assessment, "financial")
 
+    # Legacy rows that only stored a single financial score: use it for all fin legs.
     if debt is None and fcf is None and op_margin is None and financial is not None:
         debt = fcf = op_margin = financial
     if durability is None:
@@ -228,7 +261,8 @@ def _opp_parts_from_assessment(
     """Opportunity blend inputs from persisted Assessment columns only."""
     durability = _stored_score(assessment, "stab_durability")
     raw = {
-        "price": _stored_score(assessment, "opp_price_blend") or _stored_score(assessment, "price"),
+        "price": _stored_score(assessment, "opp_price_blend")
+        or _stored_score(assessment, "price"),
         "valuation": _stored_score(assessment, "opp_valuation_blend")
         or _stored_score(assessment, "valuation"),
         "intrinsic": _stored_score(assessment, "intrinsic"),
@@ -246,19 +280,24 @@ def axes_from_assessment(
     *,
     fin_cache: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[float], Optional[float]]:
-    """Read persisted SO snapshot; never calls yfinance on the UI path."""
+    """
+    SO axes from assessment parts (no yfinance).
+
+    Recomputes from stored sub-metrics so fail-closed defaults apply even when
+    older Assessment.stability / opportunity columns were persisted under the
+    prior renormalize-missing behavior.
+    """
+    del fin_cache  # reserved; UI path stays offline
     stored_stab = _stored_score(assessment, "stability")
     stored_opp = _stored_score(assessment, "opportunity")
-    if stored_stab is not None and stored_opp is not None:
-        return stored_stab, stored_opp
-
     sym = (symbol or "").strip().upper()
-    stab_parts = _stab_parts_from_assessment(assessment)
-    opp_parts = _opp_parts_from_assessment(assessment, sym)
-    return (
-        _weighted_blend(stab_parts, STABILITY_WEIGHTS),
-        _weighted_blend(opp_parts, OPPORTUNITY_WEIGHTS),
-    )
+    stab_parts = _with_missing_profitability(_stab_parts_from_assessment(assessment))
+    opp_parts = _with_missing_valuation(_opp_parts_from_assessment(assessment, sym))
+    stability = _weighted_blend(stab_parts, STABILITY_WEIGHTS)
+    opportunity = _weighted_blend(opp_parts, OPPORTUNITY_WEIGHTS)
+    if stability is not None or opportunity is not None:
+        return stability, opportunity
+    return stored_stab, stored_opp
 
 
 def persist_so_on_assessment(assessment: "Assessment") -> bool:

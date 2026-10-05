@@ -1,5 +1,5 @@
 """
-Price position component (20% of final buy score in v2 model).
+Price position component (15% of final buy score in v2 model).
 
 Where the current price sits in the 52-week range, vs the 2-week high, and
 same-session move (anti-chase for headline-driven buys).
@@ -15,7 +15,7 @@ import yfinance as yf
 
 from core.services.health._util import linear_map, pct_change, safe_div, score_range_percentile
 
-COMPONENT_WEIGHT = 0.20
+COMPONENT_WEIGHT = 0.15
 
 # Minimum composite price score for news_flash discoveries (after LLM BUY).
 NEWS_FLASH_MIN_PRICE_SCORE = 60.0

@@ -26,6 +26,10 @@ METRIC_WEIGHTS = {
 
 COMPONENT_WEIGHT = 0.20  # share of final buy score when all components exist
 
+# Missing profitability is a signal for pre-revenue / unprofitable names — do not skip.
+MISSING_PROFITABILITY_SCORE = 25.0
+_PROFITABILITY_KEYS = frozenset({"operating_margin", "fcf_margin"})
+
 
 @dataclass
 class MetricResult:
@@ -246,8 +250,9 @@ def score_financial_health(symbol: str) -> FinancialHealthResult:
     """
     Compute financial health sub-score (0–100).
 
-    Returns weighted average of normalized metrics; missing metrics are
-    excluded and weights renormalized over available inputs.
+    Returns weighted average of normalized metrics. Missing growth/ROE/D/E are
+    excluded and weights renormalized; missing operating / FCF margin score as
+    MISSING_PROFITABILITY_SCORE so pre-revenue names are not inflated.
     """
     sym = (symbol or "").strip().upper()
     if not sym:
@@ -318,7 +323,13 @@ def score_financial_health(symbol: str) -> FinancialHealthResult:
 
     for key, label, w, raw_val, raw_disp, sub_score in builders:
         m = MetricResult(key=key, label=label, weight=w, raw=raw_val, raw_display=raw_disp)
-        if sub_score is None:
+        if sub_score is None and key in _PROFITABILITY_KEYS:
+            m.score = MISSING_PROFITABILITY_SCORE
+            m.note = "missing profitability — fail closed"
+            missing.append(key)
+            weighted_sum += MISSING_PROFITABILITY_SCORE * w
+            weight_total += w
+        elif sub_score is None:
             m.note = "insufficient data"
             missing.append(key)
         else:
