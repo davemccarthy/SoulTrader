@@ -13,6 +13,7 @@ from django.utils import timezone
 from core.models import Holding, Discovery, Profile
 from core.services.execution import execute_buy, execute_buy_exact_shares, execute_sell
 from core.services.risk.headline_screen import (
+    fetch_headlines,
     log_headline_rebuy_flatten,
     rebuy_flatten_explanation,
     rebuy_headline_decision,
@@ -38,6 +39,9 @@ logger = logging.getLogger(__name__)
 DT_EXIT_CONFIDENCE_MIN = 0.70
 # analyse_drop: only honor EXIT when model tags catalyst as fresh (see _build_drop_prompt).
 DT_FRESH_CATALYST_AGES = frozenset({"today", "1d", "2d"})
+# Yahoo-first gate: empty feed → HOLD (no Gemini). ~2 trading days + weekend buffer.
+DT_YAHOO_HEADLINE_LIMIT = 5
+DT_YAHOO_MAX_AGE_DAYS = 3
 # Shadow DT exits: still run LLM triage, log would-SELL, do not execute (avoids fighting REBUY).
 DT_SHADOW_MODE = True
 REBUY_STABILIZE_MINUTES = STABILIZE_MINUTES_DEFAULT
@@ -604,20 +608,38 @@ def _session_exit_threshold_px(value1, avg) -> Decimal | None:
     return mult
 
 
+def _yahoo_headlines_empty(headlines) -> bool:
+    """True when Yahoo returned no usable titles (empty / placeholder / error)."""
+    if not headlines:
+        return True
+    if len(headlines) == 1:
+        h = str(headlines[0] or "")
+        if (
+            h.startswith("No headlines")
+            or h.startswith("No recent")
+            or h.startswith("Error")
+            or h.startswith("No ticker")
+        ):
+            return True
+    return False
+
+
 def _build_drop_prompt(context_block: str) -> str:
     return f"""
 You are a live risk triage assistant for equity positions.
 
 A descending-trend alert has triggered for the tickers below (2h price trend broken).
-Decide EXIT only if there is a materially negative catalyst that likely CAUSED or is driving
-THIS drop — not general background risk.
+Yahoo headlines (last ~{DT_YAHOO_MAX_AGE_DAYS} calendar days) are provided per ticker.
+Decide EXIT only if those headlines show a materially negative catalyst that likely CAUSED or
+is driving THIS drop — not general background risk.
 
 Recency policy (hard rules):
 - Prefer catalysts dated within the last 2 trading days (US equity calendar).
 - Ignore or treat as non-decisive: older earnings, old lawsuits, evergreen competition,
   macro/sector narratives, and anything clearly published before our position entry
   (entry_date in context) unless there is a NEW material update in the last 2 trading days.
-- If you cannot find a trusted-source catalyst in that window, you MUST HOLD.
+- Decide only from the provided Yahoo headlines. Do not invent catalysts not present there.
+- If the headlines lack a trusted-source catalyst in that window, you MUST HOLD.
 - Do not EXIT on "continued weakness" or "prior miss still overhanging" alone.
 
 Source quality policy:
@@ -625,6 +647,7 @@ Source quality policy:
 - Secondary: Benzinga (alone only if catalyst is clear, dated, and material)
 - In reason, name the catalyst AND its approximate date (e.g. "guidance cut today").
 - sources_used: only sources you actually relied on for the EXIT case; empty on HOLD.
+  Prefer naming the outlet if the headline implies one; otherwise use ["Yahoo"].
 
 What qualifies for EXIT:
 - New, company-specific, material negative: earnings/guidance miss, major downgrade cluster,
@@ -633,7 +656,7 @@ What qualifies for EXIT:
 - Confidence >= 0.70 only when the link from catalyst → this drop is clear.
 
 What qualifies for HOLD:
-- No trusted catalyst in the last 2 trading days, or
+- No trusted catalyst in the last 2 trading days among the provided headlines, or
 - Only stale/minor/speculative/already-absorbed news, or
 - Drop looks technical/sector/noise without a fresh company catalyst.
 
@@ -642,7 +665,7 @@ Rules:
 - If uncertain, HOLD with lower confidence.
 - Never EXIT solely because price/trend is weak; trend already triggered this review.
 
-Context (per ticker includes entry_date, days_held, pnl — use them):
+Context (per ticker includes entry_date, days_held, pnl, yahoo_headlines — use them):
 {context_block}
 
 Return ONLY a single JSON object in this exact shape:
@@ -660,8 +683,10 @@ Return ONLY a single JSON object in this exact shape:
 
 def analyse_drop(sa, dropped_stocks):
     """
-    Evaluate DT-triggered holdings via LLM and execute sells for EXIT decisions.
+    Evaluate DT-triggered holdings via Yahoo-first then LLM; sell on EXIT.
 
+    Yahoo gate: no usable headlines in the last DT_YAHOO_MAX_AGE_DAYS → HOLD (no Gemini).
+    Symbols with headlines go to Gemini without search grounding (headlines are the evidence).
     EXIT requires confidence >= DT_EXIT_CONFIDENCE_MIN and catalyst_age in
     {{today, 1d, 2d}} so stale news alone cannot force a loss exit.
     """
@@ -720,7 +745,46 @@ def analyse_drop(sa, dropped_stocks):
             line += f"; pnl_pct={float(pnl_pct):.2f}%"
         contexts_by_symbol[symbol] = line
 
-    context_block = "\n".join(contexts_by_symbol[s] for s in sorted(contexts_by_symbol.keys()))
+    # Yahoo-first: only escalate symbols with usable headlines to Gemini (no search).
+    escalate_context = {}
+    for symbol, line in contexts_by_symbol.items():
+        _resolved, headlines, lookback = fetch_headlines(
+            symbol,
+            limit=DT_YAHOO_HEADLINE_LIMIT,
+            max_age_days=DT_YAHOO_MAX_AGE_DAYS,
+        )
+        if _yahoo_headlines_empty(headlines):
+            logger.info(
+                "analyse_drop HOLD/skip %s: no usable Yahoo headlines "
+                "(lookback=%s) — skipping Gemini",
+                symbol,
+                lookback,
+            )
+            continue
+        headline_block = " | ".join(str(h).strip() for h in headlines if str(h).strip())
+        escalate_context[symbol] = (
+            f"{line}; yahoo_lookback={lookback}; yahoo_headlines={headline_block!r}"
+        )
+        logger.info(
+            "analyse_drop Yahoo hit %s (%s): %s",
+            symbol,
+            lookback,
+            headline_block,
+        )
+
+    if not escalate_context:
+        logger.info(
+            "analyse_drop: all %s DT symbols Yahoo-empty — no Gemini call",
+            len(contexts_by_symbol),
+        )
+        return
+
+    context_block = "\n".join(escalate_context[s] for s in sorted(escalate_context.keys()))
+    logger.info(
+        "analyse_drop prompt context (%s symbols, Yahoo-gated):\n%s",
+        len(escalate_context),
+        context_block,
+    )
     prompt = _build_drop_prompt(context_block)
 
     model, results, _next_model_idx, _next_key_idx = llm_ask_gemini(
@@ -729,7 +793,7 @@ def analyse_drop(sa, dropped_stocks):
         gemini_model_index=0,
         gemini_key_index=0,
         timeout=120.0,
-        use_search=True,
+        use_search=False,
     )
 
     if not results or not isinstance(results, dict):
@@ -737,7 +801,7 @@ def analyse_drop(sa, dropped_stocks):
         return
 
     exit_by_symbol = {}
-    for symbol in contexts_by_symbol.keys():
+    for symbol in escalate_context.keys():
         data = results.get(symbol) or results.get(symbol.upper()) or results.get(symbol.lower())
         if not isinstance(data, dict):
             logger.info("analyse_drop: %s missing/invalid decision payload", symbol)
