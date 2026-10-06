@@ -6,8 +6,6 @@ import pandas as pd
 import pywt
 from datetime import datetime, timedelta
 from scipy.signal import find_peaks
-from decimal import Decimal
-
 from core.services.advisors.advisor import AdvisorBase, register
 from core.services.financial import polygon as financial_polygon
 from core.services.financial import yahoo as financial_yahoo
@@ -44,7 +42,10 @@ LOOKBACK_DAYS = 40  # Days of history needed for wavelet analysis (64 trading da
 MIN_RR = 1.8  # Minimum reward:risk ratio
 TURN_CONFIRMATION_ENABLED = True  # Require turn confirmation (higher close + higher low) before entry
 # MIN_STOP_BUFFER_PCT = 0.10  # Minimum stop distance from entry (0 = disabled, use calculated stop directly)
-MAX_WAVE_POSITION = -999  # Maximum (most negative) wave_position to accept (filters strong downtrends) - DISABLED
+# 0 = average trough, 1 = average peak. Below 0 is under the trough.
+# -2 is two full wave-ranges below it. Further than that is a broken cycle, not a buy.
+MIN_WAVE_POSITION = -2.0
+MAX_WAVE_POSITION = -999  # Engine-level floor. Disabled; discover() applies MIN_WAVE_POSITION.
 MIN_CONSISTENCY = 0.0  # Minimum consistency score (filters inconsistent wave patterns) - DISABLED
 MAX_STOCKS = 1000  # Maximum number of stocks to process (for testing/comparison with test script, None = unlimited)
 
@@ -119,7 +120,7 @@ def wavelet_trade_engine(price_series, min_rr=MIN_RR, low_series=None, turn_conf
     wave_position = (current_price - avg_trough) / wave_range
     log.append(f"Wave position: {wave_position:.3f} (0=trough, 1=peak)")
     
-    # Note: Internal wave_position filtering removed - filtering happens in discover() with range (-50.0 to 0.0)
+    # Note: Internal wave_position filtering removed - discover() keeps MIN_WAVE_POSITION..0.
     
     # Filter: Reject extreme negative wave positions (strong downtrends)
     # Can be disabled by setting MAX_WAVE_POSITION to a very negative value (e.g., -999)
@@ -318,8 +319,8 @@ class Oscilla(AdvisorBase):
                     # Apply additional filters after wavelet passes
                     wave_position = wave_result.get("wave_position", 0)
                     
-                    # Filter wave_position: only accept between -50.0 and 0.0
-                    if wave_position < -50.0 or wave_position > 0.0:
+                    # At or under the trough, and not more than two wave-ranges below it.
+                    if wave_position < MIN_WAVE_POSITION or wave_position > 0.0:
                         filtered_wave_position += 1
                         continue
                     
@@ -362,20 +363,10 @@ class Oscilla(AdvisorBase):
                         f"wave_pos={wave_result['wave_position']:.3f}"
                     )
                     
-                    # Create sell instructions: PROFIT_TARGET, PERCENTAGE_REBUY, and PROFIT_FLAT
-                    # PROFIT_TARGET: val1=ratio (e.g., 0.10 for 10% profit on average spend)
-                    # PERCENTAGE_REBUY: val1=drop %, val2=rebuy % (10% loss, rebuy 10% of cost basis)
-                    # PROFIT_FLAT: val1=range threshold %, val2=evaluation days
-                    sell_instructions = [
-                        ("PROFIT_TARGET", Decimal('0.10'), None),  # 10% profit on average spend
-                        ("PERCENTAGE_REBUY", Decimal('0.10'), Decimal('0.0')),  # 10% loss, rebuy tranche
-                        ("PROFIT_FLAT", Decimal('0.05'), Decimal('20')),  # Sell if price range within 5% over 20 days
-                    ]
-
                     logger.info(f"Submitting {ticker} - R:R={wave_result['reward_risk']:.2f}, stop=${wave_result['stop']:.2f}, target=${wave_result['target']:.2f}, wave_pos={wave_position:.3f}")
 
-                    # Create discovery
-                    if self.discovered(sa=sa, symbol=ticker, explanation=explanation, sell_instructions=sell_instructions, weight=1.0) is not None:
+                    # Default SIs: PEAKED, PERCENTAGE_REBUY, DESCENDING_TREND.
+                    if self.discovered(sa=sa, symbol=ticker, explanation=explanation, weight=1.0) is not None:
                         discoveries += 1
 
                 except Exception as e:
