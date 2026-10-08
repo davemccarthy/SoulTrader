@@ -48,6 +48,11 @@ REBUY_STABILIZE_MINUTES = STABILIZE_MINUTES_DEFAULT
 REBUY_SHORT_MINUTES = 5
 REBUY_TREND_HOURS = 2
 REBUY_MIN_TREND = Decimal("-0.10")
+# Shadow: consensus fade at rebuy trigger → would REBUY/HOLD/SELL (no order change).
+REBUY_CONSENSUS_SHADOW = True
+# Assessment.consensus is 0–100 (higher = healthier street). Drop = now - baseline.
+REBUY_CONSENSUS_HOLD_DROP = 8.0
+REBUY_CONSENSUS_SELL_DROP = 15.0
 REBUY_MAX_TRANCHES_DEFAULT = Decimal("5")
 PEAKED_MIN_MARKET_MINUTES = 60
 RECENT_TP_LOOKBACK_HOURS = 4
@@ -249,6 +254,160 @@ def _percentage_rebuy_headline_action(holding, drop_pct, instruction_name="PERCE
     elif action == "hold":
         logger.info("%s rebuy HOLD: %s", stock.symbol, result.reason or result.stage)
     return action, result
+
+
+def _rebuy_baseline_assessment(holding):
+    """Discovery-time Assessment, else latest Assessment for the stock."""
+    from core.models import Assessment
+
+    discovery = getattr(holding, "discovery", None)
+    if discovery is not None:
+        assessment = getattr(discovery, "assessment", None)
+        if assessment is not None:
+            return assessment, "discovery"
+        if getattr(discovery, "assessment_id", None):
+            try:
+                return Assessment.objects.get(pk=discovery.assessment_id), "discovery"
+            except Assessment.DoesNotExist:
+                pass
+
+    stock = holding.stock
+    latest = (
+        Assessment.objects.filter(stock=stock).order_by("-created").first()
+    )
+    if latest is not None:
+        return latest, "latest"
+    return None, "none"
+
+
+def _rebuy_consensus_shadow_would(holding) -> dict:
+    """
+    Compare live consensus health score to discovery/baseline Assessment.consensus.
+
+    Returns a dict for logging; does not persist Assessment or change orders.
+    would: REBUY | HOLD | SELL | SKIP
+    """
+    from core.services.health.consensus import score_consensus_health
+
+    symbol = (holding.stock.symbol or "").strip().upper()
+    baseline, baseline_src = _rebuy_baseline_assessment(holding)
+    base_score = None
+    if baseline is not None and baseline.consensus is not None:
+        try:
+            base_score = float(baseline.consensus)
+        except (TypeError, ValueError):
+            base_score = None
+
+    live = score_consensus_health(symbol)
+    now_score = live.score if live is not None else None
+
+    out: dict = {
+        "symbol": symbol,
+        "baseline_src": baseline_src,
+        "base_consensus": base_score,
+        "now_consensus": now_score,
+        "delta": None,
+        "would": "SKIP",
+        "reason": "",
+        "rec_mean": getattr(live, "recommendation_mean", None) if live else None,
+        "rec_key": getattr(live, "recommendation_key", None) if live else None,
+        "upside_mean": getattr(live, "upside_to_mean_pct", None) if live else None,
+        "analyst_count": getattr(live, "analyst_count", None) if live else None,
+    }
+
+    if base_score is None:
+        out["reason"] = "no baseline Assessment.consensus"
+        return out
+    if now_score is None:
+        out["reason"] = (getattr(live, "error", None) or "no live consensus score")
+        return out
+
+    delta = now_score - base_score
+    out["delta"] = delta
+    # Negative delta = faded since entry.
+    if delta <= -REBUY_CONSENSUS_SELL_DROP:
+        out["would"] = "SELL"
+        out["reason"] = (
+            f"consensus fade {delta:+.1f} <= -{REBUY_CONSENSUS_SELL_DROP:g}"
+        )
+    elif delta <= -REBUY_CONSENSUS_HOLD_DROP:
+        out["would"] = "HOLD"
+        out["reason"] = (
+            f"consensus fade {delta:+.1f} <= -{REBUY_CONSENSUS_HOLD_DROP:g}"
+        )
+    else:
+        out["would"] = "REBUY"
+        out["reason"] = f"consensus ok {delta:+.1f}"
+    return out
+
+
+def _log_rebuy_consensus_shadow(
+    holding,
+    *,
+    drop_pct,
+    live_action: str,
+    instruction_name: str = "PERCENTAGE_REBUY",
+) -> None:
+    """Shadow-only: log would-REBUY/HOLD/SELL from consensus delta vs live path."""
+    if not REBUY_CONSENSUS_SHADOW:
+        return
+    try:
+        shadow = _rebuy_consensus_shadow_would(holding)
+    except Exception as exc:
+        logger.warning(
+            "rebuy_shadow %s failed: %s",
+            getattr(holding.stock, "symbol", "?"),
+            exc,
+            exc_info=True,
+        )
+        return
+
+    fund = getattr(holding, "fund", None)
+    fund_name = fund.name if fund is not None else "?"
+    # live_action: rebuy | hold | hold_sector | sell
+    live_norm = (live_action or "").strip().lower()
+    if live_norm in ("hold", "hold_sector"):
+        live_bucket = "HOLD"
+    elif live_norm == "sell":
+        live_bucket = "SELL"
+    else:
+        live_bucket = "REBUY"
+    would = shadow["would"]
+    if would == "SKIP":
+        agree = "n/a"
+    else:
+        agree = "Y" if would == live_bucket else "N"
+
+    logger.info(
+        "rebuy_shadow %s fund=%s instr=%s drop=%.0f%% tranches=%s "
+        "live=%s would=%s agree=%s base=%s now=%s delta=%s src=%s "
+        "rec=%s mean=%s upside=%s analysts=%s reason=%s",
+        shadow["symbol"],
+        fund_name,
+        instruction_name,
+        float(drop_pct) * 100.0,
+        int(holding.tranches or 0),
+        live_action,
+        would,
+        agree,
+        shadow["base_consensus"],
+        shadow["now_consensus"],
+        (
+            f"{shadow['delta']:+.1f}"
+            if shadow["delta"] is not None
+            else "n/a"
+        ),
+        shadow["baseline_src"],
+        shadow["rec_key"] or "-",
+        shadow["rec_mean"] if shadow["rec_mean"] is not None else "-",
+        (
+            f"{shadow['upside_mean']:+.1f}%"
+            if shadow["upside_mean"] is not None
+            else "-"
+        ),
+        shadow["analyst_count"] if shadow["analyst_count"] is not None else "-",
+        shadow["reason"] or "-",
+    )
 
 
 def _percentage_rebuy_sector_downer(stock) -> bool:
@@ -972,7 +1131,7 @@ def analyze_holdings(sa, funds):
         recycle_equity_cap(sa, fund)
 
         for holding in Holding.objects.filter(fund=fund).select_related(
-            "stock", "discovery", "discovery__advisor"
+            "stock", "discovery", "discovery__advisor", "discovery__assessment"
         ):
 
             # Latest prices
@@ -1168,6 +1327,25 @@ def analyze_holdings(sa, funds):
                                     action, screen = _percentage_rebuy_headline_action(
                                         holding, drop_pct, instruction.instruction
                                     )
+                                    sector_block = False
+                                    if action == "buy":
+                                        sector_block = _percentage_rebuy_sector_downer(
+                                            holding.stock
+                                        )
+                                    if action == "hold":
+                                        live_action = "hold"
+                                    elif action == "sell":
+                                        live_action = "sell"
+                                    elif sector_block:
+                                        live_action = "hold_sector"
+                                    else:
+                                        live_action = "rebuy"
+                                    _log_rebuy_consensus_shadow(
+                                        holding,
+                                        drop_pct=drop_pct,
+                                        live_action=live_action,
+                                        instruction_name=instruction.instruction,
+                                    )
                                     if action == "hold":
                                         continue
                                     if action == "sell":
@@ -1179,7 +1357,7 @@ def analyze_holdings(sa, funds):
                                         )
                                         break
 
-                                    if _percentage_rebuy_sector_downer(holding.stock):
+                                    if sector_block:
                                         continue
 
                                     if double:
