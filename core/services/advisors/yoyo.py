@@ -10,7 +10,7 @@ Revive (per name):
   X   = clip(0.25 * (high/low - 1), 4%, 10%)
   revive = mid * (1 - X)
 
-Exit/add: PEAKED (arm +4%) + gated PERCENTAGE_REBUY 4%/5 + DESCENDING_TREND.
+Exit/add: PEAKED (arm +8% → min exit +4%) + gated PERCENTAGE_REBUY 4%/5 + DESCENDING_TREND.
 Pack correlation gate: deferred.
 """
 
@@ -45,7 +45,8 @@ YOYO_DISCOVERY_COOLDOWN_HOURS = 48
 YOYO_MIN_MINUTES_AFTER_OPEN = 15
 
 YOYO_PEAKED_GIVEBACK = 15.0
-YOYO_PEAKED_MIN_PEAK = 4.0
+# Arm at +8% peak → min exit +4% (min_peak/2). Wider than default 4/2 for vol bounce names.
+YOYO_PEAKED_MIN_PEAK = 8.0
 YOYO_REBUY_DROP = Decimal("0.04")
 YOYO_REBUY_MAX_TRANCHES = Decimal("5")
 
