@@ -59,9 +59,10 @@ def execute_sell(sa, fund, holding, explanation):
 
     with transaction.atomic():
         locked_fund = _lock_fund(fund)
+        # No select_related here: nullable discovery FK → LEFT OUTER JOIN, and
+        # Postgres rejects FOR UPDATE on the nullable side of an outer join.
         locked_holding = (
             Holding.objects.select_for_update()
-            .select_related("stock", "discovery")
             .filter(pk=holding_pk, fund_id=fund.pk, shares__gt=0)
             .first()
         )
