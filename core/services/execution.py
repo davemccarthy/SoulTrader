@@ -27,135 +27,185 @@ def _fmt_usd(value) -> str:
     return format(d, ".2f")
 
 
+def _lock_fund(fund):
+    """Row-lock Profile for cash updates; return fresh instance."""
+    return type(fund).objects.select_for_update().get(pk=fund.pk)
+
+
+def _sync_fund_cash(fund, locked_fund) -> None:
+    """Keep caller's in-memory fund.cash aligned with DB after a locked write."""
+    fund.cash = locked_fund.cash
+
+
 # Sell all for now
 def execute_sell(sa, fund, holding, explanation):
+    """
+    Sell entire holding at current quote.
 
-    # Latest price
+    Cash credit and holding delete run under select_for_update so concurrent
+    SA / force_sell / fund_watch cannot clobber each other's cash writes.
+    Quote refresh stays outside the lock (network I/O).
+    """
+    # Latest price (network — outside lock)
     holding.stock.refresh()
+    stock_ref = holding.stock
+    sell_price = stock_ref.price
+    holding_pk = holding.pk
+
     logger.info(
-        f"Trade: {fund.name} selling {holding.shares} shares of {holding.stock.symbol} "
-        f"at ${_fmt_usd(holding.stock.price)}. {explanation}"
+        f"Trade: {fund.name} selling {holding.shares} shares of {stock_ref.symbol} "
+        f"at ${_fmt_usd(sell_price)}. {explanation}"
     )
 
-    # Capture cost basis and references BEFORE deleting holding
-    cost_basis = holding.average_price or Decimal('0')
-    stock_ref = holding.stock  # Save reference before deleting
-    shares_ref = holding.shares  # Save reference before deleting
-    sell_price = stock_ref.price  # Save price before deleting
-    discovery_ref = holding.discovery  # Preserve position provenance for SELL trade
+    with transaction.atomic():
+        locked_fund = _lock_fund(fund)
+        locked_holding = (
+            Holding.objects.select_for_update()
+            .select_related("stock", "discovery")
+            .filter(pk=holding_pk, fund_id=fund.pk, shares__gt=0)
+            .first()
+        )
+        if locked_holding is None:
+            logger.warning(
+                "Trade: %s sell skipped — holding %s gone or empty (concurrent sell?)",
+                fund.name,
+                holding_pk,
+            )
+            _sync_fund_cash(fund, locked_fund)
+            return
 
-    # Transfer funds
-    fund.cash += holding.shares * holding.stock.price
+        cost_basis = locked_holding.average_price or Decimal("0")
+        shares_ref = locked_holding.shares
+        discovery_ref = locked_holding.discovery
+        proceeds = Decimal(str(shares_ref)) * Decimal(str(sell_price or 0))
 
-    # Delete holding
-    holding.delete()
+        locked_fund.cash = (locked_fund.cash or Decimal("0")) + proceeds
+        locked_holding.delete()
 
-    # Create trade record
-    trade = Trade()
+        trade = Trade()
+        trade.sa = sa
+        trade.user = locked_fund.user  # TODO: Remove. Required for backward compatibility temp
+        trade.fund = locked_fund
+        trade.action = "SELL"
+        trade.stock = stock_ref
+        trade.discovery = discovery_ref
+        trade.price = sell_price
+        trade.shares = shares_ref
+        trade.cost = cost_basis  # Store cost basis for P&L calculation
+        trade.explanation = explanation
+        trade.save()
 
-    trade.sa = sa
-    trade.user = fund.user  # TODO: Remove. Required for backward compatibility temp
-    trade.fund = fund
-    trade.action = "SELL"
-    trade.stock = stock_ref
-    trade.discovery = discovery_ref
-    trade.price = sell_price
-    trade.shares = shares_ref
-    trade.cost = cost_basis  # Store cost basis for P&L calculation
-    trade.explanation = explanation
-    trade.save()
+        locked_fund.save(update_fields=["cash"])
+        _sync_fund_cash(fund, locked_fund)
 
-    fund.save()
 
-def execute_buy(sa, fund, stock, allowance, explanation="", force = False, discovery=None):
+def execute_buy(sa, fund, stock, allowance, explanation="", force=False, discovery=None):
+    """
+    Buy with allowance at current quote.
 
-    # Check for existing stock
-    #profile = Profile.objects.get(user=user)
-    holding = Holding.objects.filter(fund=fund, stock=stock).first()
-
-    if holding is None:
-        holding = Holding()
-
-    # Check cash
-    if allowance > fund.cash:
-        logger.warning(f"{fund.name} low on cash ${_fmt_usd(fund.cash)}")
-        allowance = fund.cash
-
-    # Latest price
+    Cash debit and holding update run under select_for_update so concurrent
+    processes cannot overwrite each other's cash via stale in-memory fund rows.
+    """
+    # Latest price (network — outside lock)
     stock.refresh()
 
-    # Verify stock price
     if stock.price == 0.0:
         logger.warning(f"Trade: no price for {stock.symbol}")
         return
 
-    # Calculate no. shares to buy
-    shares = int(allowance / stock.price)
+    price = stock.price
 
-    if shares ==  0:
-        logger.info(f"Trade: {fund.name} NOT buying shares of {stock.symbol}. Can't afford any")
-        return
+    with transaction.atomic():
+        locked_fund = _lock_fund(fund)
+        cash = locked_fund.cash or Decimal("0")
 
-    # No buy if have shares (surrender allowance for subsequent purchases)
-    if shares - holding.shares <= 0 and not force:
-        logger.info(f"{fund.name} already has {holding.shares} {stock.symbol} shares")
-        return
+        spend = allowance
+        if spend > cash:
+            logger.warning(f"{locked_fund.name} low on cash ${_fmt_usd(cash)}")
+            spend = cash
 
-    if not force:
-        shares -= holding.shares
+        shares = int(spend / price)
+        if shares == 0:
+            logger.info(
+                f"Trade: {locked_fund.name} NOT buying shares of {stock.symbol}. Can't afford any"
+            )
+            _sync_fund_cash(fund, locked_fund)
+            return
 
-    cost = shares * stock.price
+        holding = (
+            Holding.objects.select_for_update()
+            .filter(fund_id=locked_fund.pk, stock=stock)
+            .first()
+        )
+        if holding is None:
+            holding = Holding()
+            holding.shares = 0
+            holding.average_price = Decimal("0")
+            holding.tranches = 0
 
-    if fund.cash < cost:
-        logger.info(f"Trade: {fund.name} NOT buying shares of {stock.symbol}. Not enough cash")
-        return
+        # No buy if have shares (surrender allowance for subsequent purchases)
+        if shares - holding.shares <= 0 and not force:
+            logger.info(
+                f"{locked_fund.name} already has {holding.shares} {stock.symbol} shares"
+            )
+            _sync_fund_cash(fund, locked_fund)
+            return
 
-    logger.info(
-        f"Trade: {fund.name} buying {shares} shares of {stock.symbol} "
-        f"at ${_fmt_usd(stock.price)}. Holding {holding.shares}"
-    )
+        if not force:
+            shares -= holding.shares
 
-    fund.cash -= cost
+        cost = shares * price
+        if cash < cost:
+            logger.info(
+                f"Trade: {locked_fund.name} NOT buying shares of {stock.symbol}. Not enough cash"
+            )
+            _sync_fund_cash(fund, locked_fund)
+            return
 
-    # Create trade record
-    trade = Trade()
+        logger.info(
+            f"Trade: {locked_fund.name} buying {shares} shares of {stock.symbol} "
+            f"at ${_fmt_usd(price)}. Holding {holding.shares}"
+        )
 
-    trade.sa = sa
-    trade.user = fund.user  # TODO: Remove. Required for backward compatibility temp
-    trade.fund = fund
-    trade.action = "BUY"
-    trade.stock = stock
-    trade.discovery = discovery
-    trade.price = stock.price
-    trade.shares = shares
-    trade.explanation = explanation
-    trade.save()
+        locked_fund.cash = cash - cost
 
-    # Update holdings
-    holding.fund = fund
-    holding.user = fund.user  # TODO: Remove. Required for backward compatibility temp
-    holding.stock = stock
-    # Forward-only population: persist origin discovery for new/legacy-unlinked holdings.
-    if discovery is not None and holding.discovery_id is None:
-        holding.discovery = discovery
-    old_shares = holding.shares
-    old_avg = holding.average_price or Decimal('0')
-    holding.shares += shares
+        trade = Trade()
+        trade.sa = sa
+        trade.user = locked_fund.user  # TODO: Remove. Required for backward compatibility temp
+        trade.fund = locked_fund
+        trade.action = "BUY"
+        trade.stock = stock
+        trade.discovery = discovery
+        trade.price = price
+        trade.shares = shares
+        trade.explanation = explanation
+        trade.save()
 
-    if holding.shares > 0:
-        total_cost = (old_avg * Decimal(old_shares)) + (stock.price * shares)
-        holding.average_price = total_cost / Decimal(holding.shares)
-    else:
-        holding.average_price = stock.price
+        holding.fund = locked_fund
+        holding.user = locked_fund.user  # TODO: Remove. Required for backward compatibility temp
+        holding.stock = stock
+        # Forward-only population: persist origin discovery for new/legacy-unlinked holdings.
+        if discovery is not None and holding.discovery_id is None:
+            holding.discovery = discovery
+        old_shares = holding.shares
+        old_avg = holding.average_price or Decimal("0")
+        holding.shares += shares
 
-    # Tranche count: first buy on an empty position = 1; each add increments.
-    if old_shares <= 0:
-        holding.tranches = 1
-    else:
-        holding.tranches = int(holding.tranches or 0) + 1
+        if holding.shares > 0:
+            total_cost = (old_avg * Decimal(old_shares)) + (price * shares)
+            holding.average_price = total_cost / Decimal(holding.shares)
+        else:
+            holding.average_price = price
 
-    holding.save()
-    fund.save()
+        # Tranche count: first buy on an empty position = 1; each add increments.
+        if old_shares <= 0:
+            holding.tranches = 1
+        else:
+            holding.tranches = int(holding.tranches or 0) + 1
+
+        holding.save()
+        locked_fund.save(update_fields=["cash"])
+        _sync_fund_cash(fund, locked_fund)
 
 
 def execute_buy_exact_shares(
@@ -174,6 +224,8 @@ def execute_buy_exact_shares(
     Unlike execute_buy (allowance-based), used for cross-fund transfers.
     When replace_discovery is True, holding.discovery is set to discovery even if
     already set (so the receiving fund uses the new User discovery / default SIs).
+
+    Cash debit is row-locked (same race fix as execute_buy / execute_sell).
     """
     shares = int(shares)
     if shares <= 0:
@@ -187,70 +239,81 @@ def execute_buy_exact_shares(
 
     price = stock.price
     cost = price * Decimal(shares)
-    if fund.cash < cost:
+
+    with transaction.atomic():
+        locked_fund = _lock_fund(fund)
+        cash = locked_fund.cash or Decimal("0")
+        if cash < cost:
+            logger.info(
+                "Trade: %s NOT buying %s shares of %s — need $%s have $%s",
+                locked_fund.name,
+                shares,
+                stock.symbol,
+                _fmt_usd(cost),
+                _fmt_usd(cash),
+            )
+            _sync_fund_cash(fund, locked_fund)
+            return None
+
+        holding = (
+            Holding.objects.select_for_update()
+            .filter(fund_id=locked_fund.pk, stock=stock)
+            .first()
+        )
+        if holding is None:
+            holding = Holding()
+            holding.shares = 0
+            holding.average_price = Decimal("0")
+            holding.tranches = 0
+
         logger.info(
-            "Trade: %s NOT buying %s shares of %s — need $%s have $%s",
-            fund.name,
+            "Trade: %s buying %s shares of %s at $%s (exact). Holding %s",
+            locked_fund.name,
             shares,
             stock.symbol,
-            _fmt_usd(cost),
-            _fmt_usd(fund.cash),
+            _fmt_usd(price),
+            holding.shares,
         )
-        return None
 
-    holding = Holding.objects.filter(fund=fund, stock=stock).first()
-    if holding is None:
-        holding = Holding()
-        holding.shares = 0
-        holding.average_price = Decimal("0")
+        locked_fund.cash = cash - cost
 
-    logger.info(
-        "Trade: %s buying %s shares of %s at $%s (exact). Holding %s",
-        fund.name,
-        shares,
-        stock.symbol,
-        _fmt_usd(price),
-        holding.shares,
-    )
+        trade = Trade()
+        trade.sa = sa
+        trade.user = locked_fund.user
+        trade.fund = locked_fund
+        trade.action = "BUY"
+        trade.stock = stock
+        trade.discovery = discovery
+        trade.price = price
+        trade.shares = shares
+        trade.explanation = (explanation or "")[:256]
+        trade.save()
 
-    fund.cash -= cost
+        holding.fund = locked_fund
+        holding.user = locked_fund.user
+        holding.stock = stock
+        if discovery is not None and (holding.discovery_id is None or replace_discovery):
+            holding.discovery = discovery
 
-    trade = Trade()
-    trade.sa = sa
-    trade.user = fund.user
-    trade.fund = fund
-    trade.action = "BUY"
-    trade.stock = stock
-    trade.discovery = discovery
-    trade.price = price
-    trade.shares = shares
-    trade.explanation = (explanation or "")[:256]
-    trade.save()
+        old_shares = int(holding.shares or 0)
+        old_avg = holding.average_price or Decimal("0")
+        holding.shares = old_shares + shares
+        if holding.shares > 0:
+            total_cost = (old_avg * Decimal(old_shares)) + (price * Decimal(shares))
+            holding.average_price = total_cost / Decimal(holding.shares)
+        else:
+            holding.average_price = price
 
-    holding.fund = fund
-    holding.user = fund.user
-    holding.stock = stock
-    if discovery is not None and (holding.discovery_id is None or replace_discovery):
-        holding.discovery = discovery
+        # Transfers / exact buys: empty receiver = 1st buy; add to existing increments.
+        if old_shares <= 0:
+            holding.tranches = 1
+        else:
+            holding.tranches = int(holding.tranches or 0) + 1
 
-    old_shares = int(holding.shares or 0)
-    old_avg = holding.average_price or Decimal("0")
-    holding.shares = old_shares + shares
-    if holding.shares > 0:
-        total_cost = (old_avg * Decimal(old_shares)) + (price * Decimal(shares))
-        holding.average_price = total_cost / Decimal(holding.shares)
-    else:
-        holding.average_price = price
-
-    # Transfers / exact buys: empty receiver = 1st buy; add to existing increments.
-    if old_shares <= 0:
-        holding.tranches = 1
-    else:
-        holding.tranches = int(holding.tranches or 0) + 1
-
-    holding.save()
-    fund.save()
-    return holding
+        holding.save()
+        locked_fund.save(update_fields=["cash"])
+        _sync_fund_cash(fund, locked_fund)
+        return holding
 
 
 class TransferError(Exception):
