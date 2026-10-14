@@ -29,7 +29,25 @@ def _fmt_usd(value) -> str:
 
 def _lock_fund(fund):
     """Row-lock Profile for cash updates; return fresh instance."""
-    return type(fund).objects.select_for_update().get(pk=fund.pk)
+    # of=("self",): never FOR UPDATE a nullable outer join (Postgres).
+    return type(fund).objects.select_for_update(of=("self",)).get(pk=fund.pk)
+
+
+def _lock_holding(holding_pk, fund_pk):
+    """
+    Row-lock a Holding by pk for this fund.
+
+    Uses of=("self",) and no select_related — Postgres rejects FOR UPDATE on the
+    nullable side of an outer join (e.g. discovery / fund FKs via select_related).
+    """
+    try:
+        locked = (
+            Holding.objects.select_for_update(of=("self",))
+            .get(pk=holding_pk, fund_id=fund_pk, shares__gt=0)
+        )
+    except Holding.DoesNotExist:
+        return None
+    return locked
 
 
 def _sync_fund_cash(fund, locked_fund) -> None:
@@ -59,13 +77,7 @@ def execute_sell(sa, fund, holding, explanation):
 
     with transaction.atomic():
         locked_fund = _lock_fund(fund)
-        # No select_related here: nullable discovery FK → LEFT OUTER JOIN, and
-        # Postgres rejects FOR UPDATE on the nullable side of an outer join.
-        locked_holding = (
-            Holding.objects.select_for_update()
-            .filter(pk=holding_pk, fund_id=fund.pk, shares__gt=0)
-            .first()
-        )
+        locked_holding = _lock_holding(holding_pk, fund.pk)
         if locked_holding is None:
             logger.warning(
                 "Trade: %s sell skipped — holding %s gone or empty (concurrent sell?)",
@@ -134,7 +146,7 @@ def execute_buy(sa, fund, stock, allowance, explanation="", force=False, discove
             return
 
         holding = (
-            Holding.objects.select_for_update()
+            Holding.objects.select_for_update(of=("self",))
             .filter(fund_id=locked_fund.pk, stock=stock)
             .first()
         )
@@ -257,7 +269,7 @@ def execute_buy_exact_shares(
             return None
 
         holding = (
-            Holding.objects.select_for_update()
+            Holding.objects.select_for_update(of=("self",))
             .filter(fund_id=locked_fund.pk, stock=stock)
             .first()
         )
@@ -382,11 +394,15 @@ def transfer_holding(
         raise TransferError("User advisor row missing") from exc
 
     with transaction.atomic():
-        from_fund = type(from_fund).objects.select_for_update().get(pk=from_fund.pk)
-        to_fund = type(to_fund).objects.select_for_update().get(pk=to_fund.pk)
+        from_fund = type(from_fund).objects.select_for_update(of=("self",)).get(
+            pk=from_fund.pk
+        )
+        to_fund = type(to_fund).objects.select_for_update(of=("self",)).get(
+            pk=to_fund.pk
+        )
 
         holding = (
-            Holding.objects.select_for_update()
+            Holding.objects.select_for_update(of=("self",))
             .filter(fund=from_fund, stock=stock, shares__gt=0)
             .first()
         )
