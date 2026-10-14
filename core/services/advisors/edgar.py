@@ -457,13 +457,18 @@ def _filing_datetime(filing):
 def _get_ex99_text(filing) -> str:
     """Return concatenated EX-99.x exhibit text from filing, or empty string."""
     parts = []
-    if hasattr(filing, "exhibits") and filing.exhibits:
-        for ex in filing.exhibits:
-            if "99." in str(ex).lower():
-                try:
-                    parts.append(ex.text())
-                except Exception:
-                    continue
+    try:
+        exhibits = getattr(filing, "exhibits", None)
+    except Exception:
+        return ""
+    if not exhibits:
+        return ""
+    for ex in exhibits:
+        if "99." in str(ex).lower():
+            try:
+                parts.append(ex.text())
+            except Exception:
+                continue
     return " ".join(parts)
 
 
@@ -1200,17 +1205,39 @@ class Edgar(AdvisorBase):
         if form != "8-K":
             return _fail("not 8-K")
 
-        if not (hasattr(filing, "exhibits") and filing.exhibits):
-            return _fail("no exhibits")
-        if not any("99." in str(ex).lower() for ex in filing.exhibits):
-            return _fail("no exhibit 99.x")
+        try:
+            exhibits = getattr(filing, "exhibits", None)
+            if not exhibits:
+                return _fail("no exhibits")
+            if not any("99." in str(ex).lower() for ex in exhibits):
+                return _fail("no exhibit 99.x")
+        except Exception as e:
+            return _fail(f"exhibits unavailable ({type(e).__name__}: {e})")
 
-        filing_text = (filing.text() or "").lower() if hasattr(filing, "text") else ""
+        # edgartools can raise AttributeError when primary_html_document is None
+        # ("'NoneType' object has no attribute 'download'"). Continue on EX-99 only.
+        filing_text = ""
+        try:
+            if hasattr(filing, "text"):
+                filing_text = (filing.text() or "").lower()
+        except Exception as e:
+            logger.info(
+                "ticker=%s, CIK=%s, accession=%s primary filing text unavailable "
+                "(%s: %s) — continuing with EX-99 only",
+                ticker or "N/A",
+                cik or "N/A",
+                accession,
+                type(e).__name__,
+                e,
+            )
 
         # Filter 2: red/green flags
         exhibit_99_text = _get_ex99_text(filing)
-        combined_text = (filing_text + " " + (exhibit_99_text or "")).lower()
-        exhibit_99_lower = (exhibit_99_text or "").lower()
+        if not exhibit_99_text or not exhibit_99_text.strip():
+            return _fail("no EX-99 text")
+
+        combined_text = (filing_text + " " + exhibit_99_text).lower()
+        exhibit_99_lower = exhibit_99_text.lower()
         score = 0
         for keyword, penalty in RED_FLAGS_SEVERE.items():
             if keyword in combined_text:
@@ -1223,10 +1250,6 @@ class Edgar(AdvisorBase):
                 score += bonus
         if score < 0:
             return _fail("red flags (score < 0)")
-
-        # Filter 4: EX-99 earnings release structure
-        if not exhibit_99_text or not exhibit_99_text.strip():
-            return _fail("no EX-99 text")
 
         return True
 
@@ -3224,12 +3247,14 @@ class Edgar(AdvisorBase):
                     cutoff = prev_ts - timedelta(minutes=FILING_FEED_LAG_MINUTES)
 
                 for filing in filings_8k:
+                    accession = (
+                        getattr(filing, "accession_no", None)
+                        or getattr(filing, "accession_number", None)
+                        or ""
+                    )
+                    cik = str(getattr(filing, "cik", "") or "")
+                    ticker = getattr(filing, "ticker", None) or cik_to_ticker(cik) or "N/A"
                     try:
-                        accession = (
-                            getattr(filing, "accession_no", None)
-                            or getattr(filing, "accession_number", None)
-                            or ""
-                        )
                         if accession and self._accession_already_handled(accession):
                             logger.info(
                                 "Filing 8-K %s already handled (watch exists) — skipping",
@@ -3248,7 +3273,14 @@ class Edgar(AdvisorBase):
                         self.analyze_8k(filing, sa)
 
                     except Exception as e:
-                        logger.error("⚠️ Error inspecting filing: %s", e)
+                        logger.error(
+                            "⚠️ Error inspecting filing ticker=%s CIK=%s accession=%s: %s",
+                            ticker,
+                            cik or "N/A",
+                            accession or "N/A",
+                            e,
+                            exc_info=True,
+                        )
 
         self.process_earnings_media(sa, dry_run=dry_run_open_check)
         self.process_earnings_watches(
