@@ -3,7 +3,7 @@ Yoyo advisor — fixed volatile pack, per-name mid-range revive entries.
 
 Funnel:
   RTH (+15m) → universe (blob or AI-8 default) → compute revive
-  → price <= revive → discover (48h cooldown; holding OK after that)
+  → price <= revive → discover (2h cooldown; holding OK after that)
 
 Revive (per name):
   mid = (lookback high + low) / 2
@@ -41,7 +41,7 @@ YOYO_LOOKBACK_DAYS = 15
 YOYO_X_FRAC_OF_SPAN = 0.25
 YOYO_X_MIN = 0.04
 YOYO_X_MAX = 0.10
-YOYO_DISCOVERY_COOLDOWN_HOURS = 48
+YOYO_DISCOVERY_COOLDOWN_HOURS = 2
 YOYO_MIN_MINUTES_AFTER_OPEN = 15
 
 YOYO_PEAKED_GIVEBACK = 15.0

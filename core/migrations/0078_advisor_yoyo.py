@@ -13,7 +13,7 @@ def add_yoyo_advisor(apps, schema_editor):
             "description": (
                 "Volatile pack yo-yo: per-name mid-range revive "
                 "(price <= mid * (1-X), X from lookback span clipped 4–10%). "
-                "48h discovery cooldown; rediscover OK while holding. "
+                "2h discovery cooldown; rediscover OK while holding. "
                 "PEAKED (15,8) + gated 4% rebuy. Default universe AI-8."
             ),
         },
