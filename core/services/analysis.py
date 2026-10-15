@@ -23,7 +23,7 @@ from core.services.intraday_stabilize import (
     STABILIZE_MINUTES_DEFAULT,
     is_down_vs_minutes_ago,
     price_above_minutes_ago,
-    sector_etf_for,
+    sector_etf_for_stock,
 )
 from core.services.llm.gemini import ask_gemini as llm_ask_gemini
 from core.services.advisors.advisor import AdvisorBase
@@ -33,6 +33,7 @@ from core.services.health.risk_matrix import (
     so_gate_fail_display,
 )
 from core.services.market import in_opening_noise_window, market_open, rth_session_open
+from core.services.market.tape import sector_etf_tape_is_red
 from core.services.sentiment import purge_eligible, purge_score
 
 logger = logging.getLogger(__name__)
@@ -415,12 +416,13 @@ def _percentage_rebuy_sector_downer(stock) -> bool:
     True = hold off the add: mapped sector ETF is strictly below its ~30m close.
     Flat/up sector does not block. Unknown sector or missing bars fail open.
     """
-    etf = sector_etf_for(getattr(stock, "sector", None) or "")
+    etf = sector_etf_for_stock(stock)
     if not etf:
         logger.info(
-            "%s rebuy sector: no ETF for %r — allowing add",
+            "%s rebuy sector: no ETF for %r / %r — allowing add",
             stock.symbol,
             getattr(stock, "sector", None) or "",
+            getattr(stock, "industry", None) or "",
         )
         return False
     down = is_down_vs_minutes_ago(etf, minutes=REBUY_STABILIZE_MINUTES)
@@ -441,6 +443,22 @@ def _percentage_rebuy_sector_downer(stock) -> bool:
         )
         return True
     return False
+
+
+def _sector_etf_red_blocks_buy(stock, *, cache: dict) -> Optional[str]:
+    """
+    Shared entrant veto: name's sector ETF on RED tape → block new long.
+
+    Same red thresholds as SPY/QQQ (vs open −1.5% / vs prior −2.0%).
+    Fail open when sector unmapped or quotes missing. Returns reason or None.
+    """
+    etf = sector_etf_for_stock(stock)
+    if not etf:
+        return None
+    is_red, detail = sector_etf_tape_is_red(etf, cache=cache)
+    if not is_red:
+        return None
+    return detail
 
 
 RUNNER_LOOKBACK_MINUTES = 30
@@ -1601,6 +1619,7 @@ def _buy_advisor_discoveries(sa, fund, advisor_row):
     # One row per stock. A later advisor can still buy the name if this one does not.
     seen_stocks = set()
     allowance = fund.average_spend()
+    sector_tape_cache: dict = {}
     for discovery in discoveries:
         if discovery.stock_id in seen_stocks:
             continue
@@ -1622,6 +1641,18 @@ def _buy_advisor_discoveries(sa, fund, advisor_row):
             continue
 
         if discovery_passes_risk_gate(discovery, fund.risk):
+            sector_block = _sector_etf_red_blocks_buy(
+                discovery.stock, cache=sector_tape_cache
+            )
+            if sector_block:
+                logger.warning(
+                    "%s: %s discovery %s sector ETF gate BLOCKED (%s)",
+                    fund.name,
+                    discovery.advisor.name,
+                    discovery.stock.symbol,
+                    sector_block,
+                )
+                continue
             if fund.sentiment_enabled() and fund.at_or_over_equity_buy_cap():
                 logger.info(
                     "%s: over buy cap (ratio=%.3f buy_until=%s); "

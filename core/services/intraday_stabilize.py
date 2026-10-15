@@ -57,9 +57,17 @@ def is_down_vs_minutes_ago(symbol: str, minutes: int = STABILIZE_MINUTES_DEFAULT
         return None
 
 
-def sector_etf_for(sector: str) -> Optional[str]:
-    """Map yfinance sector string to a sector ETF. No SPY fallback."""
+def sector_etf_for(sector: str, industry: str = "") -> Optional[str]:
+    """
+    Map yfinance sector/industry to a sector ETF. No SPY fallback.
+
+    Semiconductors map to SMH (stricter than XLK on chip washout days).
+    """
     from core.services.market.midway_candidates import SECTOR_ETF
+
+    ind = (industry or "").strip().lower()
+    if "semiconductor" in ind:
+        return "SMH"
 
     key = (sector or "").strip().lower()
     if not key:
@@ -68,6 +76,14 @@ def sector_etf_for(sector: str) -> Optional[str]:
         if needle in key:
             return etf
     return None
+
+
+def sector_etf_for_stock(stock) -> Optional[str]:
+    """ETF for a Stock row (sector + industry)."""
+    return sector_etf_for(
+        getattr(stock, "sector", None) or "",
+        getattr(stock, "industry", None) or "",
+    )
 
 
 def price_above_minutes_ago(stock, minutes: int = STABILIZE_MINUTES_DEFAULT) -> Optional[bool]:

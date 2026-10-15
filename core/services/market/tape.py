@@ -193,3 +193,35 @@ def evaluate_tape(
             readings,
         )
     return TapeVerdict("green", "benchmarks within normal intraday band", readings)
+
+
+def sector_etf_tape_is_red(
+    etf: str,
+    *,
+    cache: Optional[Dict[str, TapeVerdict]] = None,
+) -> tuple[bool, str]:
+    """
+    True when the sector ETF trips the same RED thresholds as SPY/QQQ tape.
+
+    Fail open on missing ETF / missing quotes (returns False).
+    Optional cache keyed by ETF avoids repeat Yahoo hits in one buy loop.
+    """
+    sym = (etf or "").strip().upper()
+    if not sym:
+        return False, "no sector ETF"
+
+    if cache is not None and sym in cache:
+        verdict = cache[sym]
+    else:
+        try:
+            readings = fetch_tape((sym,))
+            verdict = evaluate_tape(readings)
+        except Exception as exc:
+            logger.debug("sector ETF tape failed for %s: %s", sym, exc)
+            return False, f"{sym} tape fetch failed"
+        if cache is not None:
+            cache[sym] = verdict
+
+    if normalize_tape_state(verdict.state, default="green") != "red":
+        return False, f"{sym} {verdict.state}: {verdict.reason}"
+    return True, f"{sym} red: {verdict.reason}"
