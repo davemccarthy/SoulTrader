@@ -15,16 +15,15 @@ Entry:
 - Live IMPULSE/COMBO paths (optional): 1m momentum + COMBO (impulse + normal_stable).
 - Live TROUGH (optional): high-vol attention at session LOD with light bounce
   (near LOD ≤25bp + up 1m or LOD hold); green/white tape only; opp ≥ C;
-  same tape IPC / END_DAY SIs (no PERCENTAGE_REBUY — watcher owns adds/exits).
+  same tape END_DAY + rebuy SIs (no TARGET_INTRADAY — fund_watch owns trail).
   Shadow logs broader OR trough inventory.
 - Market tape (SPY/QQQ): refresh only during Pulse buying hours (10:30–13:00 ET);
   persist red/amber/green/white on Advisor.blob (default red); trade on amber/green/white
   (red = no discover); push superusers on status change.
-  IPC at discovery by tape: amber 0.4/0.2, green 0.6/0.2, white 0.8/0.2.
 
-Exit: TARGET_INTRADAY (tape-colored arm/giveback), dual END_DAY: 1.00× avg from
-  120m before close, then 0.995× avg in last 30m (near-flat / mild-red clutter).
-  No PERCENTAGE_REBUY (paused — fund_watch / manual), END_WEEK, DT, or SL.
+Exit/add: -2% rebuy (max 3 tranches), dual END_DAY: 1.00× avg from 120m before
+  close, then 0.995× avg in last 30m. No TARGET_INTRADAY (watcher trail), END_WEEK,
+  DT, or SL.
 
 Shadow: when enabled, logs IMPULSE/COMBO/TROUGH hits once per cache bucket.
 """
@@ -66,25 +65,19 @@ PULSE_MAX_QUOTE_DRIFT_FROM_BAR = 0.02
 PULSE_MAX_PCT_ABOVE_PRIOR_CLOSE = 5.0
 PULSE_DISCOVERY_COOLDOWN_HOURS = 6
 
-# Fallback IPC when tape color missing (green workhorse).
-PULSE_TP_MULT = Decimal("1.006")
-PULSE_INTRADAY_GIVEBACK = Decimal("0.002")
-# Rebuy paused (2026-10): averaging into holes hurt; watcher owns exits for now.
-# PULSE_REBUY_DROP = Decimal("0.02")
-# PULSE_REBUY_MAX_TRANCHES = Decimal("3")
+PULSE_REBUY_DROP = Decimal("0.02")
+PULSE_REBUY_MAX_TRANCHES = Decimal("3")
 # Dual END_DAY: bank ≥breakeven from ~2pm ET; flatten mild red in last 30m.
 PULSE_ENDDAY_TAKE = Decimal("1.00")
 PULSE_ENDDAY_MINUTES_BEFORE_CLOSE = Decimal("120")
 PULSE_ENDDAY_CLUTTER_TAKE = Decimal("0.995")
 PULSE_ENDDAY_CLUTTER_MINUTES_BEFORE_CLOSE = Decimal("30")
 
-# Tape → IPC (arm multiplier, giveback fraction) at discovery.
-# Ladder shifted up to unstick scrap +0.2–0.4% days (giveback stays 0.2%).
-PULSE_IPC_BY_TAPE: Final[Dict[str, tuple[Decimal, Decimal]]] = {
-    "amber": (Decimal("1.004"), Decimal("0.002")),  # 0.4% / 0.2%
-    "green": (Decimal("1.006"), Decimal("0.002")),  # 0.6% / 0.2%
-    "white": (Decimal("1.008"), Decimal("0.002")),  # 0.8% / 0.2%
-}
+# TARGET_INTRADAY paused (2026-10): early scrap IPC underperformed watcher trail.
+# Kept for reference / easy restore — fund_watch owns arm/giveback now.
+# PULSE_TP_MULT = Decimal("1.006")
+# PULSE_INTRADAY_GIVEBACK = Decimal("0.002")
+# PULSE_IPC_BY_TAPE: amber 1.004/0.002, green 1.006/0.002, white 1.008/0.002
 
 # Opportunity floor at discover (Oracle uses C at pre-discover gate).
 PULSE_MIN_OPPORTUNITY_GRADE = "C"
@@ -122,13 +115,11 @@ PULSE_TAPE_PUSH_TITLES: Final[Dict[str, str]] = {
 
 
 def pulse_sell_instructions_for_tape(tape_status: str) -> list[tuple[str, Decimal, Decimal | None]]:
-    """Build Pulse SIs for the current tape color (IPC arm/giveback + END_DAY; no rebuy)."""
-    status = normalize_tape_state(tape_status, default="green")
-    tp_mult, giveback = PULSE_IPC_BY_TAPE.get(
-        status, (PULSE_TP_MULT, PULSE_INTRADAY_GIVEBACK)
-    )
+    """Build Pulse SIs: rebuy + END_DAY (no TARGET_INTRADAY — watcher owns trail)."""
+    # tape_status reserved for future tape-colored SIs; END_DAY/rebuy are tape-agnostic.
+    _ = normalize_tape_state(tape_status, default="green")
     return [
-        ("TARGET_INTRADAY", tp_mult, giveback),
+        ("PERCENTAGE_REBUY", PULSE_REBUY_DROP, PULSE_REBUY_MAX_TRANCHES),
         ("END_DAY", PULSE_ENDDAY_TAKE, PULSE_ENDDAY_MINUTES_BEFORE_CLOSE),
         ("END_DAY", PULSE_ENDDAY_CLUTTER_TAKE, PULSE_ENDDAY_CLUTTER_MINUTES_BEFORE_CLOSE),
     ]
@@ -1185,14 +1176,9 @@ class Pulse(AdvisorBase):
             return
 
         sell_instructions = pulse_sell_instructions_for_tape(tape_status)
-        tp_mult, giveback = PULSE_IPC_BY_TAPE.get(
-            tape_status, (PULSE_TP_MULT, PULSE_INTRADAY_GIVEBACK)
-        )
         logger.info(
-            "Pulse tape=%s IPC arm=%s giveback=%s",
+            "Pulse tape=%s SIs=rebuy+END_DAY (TARGET_INTRADAY deferred to fund_watch)",
             tape_status.upper(),
-            tp_mult,
-            giveback,
         )
 
         attention, recovery_candidates = self._ensure_pulse_cache()
