@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for four-color evaluate_tape + Pulse IPC map (no network)."""
+"""Unit tests for four-color evaluate_tape + Pulse SI list (no network)."""
 from __future__ import annotations
 
 import os
@@ -15,7 +15,12 @@ django.setup()
 from decimal import Decimal
 
 from core.services.advisors.pulse import (
-    PULSE_IPC_BY_TAPE,
+    PULSE_ENDDAY_CLUTTER_MINUTES_BEFORE_CLOSE,
+    PULSE_ENDDAY_CLUTTER_TAKE,
+    PULSE_ENDDAY_MINUTES_BEFORE_CLOSE,
+    PULSE_ENDDAY_TAKE,
+    PULSE_REBUY_DROP,
+    PULSE_REBUY_MAX_TRANCHES,
     pulse_sell_instructions_for_tape,
 )
 from core.services.market.tape import (
@@ -84,17 +89,28 @@ def test_normalize_yellow_to_amber():
     assert normalize_tape_state("nope") == "red"
 
 
-def test_ipc_map_and_sell_instructions():
-    assert PULSE_IPC_BY_TAPE["amber"] == (Decimal("1.004"), Decimal("0.002"))
-    assert PULSE_IPC_BY_TAPE["green"] == (Decimal("1.006"), Decimal("0.002"))
-    assert PULSE_IPC_BY_TAPE["white"] == (Decimal("1.008"), Decimal("0.002"))
+def test_pulse_sell_instructions_no_ipc():
+    """TARGET_INTRADAY deferred to fund_watch; Pulse attaches rebuy + dual END_DAY."""
     sis = pulse_sell_instructions_for_tape("amber")
-    assert sis[0] == ("TARGET_INTRADAY", Decimal("1.004"), Decimal("0.002"))
     sis_g = pulse_sell_instructions_for_tape("green")
-    assert sis_g[0][1:] == (Decimal("1.006"), Decimal("0.002"))
-    # Dual END_DAY: 1.00@120m, 0.995@30m
-    assert ("END_DAY", Decimal("1.00"), Decimal("120")) in sis
-    assert ("END_DAY", Decimal("0.995"), Decimal("30")) in sis
+    assert sis == sis_g  # tape-agnostic while IPC paused
+    kinds = [row[0] for row in sis]
+    assert "TARGET_INTRADAY" not in kinds
+    assert (
+        "PERCENTAGE_REBUY",
+        PULSE_REBUY_DROP,
+        PULSE_REBUY_MAX_TRANCHES,
+    ) in sis
+    assert (
+        "END_DAY",
+        PULSE_ENDDAY_TAKE,
+        PULSE_ENDDAY_MINUTES_BEFORE_CLOSE,
+    ) in sis
+    assert (
+        "END_DAY",
+        PULSE_ENDDAY_CLUTTER_TAKE,
+        PULSE_ENDDAY_CLUTTER_MINUTES_BEFORE_CLOSE,
+    ) in sis
 
 
 if __name__ == "__main__":
@@ -104,5 +120,5 @@ if __name__ == "__main__":
     test_white_requires_all()
     test_white_fails_if_one_weak()
     test_normalize_yellow_to_amber()
-    test_ipc_map_and_sell_instructions()
+    test_pulse_sell_instructions_no_ipc()
     print("ok")
