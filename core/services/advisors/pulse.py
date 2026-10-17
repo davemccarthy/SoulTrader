@@ -15,15 +15,16 @@ Entry:
 - Live IMPULSE/COMBO paths (optional): 1m momentum + COMBO (impulse + normal_stable).
 - Live TROUGH (optional): high-vol attention at session LOD with light bounce
   (near LOD ≤25bp + up 1m or LOD hold); green/white tape only; opp ≥ C;
-  same tape IPC / rebuy / END_DAY SIs. Shadow logs broader OR trough inventory.
+  same tape IPC / END_DAY SIs (no PERCENTAGE_REBUY — watcher owns adds/exits).
+  Shadow logs broader OR trough inventory.
 - Market tape (SPY/QQQ): refresh only during Pulse buying hours (10:30–13:00 ET);
   persist red/amber/green/white on Advisor.blob (default red); trade on amber/green/white
   (red = no discover); push superusers on status change.
   IPC at discovery by tape: amber 0.4/0.2, green 0.6/0.2, white 0.8/0.2.
 
-Exit/add: TARGET_INTRADAY (tape-colored arm/giveback), -2% rebuy (max 3 tranches;
-  2h trend + 5m/30m recovery), dual END_DAY: 1.00× avg from 120m before close,
-  then 0.995× avg in last 30m (near-flat / mild-red clutter). No END_WEEK, DT, or SL.
+Exit: TARGET_INTRADAY (tape-colored arm/giveback), dual END_DAY: 1.00× avg from
+  120m before close, then 0.995× avg in last 30m (near-flat / mild-red clutter).
+  No PERCENTAGE_REBUY (paused — fund_watch / manual), END_WEEK, DT, or SL.
 
 Shadow: when enabled, logs IMPULSE/COMBO/TROUGH hits once per cache bucket.
 """
@@ -68,8 +69,9 @@ PULSE_DISCOVERY_COOLDOWN_HOURS = 6
 # Fallback IPC when tape color missing (green workhorse).
 PULSE_TP_MULT = Decimal("1.006")
 PULSE_INTRADAY_GIVEBACK = Decimal("0.002")
-PULSE_REBUY_DROP = Decimal("0.02")
-PULSE_REBUY_MAX_TRANCHES = Decimal("3")
+# Rebuy paused (2026-10): averaging into holes hurt; watcher owns exits for now.
+# PULSE_REBUY_DROP = Decimal("0.02")
+# PULSE_REBUY_MAX_TRANCHES = Decimal("3")
 # Dual END_DAY: bank ≥breakeven from ~2pm ET; flatten mild red in last 30m.
 PULSE_ENDDAY_TAKE = Decimal("1.00")
 PULSE_ENDDAY_MINUTES_BEFORE_CLOSE = Decimal("120")
@@ -120,14 +122,13 @@ PULSE_TAPE_PUSH_TITLES: Final[Dict[str, str]] = {
 
 
 def pulse_sell_instructions_for_tape(tape_status: str) -> list[tuple[str, Decimal, Decimal | None]]:
-    """Build Pulse SIs for the current tape color (IPC arm/giveback + rebuy + END_DAY)."""
+    """Build Pulse SIs for the current tape color (IPC arm/giveback + END_DAY; no rebuy)."""
     status = normalize_tape_state(tape_status, default="green")
     tp_mult, giveback = PULSE_IPC_BY_TAPE.get(
         status, (PULSE_TP_MULT, PULSE_INTRADAY_GIVEBACK)
     )
     return [
         ("TARGET_INTRADAY", tp_mult, giveback),
-        ("PERCENTAGE_REBUY", PULSE_REBUY_DROP, PULSE_REBUY_MAX_TRANCHES),
         ("END_DAY", PULSE_ENDDAY_TAKE, PULSE_ENDDAY_MINUTES_BEFORE_CLOSE),
         ("END_DAY", PULSE_ENDDAY_CLUTTER_TAKE, PULSE_ENDDAY_CLUTTER_MINUTES_BEFORE_CLOSE),
     ]
