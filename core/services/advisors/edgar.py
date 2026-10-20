@@ -1,7 +1,8 @@
 """
 Edgar advisor (EDDIE-8): two-stage 8-K earnings pipeline + Form 4 enrichment.
 
-Stage 1 — Item 2.02 8-K → EX-99 LLM + score → watch() (Pending).
+Stage 1 — earnings-like EX-99 8-K → EX-99 LLM + score → watch() (Pending).
+         (Item 2.02 optional: latest-feed items/text often unavailable.)
 Stage 1b — media LLM after delay (AH +2h / pre/RTH +1h) → media_gate pass/fail.
          Batch caps per SA: AH 2 (overnight drip), pre/RTH 5 (morning burst).
          eps=unknown/other or no_coverage → Gemini search then retry later (FLXS/NESR/AVEX);
@@ -466,9 +467,12 @@ def _get_ex99_text(filing) -> str:
     for ex in exhibits:
         if "99." in str(ex).lower():
             try:
-                parts.append(ex.text())
+                text = ex.text()
             except Exception:
                 continue
+            # Attachment.text() can return None (binary / empty exhibit).
+            if isinstance(text, str) and text.strip():
+                parts.append(text)
     return " ".join(parts)
 
 
@@ -1214,22 +1218,13 @@ class Edgar(AdvisorBase):
         except Exception as e:
             return _fail(f"exhibits unavailable ({type(e).__name__}: {e})")
 
-        # edgartools can raise AttributeError when primary_html_document is None
-        # ("'NoneType' object has no attribute 'download'"). Continue on EX-99 only.
+        # edgartools can raise when primary_html_document is None. EX-99 is enough.
         filing_text = ""
         try:
             if hasattr(filing, "text"):
                 filing_text = (filing.text() or "").lower()
-        except Exception as e:
-            logger.info(
-                "ticker=%s, CIK=%s, accession=%s primary filing text unavailable "
-                "(%s: %s) — continuing with EX-99 only",
-                ticker or "N/A",
-                cik or "N/A",
-                accession,
-                type(e).__name__,
-                e,
-            )
+        except Exception:
+            pass
 
         # Filter 2: red/green flags
         exhibit_99_text = _get_ex99_text(filing)
@@ -2047,33 +2042,20 @@ class Edgar(AdvisorBase):
 
     def analyze_8k_earnings(self, filing, cik, ticker, accession, sa):
         """
-        Item 2.02 earnings path.
+        Earnings path via EX-99 structure (Item 2.02 optional).
 
-        Returns True when this filing is owned as earnings (pass → watch, or
-        rejected with a logged reason). Returns False only when not an
-        earnings filing (no Item 2.02) so callers may try pharma/event.
+        Latest-feed Filing objects often lack ``items`` and primary ``text()``
+        fails (None.download), so Item 2.02 metadata is unreliable. Ownership
+        is claimed when EX-99 looks like an earnings release; otherwise return
+        False so pharma/event can try.
+
+        Returns True when owned as earnings (watch or rejected after gates).
         """
-        # Verify item 2.02
-        if not self.has_item(filing, "2.02"):
-            logger.info(
-                "ticker=%s, CIK=%s, accession=%s no item 2.02 -> not earnings filing",
-                ticker,
-                cik,
-                accession,
-            )
-            return False
+        has_202 = self.has_item(filing, "2.02")
 
-        # Verify earnings text
         exhibit_99_text = _get_ex99_text(filing)
         if not (exhibit_99_text or "").strip():
-            logger.info(
-                "ticker=%s, CIK=%s, accession=%s earnings text gate fail "
-                "(no EX-99 text) -> fail",
-                ticker,
-                cik,
-                accession,
-            )
-            return True
+            return False
 
         text = _filter4_normalize(exhibit_99_text)
         checks = {
@@ -2083,49 +2065,29 @@ class Edgar(AdvisorBase):
             "table_structure": _filter4_has_table_structure(text),
             "comparables": _filter4_has_comparables(text),
         }
+        # Not earnings-like EX-99 → hand off (do not block pharma/event).
         if not checks["earnings_context"]:
-            logger.info(
-                "ticker=%s, CIK=%s, accession=%s earnings text gate fail "
-                "(earnings_context) -> fail",
-                ticker,
-                cik,
-                accession,
-            )
-            return True
+            return False
         if not checks["eps_evidence"]:
-            logger.info(
-                "ticker=%s, CIK=%s, accession=%s earnings text gate fail "
-                "(eps_evidence) -> fail",
-                ticker,
-                cik,
-                accession,
-            )
-            return True
+            return False
         if checks["numeric_density"] < 15:
-            logger.info(
-                "ticker=%s, CIK=%s, accession=%s earnings text gate fail "
-                "(numeric_density=%s < 15) -> fail",
-                ticker,
-                cik,
-                accession,
-                checks["numeric_density"],
-            )
-            return True
+            return False
 
         score = sum([checks["table_structure"], checks["comparables"]])
-
-        # Check soft fail
         if score < 1:
-            logger.info(
-                "ticker=%s, CIK=%s, accession=%s earnings soft score -> fail "
-                "(table=%s comparables=%s)",
-                ticker,
-                cik,
-                accession,
-                checks["table_structure"],
-                checks["comparables"],
-            )
-            return True
+            return False
+
+        logger.info(
+            "ticker=%s, CIK=%s, accession=%s earnings lane via EX-99 "
+            "(item_2.02=%s density=%s table=%s comparables=%s)",
+            ticker,
+            cik,
+            accession,
+            has_202,
+            checks["numeric_density"],
+            checks["table_structure"],
+            checks["comparables"],
+        )
 
         # Try and see if EPS intel in AV or Filing
         eps_beat = self.evaluate_eps_beat(filing)
