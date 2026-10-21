@@ -18,7 +18,9 @@ Test independently:
     python manage.py run_edgar --open-check-only --force-open-check --dry-run
 
 Open-check (Goldilocks −3%…+8% vs prior close): needs media_gate=pass and
-known EPS beat. Cliffs Excluded; rockets stay Pending (no chase).
+known EPS beat. Prior close is daily OHLC T-1 only (never Fast Info
+previousClose — SPCX AH bug). Cliffs Excluded; rockets (≥+8% vs prior) stay
+Pending unless 2-day net vs T-2 is still in the Goldilocks band.
 Form 4 helpers live in ``core.services.sec.form4``.
 """
 
@@ -191,27 +193,82 @@ def _session_vwap(hist) -> Optional[float]:
     return float((typical * vol.astype(float)).sum() / total_vol)
 
 
+def _daily_prior_and_t2_closes(ticker) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Completed-session closes from daily OHLC only: prior (T-1) and T-2.
+
+    Ignores Fast Info / summary ``previousClose`` (can be overwritten by AH
+    prints — SPCX 2026-10-21). Drops today's incomplete bar when present so
+    prior is the last finished session Close (immutable after the day ends).
+    """
+    try:
+        daily = ticker.history(period="15d", interval="1d", auto_adjust=True)
+    except Exception:
+        return None, None
+    if daily is None or daily.empty or "Close" not in daily.columns:
+        return None, None
+    closes = daily["Close"].astype(float).dropna()
+    if closes.empty:
+        return None, None
+
+    today_et = datetime.now(_ET).date()
+    last_idx = closes.index[-1]
+    last_date = last_idx.date() if hasattr(last_idx, "date") else None
+    if last_date == today_et and len(closes) >= 2:
+        completed = closes.iloc[:-1]
+    else:
+        completed = closes
+
+    prior = _safe_float(completed.iloc[-1]) if len(completed) >= 1 else None
+    close_t2 = _safe_float(completed.iloc[-2]) if len(completed) >= 2 else None
+    return prior, close_t2
+
+
 def earnings_open_tape(symbol: str) -> Optional[Dict[str, Any]]:
     """
     Live open-tape snapshot vs prior close (gap, vs_close, pullback, VWAP).
 
-    Uses yfinance 1m bars with prepost; prior close from fast_info when available.
+    Reference closes (``prior_close`` / ``close_t2``) always come from completed
+    daily OHLC bars — never Fast Info ``previousClose``. Live last / open / high
+    still use 1m (+ optional Fast Info last). ``vs_close_2d_pct`` supports the
+    rocket-reclaim Goldilocks override.
     """
     sym = (symbol or "").strip().upper()
     if not sym:
         return None
     try:
         t = yf.Ticker(sym)
-        prior = None
+        prior, close_t2 = _daily_prior_and_t2_closes(t)
+        if prior is None:
+            logger.warning("earnings_open_tape(%s): no daily T-1 close", sym)
+            return None
+
+        # Live last only — never use Fast Info previousClose for reference.
         last = None
         try:
             fi = t.fast_info
             if isinstance(fi, dict):
-                prior = _safe_float(fi.get("previousClose") or fi.get("previous_close"))
                 last = _safe_float(fi.get("lastPrice") or fi.get("last_price"))
+                fi_prev = _safe_float(
+                    fi.get("previousClose") or fi.get("previous_close")
+                )
             else:
-                prior = _safe_float(getattr(fi, "previous_close", None))
                 last = _safe_float(getattr(fi, "last_price", None))
+                fi_prev = _safe_float(getattr(fi, "previous_close", None))
+            # SPCX-class: log when summary prior disagrees with daily T-1.
+            if (
+                fi_prev is not None
+                and prior > 0
+                and abs(fi_prev - prior) / prior >= 0.02
+            ):
+                logger.info(
+                    "earnings_open_tape(%s): ignoring fast_info previousClose="
+                    "%.4f (daily T-1=%.4f, Δ=%.1f%%)",
+                    sym,
+                    fi_prev,
+                    prior,
+                    100.0 * (fi_prev - prior) / prior,
+                )
         except Exception:
             pass
 
@@ -219,15 +276,17 @@ def earnings_open_tape(symbol: str) -> Optional[Dict[str, Any]]:
         if hist is None or hist.empty:
             hist = t.history(period="1d", interval="1m")
         if hist is None or hist.empty:
-            if prior is None or last is None:
+            if last is None:
                 return None
             return {
                 "prior_close": prior,
+                "close_t2": close_t2,
                 "open_px": None,
                 "last": last,
                 "high": last,
                 "gap_pct": None,
                 "vs_close_pct": _pct(last, prior),
+                "vs_close_2d_pct": _pct(last, close_t2),
                 "vs_open_pct": None,
                 "pullback_pct": None,
                 "vwap": None,
@@ -253,15 +312,6 @@ def earnings_open_tape(symbol: str) -> Optional[Dict[str, Any]]:
         bar_last = _safe_float(hist["Close"].iloc[-1]) if "Close" in hist.columns else None
         if last is None:
             last = bar_last
-        if prior is None:
-            daily = t.history(period="10d", interval="1d", auto_adjust=True)
-            if daily is not None and not daily.empty and "Close" in daily.columns:
-                closes = daily["Close"].astype(float).dropna()
-                if len(closes) >= 2:
-                    # Last completed session close when today already has a bar.
-                    prior = _safe_float(closes.iloc[-2])
-                elif len(closes) == 1:
-                    prior = _safe_float(closes.iloc[-1])
 
         vwap = _session_vwap(hist if hist is not None else rth)
         pb = None
@@ -270,11 +320,13 @@ def earnings_open_tape(symbol: str) -> Optional[Dict[str, Any]]:
 
         return {
             "prior_close": prior,
+            "close_t2": close_t2,
             "open_px": open_px,
             "last": last,
             "high": high,
             "gap_pct": _pct(open_px, prior),
             "vs_close_pct": _pct(last, prior),
+            "vs_close_2d_pct": _pct(last, close_t2),
             "vs_open_pct": _pct(last, open_px),
             "pullback_pct": pb,
             "vwap": vwap,
@@ -290,8 +342,9 @@ def classify_goldilocks_bucket(tape: Dict[str, Any]) -> str:
     Goldilocks open-check (mimics remote backtest bands): cliff | goldilocks | rocket | unclear.
 
     cliff:      vs prior close ≤ −3% → dismiss
-    goldilocks: −3% < vs < +8% → punt at live quote (soft red included)
-    rocket:     vs ≥ +8% → no chase
+    goldilocks: −3% < vs_close < +8% → punt at live quote (soft red included)
+    rocket:     vs_close ≥ +8% → no chase, unless 2-day net (last vs T-2) is
+                still inside (−3%, +8%) — reclaim / soft prior day → goldilocks
     unclear:    no vs_close
     """
     vs_close = tape.get("vs_close_pct")
@@ -300,6 +353,14 @@ def classify_goldilocks_bucket(tape: Dict[str, Any]) -> str:
     if vs_close <= _GOLDILOCKS_LO:
         return "cliff"
     if vs_close >= _GOLDILOCKS_HI:
+        vs_2d = tape.get("vs_close_2d_pct")
+        # B: 1-day rocket OK if 2-day net still Goldilocks.
+        if (
+            vs_2d is not None
+            and vs_2d > _GOLDILOCKS_LO
+            and vs_2d < _GOLDILOCKS_HI
+        ):
+            return "goldilocks"
         return "rocket"
     return "goldilocks"
 
@@ -2909,10 +2970,10 @@ class Edgar(AdvisorBase):
         Goldilocks open-check on Pending edgar_earnings watches with media_gate=pass
         and a known EPS beat (meta.media eps in beat/strong_beat).
 
-        Buckets (vs prior close):
+        Buckets (vs prior close; rocket may reclaim via 2-day net):
           cliff      (≤ −3%) → Excluded
-          goldilocks (−3%…+8%) → discovered() at live quote, watch → Executed
-          rocket     (≥ +8%) → leave Pending (no chase)
+          goldilocks (−3%…+8%, or ≥+8% with vs T-2 still in band) → discovered()
+          rocket     (≥ +8% and 2-day net outside band) → leave Pending (no chase)
           unclear    → leave Pending
 
         Requires market open ≥ OPEN_CHECK_MIN_MINUTES (15) unless force=True.
@@ -3014,14 +3075,17 @@ class Edgar(AdvisorBase):
                 counts[bucket] = counts.get(bucket, 0) + 1
 
                 vs = tape.get("vs_close_pct")
+                vs_2d = tape.get("vs_close_2d_pct")
                 gap = tape.get("gap_pct")
                 pb = tape.get("pullback_pct")
                 vs_vwap = tape.get("vs_vwap_pct")
                 logger.info(
-                    "Open-check %s → %s (vs_close=%.2f%% gap=%s pb=%s vs_vwap=%s last=%s)",
+                    "Open-check %s → %s (vs_close=%.2f%% vs_2d=%s gap=%s pb=%s "
+                    "vs_vwap=%s last=%s)",
                     symbol,
                     bucket,
                     vs if vs is not None else float("nan"),
+                    f"{vs_2d:.2f}%" if vs_2d is not None else "n/a",
                     f"{gap:.2f}%" if gap is not None else "n/a",
                     f"{pb:.2f}%" if pb is not None else "n/a",
                     f"{vs_vwap:.2f}%" if vs_vwap is not None else "n/a",
@@ -3032,12 +3096,14 @@ class Edgar(AdvisorBase):
                 meta["open_check"] = {
                     "mode": "goldilocks",
                     "vs_close_pct": vs,
+                    "vs_close_2d_pct": vs_2d,
                     "gap_pct": gap,
                     "vs_open_pct": tape.get("vs_open_pct"),
                     "pullback_pct": pb,
                     "vs_vwap_pct": vs_vwap,
                     "last": tape.get("last"),
                     "prior_close": tape.get("prior_close"),
+                    "close_t2": tape.get("close_t2"),
                     "forced": bool(force),
                     "dry_run": bool(dry_run),
                 }
