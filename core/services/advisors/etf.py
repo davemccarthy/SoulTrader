@@ -6,7 +6,7 @@ Flow:
   2) Each SA while RTH ≥ +15m: open-check Pending watches → discovered()
 
 Uses core.services.financial.etf_holdings for snapshot/diff/lookup.
-Exit: PERCENTAGE_REBUY (no average-down) + AFTER_DAYS (profit-only) + PROFIT_FLAT.
+Exit: PERCENTAGE_REBUY (max 5 tranches) + AFTER_DAYS (profit-only) + PROFIT_FLAT.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ ETF_MIN_PRICE = 5.0
 ETF_MAX_NEW_PER_DAY = 5
 
 ETF_REBUY_DROP = Decimal("0.05")
-ETF_REBUY_MAX_TRANCHES = Decimal("1")  # initial tranche only — no average-down
+ETF_REBUY_MAX_TRANCHES = Decimal("5")  # rebuy while holding.tranches < 5
 ETF_AFTER_DAYS = Decimal("15")
 ETF_PROFIT_FLAT_RANGE = Decimal("0.05")
 ETF_PROFIT_FLAT_DAYS = Decimal("15")
