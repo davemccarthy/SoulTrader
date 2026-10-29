@@ -1235,7 +1235,7 @@ def trades(request):
         Trade.objects
         .filter(fund=fund)
         .select_related('stock', 'stock__advisor', 'discovery__advisor', 'sa')
-        .order_by('sa__started', 'id')
+        .order_by('created', 'id')
     )
 
     # Legacy fallback when trade.discovery is unset: first discovery per (stock, SA).
@@ -1342,8 +1342,8 @@ def trades(request):
             'shares': trade.shares,
             'price': trade.price,
             'sa_id': trade.sa_id,
-            'timestamp': trade.sa.started if trade.sa else None,
-            'timestamp_display': _format_trade_timestamp(trade.sa.started) if trade.sa else None,
+            'timestamp': trade.created,
+            'timestamp_display': _format_trade_timestamp(trade.created),
             'action': trade.action,
             'cost': data.get('cost', Decimal('0')),
             'pl_amount': pl_amount,
