@@ -21,7 +21,7 @@ Entry:
   persist red/amber/green/white on Advisor.blob (default red); trade on amber/green/white
   (red = no discover); push superusers on status change.
 
-Exit/add: -2% rebuy (max 3 tranches), dual END_DAY: 1.00× avg from 120m before
+Exit/add: -2% rebuy (max 5 tranches), dual END_DAY: 1.00× avg from 120m before
   close, then 0.995× avg in last 30m. No TARGET_INTRADAY (watcher trail), END_WEEK,
   DT, or SL.
 
@@ -66,7 +66,7 @@ PULSE_MAX_PCT_ABOVE_PRIOR_CLOSE = 5.0
 PULSE_DISCOVERY_COOLDOWN_HOURS = 6
 
 PULSE_REBUY_DROP = Decimal("0.02")
-PULSE_REBUY_MAX_TRANCHES = Decimal("3")
+PULSE_REBUY_MAX_TRANCHES = Decimal("5")
 # Dual END_DAY: bank ≥breakeven from ~2pm ET; flatten mild red in last 30m.
 PULSE_ENDDAY_TAKE = Decimal("1.00")
 PULSE_ENDDAY_MINUTES_BEFORE_CLOSE = Decimal("120")
