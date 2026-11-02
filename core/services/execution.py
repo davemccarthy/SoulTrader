@@ -112,7 +112,17 @@ def execute_sell(sa, fund, holding, explanation):
         _sync_fund_cash(fund, locked_fund)
 
 
-def execute_buy(sa, fund, stock, allowance, explanation="", force=False, discovery=None):
+def execute_buy(
+    sa,
+    fund,
+    stock,
+    allowance,
+    explanation="",
+    force=False,
+    discovery=None,
+    *,
+    count_tranche=True,
+):
     """
     Buy with allowance at current quote.
 
@@ -211,9 +221,10 @@ def execute_buy(sa, fund, stock, allowance, explanation="", force=False, discove
             holding.average_price = price
 
         # Tranche count: first buy on an empty position = 1; each add increments.
+        # Top-ups pass count_tranche=False so a gap fill is not another tranche.
         if old_shares <= 0:
             holding.tranches = 1
-        else:
+        elif count_tranche:
             holding.tranches = int(holding.tranches or 0) + 1
 
         holding.save()

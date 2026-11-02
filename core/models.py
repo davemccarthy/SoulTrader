@@ -848,6 +848,7 @@ class SellInstruction(models.Model):
         ("PROFIT_CASH", "Take profit at dollar P&L"),
         ("PERCENTAGE_REBUY", "Loss - will gamble a Rebuy"),
         ("PERCENTAGE_DOUBLE", "Loss - double share count"),
+        ("TOPUP", "Top up to a percentage of the fund"),
         ("PROFIT_FLAT", "Price flatlined"),
         ("PEAKED", "Sell when down X% from peak since purchase"),
     ]

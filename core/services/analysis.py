@@ -4,7 +4,7 @@ Stock Analysis Service
 
 import logging
 from datetime import datetime, timedelta, timezone as dt_timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
 import pandas as pd
@@ -55,6 +55,8 @@ REBUY_CONSENSUS_SHADOW = True
 REBUY_CONSENSUS_HOLD_DROP = 8.0
 REBUY_CONSENSUS_SELL_DROP = 15.0
 REBUY_MAX_TRANCHES_DEFAULT = Decimal("5")
+# TOPUP value2 blank → buy only when market value is at least this far under target.
+TOPUP_BAND_DEFAULT = Decimal("0.02")
 PEAKED_MIN_MARKET_MINUTES = 60
 RECENT_TP_LOOKBACK_HOURS = 4
 
@@ -72,6 +74,33 @@ def _holding_unrealized_pnl(holding: Holding) -> Decimal:
     px = Decimal(str(holding.stock.price or 0))
     mv = Decimal(str(holding.shares or 0)) * px
     return mv - _holding_cost_basis(holding)
+
+
+def topup_gap(wealth, weight, market_value, band=TOPUP_BAND_DEFAULT):
+    """
+    Dollars to buy so market value reaches weight × wealth.
+
+    weight and band are fractions (0.10 = 10% of the fund, 0.02 = 2% of the
+    target dollars). Returns None when the sleeve is still inside the band,
+    or when weight/band cannot be a fund share. A buy restores the full gap,
+    not merely the band edge.
+    """
+    try:
+        wealth = Decimal(str(wealth))
+        weight = Decimal(str(weight))
+        market_value = Decimal(str(market_value or 0))
+        band = TOPUP_BAND_DEFAULT if band is None else Decimal(str(band))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if wealth <= 0 or weight <= 0 or weight > 1 or band < 0 or band >= 1:
+        return None
+    target = wealth * weight
+    if market_value > target * (Decimal("1") - band):
+        return None
+    gap = target - market_value
+    if gap <= 0:
+        return None
+    return gap
 
 
 def recycle_equity_cap(sa, fund: Profile) -> int:
@@ -1410,6 +1439,60 @@ def analyze_holdings(sa, funds):
                                 logger.warning(
                                     "%s instruction %s missing buy_price",
                                     instruction.instruction,
+                                    instruction.id,
+                                )
+
+                        elif instruction.instruction == "TOPUP":
+                            # value1 = target weight of fund wealth (0.10 = 10%).
+                            # value2 = band under that target (blank = 2%). Buy the
+                            # dollar gap, whole shares only, after the rebuy gate.
+                            if instruction.value1 and holding.shares > 0 and holding.stock.price:
+                                weight = Decimal(str(instruction.value1))
+                                if weight <= 0 or weight > 1:
+                                    logger.warning(
+                                        "%s TOPUP skipped: value1 %s is not a fund fraction",
+                                        holding.stock.symbol,
+                                        weight,
+                                    )
+                                    continue
+                                band = (
+                                    Decimal(str(instruction.value2))
+                                    if instruction.value2 is not None
+                                    else TOPUP_BAND_DEFAULT
+                                )
+                                price = Decimal(str(holding.stock.price))
+                                market_value = Decimal(str(holding.shares)) * price
+                                gap = topup_gap(fund.wealth(), weight, market_value, band)
+                                if gap is None:
+                                    continue
+                                if int(gap / price) <= 0:
+                                    logger.info(
+                                        "%s top up deferred: gap $%.2f is under one share at $%.2f",
+                                        holding.stock.symbol,
+                                        float(gap),
+                                        float(price),
+                                    )
+                                    continue
+                                if not _percentage_rebuy_intraday_allows(
+                                    holding.stock, holding.stock.price
+                                ):
+                                    continue
+                                execute_buy(
+                                    sa,
+                                    fund,
+                                    holding.stock,
+                                    gap,
+                                    (
+                                        f"Top up {holding.stock.symbol} ${gap:.0f} "
+                                        f"to {weight * 100:.2f}% of fund"
+                                    ),
+                                    force=True,
+                                    discovery=holding.discovery,
+                                    count_tranche=False,
+                                )
+                            else:
+                                logger.warning(
+                                    "TOPUP instruction %s missing value1",
                                     instruction.id,
                                 )
 

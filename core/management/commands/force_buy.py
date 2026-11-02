@@ -12,6 +12,7 @@ sector ETFs trade.
 Usage:
     python manage.py force_buy XLK --funds FOFS --explanation "Technology"
     python manage.py force_buy XLK --funds FOFS --explanation "Technology" --dry-run
+    python manage.py force_buy XLK --funds SECTORS --explanation "Technology" --topup 0.10
 """
 
 import logging
@@ -21,7 +22,7 @@ import yfinance as yf
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
-from core.models import Advisor, Discovery, Holding, Profile, SmartAnalysis, Stock
+from core.models import Advisor, Discovery, Holding, Profile, SellInstruction, SmartAnalysis, Stock
 from core.services.execution import execute_buy
 
 logger = logging.getLogger(__name__)
@@ -104,12 +105,25 @@ class Command(BaseCommand):
             action="store_true",
             help="Show the tranche, share count, and cash impact without buying",
         )
+        parser.add_argument(
+            "--topup",
+            type=str,
+            default="",
+            help="Attach TOPUP at this fund fraction (0.10 = 10%% of wealth). Blank skips it.",
+        )
+        parser.add_argument(
+            "--topup-band",
+            type=str,
+            default="0.02",
+            help="TOPUP band under the target (0.02 = buy at 98%% of target dollars).",
+        )
 
     def handle(self, *args, **options):
         symbol = (options["symbol"] or "").upper().strip()
         fund_name = (options["funds"] or "").strip()
         explanation = " ".join((options["explanation"] or "").split()).strip()
         dry_run = options["dry_run"]
+        topup_weight, topup_band = self._parse_topup(options)
 
         if not symbol:
             raise CommandError("You must provide a symbol to buy")
@@ -158,6 +172,7 @@ class Command(BaseCommand):
             raise CommandError(f"No price for {symbol}")
         if buy_shares <= 0:
             self._report_no_buy(fund, symbol, allowance, cash, price, held)
+            self._attach_topup_if_held(holding, symbol, topup_weight, topup_band, dry_run)
             return
         if dry_run:
             cost = buy_shares * price
@@ -167,6 +182,12 @@ class Command(BaseCommand):
                     f"at ${price:.2f} (cost ${cost:,.2f}, cash left ${cash - cost:,.2f})"
                 )
             )
+            if topup_weight is not None:
+                self.stdout.write(
+                    self.style.WARNING(
+                        f"Would attach TOPUP value1={topup_weight} value2={topup_band}"
+                    )
+                )
             return
 
         stock, created_stock = self._ensure_stock(symbol, advisor, explanation)
@@ -178,6 +199,7 @@ class Command(BaseCommand):
             if price is None:
                 raise CommandError(f"No price for {symbol}")
             self._report_no_buy(fund, symbol, allowance, cash, price, held)
+            self._attach_topup_if_held(holding, symbol, topup_weight, topup_band, dry_run)
             return
 
         sa = self._latest_sa()
@@ -226,6 +248,65 @@ class Command(BaseCommand):
             self.style.SUCCESS(
                 f"Bought {symbol} for {fund.name}: {holding.shares} shares "
                 f"@ ${holding.average_price:.2f}, cash ${fund.cash:,.2f}"
+            )
+        )
+        self._attach_topup(holding.discovery or discovery, topup_weight, topup_band, dry_run=False)
+
+    def _parse_topup(self, options):
+        raw = (options.get("topup") or "").strip()
+        if not raw:
+            return None, None
+        try:
+            weight = Decimal(raw)
+            band = Decimal((options.get("topup_band") or "0.02").strip())
+        except InvalidOperation:
+            raise CommandError("--topup and --topup-band must be decimals such as 0.10 and 0.02")
+        if weight <= 0 or weight > 1:
+            raise CommandError("--topup must be a fund fraction from 0 to 1 (0.10 = 10%)")
+        if band < 0 or band >= 1:
+            raise CommandError("--topup-band must be from 0 up to, but not including, 1")
+        return weight, band
+
+    def _attach_topup_if_held(self, holding, symbol, weight, band, dry_run):
+        if weight is None:
+            return
+        if holding is None or not holding.discovery_id:
+            self.stdout.write(
+                self.style.WARNING(f"No {symbol} discovery to attach TOPUP to")
+            )
+            return
+        self._attach_topup(holding.discovery, weight, band, dry_run)
+
+    def _attach_topup(self, discovery, weight, band, dry_run):
+        if weight is None or discovery is None:
+            return
+        existing = SellInstruction.objects.filter(
+            discovery=discovery, instruction="TOPUP"
+        ).first()
+        if existing is not None:
+            self.stdout.write(
+                f"TOPUP already on discovery {discovery.id}: "
+                f"value1={existing.value1} value2={existing.value2}"
+            )
+            return
+        if dry_run:
+            self.stdout.write(
+                self.style.WARNING(
+                    f"Would attach TOPUP value1={weight} value2={band} "
+                    f"on discovery {discovery.id}"
+                )
+            )
+            return
+        SellInstruction.objects.create(
+            discovery=discovery,
+            instruction="TOPUP",
+            value1=weight,
+            value2=band,
+        )
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"Attached TOPUP on discovery {discovery.id}: "
+                f"{weight} of fund, band {band}"
             )
         )
 

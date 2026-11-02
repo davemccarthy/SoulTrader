@@ -2588,6 +2588,13 @@
                     valueDisplay = `${(inst.value * 100).toFixed(0)}% profit on average spend`;
                 } else if (inst.instruction === 'PROFIT_CASH' && inst.value != null) {
                     valueDisplay = `Sell if unrealized P&L ≥ ${formatCurrency(inst.value)}`;
+                } else if (inst.instruction === 'TOPUP' && inst.value != null) {
+                    valueDisplay = `Top up to ${(inst.value * 100).toFixed(2)}% of fund`;
+                    const bandPct = inst.value2 != null ? (inst.value2 * 100) : 2;
+                    extraInfo = ` when ${bandPct.toFixed(1)}% under target`;
+                    if (inst.target_dollars != null) {
+                        extraInfo += ` (target ${formatCurrency(inst.target_dollars)})`;
+                    }
                 } else if (inst.instruction === 'PERCENTAGE_REBUY' && inst.value != null) {
                     valueDisplay = `Add one tranche if price drops ${(inst.value * 100).toFixed(1)}% below avg`;
                     if (inst.value2 != null && Number(inst.value2) > 0) {

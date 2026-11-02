@@ -546,6 +546,26 @@ def _trade_is_rebuy(trade) -> bool:
     return text.startswith('rebuy') or text.startswith('double')
 
 
+def _annotate_topup(instruction_data, fund, holding, current_price):
+    """Mark a TOPUP row active when the sleeve is through its band."""
+    from core.services.analysis import TOPUP_BAND_DEFAULT, topup_gap
+
+    weight = instruction_data.get("value")
+    if weight is None or fund is None or holding is None:
+        instruction_data["status"] = "pending"
+        return
+    raw_band = instruction_data.get("value2")
+    band = TOPUP_BAND_DEFAULT if raw_band is None else Decimal(str(raw_band))
+    price = Decimal(str(current_price or 0))
+    market_value = Decimal(str(holding.shares or 0)) * price
+    wealth = fund.wealth()
+    gap = topup_gap(wealth, Decimal(str(weight)), market_value, band)
+    target = wealth * Decimal(str(weight)) if wealth and Decimal(str(weight)) > 0 else Decimal("0")
+    instruction_data["target_dollars"] = float(target)
+    instruction_data["gap"] = float(gap) if gap is not None else 0.0
+    instruction_data["status"] = "active" if gap is not None else "pending"
+
+
 def _position_discovery(holding, trades_for_position=()):
     """Provenance discovery for a position: holding.discovery, else first BUY trade's discovery."""
     if holding is not None and holding.discovery_id:
@@ -746,7 +766,9 @@ def holding_detail(request, stock_id):
                         cp = float(current_price)
                         instruction_data['peak_price'] = peak_price
                         instruction_data['pct_from_peak'] = ((cp - peak_price) / peak_price) * 100
-                
+                elif instruction.instruction == 'TOPUP' and instruction.value1:
+                    _annotate_topup(instruction_data, fund, holding, current_price)
+
                 sell_instructions.append(instruction_data)
             trade_payload['sell_instructions'] = sell_instructions
         else:
@@ -1114,7 +1136,9 @@ def holding_history(request, stock_id):
                     cp = float(current_price)
                     instruction_data['peak_price'] = peak_price
                     instruction_data['pct_from_peak'] = ((cp - peak_price) / peak_price) * 100
-            
+            elif instruction.instruction == 'TOPUP' and instruction.value1:
+                _annotate_topup(instruction_data, fund, holding, current_price)
+
             sell_instructions.append(instruction_data)
 
     # Health history (derive from discovery.health so optional health checks work)
