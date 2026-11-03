@@ -3,8 +3,8 @@ Force Buy Management Command
 
 Buy one symbol into a named fund. Spends one spread tranche (Profile.average_spend)
 from that fund's cash. Writes a User Advisor discovery with the given explanation
-and no sell instructions, so holdings analysis can group the sleeve without the
-trading engine selling it.
+and User/AdvisorBase default sell instructions (PEAKED / rebuy / descending trend).
+Pass --no-si for hold-forever sleeves (e.g. sector ETF books) that must not auto-exit.
 
 ETFs are created directly. Stock.create() rejects NYSE Arca, which is where the
 sector ETFs trade.
@@ -12,7 +12,8 @@ sector ETFs trade.
 Usage:
     python manage.py force_buy XLK --funds FOFS --explanation "Technology"
     python manage.py force_buy XLK --funds FOFS --explanation "Technology" --dry-run
-    python manage.py force_buy XLK --funds SECTORS --explanation "Technology" --topup 0.10
+    python manage.py force_buy XLK --funds SECTS --explanation "Technology" --topup 0.10
+    python manage.py force_buy XLK --funds FOFS --explanation "Technology" --no-si
 """
 
 import logging
@@ -23,6 +24,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from core.models import Advisor, Discovery, Holding, Profile, SellInstruction, SmartAnalysis, Stock
+from core.services.advisors.advisor import AdvisorBase
 from core.services.execution import execute_buy
 
 logger = logging.getLogger(__name__)
@@ -117,12 +119,18 @@ class Command(BaseCommand):
             default="0.02",
             help="TOPUP band under the target (0.02 = buy at 98%% of target dollars).",
         )
+        parser.add_argument(
+            "--no-si",
+            action="store_true",
+            help="Skip User default sell instructions (hold-forever sleeves).",
+        )
 
     def handle(self, *args, **options):
         symbol = (options["symbol"] or "").upper().strip()
         fund_name = (options["funds"] or "").strip()
         explanation = " ".join((options["explanation"] or "").split()).strip()
         dry_run = options["dry_run"]
+        no_si = bool(options.get("no_si"))
         topup_weight, topup_band = self._parse_topup(options)
 
         if not symbol:
@@ -188,6 +196,13 @@ class Command(BaseCommand):
                         f"Would attach TOPUP value1={topup_weight} value2={topup_band}"
                     )
                 )
+            if no_si:
+                self.stdout.write(self.style.WARNING("Would skip default sell instructions (--no-si)"))
+            else:
+                self.stdout.write(
+                    "Would attach User default SIs: "
+                    + ", ".join(t[0] for t in AdvisorBase.sell_instructions)
+                )
             return
 
         stock, created_stock = self._ensure_stock(symbol, advisor, explanation)
@@ -250,7 +265,9 @@ class Command(BaseCommand):
                 f"@ ${holding.average_price:.2f}, cash ${fund.cash:,.2f}"
             )
         )
-        self._attach_topup(holding.discovery or discovery, topup_weight, topup_band, dry_run=False)
+        live_discovery = holding.discovery or discovery
+        self._attach_default_sell_instructions(live_discovery, no_si=no_si)
+        self._attach_topup(live_discovery, topup_weight, topup_band, dry_run=False)
 
     def _parse_topup(self, options):
         raw = (options.get("topup") or "").strip()
@@ -276,6 +293,35 @@ class Command(BaseCommand):
             )
             return
         self._attach_topup(holding.discovery, weight, band, dry_run)
+
+    def _attach_default_sell_instructions(self, discovery, *, no_si: bool) -> None:
+        """Attach User/AdvisorBase defaults when discovery has no SIs yet."""
+        if discovery is None or no_si:
+            if no_si and discovery is not None:
+                self.stdout.write(
+                    f"Skipped default SIs on discovery {discovery.id} (--no-si)"
+                )
+            return
+        if SellInstruction.objects.filter(discovery=discovery).exists():
+            self.stdout.write(
+                f"Discovery {discovery.id} already has sell instructions; left as-is"
+            )
+            return
+        created = []
+        for instruction_type, value1, value2 in AdvisorBase.sell_instructions:
+            SellInstruction.objects.create(
+                discovery=discovery,
+                instruction=instruction_type,
+                value1=Decimal(str(value1)) if value1 is not None else None,
+                value2=Decimal(str(value2)) if value2 is not None else None,
+            )
+            created.append(instruction_type)
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"Attached User default SIs on discovery {discovery.id}: "
+                + ", ".join(created)
+            )
+        )
 
     def _attach_topup(self, discovery, weight, band, dry_run):
         if weight is None or discovery is None:
