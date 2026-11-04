@@ -538,12 +538,22 @@ def _advisor_logo_url(advisor):
     return static(filename)
 
 
+def _buy_explanation(trade) -> str:
+    """Lowercased explanation for a BUY. Empty for any other action."""
+    if getattr(trade, 'action', None) != 'BUY':
+        return ''
+    return (getattr(trade, 'explanation', None) or '').strip().lower()
+
+
 def _trade_is_rebuy(trade) -> bool:
     """PERCENTAGE_REBUY / PERCENTAGE_DOUBLE adds stay action=BUY with 'Rebuy…' / 'Double…'."""
-    if getattr(trade, 'action', None) != 'BUY':
-        return False
-    text = (getattr(trade, 'explanation', None) or '').strip().lower()
+    text = _buy_explanation(trade)
     return text.startswith('rebuy') or text.startswith('double')
+
+
+def _trade_is_topup(trade) -> bool:
+    """TOPUP adds stay action=BUY with 'Top up…'."""
+    return _buy_explanation(trade).startswith('top up')
 
 
 def _annotate_topup(instruction_data, fund, holding, current_price):
@@ -649,6 +659,7 @@ def holding_detail(request, stock_id):
             'value': trade_value,
             'explanation': trade.explanation,
             'is_rebuy': _trade_is_rebuy(trade),
+            'is_topup': _trade_is_topup(trade),
         }
 
         discovery = discoveries_map.get(trade.sa_id)
@@ -1230,6 +1241,7 @@ def holding_history(request, stock_id):
             'sa_id': trade.sa_id,
             'explanation': trade.explanation,
             'is_rebuy': _trade_is_rebuy(trade),
+            'is_topup': _trade_is_topup(trade),
         }
         trades_data.append(trade_data)
 
@@ -1377,6 +1389,7 @@ def trades(request):
             'realized': realized,
             'explanation': trade.explanation,
             'is_rebuy': _trade_is_rebuy(trade),
+            'is_topup': _trade_is_topup(trade),
             'discovery': discovery_payload,
         })
 

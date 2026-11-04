@@ -13,6 +13,7 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
 
 from core.services.analysis import TOPUP_BAND_DEFAULT, topup_gap
+from core.views import _trade_is_rebuy, _trade_is_topup
 
 
 class TopupGapTests(unittest.TestCase):
@@ -42,6 +43,29 @@ class TopupGapTests(unittest.TestCase):
         # A larger book lifts the dollar target. 10% of $110,000 is $11,000.
         gap = topup_gap(110_000, "0.10", 10_000, "0.02")
         self.assertEqual(gap, Decimal("1000"))
+
+
+class _Trade:
+    def __init__(self, action, explanation):
+        self.action = action
+        self.explanation = explanation
+
+
+class TopupTradeLabelTests(unittest.TestCase):
+    def test_topup_explanation_is_not_a_rebuy(self):
+        trade = _Trade("BUY", "Top up XLK $233 to 10.00% of fund")
+        self.assertTrue(_trade_is_topup(trade))
+        self.assertFalse(_trade_is_rebuy(trade))
+
+    def test_rebuy_explanation_is_not_a_topup(self):
+        trade = _Trade("BUY", "Rebuy $2500 after 4% drop vs avg")
+        self.assertTrue(_trade_is_rebuy(trade))
+        self.assertFalse(_trade_is_topup(trade))
+
+    def test_plain_buy_is_neither(self):
+        trade = _Trade("BUY", "Technology")
+        self.assertFalse(_trade_is_topup(trade))
+        self.assertFalse(_trade_is_rebuy(trade))
 
 
 if __name__ == "__main__":

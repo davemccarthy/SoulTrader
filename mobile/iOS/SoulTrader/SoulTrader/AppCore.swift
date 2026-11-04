@@ -594,18 +594,30 @@ struct TradeResponse: Decodable, Identifiable {
 
     /// PERCENTAGE_REBUY / PERCENTAGE_DOUBLE adds stay `action=BUY` with "Rebuy…" / "Double…".
     var isRebuy: Bool {
-        guard action.uppercased() == "BUY" else { return false }
+        guard action.uppercased() == "BUY", !isTopup else { return false }
         let text = (explanation ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         return text.hasPrefix("rebuy") || text.hasPrefix("double")
     }
 
+    /// TOPUP adds stay `action=BUY` with "Top up…".
+    var isTopup: Bool {
+        guard action.uppercased() == "BUY" else { return false }
+        let text = (explanation ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return text.hasPrefix("top up")
+    }
+
     var actionDisplayLabel: String {
-        isRebuy ? "REBUY" : action.uppercased()
+        if isTopup { return "TOPUP" }
+        if isRebuy { return "REBUY" }
+        return action.uppercased()
     }
 
     var actionDisplayColor: Color {
+        if isTopup { return Theme.topup }
         if isRebuy { return Theme.rebuy }
         switch action.uppercased() {
         case "BUY": return Theme.positive
