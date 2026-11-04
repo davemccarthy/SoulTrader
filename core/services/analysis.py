@@ -47,7 +47,7 @@ DT_YAHOO_MAX_AGE_DAYS = 3
 DT_SHADOW_MODE = True
 REBUY_STABILIZE_MINUTES = STABILIZE_MINUTES_DEFAULT
 REBUY_SHORT_MINUTES = 5
-REBUY_TREND_HOURS = 2
+REBUY_TREND_HOURS = 1
 REBUY_MIN_TREND = Decimal("-0.10")
 # Shadow: consensus fade at rebuy trigger → would REBUY/HOLD/SELL (no order change).
 REBUY_CONSENSUS_SHADOW = True
@@ -199,7 +199,7 @@ def recycle_equity_cap(sa, fund: Profile) -> int:
 
 def _percentage_rebuy_intraday_allows(stock, current_price) -> bool:
     """
-    PERCENTAGE_REBUY recovery gate (global): RTH only, short-term uptick, mild 2h trend.
+    PERCENTAGE_REBUY recovery gate (global): RTH only, short-term uptick, mild 1h trend.
     """
     if market_open() is None:
         logger.info("%s rebuy deferred: market closed", stock.symbol)
@@ -220,10 +220,11 @@ def _percentage_rebuy_intraday_allows(stock, current_price) -> bool:
         return False
     if trend <= REBUY_MIN_TREND:
         logger.info(
-            "%s rebuy deferred: trend %.4f <= %.2f (2h slope)",
+            "%s rebuy deferred: trend %.4f <= %.2f (%dh slope)",
             stock.symbol,
             float(trend),
             float(REBUY_MIN_TREND),
+            REBUY_TREND_HOURS,
         )
         return False
 
@@ -1342,7 +1343,7 @@ def analyze_holdings(sa, funds):
                         elif instruction.instruction in ("PERCENTAGE_REBUY", "PERCENTAGE_DOUBLE"):
                             # value1 = drop fraction from average (e.g. 0.02 = 2%).
                             # value2 = max tranche count vs holding.tranches (default 5; <=0 = unlimited).
-                            # Recovery: _percentage_rebuy_intraday_allows (RTH, 2h trend, 5m/30m up).
+                            # Recovery: _percentage_rebuy_intraday_allows (RTH, 1h trend, 5m/30m up).
                             # Then headline BUY/HOLD/SELL and sector-ETF downer — same as rebuy.
                             # REBUY adds one fund tranche; DOUBLE buys current share count.
                             double = instruction.instruction == "PERCENTAGE_DOUBLE"
