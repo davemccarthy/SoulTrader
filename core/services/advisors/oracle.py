@@ -78,17 +78,6 @@ _PRE_FORM4_SHAPE_TIER = {"creep": 0, "mixed": 1, "bang": 2, "flat": 3}
 # LLM triage: batch attribution on gate passers; skip discover on verdict=veto or flag.
 LLM_TRIAGE_TIMEOUT_SEC = 180.0
 
-# Pre-earnings holds: wider than default PEAKED (see LNN lesson).
-# STOP_PERCENTAGE first — hard cap on wrong picks (~6%); augmenting still ratchets winners.
-# Hard stop is not evaluated in the first 60 min after open (same window as PEAKED).
-ORACLE_STOP_MULT = Decimal("0.94")
-ORACLE_SELL_INSTRUCTIONS = [
-    ("STOP_PERCENTAGE", ORACLE_STOP_MULT, None),
-    ("PERCENTAGE_AUGMENTING", Decimal("0.88"), 45),
-    ("DESCENDING_TREND", Decimal("-0.20"), None),
-    ("AFTER_DAYS", 45, None),
-]
-
 _CALENDAR_SESSIONS = ("pre", "after", "notSupplied")
 
 
@@ -699,12 +688,10 @@ def run_llm_triage_batch(
 
 
 class Oracle(AdvisorBase):
-    """Forward pre-earnings scanner."""
+    """Forward pre-earnings scanner. New discoveries use AdvisorBase sell instructions."""
 
     # First SA on/after this UTC hour may refresh the earnings calendar (once per calendar day).
     PROCESS_CUTOFF_HOUR_UTC = 0
-
-    sell_instructions = ORACLE_SELL_INSTRUCTIONS
 
     def discover(self, sa) -> None:
         today = date.today().isoformat()
@@ -1003,7 +990,6 @@ class Oracle(AdvisorBase):
                 sa,
                 sym,
                 explanation,
-                sell_instructions=self.sell_instructions,
                 weight=weight,
             ):
                 discoveries += 1
