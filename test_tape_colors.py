@@ -21,6 +21,7 @@ from core.services.advisors.pulse import (
     PULSE_ENDDAY_TAKE,
     PULSE_REBUY_DROP,
     PULSE_REBUY_MAX_TRANCHES,
+    _extension_skip_reason,
     pulse_sell_instructions_for_tape,
 )
 from core.services.market.tape import (
@@ -113,6 +114,16 @@ def test_pulse_sell_instructions_no_ipc():
     ) in sis
 
 
+def test_extension_skip_year_change_and_near_52w():
+    """Parabolic yearChange or near yearHigh → skip; missing metrics fail open."""
+    assert _extension_skip_reason(price=100, year_high=200, year_change=0.5) is None
+    assert "yearChange" in (_extension_skip_reason(price=100, year_high=200, year_change=0.80) or "")
+    assert "yearChange" in (_extension_skip_reason(price=370, year_high=595, year_change=1.79) or "")
+    assert "near52w" in (_extension_skip_reason(price=95, year_high=100, year_change=0.2) or "")
+    assert _extension_skip_reason(price=80, year_high=100, year_change=0.2) is None
+    assert _extension_skip_reason(price=None, year_high=None, year_change=None) is None
+
+
 if __name__ == "__main__":
     test_red_beats_amber()
     test_amber_at_soft_open()
@@ -121,4 +132,5 @@ if __name__ == "__main__":
     test_white_fails_if_one_weak()
     test_normalize_yellow_to_amber()
     test_pulse_sell_instructions_no_ipc()
+    test_extension_skip_year_change_and_near_52w()
     print("ok")

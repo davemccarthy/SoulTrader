@@ -11,6 +11,8 @@ Entry:
 - Require recent 60m intraday range >= 1.25%.
 - Gap gate (all paths): skip discover when live quote is >+5% vs prior-session
   close (Polygon seed). Blocks post-print / spike chases (e.g. ACN +22%, QCOM/AKAM).
+- Extension skip (all paths): block parabolic / near-52w winners — Yahoo yearChange
+  above max, or live price within a fraction of yearHigh (local dip ≠ not extended).
 - Discover qualifying names between 10:30 and 13:00 ET (earlier window = more IPC runway).
 - Live IMPULSE/COMBO paths (optional): 1m momentum + COMBO (impulse + normal_stable).
 - Live TROUGH (optional): high-vol attention at session LOD with light bounce
@@ -63,6 +65,10 @@ PULSE_MAX_PRICE_DRIFT_FROM_SEED = 0.50
 PULSE_MAX_QUOTE_DRIFT_FROM_BAR = 0.02
 # Max live premium vs prior-session close (Polygon seed). Percent points, not fraction.
 PULSE_MAX_PCT_ABOVE_PRIOR_CLOSE = 5.0
+# Extension skip: multi-horizon "already ran" (Yahoo fast_info). Fail open if missing.
+# yearChange 0.80 = +80% ~1y; near-52w if price >= 90% of yearHigh.
+PULSE_EXT_MAX_YEAR_CHANGE = 0.80
+PULSE_EXT_NEAR_52W_HIGH_FRAC = 0.90
 PULSE_DISCOVERY_COOLDOWN_HOURS = 6
 
 PULSE_REBUY_DROP = Decimal("0.02")
@@ -372,6 +378,87 @@ def _fast_info_price(symbol: str) -> Optional[float]:
     except Exception as exc:
         logger.debug("Pulse: fast_info unavailable for %s: %s", symbol, exc)
         return None
+
+
+def _extension_skip_reason(
+    *,
+    price: Optional[float],
+    year_high: Optional[float],
+    year_change: Optional[float],
+) -> Optional[str]:
+    """
+    Why to skip an extended name, or None if ok / unknown.
+
+    year_change is a fraction (1.5 = +150%). near-52w uses price / year_high.
+    """
+    if year_change is not None and float(year_change) >= PULSE_EXT_MAX_YEAR_CHANGE:
+        return (
+            f"yearChange={float(year_change)*100:.1f}%"
+            f">={PULSE_EXT_MAX_YEAR_CHANGE*100:.0f}%"
+        )
+    if (
+        price is not None
+        and year_high is not None
+        and float(year_high) > 0
+        and float(price) / float(year_high) >= PULSE_EXT_NEAR_52W_HIGH_FRAC
+    ):
+        frac = float(price) / float(year_high)
+        return (
+            f"near52w={frac*100:.1f}%ofHigh"
+            f">={PULSE_EXT_NEAR_52W_HIGH_FRAC*100:.0f}%"
+        )
+    return None
+
+
+def _fast_info_extension_metrics(symbol: str) -> dict[str, Optional[float]]:
+    """Yahoo fast_info yearChange / yearHigh / last for extension gate."""
+    out: dict[str, Optional[float]] = {
+        "price": None,
+        "year_high": None,
+        "year_change": None,
+    }
+    try:
+        info = yf.Ticker(symbol).fast_info
+        out["price"] = _safe_float(
+            info.get("lastPrice") or info.get("regularMarketPrice")
+        )
+        out["year_high"] = _safe_float(info.get("yearHigh") or info.get("year_high"))
+        out["year_change"] = _safe_float(
+            info.get("yearChange") or info.get("year_change")
+        )
+    except Exception as exc:
+        logger.debug("Pulse: extension fast_info unavailable for %s: %s", symbol, exc)
+    return out
+
+
+def _pulse_extension_gate(symbol: str, *, cache: dict) -> tuple[bool, str]:
+    """
+    Block parabolic / near-52w names. Returns (allowed, detail).
+    Fail open when Yahoo metrics are missing.
+    """
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return True, "empty symbol"
+    if sym not in cache:
+        cache[sym] = _fast_info_extension_metrics(sym)
+    metrics = cache[sym]
+    reason = _extension_skip_reason(
+        price=metrics.get("price"),
+        year_high=metrics.get("year_high"),
+        year_change=metrics.get("year_change"),
+    )
+    if reason:
+        return False, reason
+    yc = metrics.get("year_change")
+    yh = metrics.get("year_high")
+    px = metrics.get("price")
+    yc_s = f"{float(yc)*100:.1f}%" if yc is not None else "n/a"
+    near_s = (
+        f"{100.0 * float(px) / float(yh):.1f}%ofHigh"
+        if px is not None and yh is not None and float(yh) > 0
+        else "n/a"
+    )
+    return True, f"yearChange={yc_s} near52w={near_s}"
 
 
 def _symbol_hist(data: pd.DataFrame, symbol: str) -> pd.DataFrame:
@@ -1107,8 +1194,9 @@ class Pulse(AdvisorBase):
         path: str,
         pct_prior_close: Optional[float] = None,
         prior_close_ok: Optional[bool] = None,
+        extension_cache: Optional[dict] = None,
     ) -> str:
-        """Returns discovered | cooldown | opp | gap | dup | failed."""
+        """Returns discovered | cooldown | opp | gap | ext | dup | failed."""
         if symbol in discovered_symbols:
             return "dup"
         if not self.allow_discovery(symbol, period=PULSE_DISCOVERY_COOLDOWN_HOURS):
@@ -1126,6 +1214,20 @@ class Pulse(AdvisorBase):
                 PULSE_MAX_PCT_ABOVE_PRIOR_CLOSE,
             )
             return "gap"
+
+        ext_cache = extension_cache if extension_cache is not None else {}
+        ext_ok, ext_detail = _pulse_extension_gate(symbol, cache=ext_cache)
+        if not ext_ok:
+            logger.info(
+                "pulse_ext_gate block discover %s path=%s %s "
+                "(max_yearChange=+%.0f%% near52w>=%.0f%%)",
+                symbol,
+                path,
+                ext_detail,
+                PULSE_EXT_MAX_YEAR_CHANGE * 100,
+                PULSE_EXT_NEAR_52W_HIGH_FRAC * 100,
+            )
+            return "ext"
 
         opp_ok, opp_detail = _pulse_opportunity_gate(symbol)
         if not opp_ok:
@@ -1183,16 +1285,18 @@ class Pulse(AdvisorBase):
 
         attention, recovery_candidates = self._ensure_pulse_cache()
         discovered_symbols: set[str] = set()
+        extension_cache: dict = {}
         skipped_cooldown = 0
         skipped_opp = 0
         skipped_gap = 0
+        skipped_ext = 0
         discoveries_combo = 0
         discoveries_recovery = 0
         discoveries_impulse = 0
         discoveries_trough = 0
 
         def _tally(outcome: str, bucket: str) -> None:
-            nonlocal skipped_cooldown, skipped_opp, skipped_gap
+            nonlocal skipped_cooldown, skipped_opp, skipped_gap, skipped_ext
             nonlocal discoveries_combo, discoveries_recovery, discoveries_impulse, discoveries_trough
             if outcome == "discovered":
                 if bucket == "combo":
@@ -1209,6 +1313,22 @@ class Pulse(AdvisorBase):
                 skipped_opp += 1
             elif outcome == "gap":
                 skipped_gap += 1
+            elif outcome == "ext":
+                skipped_ext += 1
+
+        def _try_discover(symbol, explanation, path, row_or_cand, bucket):
+            outcome = self._discover_pulse_candidate(
+                sa,
+                symbol,
+                explanation,
+                sell_instructions,
+                discovered_symbols,
+                path=path,
+                pct_prior_close=row_or_cand.get("pct_prior_close"),
+                prior_close_ok=row_or_cand.get("prior_close_ok"),
+                extension_cache=extension_cache,
+            )
+            _tally(outcome, bucket)
 
         if PULSE_COMBO_LIVE:
             for row in attention:
@@ -1219,34 +1339,14 @@ class Pulse(AdvisorBase):
                     continue
                 candidate = _attention_row_to_candidate(row)
                 explanation = build_pulse_combo_discovery_explanation(candidate, row)
-                outcome = self._discover_pulse_candidate(
-                    sa,
-                    symbol,
-                    explanation,
-                    sell_instructions,
-                    discovered_symbols,
-                    path="COMBO",
-                    pct_prior_close=row.get("pct_prior_close"),
-                    prior_close_ok=row.get("prior_close_ok"),
-                )
-                _tally(outcome, "combo")
+                _try_discover(symbol, explanation, "COMBO", row, "combo")
 
         for candidate in recovery_candidates:
             symbol = str(candidate.get("symbol") or "").strip().upper()
             if not symbol:
                 continue
             explanation = build_pulse_discovery_explanation(candidate)
-            outcome = self._discover_pulse_candidate(
-                sa,
-                symbol,
-                explanation,
-                sell_instructions,
-                discovered_symbols,
-                path="RECOVERY",
-                pct_prior_close=candidate.get("pct_prior_close"),
-                prior_close_ok=candidate.get("prior_close_ok"),
-            )
-            _tally(outcome, "recovery")
+            _try_discover(symbol, explanation, "RECOVERY", candidate, "recovery")
 
         if PULSE_IMPULSE_LIVE:
             for row in attention:
@@ -1257,17 +1357,7 @@ class Pulse(AdvisorBase):
                     continue
                 candidate = _attention_row_to_candidate(row)
                 explanation = build_pulse_impulse_discovery_explanation(candidate, row)
-                outcome = self._discover_pulse_candidate(
-                    sa,
-                    symbol,
-                    explanation,
-                    sell_instructions,
-                    discovered_symbols,
-                    path="IMPULSE",
-                    pct_prior_close=row.get("pct_prior_close"),
-                    prior_close_ok=row.get("prior_close_ok"),
-                )
-                _tally(outcome, "impulse")
+                _try_discover(symbol, explanation, "IMPULSE", row, "impulse")
 
         if PULSE_TROUGH_LIVE and tape_status in PULSE_TAPE_TROUGH_STATES:
             for row in attention:
@@ -1281,17 +1371,7 @@ class Pulse(AdvisorBase):
                     continue
                 candidate = _attention_row_to_candidate(row)
                 explanation = build_pulse_trough_discovery_explanation(candidate, row)
-                outcome = self._discover_pulse_candidate(
-                    sa,
-                    symbol,
-                    explanation,
-                    sell_instructions,
-                    discovered_symbols,
-                    path="TROUGH",
-                    pct_prior_close=row.get("pct_prior_close"),
-                    prior_close_ok=row.get("prior_close_ok"),
-                )
-                _tally(outcome, "trough")
+                _try_discover(symbol, explanation, "TROUGH", row, "trough")
         elif PULSE_TROUGH_LIVE:
             logger.info(
                 "Pulse trough skip: tape=%s (live trough on %s only)",
@@ -1308,8 +1388,8 @@ class Pulse(AdvisorBase):
         logger.info(
             "Pulse discover sa=%s: recovery_cands=%d attention=%d "
             "discoveries=%d (combo=%d recovery=%d impulse=%d trough=%d) "
-            "skipped_cooldown=%d skipped_opp=%d skipped_gap=%d "
-            "(max_pct_prior=+%.1f%%)",
+            "skipped_cooldown=%d skipped_opp=%d skipped_gap=%d skipped_ext=%d "
+            "(max_pct_prior=+%.1f%% max_yearChange=+%.0f%% near52w>=%.0f%%)",
             sa.id,
             len(recovery_candidates),
             len(attention),
@@ -1321,7 +1401,10 @@ class Pulse(AdvisorBase):
             skipped_cooldown,
             skipped_opp,
             skipped_gap,
+            skipped_ext,
             PULSE_MAX_PCT_ABOVE_PRIOR_CLOSE,
+            PULSE_EXT_MAX_YEAR_CHANGE * 100,
+            PULSE_EXT_NEAR_52W_HIGH_FRAC * 100,
         )
 
     def analyze(self, sa, stock) -> None:
