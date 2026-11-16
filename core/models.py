@@ -64,7 +64,9 @@ class Profile(models.Model):
     EQUITY_BUY_BUFFER = Decimal("0.10")
 
     # Never purge a holding below this score, even when over the equity cap.
-    PURGE_MIN_SCORE = 30
+    # 20 (was 30): with signed gain, fat reds sit ~0–5; 20 lets soft/near-flat
+    # inventory clear without re-admitting VICR-style losers.
+    PURGE_MIN_SCORE = 20
 
     user = models.ForeignKey(User, on_delete=models.DO_NOTHING)
     name = models.CharField(max_length=120, blank=True, default="")

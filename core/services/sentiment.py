@@ -67,7 +67,8 @@ def holding_purge_metrics(holding: Holding, fund: Profile) -> Dict[str, Any]:
 
 def purge_score(holding: Holding, fund: Profile) -> Tuple[float, Dict[str, float]]:
     """
-    Purge willingness score 0–100. Higher = sell sooner when over equity cap.
+    Purge willingness score (typically ~-40..100). Higher = sell sooner when
+    over equity cap. Gain leg is signed: negative P&L lowers the score.
 
     Returns (score, component_norms) for logging / dry-run.
     """
@@ -81,9 +82,15 @@ def purge_score(holding: Holding, fund: Profile) -> Tuple[float, Dict[str, float
     slots_norm = _clamp(slots / SLOTS_FULL_AT)
     age_norm = _clamp(days / AGE_FULL_AT_DAYS)
 
+    # Signed: winners boost score, losers subtract (same $/scale both ways).
+    # Stops fat reds (high slots/age) clearing PURGE_MIN_SCORE with gain=0.
     min_rec = fund.min_recycle_profit()
     if min_rec > 0:
-        gain_norm = _clamp(float(pnl / (min_rec * GAIN_NORM_OF_MIN_RECYCLE)))
+        gain_norm = _clamp(
+            float(pnl / (min_rec * GAIN_NORM_OF_MIN_RECYCLE)),
+            -1.0,
+            1.0,
+        )
     else:
         gain_norm = 0.0
 
