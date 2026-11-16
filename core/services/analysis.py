@@ -33,7 +33,13 @@ from core.services.health.risk_matrix import (
     so_gate_fail_display,
 )
 from core.services.market import in_opening_noise_window, market_open, rth_session_open
-from core.services.sentiment import purge_eligible, purge_score
+from core.services.sentiment import (
+    equity_overshoot,
+    holding_meets_purge_pnl,
+    holding_purge_metrics,
+    min_purge_pnl,
+    purge_band_label,
+)
 
 logger = logging.getLogger(__name__)
 DT_EXIT_CONFIDENCE_MIN = 0.70
@@ -104,9 +110,9 @@ def topup_gap(wealth, weight, market_value, band=TOPUP_BAND_DEFAULT):
 
 def recycle_equity_cap(sa, fund: Profile) -> int:
     """
-    When sentiment is enabled and equity is at/over target, sell holdings ranked
-    by purge_score (highest first) while score >= PURGE_MIN_SCORE, until under
-    the equity cap.
+    When sentiment is enabled and equity is at/over target, sell holdings that
+    clear the overshoot-band min P&L (g × average_spend), ranked by pnl_$ then
+    slots, until under the equity cap. Dust (slots < PURGE_MIN_SLOTS) skipped.
 
     Returns number of positions sold. No-op when sentiment is DISABLED.
     """
@@ -116,62 +122,85 @@ def recycle_equity_cap(sa, fund: Profile) -> int:
         return 0
 
     target = fund.equity_target()
-    min_score = Profile.PURGE_MIN_SCORE
+    overshoot = equity_overshoot(fund)
+    min_pnl = min_purge_pnl(fund)
+    if min_pnl is None or overshoot is None:
+        return 0
 
     logger.info(
-        "%s: equity purge — ratio=%.3f recycle_at=%s min_score=%s",
+        "%s: equity purge — ratio=%.3f recycle_at=%s overshoot=%.3f "
+        "band=%s min_pnl=$%s",
         fund.name,
         float(fund.equity_ratio()),
         target,
-        min_score,
+        float(overshoot),
+        purge_band_label(overshoot),
+        min_pnl,
     )
 
-    # Refresh once, rank by purge_score, then sell down the list.
+    # Refresh once; rank eligible by pnl_$ desc, then slots desc.
     candidates = []
     for holding in Holding.objects.filter(fund=fund, shares__gt=0).select_related(
         "stock", "discovery"
     ):
         holding.stock.refresh()
-        score, _components = purge_score(holding, fund)
-        cost = _holding_cost_basis(holding)
-        pnl = _holding_unrealized_pnl(holding)
-        candidates.append((holding, score, cost, pnl))
+        metrics = holding_purge_metrics(holding, fund)
+        candidates.append((holding, metrics))
 
     if not candidates:
         return 0
 
-    candidates.sort(key=lambda row: (row[1], float(row[2])), reverse=True)
-    eligible = [row for row in candidates if purge_eligible(row[1], fund)]
+    eligible = [
+        (h, m)
+        for h, m in candidates
+        if holding_meets_purge_pnl(m, min_pnl)
+    ]
+    eligible.sort(
+        key=lambda row: (float(row[1]["pnl"]), float(row[1]["slots"])),
+        reverse=True,
+    )
 
     if not eligible:
-        best = candidates[0]
+        # Best by pnl among non-dust for the stall message.
+        ranked = sorted(
+            candidates,
+            key=lambda row: float(row[1]["pnl"]),
+            reverse=True,
+        )
+        best_h, best_m = ranked[0]
         logger.warning(
-            "%s: equity purge stalled — ratio=%.3f recycle_at=%s; "
-            "no holdings score>=%s (best=%.1f %s)",
+            "%s: equity purge stalled — ratio=%.3f recycle_at=%s "
+            "overshoot=%.3f min_pnl=$%s; none eligible (best pnl $%.2f %s "
+            "slots=%.2f)",
             fund.name,
             float(fund.equity_ratio()),
             target,
-            min_score,
-            best[1],
-            best[0].stock.symbol,
+            float(overshoot),
+            min_pnl,
+            float(best_m["pnl"]),
+            best_h.stock.symbol,
+            float(best_m["slots"]),
         )
         return 0
 
     sold = 0
-    for holding, score, cost, pnl in eligible:
+    for holding, metrics in eligible:
         if not fund.at_or_over_equity_cap():
             break
-        if not purge_eligible(score, fund):
-            break
+        # Band is fixed for this SA pass (no intra-run loosen).
+        if not holding_meets_purge_pnl(metrics, min_pnl):
+            continue
         if not Holding.objects.filter(pk=holding.pk).exists():
             continue
+        pnl = metrics["pnl"]
+        cost = metrics["cost"]
         execute_sell(
             sa,
             fund,
             holding,
             f"{holding.stock.symbol} equity purge "
-            f"(score={score:.1f}; pnl ${pnl:.2f}; cost ${cost:.2f}; "
-            f"recycle_at {target})",
+            f"(pnl ${pnl:.2f} >= ${min_pnl}; cost ${cost:.2f}; "
+            f"overshoot {float(overshoot):.3f}; recycle_at {target})",
         )
         sold += 1
 
@@ -183,15 +212,15 @@ def recycle_equity_cap(sa, fund: Profile) -> int:
             float(fund.equity_ratio()),
         )
     elif fund.at_or_over_equity_cap():
-        best_eligible = eligible[0]
+        best_h, best_m = eligible[0]
         logger.warning(
             "%s: equity purge stalled — ratio=%.3f recycle_at=%s; "
-            "no further sells (best eligible=%.1f %s)",
+            "no further sells (best eligible pnl $%.2f %s)",
             fund.name,
             float(fund.equity_ratio()),
             target,
-            best_eligible[1],
-            best_eligible[0].stock.symbol,
+            float(best_m["pnl"]),
+            best_h.stock.symbol,
         )
     return sold
 

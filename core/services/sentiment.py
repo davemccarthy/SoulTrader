@@ -1,33 +1,32 @@
 """
-Sentiment equity purge scoring.
+Sentiment equity purge — overshoot bands.
 
-Rank holdings when over the equity cap; higher score = more willing to sell.
+When equity_ratio >= sentiment target, sell holdings that clear a min P&L
+threshold. The further over target, the looser the threshold (tranche-% of
+average_spend). One ladder for all sentiments.
 """
 
 from __future__ import annotations
 
 from datetime import timezone as dt_timezone
 from decimal import Decimal
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from django.utils import timezone
 
 from core.models import Holding, Profile
 
-# v2 weights (slots / age / gain / flat).
-PURGE_WEIGHT_SLOTS = 0.25
-PURGE_WEIGHT_AGE = 0.20
-PURGE_WEIGHT_GAIN = 0.40
-PURGE_WEIGHT_FLAT = 0.15
+# (min_overshoot, g) — g × average_spend = min pnl_$. Highest overshoot first.
+# overshoot = equity_ratio - recycle_at.
+PURGE_BANDS: List[Tuple[Decimal, Decimal]] = [
+    (Decimal("0.15"), Decimal("-0.01")),  # desperate: tiny red OK
+    (Decimal("0.10"), Decimal("0")),  # stressed: flat+
+    (Decimal("0.05"), Decimal("0.025")),  # clearly over: soft winner
+    (Decimal("0.00"), Decimal("0.05")),  # just over: solid winner
+]
 
-SLOTS_FULL_AT = 5
-AGE_FULL_AT_DAYS = 30
-GAIN_NORM_OF_MIN_RECYCLE = 2
-FLAT_PNL_PCT_BAND = Decimal("0.03")
-
-
-def _clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
-    return max(lo, min(hi, x))
+# Skip dust — frees too little cash (WBS-class 1-lots).
+PURGE_MIN_SLOTS = Decimal("0.75")
 
 
 def _holding_days(holding: Holding) -> int:
@@ -45,7 +44,7 @@ def _holding_days(holding: Holding) -> int:
 
 
 def holding_purge_metrics(holding: Holding, fund: Profile) -> Dict[str, Any]:
-    """Raw inputs for purge_score (dry-run / logging)."""
+    """Raw inputs for purge dry-run / logging."""
     shares = Decimal(str(holding.shares or 0))
     avg = Decimal(str(holding.average_price or 0))
     px = Decimal(str(holding.stock.price or 0))
@@ -65,52 +64,56 @@ def holding_purge_metrics(holding: Holding, fund: Profile) -> Dict[str, Any]:
     }
 
 
-def purge_score(holding: Holding, fund: Profile) -> Tuple[float, Dict[str, float]]:
+def equity_overshoot(fund: Profile) -> Optional[Decimal]:
     """
-    Purge willingness score (typically ~-40..100). Higher = sell sooner when
-    over equity cap. Gain leg is signed: negative P&L lowers the score.
-
-    Returns (score, component_norms) for logging / dry-run.
+    equity_ratio - recycle_at. None when sentiment disabled / no target.
+    Negative when under target.
     """
-    m = holding_purge_metrics(holding, fund)
-    cost = m["cost"]
-    pnl = m["pnl"]
-    pnl_pct = m["pnl_pct"]
-    days = m["days"]
-    slots = float(m["slots"])
-
-    slots_norm = _clamp(slots / SLOTS_FULL_AT)
-    age_norm = _clamp(days / AGE_FULL_AT_DAYS)
-
-    # Signed: winners boost score, losers subtract (same $/scale both ways).
-    # Stops fat reds (high slots/age) clearing PURGE_MIN_SCORE with gain=0.
-    min_rec = fund.min_recycle_profit()
-    if min_rec > 0:
-        gain_norm = _clamp(
-            float(pnl / (min_rec * GAIN_NORM_OF_MIN_RECYCLE)),
-            -1.0,
-            1.0,
-        )
-    else:
-        gain_norm = 0.0
-
-    flat_pct = abs(float(pnl_pct))
-    flat_norm = age_norm * (1.0 - _clamp(flat_pct / float(FLAT_PNL_PCT_BAND)))
-
-    score = 100.0 * (
-        PURGE_WEIGHT_SLOTS * slots_norm
-        + PURGE_WEIGHT_AGE * age_norm
-        + PURGE_WEIGHT_GAIN * gain_norm
-        + PURGE_WEIGHT_FLAT * flat_norm
-    )
-    components = {
-        "slots": slots_norm,
-        "age": age_norm,
-        "gain": gain_norm,
-        "flat": flat_norm,
-    }
-    return score, components
+    target = fund.equity_target()
+    if target is None:
+        return None
+    return fund.equity_ratio() - target
 
 
-def purge_eligible(score: float, fund: Profile) -> bool:
-    return score >= Profile.PURGE_MIN_SCORE
+def purge_band_for_overshoot(overshoot: Decimal) -> Tuple[Decimal, Decimal]:
+    """
+    Return (min_overshoot, g) for this overshoot.
+    If under target (overshoot < 0), still returns the pickiest band for display.
+    """
+    if overshoot < 0:
+        return PURGE_BANDS[-1]
+    for min_os, g in PURGE_BANDS:
+        if overshoot >= min_os:
+            return min_os, g
+    return PURGE_BANDS[-1]
+
+
+def min_purge_pnl(fund: Profile) -> Optional[Decimal]:
+    """
+    Dollar floor for purge eligibility: g × average_spend for current overshoot.
+    None when sentiment disabled.
+    """
+    overshoot = equity_overshoot(fund)
+    if overshoot is None:
+        return None
+    _min_os, g = purge_band_for_overshoot(overshoot)
+    return (g * fund.average_spend()).quantize(Decimal("0.01"))
+
+
+def purge_band_label(overshoot: Optional[Decimal]) -> str:
+    if overshoot is None:
+        return "n/a"
+    if overshoot < 0:
+        return "under"
+    _min_os, g = purge_band_for_overshoot(overshoot)
+    return f"g={g:+.3f} (os>={_min_os})"
+
+
+def holding_meets_purge_pnl(
+    metrics: Dict[str, Any],
+    min_pnl: Decimal,
+) -> bool:
+    """True if slots clear dust floor and pnl_$ >= band minimum."""
+    if metrics["slots"] < PURGE_MIN_SLOTS:
+        return False
+    return metrics["pnl"] >= min_pnl
