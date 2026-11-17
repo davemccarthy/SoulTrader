@@ -15,6 +15,7 @@ Usage:
     python manage.py force_buy XLK --funds SECTS --explanation "Technology" --topup 0.10
     python manage.py force_buy XLK --funds FOFS --explanation "Technology" --no-si
     python manage.py force_buy MRVL --funds PULSE --explanation "manual" --wait-trend
+    python manage.py force_buy NKE --funds PULSE --explanation "manual" --wait-trend --dry-run
 """
 
 import logging
@@ -137,7 +138,8 @@ class Command(BaseCommand):
             action="store_true",
             help=(
                 "Poll every 10s until short-term ups > downs over 6 votes "
-                "(3-3 hold), then buy. Same helper as pulse_agent."
+                "(3-3 hold), then buy. Works with --dry-run (logs would-buy only). "
+                "Same helper as pulse_agent."
             ),
         )
         parser.add_argument(
@@ -207,14 +209,37 @@ class Command(BaseCommand):
             self._report_no_buy(fund, symbol, allowance, cash, price, held)
             self._attach_topup_if_held(holding, symbol, topup_weight, topup_band, dry_run)
             return
+
+        if wait_trend and wait_timeout <= 0:
+            raise CommandError("--wait-trend-timeout must be positive")
+
+        # Dry-run: optional trend wait via Yahoo (no DB stock / no execute_buy).
         if dry_run:
-            cost = buy_shares * price
-            self.stdout.write(
-                self.style.WARNING(
-                    f"Would buy {buy_shares} {symbol} for {fund.name} "
-                    f"at ${price:.2f} (cost ${cost:,.2f}, cash left ${cash - cost:,.2f})"
+            trend_detail = None
+            if wait_trend:
+                trend_detail = self._wait_for_trend(
+                    symbol,
+                    get_price=lambda: _yahoo_profile(symbol)[2],
+                    timeout_s=wait_timeout,
+                    poll_s=DEFAULT_TREND_POLL_S,
+                    votes=DEFAULT_TREND_VOTES,
                 )
+                _c, _e, price = _yahoo_profile(symbol)
+                buy_shares = _planned_buy_shares(allowance, cash, price, held)
+                if price is None or buy_shares <= 0:
+                    if price is None:
+                        raise CommandError(f"No price for {symbol} after trend wait")
+                    self._report_no_buy(fund, symbol, allowance, cash, price, held)
+                    self._attach_topup_if_held(holding, symbol, topup_weight, topup_band, dry_run)
+                    return
+            cost = buy_shares * price
+            would = (
+                f"Would buy {buy_shares} {symbol} for {fund.name} "
+                f"at ${price:.2f} (cost ${cost:,.2f}, cash left ${cash - cost:,.2f})"
             )
+            if trend_detail:
+                would += f" [trend {trend_detail}]"
+            self.stdout.write(self.style.WARNING(would))
             if topup_weight is not None:
                 self.stdout.write(
                     self.style.WARNING(
@@ -243,11 +268,12 @@ class Command(BaseCommand):
             return
 
         if wait_trend:
-            if wait_timeout <= 0:
-                self._drop_unused_stock(stock, created_stock)
-                raise CommandError("--wait-trend-timeout must be positive")
             trend_detail = self._wait_for_trend(
-                stock,
+                symbol,
+                get_price=lambda: (
+                    stock.refresh()
+                    or (stock.price if stock.price and stock.price > 0 else None)
+                ),
                 timeout_s=wait_timeout,
                 poll_s=DEFAULT_TREND_POLL_S,
                 votes=DEFAULT_TREND_VOTES,
@@ -318,8 +344,9 @@ class Command(BaseCommand):
 
     def _wait_for_trend(
         self,
-        stock: Stock,
+        symbol: str,
         *,
+        get_price,
         timeout_s: float,
         poll_s: float,
         votes: int,
@@ -328,29 +355,24 @@ class Command(BaseCommand):
         window = PriceTrendWindow(votes=votes)
         deadline = time.monotonic() + float(timeout_s)
         self.stdout.write(
-            f"Waiting for short-term trend on {stock.symbol} "
+            f"Waiting for short-term trend on {symbol} "
             f"(poll={poll_s:.0f}s votes={votes}; ups>downs; timeout={timeout_s:.0f}s)"
         )
         while True:
-            stock.refresh()
-            price = stock.price if stock.price and stock.price > 0 else None
-            if price is None:
-                self.stdout.write(self.style.WARNING(f"{stock.symbol}: no price; retry"))
+            price = get_price()
+            if price is None or price <= 0:
+                self.stdout.write(self.style.WARNING(f"{symbol}: no price; retry"))
             else:
                 vote = window.push(price)
-                self.stdout.write(
-                    f"{stock.symbol} last=${price} trend[{vote.detail}]"
-                )
+                self.stdout.write(f"{symbol} last=${price} trend[{vote.detail}]")
                 if vote.ready and vote.bullish:
                     self.stdout.write(
-                        self.style.SUCCESS(
-                            f"Trend ok {stock.symbol}: {vote.detail}"
-                        )
+                        self.style.SUCCESS(f"Trend ok {symbol}: {vote.detail}")
                     )
                     return vote.detail
             if time.monotonic() >= deadline:
                 raise CommandError(
-                    f"Trend wait timed out for {stock.symbol} after {timeout_s:.0f}s"
+                    f"Trend wait timed out for {symbol} after {timeout_s:.0f}s"
                 )
             time.sleep(float(poll_s))
 
