@@ -268,12 +268,14 @@ class Command(BaseCommand):
             return
 
         if wait_trend:
+
+            def _live_price():
+                stock.refresh()
+                return stock.price if stock.price and stock.price > 0 else None
+
             trend_detail = self._wait_for_trend(
                 symbol,
-                get_price=lambda: (
-                    stock.refresh()
-                    or (stock.price if stock.price and stock.price > 0 else None)
-                ),
+                get_price=_live_price,
                 timeout_s=wait_timeout,
                 poll_s=DEFAULT_TREND_POLL_S,
                 votes=DEFAULT_TREND_VOTES,
