@@ -14,9 +14,11 @@ Usage:
     python manage.py force_buy XLK --funds FOFS --explanation "Technology" --dry-run
     python manage.py force_buy XLK --funds SECTS --explanation "Technology" --topup 0.10
     python manage.py force_buy XLK --funds FOFS --explanation "Technology" --no-si
+    python manage.py force_buy MRVL --funds PULSE --explanation "manual" --wait-trend
 """
 
 import logging
+import time
 from decimal import Decimal, InvalidOperation
 
 import yfinance as yf
@@ -26,10 +28,16 @@ from django.utils import timezone
 from core.models import Advisor, Discovery, Holding, Profile, SellInstruction, SmartAnalysis, Stock
 from core.services.advisors.advisor import AdvisorBase
 from core.services.execution import execute_buy
+from core.services.short_term_trend import (
+    DEFAULT_TREND_POLL_S,
+    DEFAULT_TREND_VOTES,
+    PriceTrendWindow,
+)
 
 logger = logging.getLogger(__name__)
 
 TRADE_EXPLANATION_MAX = 256
+DEFAULT_WAIT_TREND_TIMEOUT_S = 600.0
 
 
 def _yahoo_profile(symbol):
@@ -124,6 +132,21 @@ class Command(BaseCommand):
             action="store_true",
             help="Skip User default sell instructions (hold-forever sleeves).",
         )
+        parser.add_argument(
+            "--wait-trend",
+            action="store_true",
+            help=(
+                "Poll every 10s until short-term ups > downs over 6 votes "
+                "(3-3 hold), then buy. Same helper as pulse_agent."
+            ),
+        )
+        parser.add_argument(
+            "--wait-trend-timeout",
+            type=float,
+            default=DEFAULT_WAIT_TREND_TIMEOUT_S,
+            metavar="SECONDS",
+            help=f"Max seconds to wait for trend (default {DEFAULT_WAIT_TREND_TIMEOUT_S:.0f}).",
+        )
 
     def handle(self, *args, **options):
         symbol = (options["symbol"] or "").upper().strip()
@@ -131,6 +154,8 @@ class Command(BaseCommand):
         explanation = " ".join((options["explanation"] or "").split()).strip()
         dry_run = options["dry_run"]
         no_si = bool(options.get("no_si"))
+        wait_trend = bool(options.get("wait_trend"))
+        wait_timeout = float(options.get("wait_trend_timeout") or DEFAULT_WAIT_TREND_TIMEOUT_S)
         topup_weight, topup_band = self._parse_topup(options)
 
         if not symbol:
@@ -217,6 +242,28 @@ class Command(BaseCommand):
             self._attach_topup_if_held(holding, symbol, topup_weight, topup_band, dry_run)
             return
 
+        if wait_trend:
+            if wait_timeout <= 0:
+                self._drop_unused_stock(stock, created_stock)
+                raise CommandError("--wait-trend-timeout must be positive")
+            trend_detail = self._wait_for_trend(
+                stock,
+                timeout_s=wait_timeout,
+                poll_s=DEFAULT_TREND_POLL_S,
+                votes=DEFAULT_TREND_VOTES,
+            )
+            explanation = f"{explanation} | trend {trend_detail}"
+            stock.refresh()
+            price = stock.price if stock.price and stock.price > 0 else None
+            buy_shares = _planned_buy_shares(allowance, cash, price, held)
+            if price is None or buy_shares <= 0:
+                self._drop_unused_stock(stock, created_stock)
+                if price is None:
+                    raise CommandError(f"No price for {symbol} after trend wait")
+                self._report_no_buy(fund, symbol, allowance, cash, price, held)
+                self._attach_topup_if_held(holding, symbol, topup_weight, topup_band, dry_run)
+                return
+
         sa = self._latest_sa()
         discovery = holding.discovery if holding and holding.discovery_id else None
         created_discovery = False
@@ -268,6 +315,44 @@ class Command(BaseCommand):
         live_discovery = holding.discovery or discovery
         self._attach_default_sell_instructions(live_discovery, no_si=no_si)
         self._attach_topup(live_discovery, topup_weight, topup_band, dry_run=False)
+
+    def _wait_for_trend(
+        self,
+        stock: Stock,
+        *,
+        timeout_s: float,
+        poll_s: float,
+        votes: int,
+    ) -> str:
+        """Poll until ups > downs over `votes` comparisons, or raise on timeout."""
+        window = PriceTrendWindow(votes=votes)
+        deadline = time.monotonic() + float(timeout_s)
+        self.stdout.write(
+            f"Waiting for short-term trend on {stock.symbol} "
+            f"(poll={poll_s:.0f}s votes={votes}; ups>downs; timeout={timeout_s:.0f}s)"
+        )
+        while True:
+            stock.refresh()
+            price = stock.price if stock.price and stock.price > 0 else None
+            if price is None:
+                self.stdout.write(self.style.WARNING(f"{stock.symbol}: no price; retry"))
+            else:
+                vote = window.push(price)
+                self.stdout.write(
+                    f"{stock.symbol} last=${price} trend[{vote.detail}]"
+                )
+                if vote.ready and vote.bullish:
+                    self.stdout.write(
+                        self.style.SUCCESS(
+                            f"Trend ok {stock.symbol}: {vote.detail}"
+                        )
+                    )
+                    return vote.detail
+            if time.monotonic() >= deadline:
+                raise CommandError(
+                    f"Trend wait timed out for {stock.symbol} after {timeout_s:.0f}s"
+                )
+            time.sleep(float(poll_s))
 
     def _parse_topup(self, options):
         raw = (options.get("topup") or "").strip()

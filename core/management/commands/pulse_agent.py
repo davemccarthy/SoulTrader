@@ -1,8 +1,12 @@
 """
-Pulse agent: grade OPEN_VOL discoveries, buy on open→dip, IPC trail sells.
+Pulse agent: grade OPEN_VOL discoveries, buy on dip + short-term trend, IPC sells.
 
 Pulse writes discoveries (SA discover); this agent alone buys into the trial fund
 and owns the live trail (fund_watch can stay off for that book).
+
+BUY-armed (graded pending) or SELL-armed (IPC) poll every 10s; quiet stays at --loop
+(default 30s). Entry needs open→last giveback ≥ dip% and ups > downs over 6 samples
+(3-3 hold).
 
 Usage:
     python manage.py pulse_agent PULSE --cron
@@ -28,7 +32,6 @@ from django.utils import timezone
 from core.management.commands.fund_watch import (
     SLEEP_CRON_DEFAULT,
     TrailState,
-    _dynamic_sleep_s,
     _effective_ipc,
     _holding_age_minutes,
     _position_pnl,
@@ -41,6 +44,13 @@ from core.services.health.so_ratings import (
     score_to_opportunity_grade,
 )
 from core.services.market import market_open, rth_session_open
+from core.services.short_term_trend import (
+    DEFAULT_TREND_POLL_S,
+    DEFAULT_TREND_VOTES,
+    PriceTrendWindow,
+    dynamic_arm_sleep_s,
+    evaluate_trend,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +62,8 @@ DEFAULT_DIP_PCT = 0.8
 DEFAULT_MAX_HOLDS = 10
 DEFAULT_ARM = 0.8
 DEFAULT_GIVEBACK = 0.2
+ARM_POLL_S = DEFAULT_TREND_POLL_S  # 10s for BUY-armed and SELL-armed
+TREND_VOTES = DEFAULT_TREND_VOTES  # 6 votes (~7×10s); ups > downs; 3-3 hold
 # New buys stop mid-afternoon; trail/sells continue to RTH close.
 BUY_END_TIME_ET = dt_time(15, 0)
 BUY_START_TIME_ET = dt_time(9, 45)
@@ -139,6 +151,19 @@ def _self_test() -> None:
     assert dip_ready(Decimal("100"), Decimal("99.1"), dip_pct=Decimal("0.8"))
     assert not dip_ready(Decimal("100"), Decimal("99.5"), dip_pct=Decimal("0.8"))
     assert dip_giveback_pct(Decimal("100"), Decimal("99")) == Decimal("1")
+
+    # 7 prices → 6 votes; 3-3 hold; 4-2 buy
+    tie = evaluate_trend([10, 9, 10, 9, 10, 9, 10], votes=6)
+    assert tie.ready and tie.ups == 3 and tie.downs == 3 and not tie.bullish
+    up = evaluate_trend([10, 11, 10, 11, 10, 11, 12], votes=6)
+    assert up.ready and up.ups == 4 and up.downs == 2 and up.bullish
+    win = PriceTrendWindow(votes=6)
+    for px in (10, 9, 10, 9, 10, 9, 10):
+        vote = win.push(px)
+    assert vote.ready and not vote.bullish
+    assert dynamic_arm_sleep_s(base_s=30, buy_armed=True, sell_armed=False) == 10.0
+    assert dynamic_arm_sleep_s(base_s=30, buy_armed=False, sell_armed=True) == 10.0
+    assert dynamic_arm_sleep_s(base_s=30, buy_armed=False, sell_armed=False) == 30.0
     print("pulse_agent self-test ok")
 
 
@@ -265,6 +290,7 @@ class Command(BaseCommand):
 
         trails: dict[int, TrailState] = {}
         grade_rejects: set[int] = set()
+        trend_windows: dict[str, PriceTrendWindow] = {}
         sa: Optional[SmartAnalysis] = None
 
         self._emit(
@@ -273,6 +299,7 @@ class Command(BaseCommand):
                 f"pulse_agent start fund={fund.name} min_grade={min_grade} "
                 f"dip>={dip_pct}% max_holds={max_holds} arm=+{arm_pct}% "
                 f"giveback={giveback_pp}pp diminish={diminish} "
+                f"trend_votes={TREND_VOTES} arm_poll={ARM_POLL_S}s "
                 f"dry_run={dry_run} no_buy={no_buy} cron={cron} loop_base={loop_s}"
             ),
         )
@@ -293,7 +320,7 @@ class Command(BaseCommand):
                         self._emit(cron, "pulse_agent stop: RTH closed", level="info")
                         break
 
-                sa = self._tick(
+                sa, buy_armed, sell_armed = self._tick(
                     fund,
                     cron=cron,
                     dry_run=dry_run,
@@ -306,23 +333,25 @@ class Command(BaseCommand):
                     diminish=diminish,
                     trails=trails,
                     grade_rejects=grade_rejects,
+                    trend_windows=trend_windows,
                     sa=sa,
                 )
 
                 if loop_s is None:
                     break
 
-                n_holdings = Holding.objects.filter(fund=fund, shares__gt=0).count()
-                n_armed = sum(1 for st in trails.values() if st.armed)
-                sleep_s = _dynamic_sleep_s(
+                sleep_s = dynamic_arm_sleep_s(
                     base_s=float(loop_s),
-                    n_sell=0,
-                    n_armed=n_armed,
-                    near_arm=False,
+                    buy_armed=buy_armed,
+                    sell_armed=sell_armed,
+                    arm_poll_s=ARM_POLL_S,
                 )
                 if cron:
                     logger.debug(
-                        "pulse_agent sleep=%.1fs holdings=%s", sleep_s, n_holdings
+                        "pulse_agent sleep=%.1fs buy_armed=%s sell_armed=%s",
+                        sleep_s,
+                        buy_armed,
+                        sell_armed,
                     )
                 time.sleep(sleep_s)
         except KeyboardInterrupt:
@@ -366,8 +395,9 @@ class Command(BaseCommand):
         diminish: bool,
         trails: dict[int, TrailState],
         grade_rejects: set[int],
+        trend_windows: dict[str, PriceTrendWindow],
         sa: Optional[SmartAnalysis],
-    ) -> Optional[SmartAnalysis]:
+    ) -> tuple[Optional[SmartAnalysis], bool, bool]:
         now_et = datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S %Z")
         holdings = list(
             Holding.objects.filter(fund=fund, shares__gt=0)
@@ -379,7 +409,7 @@ class Command(BaseCommand):
             f"pulse_agent tick {fund.name} {now_et} holdings={len(holdings)}",
         )
 
-        sa = self._trail_tick(
+        sa, sell_armed = self._trail_tick(
             fund,
             holdings=holdings,
             cron=cron,
@@ -392,10 +422,11 @@ class Command(BaseCommand):
         )
 
         if no_buy:
-            return sa
+            return sa, False, sell_armed
         if not self._in_buy_window():
             self._emit(cron, "pulse_agent buy window closed (09:45–15:00 ET)")
-            return sa
+            trend_windows.clear()
+            return sa, False, sell_armed
 
         open_count = Holding.objects.filter(fund=fund, shares__gt=0).count()
         slots = max_holds - open_count
@@ -404,7 +435,8 @@ class Command(BaseCommand):
                 cron,
                 f"pulse_agent at max_holds={max_holds}; skip buys",
             )
-            return sa
+            trend_windows.clear()
+            return sa, False, sell_armed
 
         if fund.sentiment_enabled() and fund.at_or_over_equity_buy_cap():
             self._emit(
@@ -412,7 +444,7 @@ class Command(BaseCommand):
                 f"pulse_agent over equity buy cap; skip buys",
                 level="warning",
             )
-            return sa
+            return sa, False, sell_armed
 
         since = session_start_et()
         # Discovery.created is typically UTC-aware; convert ET midnight.
@@ -424,6 +456,9 @@ class Command(BaseCommand):
         )
 
         bought = 0
+        buy_armed = False
+        live_syms: set[str] = set()
+
         for discovery in pending:
             if bought >= slots:
                 break
@@ -449,39 +484,60 @@ class Command(BaseCommand):
                 continue
 
             stock = discovery.stock
+            symbol = stock.symbol
             stock.refresh()
             last = stock.price or Decimal("0")
             if last <= 0:
                 self._emit(
                     cron,
-                    f"pulse_agent skip {stock.symbol}: no live price",
+                    f"pulse_agent skip {symbol}: no live price",
                     level="warning",
                 )
+                buy_armed = True
                 continue
+
+            # Graded + watching → BUY-armed; sample every arm poll.
+            live_syms.add(symbol)
+            window = trend_windows.setdefault(
+                symbol, PriceTrendWindow(votes=TREND_VOTES)
+            )
+            vote = window.push(last)
+            buy_armed = True
 
             giveback = dip_giveback_pct(open_px, last)
             if not dip_ready(open_px, last, dip_pct=dip_pct):
                 gb_txt = "n/a" if giveback is None else f"{giveback:.2f}%"
                 self._emit(
                     cron,
-                    f"pulse_agent wait dip {stock.symbol}: "
+                    f"pulse_agent wait dip {symbol}: "
                     f"open=${open_px} last=${last} giveback={gb_txt} need>={dip_pct}% "
-                    f"({detail})",
+                    f"trend[{vote.detail}] ({detail})",
+                )
+                continue
+
+            if not vote.ready or not vote.bullish:
+                self._emit(
+                    cron,
+                    f"pulse_agent wait trend {symbol}: "
+                    f"open=${open_px} last=${last} giveback="
+                    f"{'n/a' if giveback is None else f'{giveback:.2f}%'} "
+                    f"trend[{vote.detail}] need ups>downs ({detail})",
                 )
                 continue
 
             allowance = fund.average_spend()
             lead = (discovery.explanation or "").split("|", 1)[0].strip()
-            explanation = f"pulse_agent dip-buy {lead}"
+            explanation = f"pulse_agent dip+trend {lead}"
             gb_txt = "n/a" if giveback is None else f"{giveback:.2f}%"
             msg = (
-                f"pulse_agent BUY {stock.symbol} fund={fund.name} "
-                f"open=${open_px} last=${last} giveback={gb_txt} {detail} "
-                f"allowance=${allowance}"
+                f"pulse_agent BUY {symbol} fund={fund.name} "
+                f"open=${open_px} last=${last} giveback={gb_txt} "
+                f"trend[{vote.detail}] {detail} allowance=${allowance}"
             )
             if dry_run:
                 self._emit(cron, f"DRY-RUN {msg}")
-                bought += 1  # reserve slot in dry-run so we don't spam all names
+                bought += 1
+                trend_windows.pop(symbol, None)
                 continue
 
             sa = self._ensure_sa(sa)
@@ -494,12 +550,16 @@ class Command(BaseCommand):
                 explanation,
                 discovery=discovery,
             )
-            # Confirm fill created a holding before counting slot.
             if Holding.objects.filter(fund=fund, stock=stock, shares__gt=0).exists():
                 bought += 1
+                trend_windows.pop(symbol, None)
             fund.refresh_from_db()
 
-        return sa
+        for sym in list(trend_windows.keys()):
+            if sym not in live_syms:
+                del trend_windows[sym]
+
+        return sa, buy_armed, sell_armed
 
     def _trail_tick(
         self,
@@ -513,13 +573,14 @@ class Command(BaseCommand):
         diminish: bool,
         trails: dict[int, TrailState],
         sa: Optional[SmartAnalysis],
-    ) -> Optional[SmartAnalysis]:
+    ) -> tuple[Optional[SmartAnalysis], bool]:
         if not holdings:
             trails.clear()
-            return sa
+            return sa, False
 
         live_ids: set[int] = set()
         sell_symbols: list[str] = []
+        sell_armed = False
 
         for holding in holdings:
             live_ids.add(holding.id)
@@ -544,6 +605,8 @@ class Command(BaseCommand):
                 arm_pct=eff_arm,
                 giveback_pp=eff_gb,
             )
+            if state.armed or status == "SELL":
+                sell_armed = True
             if status in ("SELL", "ARMED"):
                 pct_txt = "n/a" if pnl_pct is None else f"{pnl_pct:+.2f}%"
                 high_txt = "—" if high_pct is None else f"{high_pct:+.2f}%"
@@ -560,7 +623,7 @@ class Command(BaseCommand):
                 del trails[hid]
 
         if not sell_symbols:
-            return sa
+            return sa, sell_armed
 
         for symbol in sorted(set(sell_symbols)):
             try:
@@ -602,4 +665,4 @@ class Command(BaseCommand):
             )
             trails.pop(holding.id, None)
 
-        return sa
+        return sa, sell_armed
