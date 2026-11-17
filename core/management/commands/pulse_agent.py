@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from datetime import datetime, time as dt_time
+from datetime import datetime, time as dt_time, timezone as dt_timezone
 from decimal import Decimal
 from typing import Optional
 
@@ -416,7 +416,7 @@ class Command(BaseCommand):
 
         since = session_start_et()
         # Discovery.created is typically UTC-aware; convert ET midnight.
-        since_utc = since.astimezone(timezone.utc) if since.tzinfo else since
+        since_utc = since.astimezone(dt_timezone.utc) if since.tzinfo else since
         pending = list(pending_open_vol_discoveries(fund, since=since_utc))
         self._emit(
             cron,
