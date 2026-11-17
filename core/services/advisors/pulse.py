@@ -1,33 +1,22 @@
 """
-Pulse advisor — daily attention universe + stable intraday entry.
+Pulse advisor — high-open × high-early-volume discoveries for pulse_agent.
 
-Entry:
-- Build a broad liquid-stock seed after 10:30 ET from Polygon grouped daily aggs.
-- Rank/filter that seed by today's intraday 15m volume so far.
-- Exclude common ETF/fund tickers.
-- Keep names with recovery + stability at build time:
-  executable quote below 30m ago and above 1m ago (1m bars; short-term bounce after pullback),
-  executable quote >= 60m ago * 0.995, executable quote >= open * 0.99 (15m anchors).
-- Require recent 60m intraday range >= 1.25%.
-- Gap gate (all paths): skip discover when live quote is >+5% vs prior-session
-  close (Polygon seed). Blocks post-print / spike chases (e.g. ACN +22%, QCOM/AKAM).
-- Extension skip (all paths): block parabolic / near-52w winners — Yahoo yearChange
-  above max, or live price within a fraction of yearHigh (local dip ≠ not extended).
-- Discover qualifying names between 10:30 and 13:00 ET (earlier window = more IPC runway).
-- Live IMPULSE/COMBO paths (optional): 1m momentum + COMBO (impulse + normal_stable).
-- Live TROUGH (optional): high-vol attention at session LOD with light bounce
-  (near LOD ≤25bp + up 1m or LOD hold); green/white tape only; opp ≥ C;
-  same tape END_DAY + rebuy SIs (no TARGET_INTRADAY — fund_watch owns trail).
-  Shadow logs broader OR trough inventory.
-- Market tape (SPY/QQQ): refresh only during Pulse buying hours (10:30–13:00 ET);
-  persist red/amber/green/white on Advisor.blob (default red); trade on amber/green/white
-  (red = no discover); push superusers on status change.
+Entry (live):
+- From ~09:45 ET (second SA), build candidates via one Polygon snapshot-all call
+  (Yahoo 15m fallback if snapshots not on plan).
+- Liquid equities only (exclude common ETF/fund tickers); min price $20.
+- Rank by today's dollar volume so far; hard-cap top N (default 30).
+- Keep names whose open is ≥+2% vs prior-session close.
+- No Recovery / Impulse / Combo / Trough live paths.
+- No extension skip or opportunity grade at discover — pulse_agent decides.
+- Market tape (SPY/QQQ): refresh during discover window; persist on Advisor.blob;
+  discover on amber/green/white only (red = no discover).
 
-Exit/add: -2% rebuy (max 5 tranches), dual END_DAY: 1.00× avg from 120m before
-  close, then 0.995× avg in last 30m. No TARGET_INTRADAY (watcher trail), END_WEEK,
-  DT, or SL.
+Exit/add SIs on discovery (agent will own trail later): -2% rebuy (max 5),
+dual END_DAY. No TARGET_INTRADAY on Pulse SIs.
 
-Shadow: when enabled, logs IMPULSE/COMBO/TROUGH hits once per cache bucket.
+Legacy Recovery/Impulse/Trough helpers remain in-module for reference/tests;
+live flags are off.
 """
 from __future__ import annotations
 
@@ -48,68 +37,57 @@ from core.services.push import push_super
 logger = logging.getLogger(__name__)
 
 ET = pytz.timezone("US/Eastern")
-PULSE_CANDIDATE_VERSION = 15
-PULSE_BUILD_TIME_ET = time(10, 30)
+PULSE_CANDIDATE_VERSION = 16
+PULSE_BUILD_TIME_ET = time(9, 45)
 PULSE_DISCOVERY_END_TIME_ET = time(13, 0)
 PULSE_SEED_UNIVERSE = 500
+PULSE_TOP_EARLY_VOLUME = 30
+PULSE_MIN_GAP_PCT = 2.0
+PULSE_MIN_PRICE = 20.0
+# Soft floors so early session ranks are not empty (not full-day $25M).
+PULSE_MIN_SESSION_VOLUME = 50_000
+PULSE_MIN_DOLLAR_VOLUME = 2_000_000.0
+PULSE_MIN_PRIOR_VOLUME = 500_000
+PULSE_CANDIDATE_CACHE_MINUTES = 15
+PULSE_DISCOVERY_COOLDOWN_HOURS = 6
+
+# Legacy constants kept for helper/tests (not used by live open×vol path).
 PULSE_TOP_DAILY_VOLUME = 100
-PULSE_MIN_PRICE = 5.0
-PULSE_MIN_SESSION_VOLUME = 500_000
-PULSE_MIN_DOLLAR_VOLUME = 25_000_000.0
 PULSE_MIN_RANGE_PCT = 1.25
 PULSE_RANGE_LOOKBACK_MINUTES = 60
 PULSE_RECOVERY_MEDIUM_MINUTES = 30
 PULSE_RECOVERY_SHORT_MINUTES = 1
-PULSE_CANDIDATE_CACHE_MINUTES = 15
 PULSE_MAX_PRICE_DRIFT_FROM_SEED = 0.50
 PULSE_MAX_QUOTE_DRIFT_FROM_BAR = 0.02
-# Max live premium vs prior-session close (Polygon seed). Percent points, not fraction.
 PULSE_MAX_PCT_ABOVE_PRIOR_CLOSE = 5.0
-# Extension skip: multi-horizon "already ran" (Yahoo fast_info). Fail open if missing.
-# yearChange 0.80 = +80% ~1y; near-52w if price >= 90% of yearHigh.
 PULSE_EXT_MAX_YEAR_CHANGE = 0.80
 PULSE_EXT_NEAR_52W_HIGH_FRAC = 0.90
-PULSE_DISCOVERY_COOLDOWN_HOURS = 6
+PULSE_MIN_OPPORTUNITY_GRADE = "C"
 
 PULSE_REBUY_DROP = Decimal("0.02")
 PULSE_REBUY_MAX_TRANCHES = Decimal("5")
-# Dual END_DAY: bank ≥breakeven from ~2pm ET; flatten mild red in last 30m.
 PULSE_ENDDAY_TAKE = Decimal("1.00")
 PULSE_ENDDAY_MINUTES_BEFORE_CLOSE = Decimal("120")
 PULSE_ENDDAY_CLUTTER_TAKE = Decimal("0.995")
 PULSE_ENDDAY_CLUTTER_MINUTES_BEFORE_CLOSE = Decimal("30")
 
-# TARGET_INTRADAY paused (2026-10): early scrap IPC underperformed watcher trail.
-# Kept for reference / easy restore — fund_watch owns arm/giveback now.
-# PULSE_TP_MULT = Decimal("1.006")
-# PULSE_INTRADAY_GIVEBACK = Decimal("0.002")
-# PULSE_IPC_BY_TAPE: amber 1.004/0.002, green 1.006/0.002, white 1.008/0.002
-
-# Opportunity floor at discover (Oracle uses C at pre-discover gate).
-PULSE_MIN_OPPORTUNITY_GRADE = "C"
-
-# Impulse/combo gates (shadow + live discover when enabled below).
-PULSE_IMPULSE_SHADOW = True
-PULSE_IMPULSE_LIVE = True
-PULSE_COMBO_LIVE = True
+# Legacy paths off — pulse_agent consumes open×vol discoveries.
+PULSE_IMPULSE_SHADOW = False
+PULSE_IMPULSE_LIVE = False
+PULSE_COMBO_LIVE = False
 PULSE_IMPULSE_LOOKBACK_MINUTES = 30
-# ret30m signal leg: filters marginal +1.0–1.4% impulse (need 3/4 signals to discover).
 PULSE_IMPULSE_MIN_RET_30M_PCT = 1.5
 PULSE_IMPULSE_MIN_VOL_RATIO = 2.0
 PULSE_IMPULSE_MIN_CLOSE_POSITION = 0.6
 PULSE_IMPULSE_MIN_SIGNALS = 3
 
-# TROUGH: session LOD + light bounce (live on green/white; broader shadow OR gate).
-PULSE_TROUGH_SHADOW = True
-PULSE_TROUGH_LIVE = True
-PULSE_TROUGH_MAX_DAY_POSITION = 0.10  # shadow OR: bottom 10% of session range so far
-PULSE_TROUGH_NEAR_LOD_BP = 25.0  # live: within 25bp of printed LOD (not under-LOD)
-# Light bounce: up 1m on 1m bars, and/or no new LOD for N minutes.
+PULSE_TROUGH_SHADOW = False
+PULSE_TROUGH_LIVE = False
+PULSE_TROUGH_MAX_DAY_POSITION = 0.10
+PULSE_TROUGH_NEAR_LOD_BP = 25.0
 PULSE_TROUGH_BOUNCE_HOLD_MINUTES = 10.0
-# Live trough only when tape is constructive (skip amber knives).
 PULSE_TAPE_TROUGH_STATES: Final[frozenset[str]] = frozenset({"green", "white"})
 
-# Market tape on Advisor.blob (missing → red). Push titles on status change.
 PULSE_TAPE_DEFAULT = "red"
 PULSE_TAPE_TRADE_STATES: Final[frozenset[str]] = frozenset({"amber", "green", "white"})
 PULSE_TAPE_PUSH_TITLES: Final[Dict[str, str]] = {
@@ -223,6 +201,153 @@ def _pct(current: Optional[float], base: Optional[float]) -> Optional[float]:
     if current is None or base is None or base <= 0:
         return None
     return (current / base - 1.0) * 100.0
+
+
+def select_open_vol_candidates(
+    rows: List[Dict[str, Any]],
+    *,
+    top_n: int = PULSE_TOP_EARLY_VOLUME,
+    min_gap_pct: float = PULSE_MIN_GAP_PCT,
+    min_price: float = PULSE_MIN_PRICE,
+    min_volume: int = PULSE_MIN_SESSION_VOLUME,
+    min_dollar_volume: float = PULSE_MIN_DOLLAR_VOLUME,
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Rank by early dollar volume, hard-cap top_n, then keep open-gap >= min_gap_pct.
+
+    Returns (attention_top_n, gap_candidates). Pure — no I/O.
+    """
+    scored: List[Dict[str, Any]] = []
+    for raw in rows:
+        symbol = str(raw.get("symbol") or "").strip().upper()
+        if not symbol or "." in symbol or symbol in ETF_EXCLUDE_TICKERS:
+            continue
+        open_px = _safe_float(raw.get("open_px"))
+        prior_close = _safe_float(raw.get("prior_close"))
+        volume = _safe_int(raw.get("volume"))
+        price = _safe_float(raw.get("price")) or open_px
+        if open_px is None or prior_close is None or price is None:
+            continue
+        if open_px < min_price or price < min_price:
+            continue
+        if volume < min_volume:
+            continue
+        dollar_volume = float(price) * float(volume)
+        if dollar_volume < min_dollar_volume:
+            continue
+        gap_pct = _pct(open_px, prior_close)
+        if gap_pct is None:
+            continue
+        scored.append(
+            {
+                "symbol": symbol,
+                "open_px": round(float(open_px), 4),
+                "prior_close": round(float(prior_close), 4),
+                "price": round(float(price), 4),
+                "bar_price": round(float(price), 4),
+                "volume": int(volume),
+                "dollar_volume": round(dollar_volume, 2),
+                "prior_dollar_volume": round(
+                    float(prior_close) * float(_safe_int(raw.get("prior_volume"))),
+                    2,
+                ),
+                "gap_pct": round(float(gap_pct), 4),
+                "pct_prior_close": round(float(gap_pct), 4),
+                "pct_open": round(float(_pct(price, open_px) or 0.0), 4),
+            }
+        )
+
+    scored.sort(key=lambda r: float(r["dollar_volume"]), reverse=True)
+    attention = []
+    for rank, row in enumerate(scored[: max(int(top_n), 0)], start=1):
+        attention.append({**row, "rank": rank})
+    candidates = [row for row in attention if float(row["gap_pct"]) >= float(min_gap_pct)]
+    return attention, candidates
+
+
+def _rows_from_snapshots(snapshots: List[Any]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for snap in snapshots:
+        symbol = str(getattr(snap, "ticker", "") or "").strip().upper()
+        day = getattr(snap, "day", None)
+        prev = getattr(snap, "prev_day", None)
+        if not symbol or day is None or prev is None:
+            continue
+        open_px = _safe_float(getattr(day, "open", None))
+        day_close = _safe_float(getattr(day, "close", None))
+        volume = _safe_int(getattr(day, "volume", None))
+        prior_close = _safe_float(getattr(prev, "close", None))
+        prior_volume = _safe_int(getattr(prev, "volume", None))
+        last_trade = getattr(snap, "last_trade", None)
+        last_px = _safe_float(getattr(last_trade, "price", None)) if last_trade else None
+        price = day_close or last_px or open_px
+        if open_px is None or prior_close is None or price is None:
+            continue
+        out.append(
+            {
+                "symbol": symbol,
+                "open_px": open_px,
+                "prior_close": prior_close,
+                "prior_volume": prior_volume,
+                "volume": volume,
+                "price": price,
+            }
+        )
+    return out
+
+
+def _rows_from_yahoo_intraday() -> List[Dict[str, Any]]:
+    """Fallback: prior close from Polygon grouped daily + Yahoo 15m open/volume."""
+    df = financial_polygon.get_filtered_stocks(min_price=PULSE_MIN_PRICE)
+    if df is None or df.empty:
+        logger.warning("Pulse Yahoo fallback: Polygon prior universe empty")
+        return []
+
+    seed: List[Dict[str, Any]] = []
+    for _, row in df.iterrows():
+        symbol = str(row.get("ticker") or "").strip().upper()
+        if not symbol or "." in symbol or symbol in ETF_EXCLUDE_TICKERS:
+            continue
+        prior_close = _safe_float(row.get("price"))
+        prior_volume = _safe_int(row.get("today_volume"))
+        if prior_close is None or prior_volume < PULSE_MIN_PRIOR_VOLUME:
+            continue
+        seed.append(
+            {
+                "symbol": symbol,
+                "prior_close": prior_close,
+                "prior_volume": prior_volume,
+            }
+        )
+    seed.sort(key=lambda r: float(r["prior_close"]) * int(r["prior_volume"]), reverse=True)
+    shortlist = seed[:PULSE_SEED_UNIVERSE]
+    if not shortlist:
+        return []
+
+    symbols = [str(r["symbol"]) for r in shortlist]
+    intraday = _download_intraday(symbols)
+    out: List[Dict[str, Any]] = []
+    for row in shortlist:
+        symbol = str(row["symbol"])
+        hist = _symbol_hist(intraday, symbol)
+        if hist.empty or "Open" not in hist.columns:
+            continue
+        open_px = _safe_float(hist["Open"].iloc[0])
+        price = _safe_float(hist["Close"].iloc[-1]) if "Close" in hist.columns else open_px
+        volume = _volume_so_far(hist)
+        if open_px is None or price is None:
+            continue
+        out.append(
+            {
+                "symbol": symbol,
+                "open_px": open_px,
+                "prior_close": row["prior_close"],
+                "prior_volume": row["prior_volume"],
+                "volume": volume,
+                "price": price,
+            }
+        )
+    return out
 
 
 def _is_price_recovering(
@@ -861,11 +986,27 @@ def _pulse_volume_sentence(candidate: Dict[str, Any]) -> str:
 
 
 def build_pulse_discovery_explanation(candidate: Dict[str, Any]) -> str:
+    """Legacy Recovery explanation (helpers retained; live path uses open×vol)."""
     segments = [
         f"RECOVERY: {_pulse_explanation_lead(candidate)}",
         _pulse_rank_sentence(candidate),
         _pulse_stability_sentence(candidate),
         _pulse_price_sentence(candidate),
+        _pulse_volume_sentence(candidate),
+    ]
+    return " | ".join(segments)
+
+
+def build_pulse_open_vol_discovery_explanation(candidate: Dict[str, Any]) -> str:
+    gap = candidate.get("gap_pct")
+    gap_txt = _format_signed_pct(float(gap) if gap is not None else None)
+    open_px = float(candidate.get("open_px") or 0)
+    prior = float(candidate.get("prior_close") or 0)
+    price = float(candidate.get("price") or 0)
+    segments = [
+        f"OPEN_VOL: open gap {gap_txt} vs prior",
+        _pulse_rank_sentence(candidate),
+        f"Open ${open_px:.2f} / prior ${prior:.2f} / live ${price:.2f}",
         _pulse_volume_sentence(candidate),
     ]
     return " | ".join(segments)
@@ -906,7 +1047,7 @@ def _pulse_opportunity_gate(symbol: str) -> tuple[bool, str]:
 
 
 class Pulse(AdvisorBase):
-    """Daily attention universe with stable intraday entry."""
+    """High-open × high-early-volume discoveries for pulse_agent."""
 
     def _before_build_time(self) -> bool:
         now_et = datetime.now(ET)
@@ -974,187 +1115,34 @@ class Pulse(AdvisorBase):
         return new_status
 
     def _build_daily_candidates(self) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        df = financial_polygon.get_filtered_stocks(
-            min_price=PULSE_MIN_PRICE,
+        """Open×vol universe: top early $vol, then gap ≥ min. One Polygon snapshot preferred."""
+        source = "snapshot"
+        try:
+            snapshots = financial_polygon.fetch_stock_snapshots()
+            raw_rows = _rows_from_snapshots(snapshots)
+        except Exception as exc:
+            if not financial_polygon.polygon_not_authorized(exc):
+                logger.exception("Pulse snapshot-all failed")
+                raise
+            logger.warning(
+                "Pulse snapshot-all not on this Polygon plan; Yahoo fallback (%s)",
+                exc,
+            )
+            source = "yahoo"
+            raw_rows = _rows_from_yahoo_intraday()
+
+        attention, candidates = select_open_vol_candidates(raw_rows)
+        logger.info(
+            "Pulse open×vol build source=%s raw=%d attention_top%d=%d gap>=%.1f%% candidates=%d "
+            "(min_price=$%.0f)",
+            source,
+            len(raw_rows),
+            PULSE_TOP_EARLY_VOLUME,
+            len(attention),
+            PULSE_MIN_GAP_PCT,
+            len(candidates),
+            PULSE_MIN_PRICE,
         )
-        if df is None or df.empty:
-            logger.warning("Pulse: Polygon grouped daily universe empty")
-            return [], []
-
-        rows: List[Dict[str, Any]] = []
-        for _, row in df.iterrows():
-            symbol = str(row.get("ticker") or "").strip().upper()
-            if not symbol or "." in symbol or symbol in ETF_EXCLUDE_TICKERS:
-                continue
-            price = _safe_float(row.get("price"))
-            volume = _safe_int(row.get("today_volume"))
-            if price is None or volume <= 0:
-                continue
-            prior_dollar_volume = price * volume
-            rows.append(
-                {
-                    "symbol": symbol,
-                    "polygon_price": price,
-                    "prior_volume": volume,
-                    "prior_dollar_volume": prior_dollar_volume,
-                }
-            )
-
-        rows.sort(key=lambda r: float(r["prior_dollar_volume"]), reverse=True)
-        shortlist = rows[:PULSE_SEED_UNIVERSE]
-        symbols = [str(r["symbol"]) for r in shortlist]
-        intraday = _download_intraday(symbols)
-
-        intraday_ranked: List[Dict[str, Any]] = []
-        for row in shortlist:
-            symbol = str(row["symbol"])
-            hist = _symbol_hist(intraday, symbol)
-            if hist.empty or "Close" not in hist.columns or "Open" not in hist.columns:
-                continue
-
-            bar_price = _safe_float(hist["Close"].iloc[-1])
-            seed_price = _safe_float(row.get("polygon_price"))
-            if (
-                bar_price is not None
-                and seed_price is not None
-                and abs(bar_price / seed_price - 1.0) > PULSE_MAX_PRICE_DRIFT_FROM_SEED
-            ):
-                logger.debug(
-                    "Pulse: skip %s - intraday price %.2f too far from seed %.2f",
-                    symbol,
-                    bar_price,
-                    seed_price,
-                )
-                continue
-            volume_so_far = _volume_so_far(hist)
-            if bar_price is None or volume_so_far < PULSE_MIN_SESSION_VOLUME:
-                continue
-            dollar_volume_so_far = bar_price * volume_so_far
-            if dollar_volume_so_far < PULSE_MIN_DOLLAR_VOLUME:
-                continue
-
-            intraday_ranked.append(
-                {
-                    **row,
-                    "hist": hist,
-                    "bar_price": bar_price,
-                    "volume_so_far": volume_so_far,
-                    "dollar_volume_so_far": dollar_volume_so_far,
-                }
-            )
-
-        intraday_ranked.sort(key=lambda r: float(r["dollar_volume_so_far"]), reverse=True)
-
-        top_rows = intraday_ranked[:PULSE_TOP_DAILY_VOLUME]
-        top_symbols = [str(r["symbol"]) for r in top_rows]
-        data_1m = _download_intraday_1m(top_symbols)
-
-        attention: List[Dict[str, Any]] = []
-        candidates: List[Dict[str, Any]] = []
-        for rank, row in enumerate(top_rows, start=1):
-            symbol = str(row["symbol"])
-            hist = row["hist"]
-            hist_1m = _symbol_hist(data_1m, symbol)
-            bar_price = float(row["bar_price"])
-            quote_price = _fast_info_price(symbol)
-            if quote_price is None:
-                continue
-            if abs(quote_price / bar_price - 1.0) > PULSE_MAX_QUOTE_DRIFT_FROM_BAR:
-                logger.debug(
-                    "Pulse: skip %s - quote %.2f too far from 15m bar %.2f",
-                    symbol,
-                    quote_price,
-                    bar_price,
-                )
-                continue
-            price_now = quote_price
-            open_px = _safe_float(hist["Open"].iloc[0]) if "Open" in hist.columns else None
-            # Recovery B: pullback/bounce on 1m bars; 60m/open anchors stay on 15m.
-            px_30 = _bar_close_at_or_before(hist_1m, PULSE_RECOVERY_MEDIUM_MINUTES)
-            px_short = _bar_close_at_or_before(hist_1m, PULSE_RECOVERY_SHORT_MINUTES)
-            px_60 = _bar_close_at_or_before(hist, 60)
-            range_pct = _range_pct_last_minutes(hist, PULSE_RANGE_LOOKBACK_MINUTES)
-
-            recovering = _is_price_recovering(price_now, px_30, px_short)
-            stable_60 = price_now is not None and px_60 is not None and price_now >= px_60 * 0.995
-            stable_open = price_now is not None and open_px is not None and price_now >= open_px * 0.99
-            normal_stable = recovering and stable_60 and stable_open
-            session = _session_range_metrics(hist, price_now)
-            bounce = _trough_bounce_metrics(hist_1m, price_now)
-            range_ok = range_pct is not None and float(range_pct) >= PULSE_MIN_RANGE_PCT
-            trough_live_pass = bool(
-                session.get("at_printed_lod")
-                and bounce.get("bounce_light")
-                and range_ok
-            )
-            # polygon_price seed = prior session close (get_last_trading_day).
-            prior_close = _safe_float(row.get("polygon_price"))
-            pct_prior_close = _pct(price_now, prior_close)
-            prior_close_ok = (
-                pct_prior_close is None
-                or float(pct_prior_close) <= PULSE_MAX_PCT_ABOVE_PRIOR_CLOSE
-            )
-
-            attention_row = {
-                "symbol": symbol,
-                "rank": rank,
-                "price": round(float(price_now), 4),
-                "bar_price": round(float(bar_price), 4),
-                "volume": int(row["volume_so_far"]),
-                "dollar_volume": round(float(row["dollar_volume_so_far"]), 2),
-                "prior_dollar_volume": round(float(row["prior_dollar_volume"]), 2),
-                "range_pct": None if range_pct is None else round(float(range_pct), 4),
-                "pct_5m": None if px_short is None else round(float(_pct(price_now, px_short) or 0), 4),
-                "pct_30m": None if px_30 is None else round(float(_pct(price_now, px_30) or 0), 4),
-                "pct_60m": None if px_60 is None else round(float(_pct(price_now, px_60) or 0), 4),
-                "pct_open": None if open_px is None else round(float(_pct(price_now, open_px) or 0), 4),
-                "pct_prior_close": (
-                    None if pct_prior_close is None else round(float(pct_prior_close), 4)
-                ),
-                "prior_close_ok": prior_close_ok,
-                "recovering": recovering,
-                "stable_60": stable_60,
-                "stable_open": stable_open,
-                "normal_stable": normal_stable,
-                **session,
-                **bounce,
-                "trough_live_pass": trough_live_pass,
-            }
-            attention.append(attention_row)
-
-            if not normal_stable:
-                continue
-            if range_pct is None or range_pct < PULSE_MIN_RANGE_PCT:
-                continue
-
-            candidates.append(
-                {
-                    "symbol": symbol,
-                    "rank": rank,
-                    "price": attention_row["price"],
-                    "bar_price": attention_row["bar_price"],
-                    "volume": attention_row["volume"],
-                    "dollar_volume": attention_row["dollar_volume"],
-                    "prior_dollar_volume": attention_row["prior_dollar_volume"],
-                    "range_pct": attention_row["range_pct"],
-                    "pct_5m": attention_row["pct_5m"],
-                    "pct_30m": attention_row["pct_30m"],
-                    "pct_60m": attention_row["pct_60m"],
-                    "pct_open": attention_row["pct_open"],
-                    "pct_prior_close": attention_row["pct_prior_close"],
-                    "prior_close_ok": prior_close_ok,
-                }
-            )
-
-        if PULSE_IMPULSE_SHADOW or PULSE_IMPULSE_LIVE or PULSE_COMBO_LIVE:
-            _enrich_attention_impulse(
-                attention,
-                log_shadow=PULSE_IMPULSE_SHADOW,
-            )
-        if PULSE_TROUGH_SHADOW:
-            _log_attention_trough_shadow(attention)
-
-        candidates.sort(key=lambda r: float(r["range_pct"]), reverse=True)
         return attention, candidates
 
     def _daily_candidates(self) -> List[Dict[str, Any]]:
@@ -1192,47 +1180,23 @@ class Pulse(AdvisorBase):
         discovered_symbols: set[str],
         *,
         path: str,
-        pct_prior_close: Optional[float] = None,
-        prior_close_ok: Optional[bool] = None,
-        extension_cache: Optional[dict] = None,
+        gap_pct: Optional[float] = None,
     ) -> str:
-        """Returns discovered | cooldown | opp | gap | ext | dup | failed."""
+        """Returns discovered | cooldown | gap | dup | failed."""
         if symbol in discovered_symbols:
             return "dup"
         if not self.allow_discovery(symbol, period=PULSE_DISCOVERY_COOLDOWN_HOURS):
             return "cooldown"
 
-        gap_ok = prior_close_ok
-        if gap_ok is None and pct_prior_close is not None:
-            gap_ok = float(pct_prior_close) <= PULSE_MAX_PCT_ABOVE_PRIOR_CLOSE
-        if gap_ok is False:
+        if gap_pct is None or float(gap_pct) < float(PULSE_MIN_GAP_PCT):
             logger.info(
-                "pulse_gap_gate block discover %s path=%s pct_prior=%s max=+%.1f%%",
+                "pulse_gap_gate block discover %s path=%s gap=%s min=+%.1f%%",
                 symbol,
                 path,
-                f"{float(pct_prior_close):+.2f}%" if pct_prior_close is not None else "n/a",
-                PULSE_MAX_PCT_ABOVE_PRIOR_CLOSE,
+                f"{float(gap_pct):+.2f}%" if gap_pct is not None else "n/a",
+                PULSE_MIN_GAP_PCT,
             )
             return "gap"
-
-        ext_cache = extension_cache if extension_cache is not None else {}
-        ext_ok, ext_detail = _pulse_extension_gate(symbol, cache=ext_cache)
-        if not ext_ok:
-            logger.info(
-                "pulse_ext_gate block discover %s path=%s %s "
-                "(max_yearChange=+%.0f%% near52w>=%.0f%%)",
-                symbol,
-                path,
-                ext_detail,
-                PULSE_EXT_MAX_YEAR_CHANGE * 100,
-                PULSE_EXT_NEAR_52W_HIGH_FRAC * 100,
-            )
-            return "ext"
-
-        opp_ok, opp_detail = _pulse_opportunity_gate(symbol)
-        if not opp_ok:
-            logger.info("pulse_opp_gate block discover %s path=%s %s", symbol, path, opp_detail)
-            return "opp"
 
         if self.discovered(
             sa,
@@ -1243,10 +1207,10 @@ class Pulse(AdvisorBase):
         ):
             discovered_symbols.add(symbol)
             logger.info(
-                "pulse_discover path=%s symbol=%s pct_prior=%s",
+                "pulse_discover path=%s symbol=%s gap=%s",
                 path,
                 symbol,
-                f"{float(pct_prior_close):+.2f}%" if pct_prior_close is not None else "n/a",
+                f"{float(gap_pct):+.2f}%",
             )
             return "discovered"
         return "failed"
@@ -1279,132 +1243,49 @@ class Pulse(AdvisorBase):
 
         sell_instructions = pulse_sell_instructions_for_tape(tape_status)
         logger.info(
-            "Pulse tape=%s SIs=rebuy+END_DAY (TARGET_INTRADAY deferred to fund_watch)",
+            "Pulse tape=%s SIs=rebuy+END_DAY (open×vol; agent owns grade/dip/IPC)",
             tape_status.upper(),
         )
 
-        attention, recovery_candidates = self._ensure_pulse_cache()
+        attention, open_vol_candidates = self._ensure_pulse_cache()
         discovered_symbols: set[str] = set()
-        extension_cache: dict = {}
         skipped_cooldown = 0
-        skipped_opp = 0
         skipped_gap = 0
-        skipped_ext = 0
-        discoveries_combo = 0
-        discoveries_recovery = 0
-        discoveries_impulse = 0
-        discoveries_trough = 0
+        discoveries = 0
 
-        def _tally(outcome: str, bucket: str) -> None:
-            nonlocal skipped_cooldown, skipped_opp, skipped_gap, skipped_ext
-            nonlocal discoveries_combo, discoveries_recovery, discoveries_impulse, discoveries_trough
-            if outcome == "discovered":
-                if bucket == "combo":
-                    discoveries_combo += 1
-                elif bucket == "recovery":
-                    discoveries_recovery += 1
-                elif bucket == "impulse":
-                    discoveries_impulse += 1
-                elif bucket == "trough":
-                    discoveries_trough += 1
-            elif outcome == "cooldown":
-                skipped_cooldown += 1
-            elif outcome == "opp":
-                skipped_opp += 1
-            elif outcome == "gap":
-                skipped_gap += 1
-            elif outcome == "ext":
-                skipped_ext += 1
-
-        def _try_discover(symbol, explanation, path, row_or_cand, bucket):
+        for candidate in open_vol_candidates:
+            symbol = str(candidate.get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            explanation = build_pulse_open_vol_discovery_explanation(candidate)
             outcome = self._discover_pulse_candidate(
                 sa,
                 symbol,
                 explanation,
                 sell_instructions,
                 discovered_symbols,
-                path=path,
-                pct_prior_close=row_or_cand.get("pct_prior_close"),
-                prior_close_ok=row_or_cand.get("prior_close_ok"),
-                extension_cache=extension_cache,
+                path="OPEN_VOL",
+                gap_pct=candidate.get("gap_pct"),
             )
-            _tally(outcome, bucket)
+            if outcome == "discovered":
+                discoveries += 1
+            elif outcome == "cooldown":
+                skipped_cooldown += 1
+            elif outcome == "gap":
+                skipped_gap += 1
 
-        if PULSE_COMBO_LIVE:
-            for row in attention:
-                if not row.get("impulse_pass") or not row.get("normal_stable"):
-                    continue
-                symbol = str(row.get("symbol") or "").strip().upper()
-                if not symbol:
-                    continue
-                candidate = _attention_row_to_candidate(row)
-                explanation = build_pulse_combo_discovery_explanation(candidate, row)
-                _try_discover(symbol, explanation, "COMBO", row, "combo")
-
-        for candidate in recovery_candidates:
-            symbol = str(candidate.get("symbol") or "").strip().upper()
-            if not symbol:
-                continue
-            explanation = build_pulse_discovery_explanation(candidate)
-            _try_discover(symbol, explanation, "RECOVERY", candidate, "recovery")
-
-        if PULSE_IMPULSE_LIVE:
-            for row in attention:
-                if not row.get("impulse_pass") or row.get("normal_stable"):
-                    continue
-                symbol = str(row.get("symbol") or "").strip().upper()
-                if not symbol:
-                    continue
-                candidate = _attention_row_to_candidate(row)
-                explanation = build_pulse_impulse_discovery_explanation(candidate, row)
-                _try_discover(symbol, explanation, "IMPULSE", row, "impulse")
-
-        if PULSE_TROUGH_LIVE and tape_status in PULSE_TAPE_TROUGH_STATES:
-            for row in attention:
-                if not row.get("trough_live_pass"):
-                    continue
-                # Pure dip sleeve: skip names already tagged recovery/impulse this build.
-                if row.get("normal_stable") or row.get("impulse_pass"):
-                    continue
-                symbol = str(row.get("symbol") or "").strip().upper()
-                if not symbol:
-                    continue
-                candidate = _attention_row_to_candidate(row)
-                explanation = build_pulse_trough_discovery_explanation(candidate, row)
-                _try_discover(symbol, explanation, "TROUGH", row, "trough")
-        elif PULSE_TROUGH_LIVE:
-            logger.info(
-                "Pulse trough skip: tape=%s (live trough on %s only)",
-                tape_status.upper(),
-                "/".join(sorted(PULSE_TAPE_TROUGH_STATES)),
-            )
-
-        discoveries = (
-            discoveries_combo
-            + discoveries_recovery
-            + discoveries_impulse
-            + discoveries_trough
-        )
         logger.info(
-            "Pulse discover sa=%s: recovery_cands=%d attention=%d "
-            "discoveries=%d (combo=%d recovery=%d impulse=%d trough=%d) "
-            "skipped_cooldown=%d skipped_opp=%d skipped_gap=%d skipped_ext=%d "
-            "(max_pct_prior=+%.1f%% max_yearChange=+%.0f%% near52w>=%.0f%%)",
+            "Pulse discover sa=%s: attention_top%d=%d open_vol_cands=%d discoveries=%d "
+            "skipped_cooldown=%d skipped_gap=%d (min_gap=+%.1f%% min_price=$%.0f)",
             sa.id,
-            len(recovery_candidates),
+            PULSE_TOP_EARLY_VOLUME,
             len(attention),
+            len(open_vol_candidates),
             discoveries,
-            discoveries_combo,
-            discoveries_recovery,
-            discoveries_impulse,
-            discoveries_trough,
             skipped_cooldown,
-            skipped_opp,
             skipped_gap,
-            skipped_ext,
-            PULSE_MAX_PCT_ABOVE_PRIOR_CLOSE,
-            PULSE_EXT_MAX_YEAR_CHANGE * 100,
-            PULSE_EXT_NEAR_52W_HIGH_FRAC * 100,
+            PULSE_MIN_GAP_PCT,
+            PULSE_MIN_PRICE,
         )
 
     def analyze(self, sa, stock) -> None:

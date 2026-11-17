@@ -15,14 +15,19 @@ django.setup()
 from decimal import Decimal
 
 from core.services.advisors.pulse import (
+    PULSE_BUILD_TIME_ET,
     PULSE_ENDDAY_CLUTTER_MINUTES_BEFORE_CLOSE,
     PULSE_ENDDAY_CLUTTER_TAKE,
     PULSE_ENDDAY_MINUTES_BEFORE_CLOSE,
     PULSE_ENDDAY_TAKE,
+    PULSE_MIN_GAP_PCT,
+    PULSE_MIN_PRICE,
     PULSE_REBUY_DROP,
     PULSE_REBUY_MAX_TRANCHES,
+    PULSE_TOP_EARLY_VOLUME,
     _extension_skip_reason,
     pulse_sell_instructions_for_tape,
+    select_open_vol_candidates,
 )
 from core.services.market.tape import (
     TapeReading,
@@ -115,13 +120,66 @@ def test_pulse_sell_instructions_no_ipc():
 
 
 def test_extension_skip_year_change_and_near_52w():
-    """Parabolic yearChange or near yearHigh → skip; missing metrics fail open."""
+    """Helper retained for agent/highs filter; not applied at Pulse discover."""
     assert _extension_skip_reason(price=100, year_high=200, year_change=0.5) is None
     assert "yearChange" in (_extension_skip_reason(price=100, year_high=200, year_change=0.80) or "")
     assert "yearChange" in (_extension_skip_reason(price=370, year_high=595, year_change=1.79) or "")
     assert "near52w" in (_extension_skip_reason(price=95, year_high=100, year_change=0.2) or "")
     assert _extension_skip_reason(price=80, year_high=100, year_change=0.2) is None
     assert _extension_skip_reason(price=None, year_high=None, year_change=None) is None
+
+
+def test_open_vol_knobs():
+    assert PULSE_BUILD_TIME_ET.hour == 9 and PULSE_BUILD_TIME_ET.minute == 45
+    assert PULSE_MIN_PRICE >= 20.0
+    assert PULSE_MIN_GAP_PCT == 2.0
+    assert PULSE_TOP_EARLY_VOLUME == 30
+
+
+def test_select_open_vol_top_n_then_gap():
+    rows = []
+    # 40 liquid names; ranks 1..40 by volume. Gaps alternate above/below 2%.
+    for i in range(40):
+        gap = 3.0 if i % 2 == 0 else 0.5
+        prior = 100.0
+        open_px = prior * (1.0 + gap / 100.0)
+        rows.append(
+            {
+                "symbol": f"T{i:02d}",
+                "open_px": open_px,
+                "prior_close": prior,
+                "prior_volume": 1_000_000,
+                "volume": 5_000_000 - i * 10_000,
+                "price": open_px,
+            }
+        )
+    # Penny / ETF excluded
+    rows.append(
+        {
+            "symbol": "CHEAP",
+            "open_px": 10.0,
+            "prior_close": 9.0,
+            "prior_volume": 2_000_000,
+            "volume": 9_000_000,
+            "price": 10.0,
+        }
+    )
+    rows.append(
+        {
+            "symbol": "SPY",
+            "open_px": 500.0,
+            "prior_close": 480.0,
+            "prior_volume": 50_000_000,
+            "volume": 80_000_000,
+            "price": 500.0,
+        }
+    )
+    attention, cands = select_open_vol_candidates(rows, top_n=30, min_gap_pct=2.0, min_price=20.0)
+    assert len(attention) == 30
+    assert all(r["symbol"] not in {"CHEAP", "SPY"} for r in attention)
+    assert all(float(c["gap_pct"]) >= 2.0 for c in cands)
+    assert 10 <= len(cands) <= 20
+    assert attention[0]["rank"] == 1
 
 
 if __name__ == "__main__":
@@ -133,4 +191,6 @@ if __name__ == "__main__":
     test_normalize_yellow_to_amber()
     test_pulse_sell_instructions_no_ipc()
     test_extension_skip_year_change_and_near_52w()
+    test_open_vol_knobs()
+    test_select_open_vol_top_n_then_gap()
     print("ok")
