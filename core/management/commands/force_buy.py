@@ -16,6 +16,7 @@ Usage:
     python manage.py force_buy XLK --funds FOFS --explanation "Technology" --no-si
     python manage.py force_buy MRVL --funds PULSE --explanation "manual" --wait-trend
     python manage.py force_buy NKE --funds PULSE --explanation "manual" --wait-trend --dry-run
+    python manage.py force_buy LITE --funds PULSE --explanation "manual" --smart-buy --dry-run
 """
 
 import logging
@@ -33,6 +34,14 @@ from core.services.short_term_trend import (
     DEFAULT_TREND_POLL_S,
     DEFAULT_TREND_VOTES,
     PriceTrendWindow,
+)
+from core.services.smart_buy import (
+    DEFAULT_LOOKBACK_MINUTES,
+    DEFAULT_RANGE_SAMPLES,
+    DEFAULT_SMART_BUY_TIMEOUT_S,
+    DEFAULT_SMART_POLL_S,
+    SmartBuyWindow,
+    improvement_pct,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,6 +61,37 @@ def _yahoo_profile(symbol):
     if fast is not None:
         price = fast.get("lastPrice") or fast.get("regularMarketPrice")
     return (company or "")[:200], (exchange or "")[:32], _as_price(price)
+
+
+def _yahoo_lookback_closes(symbol, *, minutes: int = DEFAULT_LOOKBACK_MINUTES):
+    """
+    Recent 1m closes to seed smart-buy range (B: longer lookback than command start).
+    Falls back to empty list when Yahoo has no intraday tape.
+    """
+    minutes = max(int(minutes), 1)
+    ticker = yf.Ticker(symbol)
+    hist = None
+    try:
+        hist = ticker.history(period="1d", interval="1m", prepost=True)
+    except Exception:
+        hist = None
+    if hist is None or getattr(hist, "empty", True):
+        try:
+            hist = ticker.history(period="1d", interval="1m")
+        except Exception:
+            hist = None
+    if hist is None or getattr(hist, "empty", True):
+        return []
+    closes = []
+    try:
+        series = hist["Close"].dropna().tail(minutes)
+    except Exception:
+        return []
+    for value in series.tolist():
+        px = _as_price(value)
+        if px is not None:
+            closes.append(px)
+    return closes
 
 
 def _as_price(value):
@@ -149,6 +189,33 @@ class Command(BaseCommand):
             metavar="SECONDS",
             help=f"Max seconds to wait for trend (default {DEFAULT_WAIT_TREND_TIMEOUT_S:.0f}).",
         )
+        parser.add_argument(
+            "--smart-buy",
+            action="store_true",
+            help=(
+                "Seed ~15m of 1m closes, then poll: above urgency ceiling → wait dip; "
+                "at/under ceiling → wait short-term uptick. Ceiling widens over time "
+                "(lower-third → mid → soft). Mutually exclusive with --wait-trend. "
+                "Works with --dry-run. Default timeout 0 = until buy or Ctrl+C."
+            ),
+        )
+        parser.add_argument(
+            "--smart-buy-timeout",
+            type=float,
+            default=DEFAULT_SMART_BUY_TIMEOUT_S,
+            metavar="SECONDS",
+            help=(
+                "Max seconds for --smart-buy "
+                f"(default {DEFAULT_SMART_BUY_TIMEOUT_S:.0f} = no limit)."
+            ),
+        )
+        parser.add_argument(
+            "--smart-buy-lookback",
+            type=int,
+            default=DEFAULT_LOOKBACK_MINUTES,
+            metavar="MINUTES",
+            help=f"1m bars to seed range (default {DEFAULT_LOOKBACK_MINUTES}).",
+        )
 
     def handle(self, *args, **options):
         symbol = (options["symbol"] or "").upper().strip()
@@ -158,6 +225,15 @@ class Command(BaseCommand):
         no_si = bool(options.get("no_si"))
         wait_trend = bool(options.get("wait_trend"))
         wait_timeout = float(options.get("wait_trend_timeout") or DEFAULT_WAIT_TREND_TIMEOUT_S)
+        smart_buy = bool(options.get("smart_buy"))
+        smart_timeout = float(
+            options.get("smart_buy_timeout")
+            if options.get("smart_buy_timeout") is not None
+            else DEFAULT_SMART_BUY_TIMEOUT_S
+        )
+        smart_lookback = int(
+            options.get("smart_buy_lookback") or DEFAULT_LOOKBACK_MINUTES
+        )
         topup_weight, topup_band = self._parse_topup(options)
 
         if not symbol:
@@ -166,6 +242,8 @@ class Command(BaseCommand):
             raise CommandError("You must provide --funds (Profile.name)")
         if not explanation:
             raise CommandError("You must provide --explanation (the sleeve text)")
+        if wait_trend and smart_buy:
+            raise CommandError("Use either --wait-trend or --smart-buy, not both")
 
         try:
             fund = Profile.objects.get(name=fund_name)
@@ -212,12 +290,17 @@ class Command(BaseCommand):
 
         if wait_trend and wait_timeout <= 0:
             raise CommandError("--wait-trend-timeout must be positive")
+        if smart_buy and smart_timeout < 0:
+            raise CommandError("--smart-buy-timeout must be >= 0 (0 = no limit)")
+        if smart_buy and smart_lookback <= 0:
+            raise CommandError("--smart-buy-lookback must be positive")
 
-        # Dry-run: optional trend wait via Yahoo (no DB stock / no execute_buy).
+        # Dry-run: optional wait via Yahoo (no DB stock / no execute_buy).
         if dry_run:
-            trend_detail = None
+            wait_detail = None
+            start_quote = price
             if wait_trend:
-                trend_detail = self._wait_for_trend(
+                wait_detail = self._wait_for_trend(
                     symbol,
                     get_price=lambda: _yahoo_profile(symbol)[2],
                     timeout_s=wait_timeout,
@@ -232,13 +315,35 @@ class Command(BaseCommand):
                     self._report_no_buy(fund, symbol, allowance, cash, price, held)
                     self._attach_topup_if_held(holding, symbol, topup_weight, topup_band, dry_run)
                     return
+            elif smart_buy:
+                wait_detail = self._wait_for_smart_buy(
+                    symbol,
+                    get_price=lambda: _yahoo_profile(symbol)[2],
+                    timeout_s=smart_timeout,
+                    poll_s=DEFAULT_SMART_POLL_S,
+                    lookback_minutes=smart_lookback,
+                    start_quote=start_quote,
+                )
+                _c, _e, price = _yahoo_profile(symbol)
+                buy_shares = _planned_buy_shares(allowance, cash, price, held)
+                if price is None or buy_shares <= 0:
+                    if price is None:
+                        raise CommandError(f"No price for {symbol} after smart-buy wait")
+                    self._report_no_buy(fund, symbol, allowance, cash, price, held)
+                    self._attach_topup_if_held(holding, symbol, topup_weight, topup_band, dry_run)
+                    return
             cost = buy_shares * price
             would = (
                 f"Would buy {buy_shares} {symbol} for {fund.name} "
                 f"at ${price:.2f} (cost ${cost:,.2f}, cash left ${cash - cost:,.2f})"
             )
-            if trend_detail:
-                would += f" [trend {trend_detail}]"
+            if wait_detail:
+                would += f" [{wait_detail}]"
+            if smart_buy and start_quote and price:
+                would += (
+                    f" improvement={improvement_pct(start_quote, price):+.2f}% "
+                    f"vs start ${start_quote:.2f}"
+                )
             self.stdout.write(self.style.WARNING(would))
             if topup_weight is not None:
                 self.stdout.write(
@@ -291,6 +396,39 @@ class Command(BaseCommand):
                 self._report_no_buy(fund, symbol, allowance, cash, price, held)
                 self._attach_topup_if_held(holding, symbol, topup_weight, topup_band, dry_run)
                 return
+
+        if smart_buy:
+            start_quote = price
+
+            def _live_price():
+                stock.refresh()
+                return stock.price if stock.price and stock.price > 0 else None
+
+            smart_detail = self._wait_for_smart_buy(
+                symbol,
+                get_price=_live_price,
+                timeout_s=smart_timeout,
+                poll_s=DEFAULT_SMART_POLL_S,
+                lookback_minutes=smart_lookback,
+                start_quote=start_quote,
+            )
+            stock.refresh()
+            price = stock.price if stock.price and stock.price > 0 else None
+            buy_shares = _planned_buy_shares(allowance, cash, price, held)
+            if price is None or buy_shares <= 0:
+                self._drop_unused_stock(stock, created_stock)
+                if price is None:
+                    raise CommandError(f"No price for {symbol} after smart-buy wait")
+                self._report_no_buy(fund, symbol, allowance, cash, price, held)
+                self._attach_topup_if_held(holding, symbol, topup_weight, topup_band, dry_run)
+                return
+            improv = (
+                improvement_pct(start_quote, price) if start_quote else Decimal("0")
+            )
+            explanation = (
+                f"{explanation} | smart {smart_detail} "
+                f"improvement={improv:+.2f}% vs start"
+            )
 
         sa = self._latest_sa()
         discovery = holding.discovery if holding and holding.discovery_id else None
@@ -375,6 +513,67 @@ class Command(BaseCommand):
             if time.monotonic() >= deadline:
                 raise CommandError(
                     f"Trend wait timed out for {symbol} after {timeout_s:.0f}s"
+                )
+            time.sleep(float(poll_s))
+
+    def _wait_for_smart_buy(
+        self,
+        symbol: str,
+        *,
+        get_price,
+        timeout_s: float,
+        poll_s: float,
+        lookback_minutes: int,
+        start_quote,
+    ) -> str:
+        """
+        Seed lookback range, then poll until uptick (cheap) or dip (extended).
+
+        timeout_s <= 0 means no deadline (Ctrl+C to abort).
+        """
+        window = SmartBuyWindow(max_samples=DEFAULT_RANGE_SAMPLES)
+        seed = _yahoo_lookback_closes(symbol, minutes=lookback_minutes)
+        decision = window.seed(seed)
+        seed_n = len(window.prices)
+        start_txt = f"${start_quote:.2f}" if start_quote else "n/a"
+        timeout_txt = "none (Ctrl+C)" if timeout_s <= 0 else f"{timeout_s:.0f}s"
+        self.stdout.write(
+            f"Smart-buy {symbol}: seeded {seed_n}/{lookback_minutes} 1m closes; "
+            f"start={start_txt}; poll={poll_s:.0f}s; timeout={timeout_txt}"
+        )
+        if seed_n:
+            self.stdout.write(f"{symbol} seed {decision.detail}")
+        else:
+            self.stdout.write(
+                self.style.WARNING(
+                    f"{symbol}: no Yahoo 1m lookback; warming from live polls only"
+                )
+            )
+
+        t0 = time.monotonic()
+        deadline = None if timeout_s <= 0 else (t0 + float(timeout_s))
+
+        # If seed already says buy (cheap+uptick on historical tape), still take
+        # one live print so we don't fire on a stale last bar alone.
+        while True:
+            price = get_price()
+            elapsed = time.monotonic() - t0
+            if price is None or price <= 0:
+                self.stdout.write(self.style.WARNING(f"{symbol}: no price; retry"))
+            else:
+                decision = window.push(price, elapsed_s=elapsed)
+                improv = ""
+                if start_quote and price:
+                    improv = f" improv={improvement_pct(start_quote, price):+.2f}%"
+                self.stdout.write(f"{symbol} last=${price}{improv} {decision.detail}")
+                if decision.ready and decision.buy:
+                    self.stdout.write(
+                        self.style.SUCCESS(f"Smart-buy ok {symbol}: {decision.detail}")
+                    )
+                    return decision.detail
+            if deadline is not None and time.monotonic() >= deadline:
+                raise CommandError(
+                    f"Smart-buy timed out for {symbol} after {timeout_s:.0f}s"
                 )
             time.sleep(float(poll_s))
 
