@@ -1,16 +1,19 @@
 """
-Pulse agent: grade OPEN_VOL discoveries, buy on dip + short-term trend, IPC sells.
+Pulse agent: grade OPEN_VOL discoveries, arm on dip, buy on short-term trend, IPC sells.
 
 Pulse writes discoveries (SA discover); this agent alone buys into the trial fund
 and owns the live trail (fund_watch can stay off for that book).
 
-BUY-armed (graded pending) or SELL-armed (IPC) poll every 10s; quiet stays at --loop
-(default 30s). Entry needs open→last giveback ≥ dip% and ups > downs over 6 samples
-(3-3 hold).
+Entry:
+  1. Grade ≥ min (default C)
+  2. Open→last giveback ≥ --dip (default 0.5%) → BUY-arm (start 10s trend tracking)
+  3. Buy when ups > downs over 6 votes (3-3 hold) — fill may be lower than the arm print
+
+BUY-armed or SELL-armed (IPC) poll every 10s; quiet stays at --loop (default 30s).
 
 Usage:
     python manage.py pulse_agent PULSE --cron
-    python manage.py pulse_agent PULSE --loop 30 --min-grade C --dip 0.8 --max-holds 10
+    python manage.py pulse_agent PULSE --loop 30 --min-grade C --dip 0.5 --max-holds 10
     python manage.py pulse_agent PULSE --dry-run --once
     python manage.py pulse_agent --self-test
 """
@@ -58,7 +61,8 @@ ET = pytz.timezone("US/Eastern")
 
 # Defaults aligned with Pulse open×vol trial + fund_watch Meyka-style IPC.
 DEFAULT_MIN_GRADE = "C"
-DEFAULT_DIP_PCT = 0.8
+# Open→last giveback that starts BUY-arm / trend tracking (not the fill trigger).
+DEFAULT_DIP_PCT = 0.5
 DEFAULT_MAX_HOLDS = 10
 DEFAULT_ARM = 0.8
 DEFAULT_GIVEBACK = 0.2
@@ -148,8 +152,8 @@ def _self_test() -> None:
         "OPEN_VOL: open gap +2.5% vs prior | Open $41.20 / prior $40.00 / live $40.50"
     ) == Decimal("41.20")
     assert parse_open_px_from_explanation("no open here") is None
-    assert dip_ready(Decimal("100"), Decimal("99.1"), dip_pct=Decimal("0.8"))
-    assert not dip_ready(Decimal("100"), Decimal("99.5"), dip_pct=Decimal("0.8"))
+    assert dip_ready(Decimal("100"), Decimal("99.4"), dip_pct=Decimal("0.5"))
+    assert not dip_ready(Decimal("100"), Decimal("99.6"), dip_pct=Decimal("0.5"))
     assert dip_giveback_pct(Decimal("100"), Decimal("99")) == Decimal("1")
 
     # 7 prices → 6 votes; 3-3 hold; 4-2 buy
@@ -214,7 +218,10 @@ class Command(BaseCommand):
             type=float,
             default=DEFAULT_DIP_PCT,
             metavar="PCT",
-            help=f"Min open→last giveback %% before buy (default {DEFAULT_DIP_PCT}).",
+            help=(
+                f"Open→last giveback %% to BUY-arm and start trend tracking "
+                f"(default {DEFAULT_DIP_PCT}). Fill waits for ups>downs after arm."
+            ),
         )
         parser.add_argument(
             "--max-holds",
@@ -291,13 +298,14 @@ class Command(BaseCommand):
         trails: dict[int, TrailState] = {}
         grade_rejects: set[int] = set()
         trend_windows: dict[str, PriceTrendWindow] = {}
+        dip_armed_syms: set[str] = set()
         sa: Optional[SmartAnalysis] = None
 
         self._emit(
             cron,
             (
                 f"pulse_agent start fund={fund.name} min_grade={min_grade} "
-                f"dip>={dip_pct}% max_holds={max_holds} arm=+{arm_pct}% "
+                f"buy_arm_dip>={dip_pct}% max_holds={max_holds} ipc_arm=+{arm_pct}% "
                 f"giveback={giveback_pp}pp diminish={diminish} "
                 f"trend_votes={TREND_VOTES} arm_poll={ARM_POLL_S}s "
                 f"dry_run={dry_run} no_buy={no_buy} cron={cron} loop_base={loop_s}"
@@ -334,6 +342,7 @@ class Command(BaseCommand):
                     trails=trails,
                     grade_rejects=grade_rejects,
                     trend_windows=trend_windows,
+                    dip_armed_syms=dip_armed_syms,
                     sa=sa,
                 )
 
@@ -396,6 +405,7 @@ class Command(BaseCommand):
         trails: dict[int, TrailState],
         grade_rejects: set[int],
         trend_windows: dict[str, PriceTrendWindow],
+        dip_armed_syms: set[str],
         sa: Optional[SmartAnalysis],
     ) -> tuple[Optional[SmartAnalysis], bool, bool]:
         now_et = datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S %Z")
@@ -496,39 +506,63 @@ class Command(BaseCommand):
                 buy_armed = True
                 continue
 
-            # Graded + watching → BUY-armed; sample every arm poll.
             live_syms.add(symbol)
+            giveback = dip_giveback_pct(open_px, last)
+            gb_txt = "n/a" if giveback is None else f"{giveback:.2f}%"
+
+            # Not yet −dip% off open → watch only (faster poll); no trend samples yet.
+            if not dip_ready(open_px, last, dip_pct=dip_pct):
+                buy_armed = True
+                if symbol in dip_armed_syms:
+                    # Recovered above arm level — reset so we re-arm cleanly later.
+                    dip_armed_syms.discard(symbol)
+                    trend_windows.pop(symbol, None)
+                self._emit(
+                    cron,
+                    f"pulse_agent wait arm {symbol}: "
+                    f"open=${open_px} last=${last} giveback={gb_txt} need>={dip_pct}% "
+                    f"({detail})",
+                )
+                continue
+
+            # First time at/under arm dip → BUY-arm and start a fresh trend window.
+            if symbol not in dip_armed_syms:
+                dip_armed_syms.add(symbol)
+                trend_windows[symbol] = PriceTrendWindow(votes=TREND_VOTES)
+                self._emit(
+                    cron,
+                    f"pulse_agent BUY-arm {symbol}: "
+                    f"open=${open_px} last=${last} giveback={gb_txt} "
+                    f"tracking trend ({detail})",
+                )
+
+            buy_armed = True
             window = trend_windows.setdefault(
                 symbol, PriceTrendWindow(votes=TREND_VOTES)
             )
             vote = window.push(last)
-            buy_armed = True
-
-            giveback = dip_giveback_pct(open_px, last)
-            if not dip_ready(open_px, last, dip_pct=dip_pct):
-                gb_txt = "n/a" if giveback is None else f"{giveback:.2f}%"
-                self._emit(
-                    cron,
-                    f"pulse_agent wait dip {symbol}: "
-                    f"open=${open_px} last=${last} giveback={gb_txt} need>={dip_pct}% "
-                    f"trend[{vote.detail}] ({detail})",
-                )
-                continue
 
             if not vote.ready or not vote.bullish:
                 self._emit(
                     cron,
                     f"pulse_agent wait trend {symbol}: "
-                    f"open=${open_px} last=${last} giveback="
-                    f"{'n/a' if giveback is None else f'{giveback:.2f}%'} "
+                    f"open=${open_px} last=${last} giveback={gb_txt} "
                     f"trend[{vote.detail}] need ups>downs ({detail})",
+                )
+                continue
+
+            # Still require below open at fill (no chase through the open).
+            if last >= open_px:
+                self._emit(
+                    cron,
+                    f"pulse_agent wait below-open {symbol}: "
+                    f"last=${last} open=${open_px} trend[{vote.detail}] ({detail})",
                 )
                 continue
 
             allowance = fund.average_spend()
             lead = (discovery.explanation or "").split("|", 1)[0].strip()
-            explanation = f"pulse_agent dip+trend {lead}"
-            gb_txt = "n/a" if giveback is None else f"{giveback:.2f}%"
+            explanation = f"pulse_agent arm+trend {lead}"
             msg = (
                 f"pulse_agent BUY {symbol} fund={fund.name} "
                 f"open=${open_px} last=${last} giveback={gb_txt} "
@@ -538,6 +572,7 @@ class Command(BaseCommand):
                 self._emit(cron, f"DRY-RUN {msg}")
                 bought += 1
                 trend_windows.pop(symbol, None)
+                dip_armed_syms.discard(symbol)
                 continue
 
             sa = self._ensure_sa(sa)
@@ -553,11 +588,13 @@ class Command(BaseCommand):
             if Holding.objects.filter(fund=fund, stock=stock, shares__gt=0).exists():
                 bought += 1
                 trend_windows.pop(symbol, None)
+                dip_armed_syms.discard(symbol)
             fund.refresh_from_db()
 
         for sym in list(trend_windows.keys()):
             if sym not in live_syms:
                 del trend_windows[sym]
+                dip_armed_syms.discard(sym)
 
         return sa, buy_armed, sell_armed
 
