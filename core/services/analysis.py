@@ -22,7 +22,6 @@ from core.services.risk.headline_screen import (
 from core.services.intraday_stabilize import (
     STABILIZE_MINUTES_DEFAULT,
     is_down_vs_minutes_ago,
-    price_above_minutes_ago,
     sector_etf_for_stock,
 )
 from core.services.llm.gemini import ask_gemini as llm_ask_gemini
@@ -50,10 +49,12 @@ DT_YAHOO_HEADLINE_LIMIT = 5
 DT_YAHOO_MAX_AGE_DAYS = 3
 # Shadow DT exits: still run LLM triage, log would-SELL, do not execute (avoids fighting REBUY).
 DT_SHADOW_MODE = True
-REBUY_STABILIZE_MINUTES = STABILIZE_MINUTES_DEFAULT
-REBUY_SHORT_MINUTES = 5
+REBUY_STABILIZE_MINUTES = STABILIZE_MINUTES_DEFAULT  # sector-ETF downer only
 REBUY_TREND_HOURS = 1
-REBUY_MIN_TREND = Decimal("-0.10")
+# Mild positive 1h OLS (calc_trend scale); blocks still-falling knives.
+REBUY_MIN_TREND = Decimal("0.02")
+# Structure: last > prior_close OR last > session VWAP × buffer.
+REBUY_VWAP_BUFFER = Decimal("1.005")
 # Shadow: consensus fade at rebuy trigger → would REBUY/HOLD/SELL (no order change).
 REBUY_CONSENSUS_SHADOW = True
 # Assessment.consensus is 0–100 (higher = healthier street). Drop = now - baseline.
@@ -225,9 +226,76 @@ def recycle_equity_cap(sa, fund: Profile) -> int:
     return sold
 
 
+def _rebuy_structure_allows(stock, current_price) -> bool:
+    """
+    Structure reclaim: last > prior_close OR last > session_VWAP × REBUY_VWAP_BUFFER.
+
+    Prior close is completed daily T-1 (same helper as Edgar tape). VWAP from
+    today's 1m bars. Missing both refs → defer; one ref alone is enough to pass.
+    """
+    import yfinance as yf
+    from core.services.advisors.edgar import (
+        _daily_prior_and_t2_closes,
+        _session_vwap,
+    )
+
+    try:
+        last = float(current_price)
+    except (TypeError, ValueError):
+        return False
+    if last <= 0:
+        return False
+
+    prior = None
+    vwap = None
+    try:
+        ticker = yf.Ticker(stock.symbol)
+        prior, _ = _daily_prior_and_t2_closes(ticker)
+        hist = ticker.history(period="1d", interval="1m")
+        if hist is not None and not hist.empty:
+            vwap = _session_vwap(hist)
+    except Exception as exc:
+        logger.info(
+            "%s rebuy deferred: structure tape error (%s)",
+            stock.symbol,
+            exc,
+        )
+        return False
+
+    buf = float(REBUY_VWAP_BUFFER)
+    pass_pc = prior is not None and last > float(prior)
+    pass_vw = vwap is not None and last > float(vwap) * buf
+    if pass_pc or pass_vw:
+        via = "PC" if pass_pc else "VWAP+"
+        logger.info(
+            "%s rebuy structure ok via %s (last=%.4f pc=%s vwap=%s buf=%.3f)",
+            stock.symbol,
+            via,
+            last,
+            f"{float(prior):.4f}" if prior is not None else "n/a",
+            f"{float(vwap):.4f}" if vwap is not None else "n/a",
+            buf,
+        )
+        return True
+
+    if prior is None and vwap is None:
+        logger.info("%s rebuy deferred: no prior_close or VWAP", stock.symbol)
+    else:
+        logger.info(
+            "%s rebuy deferred: structure (last=%.4f pc=%s vwap=%s; need >PC or >VWAP×%.3f)",
+            stock.symbol,
+            last,
+            f"{float(prior):.4f}" if prior is not None else "n/a",
+            f"{float(vwap):.4f}" if vwap is not None else "n/a",
+            buf,
+        )
+    return False
+
+
 def _percentage_rebuy_intraday_allows(stock, current_price) -> bool:
     """
-    PERCENTAGE_REBUY recovery gate (global): RTH only, short-term uptick, mild 1h trend.
+    PERCENTAGE_REBUY recovery gate (global): RTH, 1h trend > 0.02,
+    and (last > prior_close OR last > session VWAP × 1.005).
     """
     if market_open() is None:
         logger.info("%s rebuy deferred: market closed", stock.symbol)
@@ -256,25 +324,7 @@ def _percentage_rebuy_intraday_allows(stock, current_price) -> bool:
         )
         return False
 
-    for minutes in (REBUY_STABILIZE_MINUTES, REBUY_SHORT_MINUTES):
-        stabilized = price_above_minutes_ago(stock, minutes=minutes)
-        if stabilized is not True:
-            if stabilized is False:
-                logger.info(
-                    "%s rebuy deferred: price $%.2f not above %dm ago (wait for stabilization)",
-                    stock.symbol,
-                    float(stock.price),
-                    minutes,
-                )
-            else:
-                logger.info(
-                    "%s rebuy deferred: no %dm intraday reference",
-                    stock.symbol,
-                    minutes,
-                )
-            return False
-
-    return True
+    return _rebuy_structure_allows(stock, current_price)
 
 
 def _percentage_rebuy_headline_action(holding, drop_pct, instruction_name="PERCENTAGE_REBUY"):
@@ -1355,7 +1405,7 @@ def analyze_holdings(sa, funds):
                         elif instruction.instruction in ("PERCENTAGE_REBUY", "PERCENTAGE_DOUBLE"):
                             # value1 = drop fraction from average (e.g. 0.02 = 2%).
                             # value2 = max tranche count vs holding.tranches (default 5; <=0 = unlimited).
-                            # Recovery: _percentage_rebuy_intraday_allows (RTH, 1h trend, 5m/30m up).
+                            # Recovery: _percentage_rebuy_intraday_allows (RTH, trend>0.02, PC|VWAP+0.5%).
                             # Then headline BUY/HOLD/SELL and sector-ETF downer — same as rebuy.
                             # REBUY adds one fund tranche; DOUBLE buys current share count.
                             double = instruction.instruction == "PERCENTAGE_DOUBLE"
