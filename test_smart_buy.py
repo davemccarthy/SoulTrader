@@ -1,4 +1,4 @@
-"""Unit tests for smart-buy range router (no network)."""
+"""Unit tests for smart-buy range router and force_buy price band (no network)."""
 from decimal import Decimal
 
 from core.services.smart_buy import (
@@ -6,6 +6,7 @@ from core.services.smart_buy import (
     dip_entry_ceiling,
     evaluate_smart_buy,
     improvement_pct,
+    price_band_block_reason,
 )
 
 
@@ -84,6 +85,18 @@ def test_window_seed_and_push():
     assert len(w.prices) == 7
 
 
+def test_price_band_blocks_above_max():
+    assert price_band_block_reason(Decimal("156"), max_price=Decimal("155"))
+    assert price_band_block_reason(Decimal("155"), max_price=Decimal("155")) is None
+    assert price_band_block_reason(Decimal("149"), min_price=Decimal("150"))
+    assert (
+        price_band_block_reason(
+            Decimal("152"), min_price=Decimal("150"), max_price=Decimal("155")
+        )
+        is None
+    )
+
+
 if __name__ == "__main__":
     test_improvement_positive_when_cheaper()
     test_dip_ceiling_urgency()
@@ -93,4 +106,5 @@ if __name__ == "__main__":
     test_dip_then_uptick_buys()
     test_urgency_relaxes_ceiling_into_mid()
     test_window_seed_and_push()
+    test_price_band_blocks_above_max()
     print("ok")

@@ -276,3 +276,24 @@ def improvement_pct(start: Decimal | float, execution: Decimal | float) -> Decim
     if s <= 0:
         return Decimal("0")
     return (s - e) / s * Decimal("100")
+
+
+def price_band_block_reason(
+    price: Decimal | float | None,
+    *,
+    min_price: Decimal | float | None = None,
+    max_price: Decimal | float | None = None,
+) -> str | None:
+    """
+    Why a trigger price is outside an optional band, or None if allowed.
+
+    Used by force_buy to veto smart-buy / wait-trend fills without stopping the chase.
+    """
+    if price is None or _as_decimal(price) <= 0:
+        return "no price"
+    cur = _as_decimal(price)
+    if min_price is not None and cur < _as_decimal(min_price):
+        return f"below min-price ${_as_decimal(min_price)}"
+    if max_price is not None and cur > _as_decimal(max_price):
+        return f"above max-price ${_as_decimal(max_price)}"
+    return None

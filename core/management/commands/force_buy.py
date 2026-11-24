@@ -17,6 +17,7 @@ Usage:
     python manage.py force_buy MRVL --funds PULSE --explanation "manual" --wait-trend
     python manage.py force_buy NKE --funds PULSE --explanation "manual" --wait-trend --dry-run
     python manage.py force_buy LITE --funds PULSE --explanation "manual" --smart-buy --dry-run
+    python manage.py force_buy NVDA --funds PONY --explanation "manual" --smart-buy --max-price 155
 """
 
 import logging
@@ -42,6 +43,7 @@ from core.services.smart_buy import (
     DEFAULT_SMART_POLL_S,
     SmartBuyWindow,
     improvement_pct,
+    price_band_block_reason,
 )
 
 logger = logging.getLogger(__name__)
@@ -130,6 +132,17 @@ def _planned_buy_shares(allowance, cash, price, held_shares):
     return buy
 
 
+def _parse_limit_price(raw, *, flag: str):
+    """Parse an optional --min-price / --max-price decimal, or None if blank."""
+    text = (raw or "").strip() if isinstance(raw, str) else raw
+    if text is None or text == "":
+        return None
+    px = _as_price(text)
+    if px is None:
+        raise CommandError(f"{flag} must be a positive price")
+    return px
+
+
 class Command(BaseCommand):
     help = "Force buy one symbol into a named fund at one spread tranche"
 
@@ -216,6 +229,27 @@ class Command(BaseCommand):
             metavar="MINUTES",
             help=f"1m bars to seed range (default {DEFAULT_LOOKBACK_MINUTES}).",
         )
+        parser.add_argument(
+            "--min-price",
+            type=str,
+            default="",
+            metavar="PRICE",
+            help=(
+                "Optional floor: with --smart-buy/--wait-trend, veto triggers below "
+                "this and keep polling; without a waiter, abort if live is below."
+            ),
+        )
+        parser.add_argument(
+            "--max-price",
+            type=str,
+            default="",
+            metavar="PRICE",
+            help=(
+                "Optional ceiling: with --smart-buy/--wait-trend, veto triggers above "
+                "this and keep polling (chase continues); without a waiter, abort "
+                "if live is above."
+            ),
+        )
 
     def handle(self, *args, **options):
         symbol = (options["symbol"] or "").upper().strip()
@@ -234,6 +268,8 @@ class Command(BaseCommand):
         smart_lookback = int(
             options.get("smart_buy_lookback") or DEFAULT_LOOKBACK_MINUTES
         )
+        min_price = _parse_limit_price(options.get("min_price"), flag="--min-price")
+        max_price = _parse_limit_price(options.get("max_price"), flag="--max-price")
         topup_weight, topup_band = self._parse_topup(options)
 
         if not symbol:
@@ -244,6 +280,8 @@ class Command(BaseCommand):
             raise CommandError("You must provide --explanation (the sleeve text)")
         if wait_trend and smart_buy:
             raise CommandError("Use either --wait-trend or --smart-buy, not both")
+        if min_price is not None and max_price is not None and min_price > max_price:
+            raise CommandError("--min-price cannot be greater than --max-price")
 
         try:
             fund = Profile.objects.get(name=fund_name)
@@ -295,6 +333,10 @@ class Command(BaseCommand):
         if smart_buy and smart_lookback <= 0:
             raise CommandError("--smart-buy-lookback must be positive")
 
+        band_txt = self._format_price_band(min_price, max_price)
+        if band_txt:
+            self.stdout.write(f"Price band: {band_txt}")
+
         # Dry-run: optional wait via Yahoo (no DB stock / no execute_buy).
         if dry_run:
             wait_detail = None
@@ -306,6 +348,8 @@ class Command(BaseCommand):
                     timeout_s=wait_timeout,
                     poll_s=DEFAULT_TREND_POLL_S,
                     votes=DEFAULT_TREND_VOTES,
+                    min_price=min_price,
+                    max_price=max_price,
                 )
                 _c, _e, price = _yahoo_profile(symbol)
                 buy_shares = _planned_buy_shares(allowance, cash, price, held)
@@ -323,6 +367,8 @@ class Command(BaseCommand):
                     poll_s=DEFAULT_SMART_POLL_S,
                     lookback_minutes=smart_lookback,
                     start_quote=start_quote,
+                    min_price=min_price,
+                    max_price=max_price,
                 )
                 _c, _e, price = _yahoo_profile(symbol)
                 buy_shares = _planned_buy_shares(allowance, cash, price, held)
@@ -332,6 +378,14 @@ class Command(BaseCommand):
                     self._report_no_buy(fund, symbol, allowance, cash, price, held)
                     self._attach_topup_if_held(holding, symbol, topup_weight, topup_band, dry_run)
                     return
+            else:
+                blocked = price_band_block_reason(
+                    price, min_price=min_price, max_price=max_price
+                )
+                if blocked:
+                    raise CommandError(
+                        f"Would not buy {symbol} at ${price}: {blocked}"
+                    )
             cost = buy_shares * price
             would = (
                 f"Would buy {buy_shares} {symbol} for {fund.name} "
@@ -384,6 +438,8 @@ class Command(BaseCommand):
                 timeout_s=wait_timeout,
                 poll_s=DEFAULT_TREND_POLL_S,
                 votes=DEFAULT_TREND_VOTES,
+                min_price=min_price,
+                max_price=max_price,
             )
             explanation = f"{explanation} | trend {trend_detail}"
             stock.refresh()
@@ -411,6 +467,8 @@ class Command(BaseCommand):
                 poll_s=DEFAULT_SMART_POLL_S,
                 lookback_minutes=smart_lookback,
                 start_quote=start_quote,
+                min_price=min_price,
+                max_price=max_price,
             )
             stock.refresh()
             price = stock.price if stock.price and stock.price > 0 else None
@@ -429,6 +487,14 @@ class Command(BaseCommand):
                 f"{explanation} | smart {smart_detail} "
                 f"improvement={improv:+.2f}% vs start"
             )
+        else:
+            # Immediate buy: hard gate (no chase to wait under/over the band).
+            blocked = price_band_block_reason(
+                price, min_price=min_price, max_price=max_price
+            )
+            if blocked:
+                self._drop_unused_stock(stock, created_stock)
+                raise CommandError(f"Not buying {symbol} at ${price}: {blocked}")
 
         sa = self._latest_sa()
         discovery = holding.discovery if holding and holding.discovery_id else None
@@ -482,6 +548,13 @@ class Command(BaseCommand):
         self._attach_default_sell_instructions(live_discovery, no_si=no_si)
         self._attach_topup(live_discovery, topup_weight, topup_band, dry_run=False)
 
+    def _format_price_band(self, min_price, max_price) -> str:
+        if min_price is None and max_price is None:
+            return ""
+        lo = f"${min_price}" if min_price is not None else "-inf"
+        hi = f"${max_price}" if max_price is not None else "+inf"
+        return f"{lo} .. {hi}"
+
     def _wait_for_trend(
         self,
         symbol: str,
@@ -490,13 +563,18 @@ class Command(BaseCommand):
         timeout_s: float,
         poll_s: float,
         votes: int,
+        min_price=None,
+        max_price=None,
     ) -> str:
         """Poll until ups > downs over `votes` comparisons, or raise on timeout."""
         window = PriceTrendWindow(votes=votes)
         deadline = time.monotonic() + float(timeout_s)
+        band = self._format_price_band(min_price, max_price)
+        band_note = f"; band {band}" if band else ""
         self.stdout.write(
             f"Waiting for short-term trend on {symbol} "
-            f"(poll={poll_s:.0f}s votes={votes}; ups>downs; timeout={timeout_s:.0f}s)"
+            f"(poll={poll_s:.0f}s votes={votes}; ups>downs; "
+            f"timeout={timeout_s:.0f}s{band_note})"
         )
         while True:
             price = get_price()
@@ -506,10 +584,20 @@ class Command(BaseCommand):
                 vote = window.push(price)
                 self.stdout.write(f"{symbol} last=${price} trend[{vote.detail}]")
                 if vote.ready and vote.bullish:
-                    self.stdout.write(
-                        self.style.SUCCESS(f"Trend ok {symbol}: {vote.detail}")
+                    blocked = price_band_block_reason(
+                        price, min_price=min_price, max_price=max_price
                     )
-                    return vote.detail
+                    if blocked:
+                        self.stdout.write(
+                            self.style.WARNING(
+                                f"Trend ok {symbol} but blocked ({blocked}); keep waiting"
+                            )
+                        )
+                    else:
+                        self.stdout.write(
+                            self.style.SUCCESS(f"Trend ok {symbol}: {vote.detail}")
+                        )
+                        return vote.detail
             if time.monotonic() >= deadline:
                 raise CommandError(
                     f"Trend wait timed out for {symbol} after {timeout_s:.0f}s"
@@ -525,11 +613,14 @@ class Command(BaseCommand):
         poll_s: float,
         lookback_minutes: int,
         start_quote,
+        min_price=None,
+        max_price=None,
     ) -> str:
         """
         Seed lookback range, then poll until uptick (cheap) or dip (extended).
 
         timeout_s <= 0 means no deadline (Ctrl+C to abort).
+        Optional min/max veto a trigger and keep chasing.
         """
         window = SmartBuyWindow(max_samples=DEFAULT_RANGE_SAMPLES)
         seed = _yahoo_lookback_closes(symbol, minutes=lookback_minutes)
@@ -537,9 +628,11 @@ class Command(BaseCommand):
         seed_n = len(window.prices)
         start_txt = f"${start_quote:.2f}" if start_quote else "n/a"
         timeout_txt = "none (Ctrl+C)" if timeout_s <= 0 else f"{timeout_s:.0f}s"
+        band = self._format_price_band(min_price, max_price)
+        band_note = f"; band {band}" if band else ""
         self.stdout.write(
             f"Smart-buy {symbol}: seeded {seed_n}/{lookback_minutes} 1m closes; "
-            f"start={start_txt}; poll={poll_s:.0f}s; timeout={timeout_txt}"
+            f"start={start_txt}; poll={poll_s:.0f}s; timeout={timeout_txt}{band_note}"
         )
         if seed_n:
             self.stdout.write(f"{symbol} seed {decision.detail}")
@@ -567,10 +660,23 @@ class Command(BaseCommand):
                     improv = f" improv={improvement_pct(start_quote, price):+.2f}%"
                 self.stdout.write(f"{symbol} last=${price}{improv} {decision.detail}")
                 if decision.ready and decision.buy:
-                    self.stdout.write(
-                        self.style.SUCCESS(f"Smart-buy ok {symbol}: {decision.detail}")
+                    blocked = price_band_block_reason(
+                        price, min_price=min_price, max_price=max_price
                     )
-                    return decision.detail
+                    if blocked:
+                        self.stdout.write(
+                            self.style.WARNING(
+                                f"Smart-buy ok {symbol} but blocked ({blocked}); "
+                                "keep chasing"
+                            )
+                        )
+                    else:
+                        self.stdout.write(
+                            self.style.SUCCESS(
+                                f"Smart-buy ok {symbol}: {decision.detail}"
+                            )
+                        )
+                        return decision.detail
             if deadline is not None and time.monotonic() >= deadline:
                 raise CommandError(
                     f"Smart-buy timed out for {symbol} after {timeout_s:.0f}s"
