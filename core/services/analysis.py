@@ -10,7 +10,9 @@ from typing import Any, Optional
 import pandas as pd
 from pytz import timezone as tz
 from django.utils import timezone
-from core.models import Holding, Discovery, Profile
+from django.db.models import Q
+
+from core.models import Holding, Discovery, Profile, Trade
 from core.services.execution import execute_buy, execute_buy_exact_shares, execute_sell
 from core.services.risk.headline_screen import (
     fetch_headlines,
@@ -226,12 +228,13 @@ def recycle_equity_cap(sa, fund: Profile) -> int:
     return sold
 
 
-def _rebuy_structure_allows(stock, current_price) -> bool:
+def _rebuy_structure_via(stock, current_price) -> Optional[str]:
     """
     Structure reclaim: last > prior_close OR last > session_VWAP × REBUY_VWAP_BUFFER.
 
-    Prior close is completed daily T-1 (same helper as Edgar tape). VWAP from
-    today's 1m bars. Missing both refs → defer; one ref alone is enough to pass.
+    Returns a short via label for trade explanations ("PC", "VWAP+", "PC+VWAP+"),
+    or None if blocked. Prior close is completed daily T-1 (Edgar helper); VWAP
+    from today's 1m bars.
     """
     import yfinance as yf
     from core.services.advisors.edgar import (
@@ -242,9 +245,9 @@ def _rebuy_structure_allows(stock, current_price) -> bool:
     try:
         last = float(current_price)
     except (TypeError, ValueError):
-        return False
+        return None
     if last <= 0:
-        return False
+        return None
 
     prior = None
     vwap = None
@@ -260,13 +263,18 @@ def _rebuy_structure_allows(stock, current_price) -> bool:
             stock.symbol,
             exc,
         )
-        return False
+        return None
 
     buf = float(REBUY_VWAP_BUFFER)
     pass_pc = prior is not None and last > float(prior)
     pass_vw = vwap is not None and last > float(vwap) * buf
     if pass_pc or pass_vw:
-        via = "PC" if pass_pc else "VWAP+"
+        if pass_pc and pass_vw:
+            via = "PC+VWAP+"
+        elif pass_pc:
+            via = "PC"
+        else:
+            via = "VWAP+"
         logger.info(
             "%s rebuy structure ok via %s (last=%.4f pc=%s vwap=%s buf=%.3f)",
             stock.symbol,
@@ -276,7 +284,7 @@ def _rebuy_structure_allows(stock, current_price) -> bool:
             f"{float(vwap):.4f}" if vwap is not None else "n/a",
             buf,
         )
-        return True
+        return via
 
     if prior is None and vwap is None:
         logger.info("%s rebuy deferred: no prior_close or VWAP", stock.symbol)
@@ -289,17 +297,19 @@ def _rebuy_structure_allows(stock, current_price) -> bool:
             f"{float(vwap):.4f}" if vwap is not None else "n/a",
             buf,
         )
-    return False
+    return None
 
 
-def _percentage_rebuy_intraday_allows(stock, current_price) -> bool:
+def _percentage_rebuy_intraday_via(stock, current_price) -> Optional[str]:
     """
     PERCENTAGE_REBUY recovery gate (global): RTH, 1h trend > 0.02,
     and (last > prior_close OR last > session VWAP × 1.005).
+
+    Returns structure via label on pass, else None.
     """
     if market_open() is None:
         logger.info("%s rebuy deferred: market closed", stock.symbol)
-        return False
+        return None
 
     trend = stock.calc_trend(
         period="1d",
@@ -313,7 +323,7 @@ def _percentage_rebuy_intraday_allows(stock, current_price) -> bool:
             stock.symbol,
             REBUY_TREND_HOURS,
         )
-        return False
+        return None
     if trend <= REBUY_MIN_TREND:
         logger.info(
             "%s rebuy deferred: trend %.4f <= %.2f (%dh slope)",
@@ -322,9 +332,61 @@ def _percentage_rebuy_intraday_allows(stock, current_price) -> bool:
             float(REBUY_MIN_TREND),
             REBUY_TREND_HOURS,
         )
-        return False
+        return None
 
-    return _rebuy_structure_allows(stock, current_price)
+    return _rebuy_structure_via(stock, current_price)
+
+
+def _last_rebuy_fill_price(holding) -> Optional[Decimal]:
+    """Most recent Rebuy/Double BUY fill for this fund+stock (None if none yet)."""
+    if holding is None or not holding.fund_id or not holding.stock_id:
+        return None
+    price = (
+        Trade.objects.filter(
+            fund_id=holding.fund_id,
+            stock_id=holding.stock_id,
+            action="BUY",
+        )
+        .filter(
+            Q(explanation__istartswith="Rebuy ")
+            | Q(explanation__istartswith="Double ")
+        )
+        .order_by("-created", "-id")
+        .values_list("price", flat=True)
+        .first()
+    )
+    if price is None:
+        return None
+    try:
+        return Decimal(str(price))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def _vwap_only_chase_blocked(holding, current_price, gate_via: str) -> bool:
+    """
+    VWAP-only path: defer when last > last rebuy fill (no paying up into a bounce).
+
+    PC / PC+VWAP+ unchanged. First rebuy (no prior add) always allowed.
+    """
+    if gate_via != "VWAP+":
+        return False
+    last = _last_rebuy_fill_price(holding)
+    if last is None:
+        return False
+    try:
+        px = Decimal(str(current_price))
+    except (InvalidOperation, TypeError, ValueError):
+        return True
+    if px > last:
+        logger.info(
+            "%s rebuy deferred: VWAP+ but $%.4f > last rebuy $%.4f (no chase)",
+            holding.stock.symbol,
+            float(px),
+            float(last),
+        )
+        return True
+    return False
 
 
 def _percentage_rebuy_headline_action(holding, drop_pct, instruction_name="PERCENTAGE_REBUY"):
@@ -1405,7 +1467,8 @@ def analyze_holdings(sa, funds):
                         elif instruction.instruction in ("PERCENTAGE_REBUY", "PERCENTAGE_DOUBLE"):
                             # value1 = drop fraction from average (e.g. 0.02 = 2%).
                             # value2 = max tranche count vs holding.tranches (default 5; <=0 = unlimited).
-                            # Recovery: _percentage_rebuy_intraday_allows (RTH, trend>0.02, PC|VWAP+0.5%).
+                            # Recovery: _percentage_rebuy_intraday_via (RTH, trend>0.02, PC|VWAP+0.5%).
+                            # VWAP-only: also block if last > prior Rebuy/Double fill (no bounce chase).
                             # Then headline BUY/HOLD/SELL and sector-ETF downer — same as rebuy.
                             # REBUY adds one fund tranche; DOUBLE buys current share count.
                             double = instruction.instruction == "PERCENTAGE_DOUBLE"
@@ -1413,8 +1476,13 @@ def analyze_holdings(sa, funds):
                                 drop_pct = Decimal(str(instruction.value1))
                                 drop_threshold = Decimal(str(buy_price)) * (Decimal("1.0") - drop_pct)
                                 if holding.stock.price <= drop_threshold:
-                                    if not _percentage_rebuy_intraday_allows(
+                                    gate_via = _percentage_rebuy_intraday_via(
                                         holding.stock, holding.stock.price
+                                    )
+                                    if not gate_via:
+                                        continue
+                                    if _vwap_only_chase_blocked(
+                                        holding, holding.stock.price, gate_via
                                     ):
                                         continue
 
@@ -1481,7 +1549,8 @@ def analyze_holdings(sa, funds):
                                             add_shares,
                                             (
                                                 f"Double {add_shares} shares after "
-                                                f"{drop_pct * 100:.0f}% drop vs avg"
+                                                f"{drop_pct * 100:.0f}% drop vs avg "
+                                                f"(via {gate_via})"
                                             ),
                                             discovery=holding.discovery,
                                         )
@@ -1494,7 +1563,11 @@ def analyze_holdings(sa, funds):
                                             fund,
                                             holding.stock,
                                             rebuy_amount,
-                                            f"Rebuy ${rebuy_amount:.0f} after {drop_pct * 100:.0f}% drop vs avg",
+                                            (
+                                                f"Rebuy ${rebuy_amount:.0f} after "
+                                                f"{drop_pct * 100:.0f}% drop vs avg "
+                                                f"(via {gate_via})"
+                                            ),
                                             force=True,
                                             discovery=holding.discovery,
                                         )
@@ -1536,9 +1609,10 @@ def analyze_holdings(sa, funds):
                                         float(price),
                                     )
                                     continue
-                                if not _percentage_rebuy_intraday_allows(
+                                gate_via = _percentage_rebuy_intraday_via(
                                     holding.stock, holding.stock.price
-                                ):
+                                )
+                                if not gate_via:
                                     continue
                                 execute_buy(
                                     sa,
@@ -1547,7 +1621,8 @@ def analyze_holdings(sa, funds):
                                     gap,
                                     (
                                         f"Top up {holding.stock.symbol} ${gap:.0f} "
-                                        f"to {weight * 100:.2f}% of fund"
+                                        f"to {weight * 100:.2f}% of fund "
+                                        f"(via {gate_via})"
                                     ),
                                     force=True,
                                     discovery=holding.discovery,
